@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
 from miles.backends.training_utils.weight_update.protocols.cuda_ipc import (
     UpdateWeightFromTensor,
@@ -69,6 +70,9 @@ class TestConnect:
             colocate=True,
             offload_rollout=True,
             lora_sync_sends_base=True,
+            sglang=make_sglang_config(pp_size=1),
+            pause_generation_mode="retract",
+            fully_async=False,
         )
         protocol.rollout_engines = None
         protocol._model_update_groups = None
@@ -123,7 +127,7 @@ class TestConnect:
         assert protocol.use_distribute is True
         assert protocol.rollout_engines == engines[:3]
         assert protocol.distributed_rollout_engines == engines[3:]
-        connect.assert_called_once_with("miles", engines[3:], engine_gpu_counts=[2])
+        connect.assert_called_once_with("miles", engines[3:], engine_gpu_counts=[2], pause_generation_mode=None)
         disconnect.assert_not_called()
         assert protocol._model_update_groups is connect.return_value
         assert protocol._ipc_engine is engines[expected_engine_index]
@@ -210,4 +214,4 @@ class TestObservedWorldSize:
 
         assert protocol.rollout_engines == engines[:3]
         assert protocol.distributed_rollout_engines == engines[3:]
-        connect.assert_called_once_with("miles", engines[3:], engine_gpu_counts=[2])
+        connect.assert_called_once_with("miles", engines[3:], engine_gpu_counts=[2], pause_generation_mode=None)

@@ -6,11 +6,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
 from miles.backends.training_utils.weight_update.protocols.broadcast import (
     UpdateWeightFromDistributed,
     connect_rollout_engines_from_distributed,
     disconnect_rollout_engines_from_distributed,
+    pp_connect_pause_mode,
     update_weights_from_distributed,
 )
 from miles.utils import async_utils
@@ -44,6 +46,32 @@ class _GatedEngine:
 class _AcceptingEngine:
     async def init_weights_update_group(self, *args, **kwargs) -> dict:
         return {"success": True}
+
+
+class _RecordingEngine:
+    def __init__(self, calls: list[tuple[int, str]], index: int, *, refuse: bool = False) -> None:
+        self._calls, self._index, self._refuse = calls, index, refuse
+
+    async def pause_generation(self, mode: str) -> None:
+        self._calls.append((self._index, f"pause_generation:{mode}"))
+
+    async def init_weights_update_group(self, *args, **kwargs) -> dict:
+        self._calls.append((self._index, "init_weights_update_group"))
+        if self._refuse:
+            raise RuntimeError("engine refused the group")
+        return {"success": True}
+
+    async def continue_generation(self) -> None:
+        self._calls.append((self._index, "continue_generation"))
+
+
+def _pause_args(*, pp_size: int | None, fully_async: bool = False, colocate: bool = False) -> Namespace:
+    return Namespace(
+        sglang=make_sglang_config(pp_size=pp_size),
+        pause_generation_mode="retract",
+        fully_async=fully_async,
+        colocate=colocate,
+    )
 
 
 class _RefusingEngine:
@@ -140,6 +168,67 @@ class TestConnectRolloutEnginesFromDistributed:
                 )
 
 
+class TestPipelineParallelEnginesArePausedForTheGroupInit:
+    @pytest.mark.parametrize(
+        "args,expected",
+        [
+            (_pause_args(pp_size=None), None),
+            (_pause_args(pp_size=1), None),
+            (_pause_args(pp_size=2), "retract"),
+            # The driver already paused them for the whole update.
+            (_pause_args(pp_size=2, fully_async=True, colocate=True), None),
+        ],
+    )
+    def test_only_pipeline_parallel_engines_the_driver_has_not_paused_are_paused(self, args, expected) -> None:
+        assert pp_connect_pause_mode(args) == expected
+
+    def test_every_engine_is_paused_before_any_joins_and_resumed_after(self) -> None:
+        """A PP stage blocked in the group init stops relaying micro-batches the next stage is waiting for."""
+        calls: list[tuple[int, str]] = []
+        engines = [_RecordingEngine(calls, index) for index in range(2)]
+
+        with (
+            patch(f"{_BROADCAST_MODULE}.ray") as ray_mock,
+            patch(f"{_BROADCAST_MODULE}.init_process_group", return_value=MagicMock(name="nccl_group")),
+        ):
+            ray_mock._private.services.get_node_ip_address.return_value = "10.0.0.1"
+            connect_rollout_engines_from_distributed(
+                "miles-pp_0", engines, engine_gpu_counts=[2, 2], pause_generation_mode="retract"
+            )
+
+        steps = [step for _, step in calls]
+        assert steps[:2] == ["pause_generation:retract"] * 2
+        assert sorted(steps[2:4]) == ["init_weights_update_group"] * 2
+        assert steps[4:] == ["continue_generation"] * 2
+
+    def test_engines_are_resumed_when_the_group_init_fails(self) -> None:
+        calls: list[tuple[int, str]] = []
+        engines = [_RecordingEngine(calls, 0), _RecordingEngine(calls, 1, refuse=True)]
+
+        with (
+            patch(f"{_BROADCAST_MODULE}.ray") as ray_mock,
+            patch(f"{_BROADCAST_MODULE}.init_process_group", return_value=MagicMock(name="nccl_group")),
+            pytest.raises(RuntimeError, match="engine refused the group"),
+        ):
+            ray_mock._private.services.get_node_ip_address.return_value = "10.0.0.1"
+            connect_rollout_engines_from_distributed(
+                "miles-pp_0", engines, engine_gpu_counts=[1, 1], pause_generation_mode="retract"
+            )
+
+        assert sorted(index for index, step in calls if step == "continue_generation") == [0, 1]
+
+    def test_engines_without_pipeline_parallelism_are_not_paused(self) -> None:
+        calls: list[tuple[int, str]] = []
+        with (
+            patch(f"{_BROADCAST_MODULE}.ray") as ray_mock,
+            patch(f"{_BROADCAST_MODULE}.init_process_group", return_value=MagicMock(name="nccl_group")),
+        ):
+            ray_mock._private.services.get_node_ip_address.return_value = "10.0.0.1"
+            connect_rollout_engines_from_distributed("miles-pp_0", [_RecordingEngine(calls, 0)], engine_gpu_counts=[1])
+
+        assert calls == [(0, "init_weights_update_group")]
+
+
 class TestUpdateWeightFromDistributedConnect:
     def test_the_protocol_forwards_discovered_gpu_counts_to_the_group_builder(self) -> None:
         """The protocol must not replace heterogeneous discovered counts with the uniform fallback."""
@@ -149,7 +238,9 @@ class TestUpdateWeightFromDistributedConnect:
             intra_dp_cp=SimpleNamespace(rank=0),
         )
         with patch(f"{_BROADCAST_MODULE}.get_parallel_state", return_value=initial_parallel_state):
-            protocol = UpdateWeightFromDistributed(Namespace(check_weight_update_equal=False))
+            protocol = UpdateWeightFromDistributed(
+                Namespace(check_weight_update_equal=False, **vars(_pause_args(pp_size=1)))
+            )
 
         engines = [MagicMock(name="prefill"), MagicMock(name="decode")]
         parallel_state = SimpleNamespace(pp=SimpleNamespace(rank=0))
@@ -172,6 +263,7 @@ class TestUpdateWeightFromDistributedConnect:
             "miles-pp_0",
             engines,
             engine_gpu_counts=[2, 4],
+            pause_generation_mode=None,
         )
 
 
