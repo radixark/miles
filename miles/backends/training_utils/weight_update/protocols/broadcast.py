@@ -15,6 +15,7 @@ from miles.backends.training_utils.weight_update.protocol import WeightTransferP
 from miles.backends.training_utils.weight_update.protocols.utils.data_replica import get_data_replica_rank_and_size
 from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
 from miles.utils import async_utils
+from miles.utils.arguments import driver_owns_generation_pause
 from miles.utils.distributed_lock import create_world_ticket_lock
 from miles.utils.distributed_utils import init_process_group
 
@@ -70,7 +71,10 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
                 self.group_name, self._model_update_groups, self.rollout_engines
             )
             self._model_update_groups = connect_rollout_engines_from_distributed(
-                self.group_name, rollout_engines, engine_gpu_counts=engine_gpu_counts
+                self.group_name,
+                rollout_engines,
+                engine_gpu_counts=engine_gpu_counts,
+                pause_generation_mode=pp_connect_pause_mode(self.args),
             )
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
@@ -88,10 +92,25 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
             bucket.clear()
 
 
+def pp_connect_pause_mode(args: Namespace) -> str | None:
+    """The mode to pause pipeline-parallel engines with before they join a weight-update group.
+
+    A PP engine handles the group init inside its pipelined loop: the stage that receives it blocks in
+    the NCCL init and stops relaying in-flight micro-batches, while the next stage blocks in a synchronous
+    receive of those micro-batches and never reaches the init. Pausing first leaves no micro-batch in
+    flight. None when the engines are not pipeline-parallel or the driver already paused them.
+    """
+    if (args.sglang.common_value("pp_size") or 1) == 1 or driver_owns_generation_pause(args):
+        return None
+    return args.pause_generation_mode
+
+
 def connect_rollout_engines_from_distributed(
     group_name: str,
     rollout_engines: Sequence[SGLangApiClient],
     engine_gpu_counts: Sequence[int] | None = None,
+    *,
+    pause_generation_mode: str | None = None,
 ) -> dist.ProcessGroup:
     """
     Create NCCL group: training rank 0 + all engine GPUs. Blocks until joined.
@@ -101,12 +120,25 @@ def connect_rollout_engines_from_distributed(
     occupies a different number of ranks in the NCCL group.
     """
     assert engine_gpu_counts is not None and len(engine_gpu_counts) == len(rollout_engines)
+    if pause_generation_mode is None:
+        return _join_weight_update_group(group_name, rollout_engines, engine_gpu_counts)
+    async_utils.wait_futures(
+        [async_utils.submit(client.pause_generation(mode=pause_generation_mode)) for client in rollout_engines]
+    )
+    try:
+        return _join_weight_update_group(group_name, rollout_engines, engine_gpu_counts)
+    finally:
+        async_utils.wait_futures([async_utils.submit(client.continue_generation()) for client in rollout_engines])
+
+
+def _join_weight_update_group(
+    group_name: str, rollout_engines: Sequence[SGLangApiClient], engine_gpu_counts: Sequence[int]
+) -> dist.ProcessGroup:
     master_address = ray._private.services.get_node_ip_address()
     with socket.socket() as sock:
         sock.bind(("", 0))
         master_port = sock.getsockname()[1]
     world_size = sum(engine_gpu_counts) + 1
-
     futures = []
     rank_cursor = 1
     for i, api_client in enumerate(rollout_engines):
