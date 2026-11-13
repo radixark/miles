@@ -17,12 +17,9 @@ from sglang.srt.debug_utils.dumper import DumperConfig, _get_rank, dumper
 from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
-from miles.utils.retry_utils import retry_until_deadline
 from miles.utils.tracking_utils.structured_log import log_structured
 
 logger = logging.getLogger(__name__)
-
-_WORKER_REGISTRATION_TIMEOUT_SECONDS = 120.0
 
 
 class DumperPhase(enum.Enum):
@@ -61,7 +58,7 @@ async def configure_sglang(args: Namespace) -> None:
 
     from miles.utils.http_utils import post
 
-    worker_urls = await _wait_registered_worker_urls(args)
+    worker_urls = _registered_worker_urls(args)
     overrides = _get_phase_override_configs(args, DumperPhase.INFERENCE)
 
     engines_dir: Path = _get_dir(args) / "engines"
@@ -81,26 +78,16 @@ async def configure_sglang(args: Namespace) -> None:
     logger.info("Configured dumper on %d SGLang engines", len(worker_urls))
 
 
-async def _wait_registered_worker_urls(args: Namespace) -> list[str]:
-    from miles.rollout.inference_rollout.inference_rollout_train import get_worker_urls
-
+def _registered_worker_urls(args: Namespace) -> list[str]:
     expected = args.init_expected_num_cells
     expected_worker_count = expected[args.sglang.models[0].name] if isinstance(expected, dict) else expected
     assert expected_worker_count is not None, "the dumper needs the run's own engines, but none are expected"
-
-    async def _attempt(_remaining_seconds: float) -> list[str]:
-        worker_urls = await get_worker_urls(args)
-        assert (
-            len(worker_urls) >= expected_worker_count
-        ), f"router reports {len(worker_urls)}/{expected_worker_count} inference engines to configure the dumper on"
-        return worker_urls
-
-    return await retry_until_deadline(
-        _attempt,
-        total_seconds=_WORKER_REGISTRATION_TIMEOUT_SECONDS,
-        retry_on=AssertionError,
-        log_fields=dict(op="dumper_wait_workers"),
-    )
+    # the controller awaited every expected cell before the first rollout, so the snapshot is complete
+    worker_urls = args.inference_runtime_mut_state.engine_urls
+    assert (
+        len(worker_urls) >= expected_worker_count
+    ), f"{len(worker_urls)}/{expected_worker_count} inference engines are addressable to configure the dumper on"
+    return worker_urls
 
 
 # ------------------------------- Megatron -------------------------------------

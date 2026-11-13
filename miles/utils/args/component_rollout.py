@@ -10,11 +10,14 @@ class InferenceRuntimeMutState(StrictBaseModel):
     engine_count: int = 0
     gpu_count: int = 0
     eval_engine_count: int = 0
+    # base URLs of the engines this run generates on, for calls that must reach every engine
+    engine_urls: list[str] = []
 
     def set_(self, other: "InferenceRuntimeMutState") -> None:
         self.engine_count = other.engine_count
         self.gpu_count = other.gpu_count
         self.eval_engine_count = other.eval_engine_count
+        self.engine_urls = list(other.engine_urls)
 
 
 class InferenceRuntimeImmutState(InferenceRuntimeMutState):
