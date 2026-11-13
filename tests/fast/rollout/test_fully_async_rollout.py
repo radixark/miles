@@ -494,7 +494,6 @@ async def test_sample_cancellation_aborts_group_without_stopping_worker(
         return sample
 
     monkeypatch.setattr(rollout_common, "generate_and_rm", generate_sample)
-    monkeypatch.setattr(rollout_common, "router_routes_by_key", lambda args: False)
     args = make_args(
         rollout_batch_size=1,
         async_max_concurrent_samples=N_SAMPLES_PER_PROMPT,

@@ -2,6 +2,7 @@
 Utils to integrate SGLang's `/generate` endpoint with RL things like Sample.
 """
 
+import uuid
 from copy import deepcopy
 from typing import Any
 
@@ -87,6 +88,21 @@ def apply_sample_max_response_len(sampling_params: dict[str, Any], sample: Sampl
             "the run's max_new_tokens"
         )
     return {**sampling_params, "max_new_tokens": limit}
+
+
+def stamp_prompt_routing_key(args, samples: list[Sample]) -> None:
+    """Key the samples of one prompt for the router; the backend decides whether they share one key.
+
+    Samples that already carry a key keep it, so re-sampled and derived samples keep their affinity.
+    """
+    backend = make_router_backend(args)
+    if not backend.routes_by_key(args.sglang.models):
+        return
+    shared = backend.shares_routing_key_per_prompt(args.sglang.models)
+    shared_key = str(uuid.uuid4())
+    for sample in samples:
+        if sample.routing_key is None:
+            sample.routing_key = shared_key if shared else str(uuid.uuid4())
 
 
 def token_space_request_fields(mm_token_expansion_start_len: int) -> dict[str, Any]:
