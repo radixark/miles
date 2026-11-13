@@ -40,7 +40,6 @@ def _args(**overrides) -> Namespace:
         max_seq_len=8192,
         rollout_max_response_len=4096,
         ref_update_interval=None,
-        save_debug_train_data=None,
         ci_test=False,
         use_routing_replay=False,
         use_rollout_routing_replay=False,
@@ -268,8 +267,6 @@ def test_unsupported_flags_are_rejected_rather_than_ignored(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.14.0")
     with pytest.raises(ValueError, match="ref-update-interval"):
         validate_torchtitan_args(_args(ref_update_interval=4))
-    with pytest.raises(ValueError, match="save-debug-train-data"):
-        validate_torchtitan_args(_args(save_debug_train_data="/tmp/dump"))
 
 
 def test_the_replay_checker_is_refused_where_blocks_compile_fullgraph(monkeypatch):
