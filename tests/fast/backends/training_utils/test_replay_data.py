@@ -702,6 +702,28 @@ def test_blocks_that_are_not_stored_parts_read_the_parts_holding_them(monkeypatc
         assert torch.equal(a, b)
 
 
+@pytest.mark.parametrize("stored", [False, True], ids=["inline", "store"])
+def test_a_rank_that_registers_no_stream_keeps_no_rows_for_the_dump(monkeypatch, fake_plugin, stored):
+    # A pipeline stage that builds no decoder layer has no block to read.
+    state = SimpleNamespace(cp=SimpleNamespace(size=1, rank=0), tp=SimpleNamespace(size=1, rank=0))
+    recorded, dump = _attach_both(
+        monkeypatch,
+        _THD_ARGS,
+        state=state,
+        lengths=(5, 3),
+        max_seq_len=None,
+        indexer=False,
+        store=_FakeOutputStore({}) if stored else None,
+        dump=True,
+        num_streams=4,
+        streams=(),
+        blocks=[],
+        splits=(2,),
+    )
+
+    assert recorded == [] and dump == [None, None]
+
+
 def test_a_block_past_the_stored_streams_fails_the_fill(monkeypatch, fake_plugin):
     state = SimpleNamespace(cp=SimpleNamespace(size=1, rank=0), tp=SimpleNamespace(size=1, rank=0))
     with pytest.raises(

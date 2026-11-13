@@ -123,7 +123,7 @@ def attach_replay_data(
     # A train-data dump, written after training, replaces the column with each sample's local rows
     # (after CP padding, before packing) of every block in turn, what replay consumed on this rank;
     # None for a sample no micro batch holds, which a fixed schedule leaves when the batch does not
-    # divide evenly.
+    # divide evenly, and for every sample on a rank that registers no stream.
     keep_column = manager.kept_in_train_dump and args.save_debug_train_data is not None
     kept_rows = {}
 
@@ -174,7 +174,7 @@ def attach_replay_data(
             ]
         if keep_column:
             # A copy: store rows are views of a slot the next micro batch overwrites.
-            kept_rows.update((j, torch.cat(r, dim=1)) for j, r in zip(order[index], rows, strict=True))
+            kept_rows.update((j, torch.cat(r, dim=1)) for j, r in zip(order[index], rows, strict=True) if r)
 
         replay_data = [pack([r[i] for r in rows], layout, pad_size) for i in range(len(blocks))]
         manager.register_replay_list_func(manager.replays, replay_data, models=models, blocks=blocks)
