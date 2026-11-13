@@ -44,6 +44,7 @@ class LoRAGroupedFC1(NativeLoRAAdapter):
         self,
         *,
         hf_prefix: str,
+        hf_leaves: tuple[str, str],
         reference: torch.Tensor,
         context: AttachContext,
         num_local_experts: int,
@@ -53,6 +54,7 @@ class LoRAGroupedFC1(NativeLoRAAdapter):
     ):
         super().__init__(hf_prefix, (), context.tp_rank)
         self.context = context
+        self.hf_leaves = hf_leaves
         rank = context.lora.rank
         ep_group = "ep" if is_ep else None
         self.register_parameter(
@@ -101,23 +103,24 @@ class LoRAGroupedFC1(NativeLoRAAdapter):
             )
 
     def export_plan(self, gather) -> list:
-        prefix = self.hf_prefix
+        gate, up = (f"{self.hf_prefix}{leaf}" for leaf in self.hf_leaves)
         return [
-            (f"{prefix}w1.lora_A.weight", self.w1_A.unsqueeze(0)),
-            (f"{prefix}w3.lora_A.weight", self.w3_A.unsqueeze(0)),
-            (f"{prefix}w1.lora_B.weight", gather.request(self.w1_B, 0, group="ep")),
-            (f"{prefix}w3.lora_B.weight", gather.request(self.w3_B, 0, group="ep")),
+            (f"{gate}.lora_A.weight", self.w1_A.unsqueeze(0)),
+            (f"{up}.lora_A.weight", self.w3_A.unsqueeze(0)),
+            (f"{gate}.lora_B.weight", gather.request(self.w1_B, 0, group="ep")),
+            (f"{up}.lora_B.weight", gather.request(self.w3_B, 0, group="ep")),
         ]
 
     def load_plan(self, take) -> list:
+        gate, up = (f"{self.hf_prefix}{leaf}" for leaf in self.hf_leaves)
         num_local = self.w1_B.shape[0]
         lo = _ep_rank() * num_local
         hi = lo + num_local
         return [
-            (self.w1_A, take(f"{self.hf_prefix}w1.lora_A.weight").squeeze(0)),
-            (self.w3_A, take(f"{self.hf_prefix}w3.lora_A.weight").squeeze(0)),
-            (self.w1_B, take(f"{self.hf_prefix}w1.lora_B.weight")[lo:hi]),
-            (self.w3_B, take(f"{self.hf_prefix}w3.lora_B.weight")[lo:hi]),
+            (self.w1_A, take(f"{gate}.lora_A.weight").squeeze(0)),
+            (self.w3_A, take(f"{up}.lora_A.weight").squeeze(0)),
+            (self.w1_B, take(f"{gate}.lora_B.weight")[lo:hi]),
+            (self.w3_B, take(f"{up}.lora_B.weight")[lo:hi]),
         ]
 
 
@@ -128,6 +131,7 @@ class LoRAGroupedFC2(NativeLoRAAdapter):
         self,
         *,
         hf_prefix: str,
+        hf_leaf: str,
         reference: torch.Tensor,
         context: AttachContext,
         num_local_experts: int,
@@ -137,6 +141,7 @@ class LoRAGroupedFC2(NativeLoRAAdapter):
     ):
         super().__init__(hf_prefix, (), context.tp_rank)
         self.context = context
+        self.hf_leaf = hf_leaf
         rank = context.lora.rank
         ep_group = "ep" if is_ep else None
         self.register_parameter(
@@ -172,19 +177,20 @@ class LoRAGroupedFC2(NativeLoRAAdapter):
             )
 
     def export_plan(self, gather) -> list:
-        prefix = self.hf_prefix
+        down = f"{self.hf_prefix}{self.hf_leaf}"
         return [
-            (f"{prefix}w2.lora_A.weight", gather.request(self.w2_A, 0, group="ep")),
-            (f"{prefix}w2.lora_B.weight", self.w2_B.unsqueeze(0)),
+            (f"{down}.lora_A.weight", gather.request(self.w2_A, 0, group="ep")),
+            (f"{down}.lora_B.weight", self.w2_B.unsqueeze(0)),
         ]
 
     def load_plan(self, take) -> list:
+        down = f"{self.hf_prefix}{self.hf_leaf}"
         num_local = self.w2_A.shape[0]
         lo = _ep_rank() * num_local
         hi = lo + num_local
         return [
-            (self.w2_A, take(f"{self.hf_prefix}w2.lora_A.weight")[lo:hi]),
-            (self.w2_B, take(f"{self.hf_prefix}w2.lora_B.weight").squeeze(0)),
+            (self.w2_A, take(f"{down}.lora_A.weight")[lo:hi]),
+            (self.w2_B, take(f"{down}.lora_B.weight").squeeze(0)),
         ]
 
 
