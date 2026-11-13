@@ -97,7 +97,7 @@ def attach_replay_data(
     that pop them; the column is dropped once the last one has been waited for.
 
     `blocks` are the `(start, end)` stream ranges this rank registers (Megatron: `replay_blocks`),
-    each a stored part from the output store; None means every stream, the whole stored field.
+    read from the stored parts that hold them; None means every stream, the whole stored field.
     Only their streams are read and padded, one tensor per block, and registered with `blocks=`.
 
     For `bshd`, `sequence_first` selects Megatron MoE's `[S, B]` token order;
@@ -233,9 +233,11 @@ def _read_local_rows(
 ) -> list[list[torch.Tensor]]:
     """Each sample's rows at this rank's local positions, one tensor per block, read in one call into a reused slot.
 
-    The slot holds each block's part in turn, every sample's local rows of it. Positions past a sample's
-    last row are padded with -1, as `take_ranges` pads inline rows. With `check`, the rows read from each
-    object are checked, those of every block together.
+    The slot holds, in turn, each stored part with a stream of `blocks`, every sample's local rows of it: a block
+    is usually one part, but a rank's streams can be fewer than the part holding them (an indexer on some layers
+    only), and a run of them can cross parts (adjacent chunks of one rank). Positions past a sample's last row are
+    padded with -1, as `take_ranges` pads inline rows. With `check`, the rows read from each object are checked,
+    those of every part together.
     """
     if not blocks:
         # This rank registers no stream.
@@ -243,37 +245,53 @@ def _read_local_rows(
     # radix_transfer_plugins ships with SGLang and is not a Miles dependency.
     from radix_transfer_plugins import RangeRead
 
+    stored = samples[0].parts()
+    if (last := max(end for _, end in blocks)) > stored[-1][1]:
+        raise StorePlanError(f"{samples[0].name} streams up to {last} are not all stored: its parts are {stored}")
+    parts = [part for part in stored if any(part[0] < end and start < part[1] for start, end in blocks)]
     counts = [sum(end - start for start, end in ranges) for ranges in local_ranges]
     regions, reads, offset = [], [], 0
-    for block in blocks:
-        region = _BlockRegion.plan(samples, local_ranges, counts, block=block, offset=offset)
+    for part in parts:
+        region = _BlockRegion.plan(samples, local_ranges, counts, block=part, offset=offset)
         regions.append(region)
-        reads += [(block, r) for r in region.reads]
+        reads += [(part, r) for r in region.reads]
         offset += sum(counts) * region.row_bytes
     buffer = slots.get(0, offset)
     slots.store.read_ranges(
         [
             RangeRead(
                 ref=r.ref,
-                field=samples[0].part_name(block),
+                field=samples[0].part_name(part),
                 src_offset=r.src_offset,
                 nbytes=r.nbytes,
                 dst_offset=r.dst_offset,
             )
-            for block, r in reads
+            for part, r in reads
         ],
         into=buffer,
     )
     rows = [region.rows(buffer, num_rows=sum(counts)) for region in regions]
     if check:
-        # Every region holds the same local rows: check those of each object read of the first block in all.
+        # Every region holds the same local rows: check those of each object read of the first part in all.
         first = regions[0]
         for r in first.reads:
             start = (r.dst_offset - first.offset) // first.row_bytes
             end = start + r.nbytes // first.row_bytes
-            samples[0].check_rows([block_rows[start:end] for block_rows in rows])
-    by_block = [torch.from_numpy(block_rows).split(counts) for block_rows in rows]
+            samples[0].check_rows([rows_of_part[start:end] for rows_of_part in rows])
+    part_rows = [torch.from_numpy(rows_of_part) for rows_of_part in rows]
+    by_block = [_block_streams(part_rows, parts, block).split(counts) for block in blocks]
     return [list(sample_rows) for sample_rows in zip(*by_block, strict=True)]
+
+
+def _block_streams(part_rows, parts, block) -> torch.Tensor:
+    """Streams `block` of rows read as `parts`, which tile them: a view when one part holds them all."""
+    start, end = block
+    pieces = [
+        rows[:, max(start, a) - a : min(end, b) - a]
+        for rows, (a, b) in zip(part_rows, parts, strict=True)
+        if a < end and start < b
+    ]
+    return pieces[0] if len(pieces) == 1 else torch.cat(pieces, dim=1)
 
 
 class _BlockRegion(NamedTuple):

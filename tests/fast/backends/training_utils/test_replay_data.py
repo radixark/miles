@@ -663,31 +663,61 @@ def test_a_pipeline_stage_reads_and_registers_only_its_blocks(
     assert read_bytes == sum(n - 1 for n in lengths) * row_bytes
 
 
-def test_a_block_the_objects_do_not_store_fails_the_fill(monkeypatch, fake_plugin):
-    args = SimpleNamespace(
-        qkv_format="thd",
-        allgather_cp=False,
-        train_backend="megatron",
-        backend=SimpleNamespace(sequence_parallel=False),
-        data_pad_size_multiplier=1,
-        save_debug_train_data=None,
-    )
+_THD_ARGS = SimpleNamespace(
+    qkv_format="thd",
+    allgather_cp=False,
+    train_backend="megatron",
+    backend=SimpleNamespace(sequence_parallel=False),
+    data_pad_size_multiplier=1,
+    save_debug_train_data="/tmp/{rollout_id}_{rank}.pt",
+)
+
+
+@pytest.mark.parametrize(
+    "streams,blocks",
+    [
+        # An indexer on some layers only: its runs are narrower than the part holding them.
+        ((0, 3), [(0, 1), (3, 4)]),
+        # Adjacent chunks of one rank: one run crosses the split.
+        ((0, 1, 2, 3), [(0, 4)]),
+        ((1, 2), [(1, 3)]),
+    ],
+    ids=["sparse", "whole", "crossing"],
+)
+def test_blocks_that_are_not_stored_parts_read_the_parts_holding_them(monkeypatch, fake_plugin, streams, blocks):
     state = SimpleNamespace(cp=SimpleNamespace(size=1, rank=0), tp=SimpleNamespace(size=1, rank=0))
-    # SGLang split at layer 2, but this rank asks for layers 1-3.
+    common = dict(
+        state=state, lengths=(5, 3), max_seq_len=None, indexer=True, dump=True, num_streams=4, streams=streams
+    )
+    inline, inline_dump = _attach_both(monkeypatch, _THD_ARGS, store=None, blocks=blocks, **common)
+    # SGLang split at stream 2.
+    stored, stored_dump = _attach_both(
+        monkeypatch, _THD_ARGS, store=_FakeOutputStore({}), blocks=blocks, splits=(2,), **common
+    )
+
+    for entries in zip(inline, stored, strict=True):
+        for a, b in zip(*entries, strict=True):
+            assert torch.equal(a, b)
+    for a, b in zip(inline_dump, stored_dump, strict=True):
+        assert torch.equal(a, b)
+
+
+def test_a_block_past_the_stored_streams_fails_the_fill(monkeypatch, fake_plugin):
+    state = SimpleNamespace(cp=SimpleNamespace(size=1, rank=0), tp=SimpleNamespace(size=1, rank=0))
     with pytest.raises(
-        StorePlanError, match=r"streams 1-3 are not a stored part: object 0/a has parts \[\(0, 2\), \(2, 4\)\]"
+        StorePlanError, match=r"streams up to 5 are not all stored: its parts are \[\(0, 2\), \(2, 4\)\]"
     ):
         _attach_both(
             monkeypatch,
-            args,
+            _THD_ARGS,
             state=state,
             lengths=(5, 3),
             max_seq_len=None,
             indexer=False,
             store=_FakeOutputStore({}),
             num_streams=4,
-            streams=(1, 2),
-            blocks=[(1, 3)],
+            streams=(3,),
+            blocks=[(3, 5)],
             splits=(2,),
         )
 

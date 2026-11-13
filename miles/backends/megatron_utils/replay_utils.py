@@ -40,9 +40,10 @@ def vp_stage_layers(models) -> list[tuple[int, int]]:
 def replay_blocks(manager, models) -> list[tuple[int, int]]:
     """The stream ranges `manager` registers on this pipeline rank, for `attach_replay_data`.
 
-    Routed experts: each virtual pipeline stage's layers; other replays: the runs of their streams. Each is one part
-    of the stored field, which SGLang splits at every stage's edges (`pp_layer_splits`), so a rank reads only its own.
+    Routed experts: each virtual pipeline stage's layers; other replays: the runs of their streams. SGLang splits the
+    stored field at every stage's edges (`pp_layer_splits`), so the parts holding them are this rank's own.
     """
     if manager.register_replay_list_func is register_replay_list_moe:
-        return vp_stage_layers(models)
+        # A chunk can build no decoder layer, e.g. one holding only the embedding.
+        return [(start, end) for start, end in vp_stage_layers(models) if start < end]
     return stream_blocks(manager.replays)
