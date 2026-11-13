@@ -63,8 +63,8 @@ same declaration drives attachment, HF export/import, and SGLang serving targets
 The spec is selected from the checkpoint's `model_type`.
 
 Adapters cover attention projections (GQA Q/K/V/O, MLA Q-A/Q-B/KV-A/KV-B/O), dense
-MLPs, and shared experts. Routed experts carry shared-outer adapters on Inkling, Kimi K3
-and Qwen3.5/3.6 MoE; selecting them requires `--experts-shared-outer-loras`. The output head (`lm_head`, the
+MLPs, and shared experts. Routed experts carry shared-outer adapters on Inkling, Kimi K3,
+Qwen3.5/3.6 MoE and DeepSeek-V4.1; selecting them requires `--experts-shared-outer-loras`. The output head (`lm_head`, the
 `unembed` group) is adaptable on every family except Kimi K3, GLM-5.3-Flash and DeepSeek-V4.1; on a
 tied-embedding model it gets its own adapter and the input embedding is unchanged, as with official
 Tinker's unembed. A selected head needs `--vocab-size`, and is refused with `--enable-mtp-training` and, on a
@@ -101,7 +101,7 @@ full-scale experiment evidence. It is not an exhaustive model whitelist.
 | Native / raw | Qwen3 0.6B, Qwen3.5-35B-A3B | Dense GQA; gated-GQA + GDN hybrid MoE | [Launcher](https://github.com/radixark/miles/blob/main/examples/lora/run_qwen3_lora_native.py), [Qwen3 0.6B E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_qwen3_0_6b_lora_native_ci.py), [Qwen3.5 E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_qwen3_5_35b_a3b_lora_native_ci.py) | E2E targets attention, including the Qwen3.5 GDN projections (+ dense/shared MLP). The MoE's routed experts (`experts.gate_up_proj`, `experts.down_proj`) train shared-outer (`--experts-shared-outer-loras`). |
 | Native / raw | GLM-4.7-Flash, GLM-5.2, Kimi K2.5 | MLA MoE | [Launcher](https://github.com/radixark/miles/blob/main/examples/lora/run_lora_native.py), [GLM-5.2 5-layer E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_glm5_2_5layer_lora_native_ci.py), [Kimi K2.5 2-layer E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_kimi_k25_2layer_lora_native_ci.py) | MLA attention adapters; routed experts require Bridge. |
 | Native / raw | GLM-5.3-Flash | Hybrid KDA + DSA MoE + mHC | [Launcher](https://github.com/radixark/miles/blob/main/scripts/run_glm5_3_flash_lora.py), [model page](/models/glm/glm5-3-flash) | KDA, DSA (except `kv_b_proj`) and dense/shared MLP adapters; routed experts stay frozen. Serving needs SGLang LoRA on the KDA projections. |
-| Native / raw | DeepSeek-V4.1-Flash | MoE + compressed sparse attention + mHC + engram | [Launcher](https://github.com/radixark/miles/blob/main/scripts/run_deepseek_v4_1.py) (`--train-mode lora`), [model page](/models/deepseek/deepseek-v4-1-flash) | Attention adapters, including the grouped `wo_a`, and the shared expert; routed experts, the compressor, the indexer and engram stay frozen. Serving needs SGLang LoRA on the V4 attention. |
+| Native / raw | DeepSeek-V4.1-Flash | MoE + compressed sparse attention + mHC + engram | [Launcher](https://github.com/radixark/miles/blob/main/scripts/run_deepseek_v4_1.py) (`--train-mode lora`), [model page](/models/deepseek/deepseek-v4-1-flash) | Attention adapters, including the grouped `wo_a`, and the shared expert; the routed experts train shared-outer with `--experts-shared-outer-loras`, and the launcher leaves them out by default; the compressor, the indexer and engram stay frozen. Serving needs SGLang LoRA on the V4 attention. |
 
 ## Quick start
 

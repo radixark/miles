@@ -22,7 +22,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     lora_rank: int = 16
     lora_alpha: int = 32
     target_modules: str = "attn,mlp"
-    # native LoRA has no routed-expert adapter
+    # routed experts take shared-outer adapters only with --experts-shared-outer-loras
     exclude_modules: str = "*.ffn.experts.*"
 
     hf_checkpoint: str | None = None

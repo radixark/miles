@@ -27,7 +27,11 @@ from miles.backends.megatron_utils.lora.native.spec.mlp import (
     FusedGateUpMLPSpec,
     SplitGateUpMLPSpec,
 )
-from miles.backends.megatron_utils.lora.native.spec.moe import GroupedExpertsSpec, PackedGroupedExpertsSpec
+from miles.backends.megatron_utils.lora.native.spec.moe import (
+    DeepSeekV4GroupedExpertsSpec,
+    GroupedExpertsSpec,
+    PackedGroupedExpertsSpec,
+)
 from miles.utils.lora.hf_lora_targets import resolve_hf_lora_targets
 from miles.utils.lora.utils import exports_hf_snapshots, matches_lora_target
 
@@ -147,7 +151,12 @@ def _build_model_specs() -> dict[str, LoRAArchSpec]:
         "deepseek_v3": mla,
         "deepseek_v32": mla,
         # its converter names the output head `head`, which no adapter here has been validated on
-        "deepseek_v41": _arch_spec(DeepSeekV41AttentionSpec(), mlp=DeepSeekV4SharedExpertSpec(), lm_head=None),
+        "deepseek_v41": _arch_spec(
+            DeepSeekV41AttentionSpec(),
+            mlp=DeepSeekV4SharedExpertSpec(),
+            lm_head=None,
+            experts=DeepSeekV4GroupedExpertsSpec(),
+        ),
         "glm4_moe_lite": mla,
         "glm_moe_dsa": mla,
         "glm5_next": _glm5_next_arch_spec(),
