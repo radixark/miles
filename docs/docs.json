@@ -114,6 +114,7 @@
         "group": "Thinking Machines",
         "pages": [
          "models/thinkingmachines/index",
+         "models/thinkingmachines/inkling-2-small",
          "models/thinkingmachines/inkling",
          "models/thinkingmachines/inkling-small"
         ],
