@@ -130,6 +130,10 @@ class TrainerConfig(
         return self.backend.wandb_project
 
     @property
+    def wandb_exp_name(self) -> str | None:
+        return self.backend.wandb_exp_name
+
+    @property
     def tensor_model_parallel_size(self) -> int:
         return self.backend.tensor_model_parallel_size
 

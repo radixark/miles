@@ -50,6 +50,10 @@ class TrainerBackendTraitConfig(BaseConfig):
 
     # from WandbConfig
     wandb_project: A[str | None, Arg(reset=True)] = None
+    wandb_exp_name: A[
+        str | None,
+        Arg(reset=True, help="W&B run name. Defaults to the run group, so several runs can share one group."),
+    ] = None
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:

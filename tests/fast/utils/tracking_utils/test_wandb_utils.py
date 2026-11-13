@@ -19,6 +19,7 @@ class TestPrimaryWandbInit:
             rank=0,
             use_wandb=True,
             wandb_dir=None,
+            wandb_exp_name=None,
             wandb_group="group",
             wandb_host=None,
             wandb_key=None,
@@ -67,6 +68,7 @@ def _args(**overrides):
         "sglang": make_sglang_config(enable_metrics=False),
         "use_wandb": True,
         "wandb_dir": None,
+        "wandb_exp_name": None,
         "wandb_group": "group",
         "wandb_host": None,
         "wandb_key": None,
@@ -149,3 +151,27 @@ class TestPrimaryTrackingIdentity:
         assert init_calls[0]["name"] == "group_suffix-RANK_0"
         assert init_calls[0]["group"] == "group_suffix"
         assert args.wandb_run_id == "assigned"
+
+
+class TestPrimaryRunName:
+    @pytest.fixture
+    def init_calls(self, monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+        calls: list[dict[str, object]] = []
+        monkeypatch.setattr(wandb_utils, "generate_id", lambda: "suffix")
+        monkeypatch.setattr(wandb_utils.wandb, "init", lambda **kwargs: calls.append(kwargs))
+        monkeypatch.setattr(wandb_utils.wandb, "define_metric", lambda *args, **kwargs: None)
+        monkeypatch.setattr(wandb_utils.wandb, "run", SimpleNamespace(id="run-id"), raising=False)
+        return calls
+
+    @pytest.mark.parametrize("random_suffix", [False, True])
+    def test_an_explicit_name_names_the_run_inside_its_group(self, init_calls, random_suffix: bool) -> None:
+        """Several runs share one group and stay apart by name."""
+        wandb_utils.init_wandb_primary(_args(wandb_exp_name="run-a", wandb_random_suffix=random_suffix))
+
+        assert init_calls[0]["name"] == "run-a"
+        assert init_calls[0]["group"] == ("group_suffix" if random_suffix else "group")
+
+    def test_without_a_name_the_run_is_named_after_its_group(self, init_calls) -> None:
+        wandb_utils.init_wandb_primary(_args())
+
+        assert init_calls[0]["name"] == "group"
