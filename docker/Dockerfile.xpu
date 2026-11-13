@@ -1,0 +1,54 @@
+# doc-dev: docs/developer/ci/02-docker-build.md
+# Intel XPU image for the FSDP backend. Build via docker/build.py:
+#       python docker/build.py --variant xpu --image-tag dev   # radixark/miles:dev-xpu (amd64)
+#
+# The base already contains the Intel GPU runtime, torch-xpu, sglang-kernel-xpu and xgrammar; this adds
+# sglang-miles and miles. No Megatron: XPU runs the FSDP backend only.
+
+ARG SGLANG_IMAGE_TAG=v0.5.23-xpu
+FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG}
+
+ARG TARGETARCH
+
+ARG SGLANG_REPO=sgl-project/sglang
+# sglang-miles commit; needs the base image's torch, kernel and transformers. Bump with SGLANG_IMAGE_TAG.
+ARG SGLANG_COMMIT=527be217de4246b341ba713aab684d1c91a0f981
+ARG MILES_COMMIT=main
+# WHEELS_TAG equals docker/Dockerfile's WHEELS_TAG_X86 (tests/fast/test_training_images.py checks it)
+ARG WHEELS_REPO=radixark/miles-wheels
+ARG WHEELS_TAG=cu130-torch214-x86_64
+
+# Keep the torch and the XPU specific packages the base image resolved for later installs
+RUN pip freeze | grep -E '^(torch|torchvision|torchaudio|triton-xpu|xgrammar|transformers)==' > /opt/xpu-constraints.txt
+
+# Replace the release's sglang with sglang-miles, built from its pyproject_xpu.toml
+RUN SGLANG_VERSION=$(python3 -c 'import importlib.metadata as m; print(m.version("sglang"))') && \
+    rm -rf /sgl-workspace/sglang && git init -q /sgl-workspace/sglang && cd /sgl-workspace/sglang && \
+    git fetch -q --depth 1 https://github.com/${SGLANG_REPO}.git ${SGLANG_COMMIT} && git checkout -q FETCH_HEAD && \
+    cp python/pyproject_xpu.toml python/pyproject.toml && \
+    pip install --no-cache-dir -c /opt/xpu-constraints.txt "setuptools>=61.0" "setuptools-rust>=1.10" "setuptools-scm>=8.0" wheel && \
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SGLANG=${SGLANG_VERSION} \
+        pip install --no-cache-dir --no-deps --no-build-isolation -e python
+
+# miles, without the CUDA-only and Megatron-only requirements
+RUN git clone https://github.com/radixark/miles.git /root/miles && \
+    cd /root/miles && git checkout ${MILES_COMMIT} && \
+    pip install --no-cache-dir --no-deps -e . && \
+    grep -vE '^\s*(#|$)|nvidia-resiliency-ext|onnxscript|ring_flash_attn|torchft-nightly' requirements.txt > /tmp/requirements-xpu.txt && \
+    pip install --no-cache-dir -c /opt/xpu-constraints.txt --extra-index-url https://download.pytorch.org/whl/xpu \
+        -r /tmp/requirements-xpu.txt && \
+    rm /tmp/requirements-xpu.txt
+
+# miles' router build (CPU only): the PyPI one drops return_routed_experts, which routing replay needs
+RUN url=$(curl -fsSL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
+    | python3 -c "import json, sys; print(next(a['browser_download_url'] for a in json.load(sys.stdin)['assets'] \
+if a['name'].startswith('sglang_router-') and a['name'].endswith('.whl')))") && \
+    curl -fsSL -o "/tmp/$(basename "$url")" "$url" && \
+    pip install --no-deps --force-reinstall /tmp/sglang_router-*.whl && rm /tmp/sglang_router-*.whl
+
+COPY docker/install-kube-tools.sh /tmp/install-kube-tools.sh
+RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-tools.sh
+
+# torch's xccl backend loads the oneCCL libraries the torch-xpu wheels install into the venv
+ENV LD_LIBRARY_PATH="${VIRTUAL_ENV}/lib:${LD_LIBRARY_PATH}"
+WORKDIR /root/miles

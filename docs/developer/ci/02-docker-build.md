@@ -12,6 +12,7 @@ GPU CI runs inside `radixark/miles`. This doc maps which Dockerfiles exist, the 
 | `docker/Dockerfile`      | `radixark/miles` (CUDA)  | `docker-build.yml`, `release-docker.yml` |
 | `docker/Dockerfile.rubin` | Vera Rubin (aarch64/SM107) | `docker-build.yml` (`rubin` manual variant) |
 | `docker/Dockerfile.tpu` | TPU v7x through torch_tpu (x86_64) | `docker-build.yml` (`tpu` variant, rolling `dev-tpu`) |
+| `docker/Dockerfile.xpu` | Intel XPU (Arc Pro B60) through torch-xpu (x86_64) | `docker-build.yml` (`xpu` manual variant) |
 | `docker/Dockerfile.rocm` | AMD ROCm (MI35x, MI30x) | `docker-build.yml` (`rocm*-mi35x`, `rocm10-mi30x` variants) |
 | `docker/Dockerfile.cu12` | Deprecated CUDA 12.9 (x86_64), unmaintained | Manual builds only |
 
@@ -56,6 +57,7 @@ The CUDA 13 defaults use `lmsysorg/sglang:v0.5.22` and the stable branch `sglang
 | `cu13-aarch64` | `radixark/miles:dev`               | `linux/arm64`                 | arm64-only build of the same image             |
 | `rubin` | `radixark/miles:dev-rubin` | `linux/arm64` | Vera Rubin — `docker/Dockerfile.rubin` |
 | `tpu` | `radixark/miles:dev-tpu` | `linux/amd64` | TPU v7x (torch_tpu) — `docker/Dockerfile.tpu` |
+| `xpu` | `radixark/miles:dev-xpu` | `linux/amd64` | Intel XPU (torch-xpu) — `docker/Dockerfile.xpu` |
 | `rocm724-mi35x` | `rocm/sgl-dev:miles-rocm724-mi35x` | native                       | AMD MI35x (`gfx950`, ROCm 7.2.4) — `docker/Dockerfile.rocm` |
 | `rocm10-mi35x`  | `rocm/sgl-dev:miles-rocm10-mi35x`  | native                       | AMD MI35x (`gfx950`, ROCm 10, ROCm SDK as pip wheels) — `docker/Dockerfile.rocm` |
 | `rocm10-mi30x`  | `rocm/sgl-dev:miles-rocm10-mi30x`  | native                       | AMD MI300X / MI325X (`gfx942`, ROCm 10) — `docker/Dockerfile.rocm` |
@@ -70,6 +72,8 @@ A multi-arch build (`cu13`) needs Buildx's `docker-container` driver. Use `--pus
 The `rubin` variant uses the existing `docker-build` runner and targets `linux/arm64`, like `cu13-aarch64`. It is not included in scheduled builds, automatic tag promotion/pruning, regular CUDA PR images or versioned releases.
 
 The `tpu` variant builds from sglang-torchtpu's release image (`SGLANG_TPU_IMAGE_TAG`): it swaps in sglang-torchtpu at `SGLANG_TPU_COMMIT` (the release's libtpu and jax), replaces torch_tpu with the wheel from the `TORCH_TPU_WHEELS_TAG` release of `WHEELS_REPO` (torch_tpu main plus `docker/tpu_patch/torch_tpu_job_local_worlds.patch`), moves the one Python environment to `TORCH_VERSION` (the CUDA image's torch; the torchtitan backend needs >= 2.14), and adds torchtitan at `TORCHTITAN_COMMIT` with `docker/tpu_patch/torchtitan_torch_tpu.patch` and miles. `docker/tpu_patch/` feeds only this image, so it stays out of `docker/image_inputs.py`. The automatic `docker-build.yml` runs build it next to `cu13` as `radixark/miles:dev-tpu` (see Rolling Docker build); it has no versioned release. A PR that changes its inputs gets `radixark/miles:pr-<number>-tpu` from `pr-test-tpu.yml` ([`.github/tpu-ci/README.md`](../../../.github/tpu-ci/README.md)), deleted with `pr-<number>` when the PR closes. `scripts/tpu/README.md` runs it.
+
+The `xpu` variant builds from SGLang's XPU release image (`SGLANG_IMAGE_TAG`), which contains the Intel GPU runtime, oneAPI and torch-xpu. It swaps in sglang-miles at `SGLANG_COMMIT`, installed without dependencies so it runs on the image's torch and XPU packages, and adds miles without the CUDA-only and Megatron-only requirements, plus miles' router build from the CUDA image's wheels release. It targets the FSDP backend only. Like `rubin`, it is manual only.
 
 ## PR build check (in `pr-test.yml`)
 

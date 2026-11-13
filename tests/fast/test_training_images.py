@@ -55,7 +55,7 @@ class TestClusterToolsInEveryTrainingImage:
 
     def test_every_variant_of_the_build_script_is_covered(self):
         """A new variant pointing at a third Dockerfile must not quietly opt out of this check."""
-        assert len(training_dockerfiles()) == 4
+        assert len(training_dockerfiles()) == 5
 
 
 def _arg_default(dockerfile: str, name: str) -> str:
@@ -70,3 +70,8 @@ def test_the_tpu_image_takes_the_cuda_images_torchtitan_and_router():
         "docker/Dockerfile", "TORCHTITAN_COMMIT"
     )
     assert _arg_default("docker/Dockerfile.tpu", "WHEELS_TAG") == _arg_default("docker/Dockerfile", "WHEELS_TAG_X86")
+
+
+def test_the_xpu_image_takes_the_cuda_images_router():
+    """Bumping only docker/Dockerfile would leave the XPU image on the old router build."""
+    assert _arg_default("docker/Dockerfile.xpu", "WHEELS_TAG") == _arg_default("docker/Dockerfile", "WHEELS_TAG_X86")
