@@ -33,6 +33,7 @@ from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_
     assign_rollout_engine_ranks,
 )
 from miles.backends.training_utils.weight_update.protocols.utils.transfer_buffers import PendingWrite, TransferBuffers
+from miles.platforms import current_platform
 from miles.utils.distributed_utils import get_gloo_group
 
 logger = logging.getLogger(__name__)
@@ -153,6 +154,9 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 if not remote_shards:
                     continue
                 param_bytes_by_name = target.model_replica.load_into(buffer, param_names, hf_tensors)
+                if buffer.device.type != "cpu":
+                    # the loads into a GPU buffer are kernels the loading thread queued; the NIC must not read before they ran
+                    torch.accelerator.synchronize(buffer.device)
                 sent_checksums = (
                     checksum_utils.compute_send_checksums(param_bytes_by_name, list(param_bytes_by_name))
                     if self.args.check_weight_transfer_checksum
@@ -212,11 +216,17 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 self.is_sender = False
                 return
             if self._transport is None:
-                self._transport = P2PTransport(
+                native_transport = (
                     NixlTransport(write_timeout=self.args.p2p_transfer_timeout)
                     if self.args.p2p_transport == NixlTransport.name
                     else MooncakeTransport()
                 )
+                transfer_buffer_device = (
+                    current_platform.current_device()
+                    if self.args.p2p_transfer_buffer_device == "gpu"
+                    else native_transport.transfer_buffer_device
+                )
+                self._transport = P2PTransport(native_transport, transfer_buffer_device=transfer_buffer_device)
             remote_shards_by_runner_role = self._transport.connect(
                 self.cell_updaters_of_cell_id, engine_cell_ids, assignments, runner_roles
             )

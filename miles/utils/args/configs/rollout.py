@@ -371,6 +371,17 @@ class RolloutRelatedConfig(BaseConfig):
             ),
         ),
     ] = "mooncake"
+    p2p_transfer_buffer_device: A[
+        str,
+        Arg(
+            type_parser=None,
+            choices=["cpu", "gpu"],
+            help=(
+                "Where P2P weight updates stage outgoing weights before the RDMA write: cpu (default, page-locked "
+                "host memory) or gpu (each trainer rank's GPU memory for GPUDirect RDMA)."
+            ),
+        ),
+    ] = "cpu"
 
 
 class RolloutRelatedRolloutOnlyConfig(BaseConfig):

@@ -666,3 +666,27 @@ class TestWriteOrdering:
             (api.session_id(0), {api.target_address(0, "w"): [1.0, 2.0, 3.0, 4.0]}),
             (api.session_id(0), {api.target_address(0, "qk"): [5.0, 6.0, 7.0, 8.0]}),
         ]
+
+
+class TestGpuTransferBuffers:
+    def test_a_gpu_transfer_buffer_is_synchronized_before_the_native_write_reads_it(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The loads into a GPU buffer are queued kernels; the NIC would otherwise read bytes they have yet to write."""
+        real_synchronize = torch.accelerator.synchronize
+        monkeypatch.setattr(
+            torch.accelerator,
+            "synchronize",
+            lambda device=None: (real_synchronize(device), p2p_sender.log.append(("synchronize", device.type)))[0],
+        )
+        protocol = p2p_sender.make_protocol(p2p_transfer_buffer_device="gpu", check_weight_transfer_checksum=True)
+        api = make_rollout_api("cell-a", gpu_count=1)
+        p2p_sender.connect(protocol, [api])
+
+        p2p_sender.begin_sync(protocol, weight_version=1)
+        protocol.send_bucket(make_bucket("hf.w"))
+        protocol.after_base_weights()
+
+        assert protocol._transport.transfer_buffer_device.type == "cuda"
+        assert p2p_sender.log == [("load", 0, ("hf.w",)), ("synchronize", "cuda"), ("write", api.session_id(0))]
+        assert not protocol.cell_updaters_of_cell_id["cell-a"].is_errored

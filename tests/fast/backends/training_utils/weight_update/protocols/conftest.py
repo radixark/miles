@@ -171,7 +171,7 @@ class _FakeTransferEngine:
             self._log.append(("unregistered read", session_id))
             return -1
         payload = {
-            target_ptr: torch.frombuffer(bytearray(ctypes.string_at(source_ptr, length)), dtype=torch.float32).tolist()
+            target_ptr: _read_registered_floats(source_ptr, length)
             for source_ptr, target_ptr, length in zip(source_ptrs, target_ptrs, source_lens, strict=True)
         }
         self._log.append(("write", session_id))
@@ -189,6 +189,38 @@ class _FakeTransferEngine:
     def payload_of(self, session_id: str) -> dict[int, list[float]]:
         (payload,) = [payload for written, payload in self.writes if written == session_id]
         return payload
+
+
+def _read_registered_floats(source_ptr: int, length: int) -> list[float]:
+    if torch.accelerator.is_available():
+        cudart = ctypes.CDLL("libcudart.so")
+        cudart.cudaMemcpy.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+        cudart.cudaMemcpy.restype = ctypes.c_int
+        host = bytearray(length)
+        host_ptr = (ctypes.c_char * length).from_buffer(host)
+        if cudart.cudaMemcpy(ctypes.addressof(host_ptr), source_ptr, length, 4) == 0:
+            return torch.frombuffer(host, dtype=torch.float32).tolist()
+    return torch.frombuffer(bytearray(ctypes.string_at(source_ptr, length)), dtype=torch.float32).tolist()
+
+
+class _HostTensorWithDevice(torch.Tensor):
+    """Host-backed tensor reporting `device`, so `stage-a-cpu` exercises GPU buffer paths without a GPU."""
+
+    @staticmethod
+    def __new__(cls, buffer_nbytes: int, device: torch.device) -> "_HostTensorWithDevice":
+        instance = torch.Tensor._make_subclass(cls, torch.empty(buffer_nbytes, dtype=torch.uint8))
+        instance._reported_device = device
+        return instance
+
+    @property
+    def device(self) -> torch.device:  # type: ignore[override]
+        return self._reported_device
+
+
+def _allocate_test_transfer_buffer(buffer_nbytes: int, device: torch.device) -> torch.Tensor:
+    if device.type != "cpu" and not torch.accelerator.is_available():
+        return _HostTensorWithDevice(buffer_nbytes, device)
+    return torch.empty(buffer_nbytes, dtype=torch.uint8, device=device)
 
 
 class _FakeNixlAgent:
@@ -409,8 +441,11 @@ class _P2PSenderHarness:
         monkeypatch.setattr(
             sys.modules[p2p_protocol.TransferBuffers.__module__],
             "_allocate_transfer_buffer",
-            lambda buffer_nbytes, device: torch.empty(buffer_nbytes, dtype=torch.uint8, device=device),
+            _allocate_test_transfer_buffer,
         )
+        if not torch.accelerator.is_available():
+            monkeypatch.setattr(p2p_protocol.current_platform, "current_device", lambda: torch.device("cuda", 0))
+            monkeypatch.setattr(torch.accelerator, "synchronize", lambda device=None: None)
 
     def loaded_event(self, tp_rank: int) -> threading.Event:
         return self._loaded_events.setdefault(tp_rank, threading.Event())
@@ -419,6 +454,7 @@ class _P2PSenderHarness:
         self,
         *,
         p2p_transfer_timeout: float = _FAILURE_BOUND,
+        p2p_transfer_buffer_device: str = "cpu",
         update_weight_buffer_size: int = 1024,
         check_weight_transfer_checksum: bool = False,
     ) -> Any:
@@ -426,6 +462,7 @@ class _P2PSenderHarness:
             ft_components=["weight_update"],
             hf_checkpoint="/model",
             p2p_transfer_timeout=p2p_transfer_timeout,
+            p2p_transfer_buffer_device=p2p_transfer_buffer_device,
             update_weight_engine_request_timeout=_FAILURE_BOUND,
             update_weight_buffer_size=update_weight_buffer_size,
             check_weight_transfer_checksum=check_weight_transfer_checksum,

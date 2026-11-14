@@ -13,7 +13,7 @@ To enable P2P weight transfer, add the following flag to your training command:
 --update-weight-transfer-mode p2p
 ```
 
-The rollout engines publish their weight addresses for the writes with `--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine`, and the writes go over Mooncake. To write over NIXL instead, add `--p2p-transport nixl` and start the rollout engines with `--sglang-remote-instance-weight-loader-start-seed-via-nixl`. `SGLANG_REMOTE_INSTANCE_NIXL_BACKEND` picks the NIXL plugin on both sides (default `UCX`).
+The rollout engines publish their weight addresses for the writes with `--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine`, and the writes go over Mooncake. To write over NIXL instead, add `--p2p-transport nixl` and start the rollout engines with `--sglang-remote-instance-weight-loader-start-seed-via-nixl`. `SGLANG_REMOTE_INSTANCE_NIXL_BACKEND` picks the NIXL plugin on both sides (default `UCX`). Pass `--p2p-transfer-buffer-device gpu` on GPUDirect RDMA clusters to stage outgoing weights directly in trainer GPU memory instead of pinned host memory (default `cpu`).
 
 ## How It Works
 
