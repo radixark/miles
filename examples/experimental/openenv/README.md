@@ -172,6 +172,11 @@ creates is called `miles-tb2-...` (`runta ps -a` lists them), with
 `OPENENV_RUN_ID` folded in when set. The build pulls the task image from
 Docker Hub anonymously, from inside the builder runtime.
 
+An episode deletes its runtime when it ends. A run that is killed outright
+cannot, and leaves its runtimes to their TTL: each is shut down within ten
+minutes of its last keepalive beat (`OPENENV_RUNTA_SANDBOX_TTL_S`) and deleted
+ten minutes after that.
+
 ### Alternative: one shared env server
 
 Rather than a sandbox per episode, one long-lived server can serve them all,
@@ -255,7 +260,8 @@ knobs — the ones shared by every backend (`<BACKEND>` is `DAYTONA`, `E2B`,
 | `OPENENV_<BACKEND>_CREATE_CONCURRENCY` | `4` | Max in-flight creates. Size it to what the endpoint can host — one self-hosted AgentENV machine took 16; on Modal the ceiling above it is the plan's container concurrency |
 | `OPENENV_<BACKEND>_CREATE_MAX_RETRIES` | `8` | How many throttled creates to retry before giving up (the backoff curve itself is not tunable) |
 | `OPENENV_<BACKEND>_READY_TIMEOUT_S` | `300` | How long the env server has to become ready after its sandbox exists. Modal records a TCP readiness event first; every backend then verifies /health through the client-facing URL |
-| `OPENENV_E2B_SANDBOX_TTL_S` / `OPENENV_NOVITA_SANDBOX_TTL_S` / `OPENENV_RUNTA_SANDBOX_TTL_S` | `1800` | E2B, Novita and Runta sandbox TTL, re-armed by a keepalive thread while the creating process lives (Daytona's equivalent backstop is its own auto-stop/auto-delete, not a knob). Novita refuses a value above 3600 without its `long_running` marker; a Runta runtime that reaches its TTL is shut down, then deleted ten minutes later |
+| `OPENENV_E2B_SANDBOX_TTL_S` / `OPENENV_NOVITA_SANDBOX_TTL_S` | `1800` | E2B and Novita sandbox TTL, re-armed by a keepalive thread while the creating process lives (Daytona's equivalent backstop is its own auto-stop/auto-delete, not a knob). Novita refuses a value above 3600 without its `long_running` marker |
+| `OPENENV_RUNTA_SANDBOX_TTL_S` | `600` | Runta runtime TTL, re-armed the same way, five times per TTL. It is how long a killed run's runtimes go on running after their last beat, not a cap on an episode; a runtime that reaches it is shut down, then deleted ten minutes later |
 | `OPENENV_E2B_THROTTLE_PATTERNS` | — | Extra comma-separated lowercase substrings that count as retryable capacity errors. Exists for self-hosted AgentENV, which words "at capacity" however its operator deployed it |
 | `OPENENV_E2B_URL_SCHEME` | `https` | Scheme for the per-sandbox URL — set `http` for a plain-HTTP self-hosted AgentENV gateway |
 | `OPENENV_MODAL_APP` | `openenv-tbench2` | App the sandboxes are created under; what a sweep scopes to in a shared workspace |

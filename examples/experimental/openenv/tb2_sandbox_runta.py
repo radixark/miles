@@ -23,7 +23,10 @@ directory. What makes that affordable per episode is the checkpoint:
       port, return ``(runtime, base_url)``. The runtime is created with a
       bounded lifetime armed as a dead-man's switch: a keepalive thread
       re-arms it while the creating process lives, so a hard-killed caller's
-      orphans are shut down and then deleted instead of running forever.
+      orphans are shut down within ten minutes of its last beat, and deleted
+      ten minutes after that, instead of running forever.
+  ``delete_task_sandbox(...)``  the close of the above: stop the keepalive,
+      then delete the runtime. The order is the point — see _Keepalive.
   bake CLI (``python tb2_sandbox_runta.py ...``)  pre-build checkpoints for a
       task list so the first training episode doesn't pay the image build.
 
@@ -131,14 +134,28 @@ def _runtime_name(purpose: str, task_dir: Path) -> str:
 # TTL / keepalive. auto-shutdown is a limit on one running session, and saving
 # it again restarts its clock — which is exactly a dead-man's switch for
 # orphans: the keepalive thread re-arms it ahead of expiry for as long as THIS
-# process lives. 6 beats per window; up to 3 consecutive failed beats (API
-# blips) tolerated before the thread concludes the runtime is gone. A runtime
-# that does get shut down is deleted _DELETE_AFTER_S later, so an orphan stops
-# costing compute at the TTL and storage shortly after.
-_SANDBOX_TTL_S = int(os.getenv("OPENENV_RUNTA_SANDBOX_TTL_S", "1800"))
+# process lives. A hard-killed caller's runtime therefore keeps running, and
+# billing, for at most the TTL after its last beat, so the TTL is sized to the
+# gap between beats and not to an episode: ten minutes, where a killed
+# 10-runtime rollout was seen to leave 3 running towards a 30-minute one.
+#
+# 5 beats per window. A beat that fails outright costs one interval, so 3 in a
+# row (API blips, a revision conflict) still leave the 4th to land inside the
+# window; a slow one has the rest of the window to land in, which at the
+# default is the 8 minutes the SDK will go on retrying a PATCH for. The thread
+# gives up only after a full window of consecutive failures, by when the
+# runtime has reached its TTL whatever the next beat does. A runtime that does
+# get shut down is deleted _DELETE_AFTER_S later, so an orphan stops costing
+# compute at the TTL and storage shortly after.
+_SANDBOX_TTL_S = int(os.getenv("OPENENV_RUNTA_SANDBOX_TTL_S", "600"))
 _READY_TIMEOUT_S = float(os.getenv("OPENENV_RUNTA_READY_TIMEOUT_S", "300"))
-_KEEPALIVE_INTERVAL_S = _SANDBOX_TTL_S / 6.0
-_KEEPALIVE_MAX_CONSECUTIVE_FAILURES = 3
+_KEEPALIVE_BEATS_PER_TTL = 5
+_KEEPALIVE_INTERVAL_S = _SANDBOX_TTL_S / _KEEPALIVE_BEATS_PER_TTL
+_KEEPALIVE_MAX_CONSECUTIVE_FAILURES = _KEEPALIVE_BEATS_PER_TTL
+# How long a delete waits for a beat that is in flight when it stops the
+# keepalive. A beat is one GET and one PATCH; only one stuck in the SDK's
+# retries outlasts this, and the delete's own conflict retry covers that one.
+_KEEPALIVE_STOP_TIMEOUT_S = 30.0
 _DELETE_AFTER_S = 600
 _CREATE_TIMEOUT_S = 240.0
 _CHECKPOINT_TIMEOUT_S = 900.0
@@ -194,9 +211,100 @@ def _create_runtime(client, name: str, **create_kwargs):
     return runtime
 
 
-def _delete_quietly(runtime) -> None:
+class _Keepalive:
+    """One runtime's keepalive thread, and the stop its delete needs.
+
+    recipe.start_keepalive, which the other backends share, ends only by
+    failing: the caller deletes the sandbox and the beats that follow find it
+    gone. That cannot be left to chance here. Runta's delete is a GET of the
+    runtime's revision and a DELETE expecting that revision, a beat is a PATCH
+    that moves it, and the SDK does not retry a delete that lost that race — so
+    a beat landing between the two turned the delete into a logged 409 and left
+    the runtime running until its TTL. Hence a thread that can be told to stop
+    and waited for: the interval is a wait on the stop event rather than a
+    sleep, so stop() ends it at once, and stop() returns only when no beat is
+    in flight (or _KEEPALIVE_STOP_TIMEOUT_S has passed).
+
+    A daemon thread, as there: it dies with the process, which is what makes
+    the TTL a dead-man's switch.
+    """
+
+    def __init__(self, beat, thread_name: str, *, interval_s: float, max_consecutive_failures: int):
+        self._beat = beat
+        self._interval_s = interval_s
+        self._max_consecutive_failures = max_consecutive_failures
+        self._stopped = threading.Event()
+        self._thread = threading.Thread(target=self._run, name=thread_name, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _run(self) -> None:
+        failures = 0
+        # wait() is the sleep between beats, and True the moment stop() is called
+        while failures < self._max_consecutive_failures and not self._stopped.wait(self._interval_s):
+            try:
+                self._beat()
+                failures = 0
+            except Exception:
+                failures += 1
+
+    def stop(self, timeout_s: float = _KEEPALIVE_STOP_TIMEOUT_S) -> None:
+        self._stopped.set()
+        self._thread.join(timeout_s)
+
+
+# The keepalive of each runtime that has one, by runtime id: what lets a delete
+# stop the thread given nothing but the runtime it is deleting.
+_keepalives_lock = threading.Lock()
+_keepalives: dict[str, _Keepalive] = {}
+
+
+def _stop_keepalive(runtime) -> None:
+    with _keepalives_lock:
+        keepalive = _keepalives.pop(runtime.id, None)
+    if keepalive is not None:
+        keepalive.stop()
+
+
+def _is_revision_conflict(exc: BaseException) -> bool:
+    """True for the 409 a delete gets when the runtime changed under it.
+
+    Read off the status, as the throttle classification is
+    (openenv_runta_agent_function): the SDK raises one ApiError for every API
+    failure. Imported here because this only runs once a delete has raised, and
+    guarded so that classifying a failure can never replace it with another.
+    """
+    try:
+        from runta import ApiError
+    except ImportError:  # without the SDK nothing raised is a Runta API error
+        return False
+    return isinstance(exc, ApiError) and exc.status_code == 409
+
+
+def delete_task_sandbox(runtime) -> None:
+    """Delete a runtime this module created, its keepalive stopped first.
+
+    The close of create_task_sandbox, and what every delete here goes through.
+    With the keepalive stopped nothing in this process writes the runtime any
+    more, but something else still can between the delete's GET and its DELETE:
+    Runta itself (a status change moves the revision too), or a beat that
+    outlasted the bounded wait. One such write is one conflict, so the delete
+    is tried once more — the SDK re-reads the revision on every call — and a
+    second conflict is raised like any other failure.
+    """
+    _stop_keepalive(runtime)
     try:
         runtime.delete()
+    except Exception as exc:
+        if not _is_revision_conflict(exc):
+            raise
+        runtime.delete()
+
+
+def _delete_quietly(runtime) -> None:
+    try:
+        delete_task_sandbox(runtime)
     except Exception:
         pass  # cleanup must not mask the real failure; the TTL reclaims it
 
@@ -359,15 +467,18 @@ def _start_keepalive(runtime, task_id: str) -> None:
 
     A live episode of any length keeps its runtime; a hard-killed caller
     (SIGKILL, OOM, node loss) stops beating and Runta shuts the runtime down
-    within _SANDBOX_TTL_S of the last beat. The thread exits once re-arms fail
-    persistently (the normal case: the episode ended and the caller deleted the
-    runtime)."""
-    recipe.start_keepalive(
+    within _SANDBOX_TTL_S of the last beat. The thread runs until
+    delete_task_sandbox stops it, or until re-arms have failed for a whole TTL
+    (see _Keepalive and the constants)."""
+    keepalive = _Keepalive(
         lambda: runtime.update_timeout_policies(auto_shutdown_after_secs=_SANDBOX_TTL_S),
         f"tb2-sandbox-keepalive-{task_id}",
         interval_s=_KEEPALIVE_INTERVAL_S,
         max_consecutive_failures=_KEEPALIVE_MAX_CONSECUTIVE_FAILURES,
     )
+    keepalive.start()
+    with _keepalives_lock:
+        _keepalives[runtime.id] = keepalive
 
 
 def _server_run_command(cmd: str) -> str:
@@ -405,8 +516,9 @@ def create_task_sandbox(
 ):
     """Create ONE per-episode runtime for *task_dir* from its checkpoint.
 
-    Returns ``(runtime, base_url)``. Caller must ``runtime.delete()`` when the
-    episode ends. First create for a task pays the image build (via
+    Returns ``(runtime, base_url)``. Caller must ``delete_task_sandbox(runtime)``
+    when the episode ends — not ``runtime.delete()``, which would race the
+    keepalive. First create for a task pays the image build (via
     ``ensure_task_checkpoint``); repeats restore the built checkpoint.
 
     The checkpoint deliberately holds no running container: the server is
@@ -435,13 +547,16 @@ def create_task_sandbox(
         auto_delete_after_secs=_DELETE_AFTER_S,
     )
     try:
+        # Beating from here on, not from when the server answers: the TTL is
+        # sized to the gap between beats, and starting the server may take
+        # most of a TTL (the exec's own deadline plus ready_timeout_s).
+        _start_keepalive(runtime, task_dir.name)
         cmd = server_cmd(command_timeout_s, default_task_id=task_dir.name)
         _checked_exec(runtime, _server_run_command(cmd), timeout=120, what="starting the env server")
         url = base_url(runtime, served_at)
         # wait_server_ready probes with `requests`; the gateway in front of a
         # published port rejects urllib's default user agent (Cloudflare 1010).
         wait_server_ready(url, timeout_s=ready_timeout_s)
-        _start_keepalive(runtime, task_dir.name)
         return runtime, url
     except Exception:
         _delete_quietly(runtime)

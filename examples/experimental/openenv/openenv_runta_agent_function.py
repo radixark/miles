@@ -76,7 +76,9 @@ def _is_throttle_error(exc: BaseException) -> bool:
 
 def _start_sandbox(task_id: str, tasks_dir: str) -> tuple[Any, str]:
     runtime, url = tb2_sandbox_runta.create_task_sandbox(Path(tasks_dir) / task_id)
-    return runtime.delete, url
+    # Not runtime.delete: the materialization's own close stops the runtime's
+    # keepalive first, which a bare delete would race (see _Keepalive there).
+    return (lambda: tb2_sandbox_runta.delete_task_sandbox(runtime)), url
 
 
 BACKEND = common.SandboxBackend(

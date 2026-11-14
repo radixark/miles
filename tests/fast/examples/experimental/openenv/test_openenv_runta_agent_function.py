@@ -25,16 +25,19 @@ import pytest
 
 def test_start_hook_creates_per_task_and_closes_by_deleting(monkeypatch):
     """The runtime is per-task (tasks_dir/task_id) and close_fn deletes it — the
-    checkpoint stays, the runtime must not."""
+    checkpoint stays, the runtime must not. The delete is the materialization's
+    own, which stops the runtime's keepalive first; the handle's bare delete
+    would race it."""
     deleted = []
     created = {}
-    runtime = types.SimpleNamespace(delete=lambda: deleted.append("runtime-handle"))
+    runtime = types.SimpleNamespace(id="rt-1", delete=lambda: pytest.fail("the bare delete races the keepalive"))
 
     def fake_create(task_dir, **kwargs):
         created.update(task_dir=task_dir, kwargs=kwargs)
         return runtime, "https://8000-abc.runta.dev"
 
     monkeypatch.setattr(oraf.tb2_sandbox_runta, "create_task_sandbox", fake_create)
+    monkeypatch.setattr(oraf.tb2_sandbox_runta, "delete_task_sandbox", lambda handle: deleted.append(handle))
 
     close_fn, url = oraf._start_sandbox("regex-chess", "/tasks")
 
@@ -45,7 +48,7 @@ def test_start_hook_creates_per_task_and_closes_by_deleting(monkeypatch):
     assert created["kwargs"] == {}
     assert deleted == []
     close_fn()
-    assert deleted == ["runtime-handle"]
+    assert deleted == [runtime]
 
 
 # --- throttle classification ------------------------------------------------
