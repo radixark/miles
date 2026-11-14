@@ -27,7 +27,7 @@ _SPEC_KEYS = {
     "target",
 }
 # Per-backend extras a spec may carry; the launchers read them with .get().
-_OPTIONAL_SPEC_KEYS = {"env_defaults", "sdk_min_version"}
+_OPTIONAL_SPEC_KEYS = {"env_defaults", "sdk_distribution", "sdk_min_version"}
 
 
 # --- the credential table ----------------------------------------------------
@@ -184,6 +184,34 @@ def test_preflight_skips_floor_without_package_metadata(monkeypatch, capsys):
     assert "cannot verify fakesdk>=2.12" in capsys.readouterr().out
 
 
+def test_preflight_reads_the_floor_from_the_distribution_not_the_module(monkeypatch):
+    """Package metadata is keyed by distribution name. Where that differs from
+    the module (``runta`` is installed as ``runta-sdk``), looking the version up
+    under the module finds nothing and the floor would be skipped in silence."""
+    monkeypatch.setitem(sys.modules, "fakesdk", types.ModuleType("fakesdk"))
+    looked_up = []
+
+    def version(name):
+        looked_up.append(name)
+        if name != "fake-sdk":
+            raise credentials.importlib.metadata.PackageNotFoundError(name)
+        return "0.2.5"
+
+    monkeypatch.setattr(credentials.importlib.metadata, "version", version)
+    with pytest.raises(RuntimeError, match=r"fake-sdk>=0\.2\.6 \(installed: 0\.2\.5\)"):
+        preflight_sdk("fakesdk", "pip install fake-sdk", "0.2.6", distribution="fake-sdk")
+    assert looked_up == ["fake-sdk"]
+
+
+def test_every_floor_is_checked_against_an_installable_name():
+    """A spec whose SDK module is not its distribution's name must say so, or
+    its floor is never enforced. The runta module ships in runta-sdk."""
+    spec = PROVIDER_CREDENTIALS["runta"]
+    assert spec["sdk"] == "runta"
+    assert spec["sdk_distribution"] == "runta-sdk"
+    assert spec["sdk_min_version"]
+
+
 def test_version_tuple_reads_leading_numbers():
     assert credentials._version_tuple("2.12") == (2, 12)
     assert credentials._version_tuple("2.46.0") == (2, 46, 0)
@@ -282,6 +310,28 @@ def test_novita_provisioning_forwards_the_region_by_value(monkeypatch, tmp_path)
 
     assert env == {"NOVITA_API_KEY_FILE": str(key_file), "NOVITA_DOMAIN": "sandbox.novita.ai"}
     assert "nvt_secret" not in str(env)
+
+
+def test_runta_provisioning_forwards_the_endpoint_and_checks_the_distribution(monkeypatch, tmp_path):
+    """Runta's endpoint selectors are addresses, forwarded by value; the token
+    rides by path; and the SDK floor is read from runta-sdk's metadata."""
+    token_file = tmp_path / "token"
+    token_file.write_text("rt_secret\n")
+    monkeypatch.setenv("RUNTA_ENDPOINT", "https://api.runta.example")
+    monkeypatch.delenv("RUNTA_INGRESS_BASE_URL", raising=False)
+    monkeypatch.setitem(sys.modules, "runta", types.ModuleType("runta"))
+    versions = {"runta-sdk": "0.2.6"}
+    monkeypatch.setattr(credentials.importlib.metadata, "version", versions.__getitem__)
+
+    env: dict[str, str] = {}
+    provision_provider(env, PROVIDER_CREDENTIALS["runta"], arg_path=str(token_file))
+
+    assert env == {"RUNTA_TOKEN_FILE": str(token_file), "RUNTA_ENDPOINT": "https://api.runta.example"}
+    assert "rt_secret" not in str(env)
+
+    versions["runta-sdk"] = "0.2.5"
+    with pytest.raises(RuntimeError, match=r"runta-sdk>=0\.2\.6"):
+        provision_provider({}, PROVIDER_CREDENTIALS["runta"], arg_path=str(token_file))
 
 
 def test_credential_available_accepts_either_supply(monkeypatch, tmp_path):

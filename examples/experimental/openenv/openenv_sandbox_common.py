@@ -2,7 +2,7 @@
 
 A backend module (``openenv_daytona_agent_function``,
 ``openenv_e2b_agent_function``, ``openenv_modal_agent_function``,
-``openenv_novita_agent_function``) owns only what is genuinely provider-specific: how ONE sandbox with the env
+``openenv_novita_agent_function``, ``openenv_runta_agent_function``) owns only what is genuinely provider-specific: how ONE sandbox with the env
 server comes into being (its ``tb2_sandbox_*`` materialization module), which
 errors count as retryable throttling, and its env-var knobs. Everything that
 makes per-episode sandboxes safe under a fanned-out rollout is provider-blind
@@ -53,9 +53,15 @@ AGENT_MODULES = {
     "e2b": "openenv_e2b_agent_function",
     "modal": "openenv_modal_agent_function",
     "novita": "openenv_novita_agent_function",
+    "runta": "openenv_runta_agent_function",
 }
 AGENT_FUNCTIONS = {backend: f"{module}.run" for backend, module in AGENT_MODULES.items()}
 _ALIASES = {"agentenv": "e2b"}
+
+# The materialization modules with a launch-time check of their own beyond the
+# credential spec: each has a ``preflight()``, called before any sandbox
+# exists. Only a backend with something of its own to check is here.
+LAUNCH_PREFLIGHTS = {"runta": "tb2_sandbox_runta"}
 
 
 def backend_names() -> str:
@@ -89,6 +95,17 @@ def load_backend(name: str | None) -> "SandboxBackend":
     each — and a provider's SDK is imported only when it is the one selected.
     """
     return importlib.import_module(AGENT_MODULES[resolve_backend(name)]).BACKEND
+
+
+def preflight_backend(backend: str) -> None:
+    """Run *backend*'s own launch-time check, when it has one (LAUNCH_PREFLIGHTS).
+
+    The launcher's half of failing fast: what would otherwise surface inside
+    each episode's sandbox start — a dropped group, refilled forever — is
+    raised once, at launch.
+    """
+    if backend in LAUNCH_PREFLIGHTS:
+        importlib.import_module(LAUNCH_PREFLIGHTS[backend]).preflight()
 
 
 async def create_once(start_fn: StartFn, task_id: str, tasks_dir: str, *, logger: logging.Logger) -> tuple[Any, str]:
