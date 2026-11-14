@@ -15,6 +15,11 @@ from miles.utils.device_flops import local_peak_bf16_tflops, peak_bf16_tflops
         ("NVIDIA H200", 989.0),
         ("NVIDIA B200", 2250.0),
         ("NVIDIA GB300", 2500.0),
+        ("AMD Instinct MI300X", 1307.4),
+        ("AMD Instinct MI300X VF", 1307.4),
+        ("AMD Instinct MI325X", 1307.4),
+        ("AMD Instinct MI350X", 2306.9),
+        ("AMD Instinct MI355X", 2516.6),
     ],
 )
 def test_known_devices_resolve(device_name, expected):
