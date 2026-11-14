@@ -227,7 +227,10 @@ Set `object_storage_endpoint_url` in the JSON config for MinIO or another custom
 endpoint. Miles forwards the same storage-neutral connection keys to SGLang.
 
 The initial sync registers a catalog-only READY v0 and captures the seed without
-uploading it. Later updates stage and publish every sender's contribution, mark
+uploading it. It also refits SGLang to v0, which installs nothing but creates
+each engine's ModelExpress client, so the client's seed copy for the first delta
+runs during the first rollout instead of delaying the first update. Later
+updates stage and publish every sender's contribution, mark
 the version READY, then pause, install, and resume SGLang. Full checkpoints
 start a new delta chain at the configured cadence; omitting
 `full_hf_checkpoint_interval` publishes only deltas. Installation failure keeps

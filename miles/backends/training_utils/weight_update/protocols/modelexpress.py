@@ -129,6 +129,11 @@ class UpdateWeightFromModelExpressDelta(WeightTransferProtocol):
                     ).version_id
                 )
             )
+            # v0 is already the engines' serving version, so this refit installs nothing. It creates
+            # their MX clients early, moving the seed copy for the first delta off v1's critical path.
+            self._rank_zero_call(
+                lambda: self._refit_engines(list(self.cell_updaters_of_cell_id.values()), self._current_version_id)
+            )
             if self.is_sender:
                 self._trainer.prepare_delta_base(tensor_iter=iter_buckets(materialize=True))
             else:
@@ -204,21 +209,24 @@ class UpdateWeightFromModelExpressDelta(WeightTransferProtocol):
         cell_updaters = list(self.cell_updaters_of_cell_id.values())
         # Abort/retract pausing also flushes the engines' caches before refit.
         maybe_pause_engines(self.args, cell_updaters)
+        self._refit_engines(cell_updaters, self._pending_version.version_id)
+        # Restore Miles' numeric rollout label after refitting with the opaque MX ID.
+        set_weight_version(cell_updaters, weight_version)
+        maybe_resume_engines(self.args, cell_updaters)
+        return perf_counter() - started
+
+    def _refit_engines(self, cell_updaters, version_id):
         results = async_utils.wait_futures(
             [
                 updater.submit_client_call(
                     "update_weights_from_modelexpress",
-                    weight_version=self._pending_version.version_id,
+                    weight_version=version_id,
                     flush_cache=False,
                 )
                 for updater in cell_updaters
             ]
         )
         check_weight_sync_results(results, is_lora=False)
-        # Restore Miles' numeric rollout label after refitting with the opaque MX ID.
-        set_weight_version(cell_updaters, weight_version)
-        maybe_resume_engines(self.args, cell_updaters)
-        return perf_counter() - started
 
     def _rank_zero_call(self, action):
         # Broadcast control-plane failures so peers do not wait at the next barrier.

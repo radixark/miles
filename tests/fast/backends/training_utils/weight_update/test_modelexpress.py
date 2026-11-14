@@ -136,7 +136,7 @@ def test_seed_delta_full_delta_and_cutover_order(setup_update, pause_mode):
     assert type(run.updater.protocol) is mx.UpdateWeightFromModelExpressDelta
     run.updater.args.pause_generation_mode = pause_mode
     assert not run.updater.update_weights(weight_version=0)
-    assert run.calls == ["create", "capture", "version"]
+    assert run.calls == ["create", "install", "capture", "version"]  # v0 refit: no pause or flush.
     for update in range(1, 4):
         run.calls.clear()
         assert run.updater.update_weights(weight_version=update)
@@ -177,7 +177,20 @@ def test_baseline_preserves_the_actor_weight_version(setup_update, initial_versi
     assert not run.updater.update_weights(weight_version=initial_version)
 
     run.engine.update_weight_version.assert_awaited_once_with(weight_version=str(initial_version))
-    run.engine.update_weights_from_modelexpress.assert_not_awaited()
+    run.engine.update_weights_from_modelexpress.assert_awaited_once_with(
+        weight_version="miles-test-v0", flush_cache=False
+    )
+
+
+def test_failed_v0_refit_fails_before_capturing_the_baseline(setup_update):
+    run = setup_update
+    run.engine.update_weights_from_modelexpress.side_effect = None
+    run.engine.update_weights_from_modelexpress.return_value = {"success": False, "message": "seed not found"}
+    with pytest.raises(RuntimeError, match="Base model weight sync failed"):
+        run.updater.update_weights(weight_version=0)
+    run.trainer.prepare_delta_base.assert_not_called()
+    run.engine.update_weight_version.assert_not_awaited()
+    assert not run.updater.protocol._baseline_captured
 
 
 def test_failed_install_keeps_engines_paused_and_base_unchanged(setup_update):
@@ -197,6 +210,7 @@ def test_failed_flush_prevents_refit_and_version_change(setup_update):
     run = setup_update
     run.updater.update_weights(weight_version=0)
     run.engine.update_weight_version.reset_mock()
+    run.engine.update_weights_from_modelexpress.reset_mock()
     run.engine.flush_cache.side_effect = RuntimeError("cache flush failed")
     with pytest.raises(RuntimeError, match="cache flush failed"):
         run.updater.update_weights(weight_version=1)
@@ -228,7 +242,7 @@ def test_failed_publication_never_marks_ready_or_pauses(setup_update):
 def test_non_sender_still_consumes_gather_iterator(setup_update, monkeypatch):
     run = setup_update
     monkeypatch.setattr(
-        run.updater.protocol, "_rank_zero_call", MagicMock(side_effect=["miles-test-v0", None, "opaque-1", 0.0])
+        run.updater.protocol, "_rank_zero_call", MagicMock(side_effect=["miles-test-v0", None, None, "opaque-1", 0.0])
     )
     run.updater.update_weights(weight_version=0)
     run.calls.clear()
