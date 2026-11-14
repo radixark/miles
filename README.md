@@ -12,6 +12,10 @@
 
 | [**Website**](https://miles.radixark.com/) | [**Documentation**](https://miles.radixark.com/docs) | [**Quick Start**](https://miles.radixark.com/docs/getting-started/quick-start) | [**Supported Models**](https://miles.radixark.com/docs/models) | [**Miles Diffusion**](https://github.com/radixark/miles_diffusion) | [**Blog**](https://www.lmsys.org/blog?filter=miles) | [**Slack**](https://slack.sglang.ai) (`#miles-rl`) |
 
+<br />
+
+[English](https://github.com/radixark/miles/blob/main/README.md) | [简体中文](https://github.com/radixark/miles/blob/main/README.zh.md)
+
 </div>
 
 --------------------------------------------------------------------------------
