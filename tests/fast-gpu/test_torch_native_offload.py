@@ -55,6 +55,43 @@ def test_offload_round_trips_fsdp_state_through_pinned_host_memory(monkeypatch):
         dist.destroy_process_group()
 
 
+class _TiedLM(nn.Module):
+    def __init__(self, vocab: int, dim: int):
+        super().__init__()
+        self.embed = nn.Embedding(vocab, dim)
+        self.head = nn.Linear(dim, vocab, bias=False)
+        self.head.weight = self.embed.weight
+
+    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        return self.head(self.embed(tokens))
+
+
+def test_offload_keeps_a_tied_weight_while_the_device_is_busy(nccl_world):
+    """nn.Module._apply hands a weight that two modules share to the copy twice, the second time as the first
+    call's pinned buffer; that buffer is still empty while earlier work holds up the copy from the device."""
+    torch.manual_seed(0)
+    model = _TiedLM(vocab=4096, dim=256).cuda()
+    fully_shard(model, mesh=init_device_mesh("cuda", (1,)))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    tokens = torch.randint(0, 4096, (4, 16), device="cuda")
+    model(tokens).pow(2).mean().backward()
+    optimizer.step()
+    assert model.head.weight is model.embed.weight
+    before = _local(model.embed.weight).detach().cpu().clone()
+
+    busy = torch.randn(4096, 4096, device="cuda")
+    (busy @ busy).sum().item()  # warm up, so that the products below are queued and not waited for
+    for _ in range(64):
+        busy @ busy
+    move_train_state([model], [optimizer], to_host=True)
+    assert model.head.weight is model.embed.weight
+    assert _local(model.embed.weight).is_pinned()
+    assert torch.equal(_local(model.embed.weight), before)
+
+    move_train_state([model], [optimizer], to_host=False)
+    assert torch.equal(_local(model.embed.weight).cpu(), before)
+
+
 if __name__ == "__main__":
     import sys
 
