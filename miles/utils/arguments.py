@@ -1358,6 +1358,28 @@ def miles_validate_args(args):
     if args.save_trigger_sentinel is not None:
         assert args.save is not None, "'--save' is required when save_trigger_sentinel is set."
 
+    assert (args.keep_recent_checkpoints is None) == (
+        args.keep_checkpoint_every is None
+    ), "--keep-recent-checkpoints and --keep-checkpoint-every must be set together."
+    if args.keep_recent_checkpoints is not None:
+        assert args.save is not None, "'--save' is required when keep_recent_checkpoints is set."
+        assert args.keep_recent_checkpoints >= 1 and args.keep_checkpoint_every >= 1
+        # An async save is finalized only at the next save, so the newest complete step must survive this one.
+        assert (
+            not args.async_save or args.keep_recent_checkpoints >= 2
+        ), "--async-save needs --keep-recent-checkpoints >= 2: the newest step is not final until the next save."
+        assert args.save_interval is not None and args.keep_checkpoint_every % args.save_interval == 0, (
+            f"--keep-checkpoint-every {args.keep_checkpoint_every} must be a multiple of --save-interval "
+            f"{args.save_interval}, or decay keeps fewer steps than asked."
+        )
+        assert args.train_backend == "megatron", "--keep-recent-checkpoints relies on megatron's iter_N layout."
+        assert args.megatron_config is None, (
+            "--keep-recent-checkpoints does not support --megatron-config: its trainers save under "
+            "<save>/trainers/<trainer_id>, which decay does not scan."
+        )
+        # use_critic is derived from advantage_estimator further down, so check the source here.
+        assert args.advantage_estimator != "ppo", "--keep-recent-checkpoints does not prune the critic's checkpoints."
+
     if args.custom_megatron_post_save_hook_path is not None:
         assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
 

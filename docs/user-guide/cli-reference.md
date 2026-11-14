@@ -161,6 +161,8 @@ Sections mirror the launch-script argument groups.
 | `--save-interval` | int | – | Rollouts between saves. |
 | `--async-save` | flag | off | Write Megatron checkpoint shards asynchronously. With `--save-hf`, the native write overlaps the HF export. |
 | `--save-trigger-sentinel` | path | – | If this file exists at a save point, save a checkpoint now (regardless of `--save-interval`) and remove the file. |
+| `--keep-recent-checkpoints` | int | – | Checkpoint decay: after each save, keep this many newest steps (`iter_N` plus `rollout/N`) and delete older ones unless their rollout count (step + 1) is a multiple of `--keep-checkpoint-every`. Set both or neither. Megatron only, not with `--use-critic`, `--megatron-config` or multi-policy; at least 2 with `--async-save`. |
+| `--keep-checkpoint-every` | int | – | Checkpoint decay: keep every Nth rollout older than the newest `--keep-recent-checkpoints`. Must be a multiple of `--save-interval`: with `--save-interval 5 --keep-checkpoint-every 20` it keeps `iter_0000019`, `iter_0000039`, …. Steps saved via `--save-trigger-sentinel` are pinned with an `iter_NNNNNNN.keep` marker under `--save` and never decayed; create or delete that file by hand to pin or unpin any step. |
 | `--custom-megatron-post-save-hook-path` | `<module>.<fn>` | – | Rank-0 callback after each checkpoint save. |
 | `--model-name` | str | – | Set in multi-node to avoid `transformers` file-system race. |
 | `--spec` | `<module> <fn>` | – | Plugin spec for custom architectures (e.g. `miles_plugins.models.qwen3_5 get_qwen3_5_spec`). |
