@@ -45,6 +45,9 @@ async def run_client(index: int, args) -> dict:
     # tml- prefix required by the SDK; the gateway reads the key as the tenant id
     service = tinker.ServiceClient(base_url=args.base_url, api_key=f"tml-smoke-{tag}")
     training = await service.create_lora_training_client_async(base_model=args.base_model, rank=args.lora_rank)
+    if args.initial_checkpoint is not None:
+        loaded = await training.load_state_async(args.initial_checkpoint.format(client=index))
+        await loaded
     tokenizer = training.get_tokenizer()
 
     datums = build_datums(tokenizer, marker)
@@ -71,8 +74,7 @@ async def run_client(index: int, args) -> dict:
 
     ok = losses[-1] < losses[0] and marker in completion
     print(
-        f"[{tag}] {'PASS' if ok else 'FAIL'} loss {losses[0]:.3f} -> {losses[-1]:.3f}, "
-        f"marker {marker!r}, completion {completion!r}"
+        f"[{tag}] {'PASS' if ok else 'FAIL'} loss {losses[0]:.3f} -> {losses[-1]:.3f}, marker {marker!r}, completion {completion!r}"
     )
     return {"tag": tag, "ok": ok}
 
@@ -93,6 +95,10 @@ if __name__ == "__main__":
     parser.add_argument("--mode", choices=["single", "multi"], default="single")
     parser.add_argument("--clients", type=int, default=4)
     parser.add_argument("--lora-rank", type=int, default=32)
+    parser.add_argument(
+        "--initial-checkpoint",
+        help="Gateway weights checkpoint to load before training; {client} expands to the client index. PiSSA requires the gateway to serve the matching residual base.",
+    )
     parser.add_argument("--steps", type=int, default=12)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--max-tokens", type=int, default=24)
