@@ -257,7 +257,14 @@ this Mooncake and returns a ref instead: routed experts (`--use-rollout-routing-
 indexer top-k (`--use-rollout-indexer-replay`) and the sampling mask (a positive
 `--rollout-top-k`). The trainer reads them back and receives the same columns as without
 the option. Miles deletes the objects once nothing can read them, at the latest after the
-rollout's `train` step.
+rollout's `train` step. Each trainer rank reads only its own rows: with Megatron pipeline
+parallelism, Miles sends the layers where its stages meet with each request
+(`replay_layer_splits`), SGLang stores routed experts and indexer top-k in parts split at
+them, and each stage reads only the parts of its layers. The split points follow the pipeline
+sizes and `--decoder-first/last-pipeline-num-layers`; a stage placed otherwise
+(`--pipeline-model-parallel-layout`, `--account-for-embedding-in-pipeline-split`,
+`--account-for-loss-in-pipeline-split`, or a `--megatron-config` trainer that overrides the
+pipeline) reads every part that holds one of its layers, so more than its own.
 
 ```bash
 --object-store-backend mooncake \
@@ -268,11 +275,14 @@ rollout's `train` step.
 Requirements:
 
 - SGLang with the output store, including
-  [sgl-project/sglang#46288](https://github.com/sgl-project/sglang/pull/46288), on every
-  engine, trainer and the session server. Miles configures each engine's store; do not
+  [sgl-project/sglang#46288](https://github.com/sgl-project/sglang/pull/46288) and
+  [sgl-project/sglang#48123](https://github.com/sgl-project/sglang/pull/48123), which stores
+  the forward fields in layer parts (`replay_layer_splits`), on every engine, trainer and the
+  session server. Miles configures each engine's store; do not
   set `output_store_backend` through `--sglang-*` flags or `sglang_overrides`.
 - `--use-miles-router`, or an `sgl-router` from `radixark/sgl-router-for-miles` that
-  forwards `return_outputs_via_store`; a router that drops it fails the rollout.
+  forwards `return_outputs_via_store` and `replay_layer_splits`; a router that drops either
+  fails the run.
 - An engine buffer (`--output-store-local-buffer-size`, default 16gb) that holds one
   response's arrays. Indexer top-k dominates, about 0.5 MB per token on DeepSeek-V3.2, so
   16gb fits a 32k-token response. A buffer too small for the longest sequence known at
