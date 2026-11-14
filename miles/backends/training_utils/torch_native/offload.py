@@ -7,6 +7,11 @@ from miles.platforms import current_platform
 
 
 def _to_pinned_host(tensor: torch.Tensor) -> torch.Tensor:
+    # nn.Module._apply calls this once per module that holds a parameter, so a weight two modules share
+    # (tied embeddings) comes back as the first call's pinned buffer: copying that again would read it
+    # before the non-blocking copy from the device has filled it
+    if tensor.device.type == "cpu":
+        return tensor
     return torch.empty_like(tensor, device="cpu", pin_memory=True).copy_(tensor, non_blocking=True)
 
 
