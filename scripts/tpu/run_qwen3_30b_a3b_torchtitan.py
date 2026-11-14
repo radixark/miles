@@ -5,8 +5,8 @@ sglang serves the policy with TP 4 + EP 4 on devices 4-7 and the trainer runs on
 over 4) live on the host (`--optimizer-cpu-offload`), so each trainer process holds ~120 GB of host RAM. The trainer
 keeps every expert on each rank (EP 1): torchtitan's all-to-all dispatcher syncs its splits to the host, which a
 compiled TPU program cannot.
-Run `sglang` in its own shell (it stays in the foreground), then `train`: sglang reports healthy only once `train`
-joins.
+Run `prepare` once, then `sglang` in its own shell (it stays in the foreground), then `train`: sglang reports
+healthy only once `train` joins.
 scripts/tpu/README.md describes the environment both expect.
 
 Args:
@@ -19,6 +19,7 @@ Args:
   --extra-args: more train.py flags, appended last.
 
 Examples:
+  python scripts/tpu/run_qwen3_30b_a3b_torchtitan.py prepare
   python scripts/tpu/run_qwen3_30b_a3b_torchtitan.py sglang
   python scripts/tpu/run_qwen3_30b_a3b_torchtitan.py train --recipe smoke
 """
@@ -54,11 +55,22 @@ def sglang(args: ScriptArgs):
     serve_sglang(args, MODEL)
 
 
+def _prepare(args: ScriptArgs) -> None:
+    prepare_model_and_data(args, [f"hf download Qwen/{MODEL.name} --local-dir {args.model_dir}/{MODEL.name}"])
+
+
+@app.command()
+@command_utils.dataclass_cli
+def prepare(args: ScriptArgs):
+    """Download the model and datasets; sglang serves the downloaded checkpoint."""
+    _prepare(args)
+
+
 @app.command()
 @command_utils.dataclass_cli
 def train(args: ScriptArgs):
-    """Download the model and datasets, then train on devices 0-3 against the sglang server."""
-    prepare_model_and_data(args, [f"hf download Qwen/{MODEL.name} --local-dir {args.model_dir}/{MODEL.name}"])
+    """Prepare as `prepare` does, then train on devices 0-3 against the sglang server."""
+    _prepare(args)
     execute_train(args, MODEL, launcher_file=__file__)
 
 

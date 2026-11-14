@@ -1,0 +1,237 @@
+# doc-dev: docs/developer/ci/00-stage.md
+name: PR Test (TPU)
+
+# scripts/tpu launchers' smoke recipe on TPU v7x; .github/tpu-ci/README.md has the triggers and the cluster side.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, closed]
+  schedule:
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+    inputs:
+      launchers:
+        description: 'Comma-separated launchers (qwen3_4b, qwen3_30b_a3b, glm4_7_flash_4layer); empty runs all'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  # other labels get a group of their own, so labelling a PR for CUDA CI does not cancel its TPU run
+  group: >-
+    pr-test-tpu-${{ github.event.pull_request.number || github.event.schedule || github.run_id }}${{
+    (github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
+    github.event.label.name != 'run-ci-tpu' && format('-{0}', github.run_id) || '' }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    # a close only cancels the running TPU run; another label's event does nothing
+    if: >-
+      github.event.action != 'closed' &&
+      ((github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+        github.event.label.name == 'run-ci-tpu') &&
+      (github.event_name != 'schedule' || github.repository == 'radixark/miles')
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      ref: ${{ steps.plan.outputs.ref }}
+      image: ${{ steps.image.outputs.image }}
+      build_image: ${{ steps.image.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      # As pr-test.yml does for the CUDA image: the released dev-tpu, unless the PR changes the files docker-build.yml
+      # rebuilds dev-tpu for. The merge commit is compared with its base (HEAD^1), which base.sha can lag.
+      - id: image
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+        run: |
+          set -euo pipefail
+          image=radixark/miles:dev-tpu
+          build=false
+          if [ -n "$PR_NUMBER" ] && ! git diff --quiet HEAD^1 HEAD -- \
+              docker/Dockerfile.tpu docker/tpu_patch docker/install-kube-tools.sh requirements.txt; then
+            image="radixark/miles:pr-${PR_NUMBER}-tpu"
+            build=true
+          fi
+          echo "TPU image: ${image}"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "build=${build}" >> "$GITHUB_OUTPUT"
+
+      - id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'run-ci-tpu') }}
+          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          INPUT_LAUNCHERS: ${{ github.event.inputs.launchers || '' }}
+          # the PR head rather than the merge commit, which lags a force-push
+          REF: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          # launcher -> JobSet deadline in minutes: download, both cold compiles and three steps
+          declare -A timeout=([qwen3_4b]=90 [qwen3_30b_a3b]=180 [glm4_7_flash_4layer]=150)
+          all="qwen3_4b qwen3_30b_a3b glm4_7_flash_4layer"
+          case "$EVENT_NAME" in
+            pull_request)
+              selected=""
+              if [ "$HAS_LABEL" = true ]; then
+                if [ "$SAME_REPO" != true ]; then
+                  echo "::error::TPU CI cannot run on a fork PR (no cluster credentials); push the branch to radixark/miles"
+                  exit 1
+                fi
+                selected="qwen3_4b"
+              fi
+              ;;
+            schedule) selected="$all" ;;
+            *) selected="${INPUT_LAUNCHERS//,/ }"; selected="${selected:-$all}" ;;
+          esac
+          entries=()
+          for launcher in $selected; do
+            [ -n "${timeout[$launcher]:-}" ] || { echo "::error::unknown launcher '$launcher' (known: $all)"; exit 1; }
+            entries+=("{\"launcher\":\"${launcher}\",\"timeout_minutes\":${timeout[$launcher]}}")
+          done
+          matrix="[$(IFS=,; echo "${entries[*]}")]"
+          echo "TPU launchers: ${matrix}"
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+
+  # the PR's own image, built and pushed the way _build-pr-ci-image.yml builds pr-<number>
+  image-build:
+    needs: plan
+    if: needs.plan.outputs.matrix != '[]' && needs.plan.outputs.build_image == 'true'
+    runs-on: ["docker-build"]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # shared builders fill their disk with idle buildkit cache; see _build-pr-ci-image.yml
+      - name: Free builder disk
+        run: |
+          docker builder prune -af --filter "until=48h" || true
+          docker image prune -af --filter "until=48h" || true
+          docker volume prune -f || true
+      - uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+      - name: Install typer
+        run: |
+          PIP_BSP=""
+          pip3 install --help 2>/dev/null | grep -q -- --break-system-packages && PIP_BSP="--break-system-packages"
+          pip3 install $PIP_BSP --ignore-installed typer
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push pr-<number>-tpu
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python3 docker/build.py --variant tpu --image-tag custom --custom-tag "pr-${PR_NUMBER}" --push
+
+  # one launcher's smoke recipe on a v7x 2x2x1 host of sglang-torchtpu's CI cluster, gated on the pod's exit code
+  smoke:
+    needs: [plan, image-build]
+    # image-build is skipped when the released image serves
+    if: >-
+      always() && !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' &&
+      needs.image-build.result != 'failure'
+    name: smoke (${{ matrix.launcher }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360 # GitHub's cap for hosted runners
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GKE_ZONE: us-central1-c
+      GKE_CLUSTER: tpu-cluster
+      WIF_PROVIDER: projects/180183988733/locations/global/workloadIdentityPools/github/providers/github-oidc-v2
+      CI_SA: tpu-ci@sglang-torchtpu.iam.gserviceaccount.com
+      RUN_LABEL: ${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.ref }}
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.CI_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER }}
+          location: ${{ env.GKE_ZONE }}
+
+      # GKE pulls Docker Hub through mirror.gcr.io, which can serve a moved tag's old image; a digest cannot go stale
+      - name: Resolve the image digest
+        id: digest
+        env:
+          IMAGE: ${{ needs.plan.outputs.image }}
+        run: |
+          set -euo pipefail
+          digest=$(docker buildx imagetools inspect "$IMAGE" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "${IMAGE} is ${IMAGE%%:*}@${digest}"
+          echo "image=${IMAGE%%:*}@${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Run on TPU
+        env:
+          # values reach the scripts through the environment, never by template substitution into the shell
+          IMAGE: ${{ steps.digest.outputs.image }}
+          LAUNCHER: ${{ matrix.launcher }}
+          TIMEOUT_MINUTES: ${{ matrix.timeout_minutes }}
+        run: |
+          set -euo pipefail
+          deadline_s=$((TIMEOUT_MINUTES * 60))
+          python3 .github/tpu-ci/render_jobset.py \
+            --image "$IMAGE" \
+            --sha "$(git rev-parse HEAD)" \
+            --launcher "$LAUNCHER" \
+            --recipe smoke \
+            --deadline-s "$deadline_s" \
+            --run-label "$RUN_LABEL" > "$RUNNER_TEMP/jobset.json"
+          # outlast the JobSet's deadline, which restarts when a scale-up outlasts Kueue's 5-minute PodsReady wait
+          bash .github/tpu-ci/run_jobset.sh "$RUNNER_TEMP/jobset.json" "${LAUNCHER} (smoke)" $((deadline_s + 1800))
+
+      # a cancelled step may die before its trap deletes the JobSet, and the kubeconfig token may be past its hour
+      - name: Refresh cluster credentials
+        if: cancelled()
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER }}
+          location: ${{ env.GKE_ZONE }}
+
+      - name: Delete this run's JobSets
+        if: cancelled()
+        run: kubectl -n tpu-ci delete jobsets -l "miles-ci-run=${RUN_LABEL}" --ignore-not-found --wait=false || true
+
+  # one check for branch protection: green when skipped (no label), red when any job failed or was cancelled
+  pr-test-tpu-finish:
+    needs: [plan, image-build, smoke]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          failed=$(jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | .key' <<<"$NEEDS")
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          if [ -n "$failed" ]; then
+            echo "TPU CI failed: ${failed//$'\n'/, }"
+            exit 1
+          fi

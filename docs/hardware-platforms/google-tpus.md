@@ -15,7 +15,8 @@ move from trainer to engine over ICI (`--update-weight-transfer-mode ici`) witho
 ## Image
 
 The engine and the trainer share one Python environment, built by `docker/Dockerfile.tpu` on
-sglang-torchtpu's release image:
+sglang-torchtpu's release image. CI rebuilds it next to the CUDA image and publishes it as
+`radixark/miles:dev-tpu` (and `latest-tpu`). To build it yourself:
 
 ```bash
 python docker/build.py --variant tpu --image-tag dev    # radixark/miles:dev-tpu
@@ -27,11 +28,12 @@ To set the environment up by hand instead, see
 ## Launch training
 
 The TPU launchers live under `scripts/tpu/`, one per model (Qwen3-4B, Qwen3-30B-A3B, and a 4-layer
-GLM-4.7-Flash). Each launcher has a `sglang` and a `train` command. Start the engine in its own shell, then start
-training a minute or two later without waiting for the engine's `/health`: the engine compiles only
-after the trainer has joined the slice.
+GLM-4.7-Flash). Each launcher has a `prepare`, a `sglang` and a `train` command. `prepare` fetches the model and
+datasets. Start the engine in its own shell, then start training a minute or two later without waiting for the
+engine's `/health`: the engine compiles only after the trainer has joined the slice.
 
 ```bash
+python3 scripts/tpu/run_qwen3_4b_torchtitan.py prepare
 python3 scripts/tpu/run_qwen3_4b_torchtitan.py sglang               # devices 4-7
 python3 scripts/tpu/run_qwen3_4b_torchtitan.py train --recipe full  # devices 0-3
 ```
