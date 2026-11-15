@@ -62,9 +62,9 @@ RUN case "${TARGETARCH}" in \
     esac && \
     echo "Fetching wheels release ${WHEELS_TAG}" && \
     mkdir -p /tmp/wheels && \
-    curl -sL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
+    curl -fsSL --retry 5 "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
     | python3 -c "import sys,json,subprocess,os; w='/tmp/wheels'; \
-[subprocess.run(['curl','-fSL','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) \
+[subprocess.run(['curl','-fSL','--retry','5','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) \
  for a in json.load(sys.stdin).get('assets',[]) \
  if a['name'].endswith(('.whl', '.tar.gz')) and not os.path.exists(os.path.join(w,a['name']))]" && \
     ls -lh /tmp/wheels/
