@@ -162,6 +162,11 @@ def build_and_push(
 
     cmd += ["--build-arg", "NO_PROXY=localhost,127.0.0.1"]
 
+    # Authenticates the Dockerfiles' GitHub API release lookups: a shared builder IP exhausts the anonymous limit
+    # (a 403). A BuildKit secret stays out of the image; never set it for an untrusted (fork) build.
+    if os.environ.get("BUILD_GITHUB_TOKEN"):
+        cmd += ["--secret", "id=github_token,env=BUILD_GITHUB_TOKEN"]
+
     # Variant-specific build args
     for key, value in config.get("build_args", {}).items():
         cmd += ["--build-arg", f"{key}={value}"]
