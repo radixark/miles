@@ -60,7 +60,7 @@ from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.logging_utils import rebind_env_reporting
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 from miles.utils.lora.utils import build_lora_config, exports_hf_snapshots, is_multi_lora_enabled, reads_adapter_slots
-from miles.utils.memory_utils import clear_memory, print_memory
+from miles.utils.memory_utils import clear_memory, print_memory, release_host_memory, reset_peak_memory
 from miles.utils.misc import partition
 from miles.utils.object_store import StoreObjectRef, ValueSpec
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
@@ -563,6 +563,8 @@ class MegatronTrainRayActor(TrainRayActor):
             torch_memory_saver.resume(tag=None)
 
         clear_memory()
+        # Peaks from here to the next offload are this step's; print_memory("before offload model") reports them.
+        reset_peak_memory()
         reload_process_groups()
         self._asleep = False
         print_memory("after wake_up model")
@@ -702,6 +704,11 @@ class MegatronTrainRayActor(TrainRayActor):
                 )
 
             self._publish_model_companion_info(rollout_id=rollout_id, attempt=attempt, result=result)
+            # the deserialised shard and its CPU copies are this step's peak; hand them
+            # back now instead of carrying the largest step so far (sleep empties only
+            # the pinned cache)
+            del rollout_data
+            release_host_memory()
             return result
 
     @with_logs
