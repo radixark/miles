@@ -1,3 +1,5 @@
+import functools
+import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -6,7 +8,7 @@ import torch
 import torch.distributed as dist
 from torch.distributed.fsdp import FSDPModule
 from torch.distributed.pipelining.schedules import PipelineScheduleSingle
-from torchtitan.config import Configurable
+from torchtitan.config import TORCH_DTYPE_MAP, Configurable
 from torchtitan.config.validation import validate_model_training_config
 from torchtitan.distributed import ParallelismContext
 from torchtitan.models.base import BaseModel
@@ -19,6 +21,8 @@ from miles.utils.data import fixed_shape_length_bucket, fixed_shape_length_bucke
 
 _FLEX_BLOCK = 128
 _CP_LENGTH_BUCKET = 1024
+# the multimodal_train_inputs keys a vision model's forward takes: pixel tensors, or PNG bytes rebuilt per microbatch
+_IMAGE_INPUT_KEYS = ("pixel_values", "image_grid_thw", "image_png", "image_png_lengths")
 
 
 def _force_sum_reduction(model_parts: list[torch.nn.Module]) -> None:
@@ -77,10 +81,29 @@ class TitanTrainer(Configurable):
         self.optimizers = self.engine.optim.optimizers
         self.device = self.engine.device
         self.loss_fn = self.engine.loss_fn
+        dtype = TORCH_DTYPE_MAP[config.training.mixed_precision_param]
+        for part in self.model_parts:
+            if hasattr(part, "attach_vision_tower"):  # config-access-exempt: only vision model parts define it
+                part.attach_vision_tower(config.hf_assets_path, device=self.device, dtype=dtype)
 
     @property
     def step(self) -> int:
         return self.engine.num_completed_steps
+
+    @functools.cached_property
+    def _image_input_keys(self) -> frozenset[str]:
+        parameters = inspect.signature(self.model_parts[0].forward).parameters
+        return frozenset(key for key in _IMAGE_INPUT_KEYS if key in parameters)
+
+    def _image_inputs(self, batch: dict) -> dict[str, torch.Tensor]:
+        images = batch.get("multimodal_train_inputs") or {}
+        unsupported = sorted(set(images) - self._image_input_keys)
+        if unsupported:
+            raise ValueError(
+                f"the batch carries multimodal inputs {unsupported} that "
+                f"{type(self.model_parts[0]).__name__}.forward does not take"
+            )
+        return dict(images)
 
     def padded_length(self, n_tokens: int) -> int:
         if self.parallelism.pp_enabled:
@@ -141,6 +164,7 @@ class TitanTrainer(Configurable):
                 "input": tokens.to(self.device),
                 "labels": torch.full_like(tokens, index, dtype=torch.long, device=self.device),
                 "positions": positions.to(self.device),
+                **self._image_inputs(batch),
             }
             with self.parallelism.activate_spmd():
                 prepared.append(
