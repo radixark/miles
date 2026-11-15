@@ -100,6 +100,8 @@ Both workflows receive `execute_command` and an optional `ref`; CUDA callers add
 
 Shard sizing and concurrency policy live in [CI Maintenance](../../../.claude/rules/ci-maintenance.md).
 
+**ROCm inputs.** `_run-ci-rocm.yml` takes the same `runs_on`, `container_image`, `timeout_minutes`, `skip_dependency_install`, `plan_already_resolved`, and `ref` inputs as `_run-ci.yml`; `num_gpus` is the GPU count each Spur job asks for.
+
 ## ROCm PR/nightly/weekly mirror
 
 `pr-test-rocm.yml` exposes `pull_request`, exact nightly and weekly crons, `workflow_dispatch`, and `workflow_call`. PR runs use the same low-trust merge-commit model as `pr-test.yml`. It runs `stage-c-2-gpu-mi350`, `stage-c-4-gpu-mi350`, and `stage-c-8-gpu-mi350` through `_run-ci-rocm.yml` on the Spur login-node runners; each shard submits a cluster job for its stage's GPU count to Miles' two 8-GPU MI355X nodes, and each stage splits its tests into two `est_time`-balanced shards on regular runs and four, six, and four on nightly, weekly, and release runs. It runs no CPU tests.

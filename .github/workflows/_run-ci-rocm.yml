@@ -8,17 +8,24 @@ on:
         required: true
       runs_on:
         type: string
-        required: true
-        description: 'JSON-encoded list of runner labels (all required). e.g. ''["linux-miles-mi35x-spur"]'' picks the Spur login-node runners.'
+        required: false
+        description: 'JSON-encoded list of runner labels (all required). e.g. ''["linux-miles-mi35x-spur"]'' picks the Spur login-node runners. No default: GPU jobs must pass this explicitly.'
       num_gpus:
         description: 'GPUs per shard: the cluster job asks the scheduler for this many (1, 2, 4 or 8).'
         type: number
         required: false
         default: 4
       container_image:
-        # The callers use the shared default in tests/ci/rocm.py.
+        # Keep in sync with DEFAULT_IMAGE_TAG in tests/ci/rocm.py, which the
+        # callers resolve; this default only serves callers that pass none.
         type: string
-        required: true
+        required: false
+        default: 'rocm/sgl-dev:miles-rocm10-mi35x'
+      timeout_minutes:
+        description: 'Job budget, including Slurm queueing, setup, execution, and cleanup. The run step keeps its own 240-minute limit, so values above 250 do not extend the run; keep it at least 10 minutes above that limit for the cancel step. launch.sh still caps the cluster job at its 3-hour TIME_LIMIT.'
+        type: number
+        required: false
+        default: 250
       skip_dependency_install:
         description: 'Keep the SGLang and Megatron-LM versions baked into the ROCm image.'
         type: boolean
@@ -121,7 +128,7 @@ jobs:
     # (e.g. the label name '["linux-miles-mi35x-spur"]' with brackets), which
     # no runner carries, and the job queues forever.
     runs-on: ${{ fromJSON(inputs.runs_on) }}
-    timeout-minutes: 250
+    timeout-minutes: ${{ inputs.timeout_minutes }}
 
     steps:
       # Launch scripts run on the login runner from the workflow revision.
