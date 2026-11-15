@@ -141,7 +141,9 @@ def _selectable(block, first, whole):
     return (block >= first) & (block < first + whole)
 
 
-@triton.jit
+# Not specialized on stride_b: a stride divisible by 16 (512 blocks per query) let Triton vectorize the row load of
+# BLOCKS, and on B300 the fill kernel built that way faulted ("misaligned address") at query tiles of 21 and 32 rows.
+@triton.jit(do_not_specialize=["stride_b"])
 def _mark_kernel(
     BLOCKS,
     TAIL,
@@ -277,7 +279,7 @@ def _fill_key_side(block, query, KMAP, K_BEFORE, K_OFFSETS, K_QUERY, K_BITS, k_w
     tl.store(K_QUERY + pos, query + tl.zeros_like(block), mask=valid)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["stride_b"])  # as _mark_kernel
 def _fill_kernel(
     BLOCKS,
     TAIL,

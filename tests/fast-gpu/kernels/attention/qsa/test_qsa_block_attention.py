@@ -216,6 +216,39 @@ def test_index_lists_the_attended_pairs_once_in_order(lens, heads, kv_heads):
     _assert_lists(*_pair_case(lens, budget=5, heads=heads, kv_heads=kv_heads, pad_rows=7))
 
 
+def _dense_case(lens, budget, seed):
+    """Each query picks ``min(budget, whole)`` distinct whole blocks of its own sequence, so the first ``budget``
+    rows of a sequence select all of theirs (dense rows) and later rows a stratified spread; with the attended
+    (query, block) pairs, causal tails included."""
+    g = torch.Generator().manual_seed(seed)
+    rows, pairs, start, first = [], set(), 0, 0
+    j = torch.arange(budget)
+    for length in lens:
+        whole = ((torch.arange(length) + 1) // RATIO).unsqueeze(1)
+        u = (torch.rand(length, 1, generator=g) * whole).long()
+        ids = torch.where(whole >= budget, (j * whole + u) // budget, torch.where(j < whole, j, -1))
+        part = torch.where(ids >= 0, ids + first, -1).to(torch.int32)
+        rows.append(part)
+        for pos, chosen in enumerate(part.tolist()):
+            pairs |= {(start + pos, b) for b in chosen if b >= 0}
+            if (pos + 1) % RATIO:
+                pairs.add((start + pos, first + pos // RATIO))
+        start += length
+        first += -(-length // RATIO)
+    return torch.cat(rows).cuda(), pairs
+
+
+@pytest.mark.parametrize("heads,kv_heads", [(12, 1), (6, 1), (3, 1), (1, 1)])
+def test_index_at_the_production_budget(heads, kv_heads):
+    """512 blocks per query, the recipe's budget, so the selection's row stride is divisible by 16; query tiles of
+    5, 10, 21 and 32 rows. On B300 the 21- and 32-row tiles faulted here before the index kernels stopped
+    specializing on that stride."""
+    lens = [2600, 700, 2049]
+    blocks, pairs = _dense_case(lens, budget=512, seed=heads)
+    index = build_qsa_block_index(blocks, _cu(lens), compress_ratio=RATIO, num_heads=heads, num_kv_heads=kv_heads)
+    _assert_lists(index, pairs)
+
+
 def test_index_of_a_long_sequence():
     """Long enough that the prefix scans over the query tiles and over a key tile's bitmap take several chunks."""
     n = 33_000
