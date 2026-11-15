@@ -9,6 +9,7 @@ import ast
 import json
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -131,7 +132,7 @@ def plan_file_run(all_tests, test_file: str, image_tag: str, *, hw: str = "auto"
         hw = "cpu"
         num_gpus = 0
         runs_on_json = ""
-    return {
+    plan = {
         "hw": hw,
         "num_gpus": str(num_gpus),
         "suite": registration.suite,
@@ -139,6 +140,25 @@ def plan_file_run(all_tests, test_file: str, image_tag: str, *, hw: str = "auto"
         "container_image": image,
         "timeout_seconds": str(timeout),
     }
+    if hw == "rocm":
+        # Both PR and comment callers execute this command in the PR snapshot.
+        plan["execute_command"] = shlex.join(
+            [
+                "python3",
+                "tests/ci/run_suite.py",
+                "--hw",
+                "rocm",
+                "--suite",
+                plan["suite"],
+                "--test-file",
+                test_file,
+                "--cadence",
+                "release",
+                "--timeout-per-file",
+                plan["timeout_seconds"],
+            ]
+        )
+    return plan
 
 
 def _read_snapshot_labels() -> dict[str, str]:

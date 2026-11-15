@@ -107,7 +107,9 @@ Shard sizing and concurrency policy live in [CI Maintenance](../../../.claude/ru
 
 Reusable calls can select a Miles `ref` and cadence, but resolve the same undated `rocm/sgl-dev:miles-rocm10-mi35x` image as the other automatic paths. SGLang and Megatron-LM remain baked into that image. The release branch-cut workflow does not call ROCm CI or include it in the `release-ci` gate.
 
-Only tests registered with `register_rocm_ci(suite="stage-c-4-gpu-mi350", ...)` run; the `nightly-` prefixed suites and CUDA registrations are not inherited. PR, nightly, weekly, and release runs consume the shared cadence and label policy: `run-ci-amd` selects the `amd`-labelled subset, other `run-ci-*` labels select matching subsets, nightly admits regular plus `nightly=True` registrations, and weekly or release selects every enabled registration.
+The `stage-c-4-gpu-mi350` suite job selects its own `register_rocm_ci` registrations. PR, nightly, weekly, and release runs consume the shared cadence and label policy: `run-ci-amd` selects the `amd`-labelled subset, other `run-ci-*` labels select matching subsets, nightly admits regular plus `nightly=True` registrations, and weekly or release selects every enabled registration.
+
+**Changed ROCm test files.** On a pull request with `run-ci-amd`, `run-ci-all`, or `nightly`, a hosted file planner reads the merge commit's changed paths and ROCm registrations. It uses the [single-file rerun plan](01-label.md#manage-ci-from-pr-comments) for each eligible file outside the selected regular suite. A `long` or `ft-long` registration needs its explicit `run-ci-long` or `run-ci-ft-long` label. The planner reports file-level skips in the job summary. If more than four eligible files remain, it lists them in the summary and creates no file jobs. Automatic and comment file jobs share the same repository-wide queue. With an unavailable diff, the existing suite policy applies.
 
 Manual dispatch adds `--match-all-labels` and runs the full regular 4-GPU suite. The external nightly coverage of all three prefixed MI350 suites is described below.
 

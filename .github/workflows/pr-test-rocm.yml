@@ -86,6 +86,7 @@ jobs:
       raw_labels: ${{ steps.resolve.outputs.raw_labels }}
       bypass_fastfail: ${{ steps.resolve.outputs.bypass_fastfail }}
       skipped_stages: ${{ steps.resolve.outputs.skipped_stages }}
+      rocm_file_jobs: ${{ steps.rocm-files.outputs.rocm_file_jobs }}
     steps:
       - name: Checkout repository
         # Deliberately not inputs.ref: this job executes ci_policy.py, so it
@@ -115,6 +116,15 @@ jobs:
           CADENCE_OVERRIDE: ${{ inputs.cadence || '' }}
           CHANGED_FILES_PATH: ${{ runner.temp }}/changed-files.z
         run: python -m tests.ci.ci_policy
+      - name: Plan changed ROCm tests
+        id: rocm-files
+        if: github.event_name == 'pull_request' && !inputs.cadence
+        env:
+          CHANGED_FILES_PATH: ${{ runner.temp }}/changed-files.z
+          RAW_LABELS: ${{ steps.resolve.outputs.raw_labels }}
+          CADENCE: ${{ steps.resolve.outputs.cadence }}
+          SKIPPED_STAGES: ${{ steps.resolve.outputs.skipped_stages }}
+        run: python -S -m tests.ci.rocm_file_plan
 
   resolve-ci-image:
     needs: [resolve-ci-policy]
@@ -189,5 +199,30 @@ jobs:
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
         ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
         --enable-retry --max-attempts 2
+    secrets:
+      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+
+  changed-rocm-file:
+    needs: [resolve-ci-policy, resolve-ci-deps]
+    if: github.event_name == 'pull_request' && (needs.resolve-ci-policy.outputs.rocm_file_jobs || '[]') != '[]'
+    name: ROCm ${{ matrix.test_file }}
+    concurrency:
+      group: rocm-file-run
+      cancel-in-progress: false
+      queue: max
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.resolve-ci-policy.outputs.rocm_file_jobs || '[]') }}
+    uses: ./.github/workflows/_run-ci-rocm.yml
+    with:
+      ref: ${{ github.sha }}
+      plan_already_resolved: true
+      runs_on: ${{ matrix.runs_on }}
+      num_gpus: ${{ fromJSON(matrix.num_gpus) }}
+      container_image: ${{ matrix.container_image }}
+      skip_dependency_install: ${{ needs.resolve-ci-deps.outputs.skip_dependency_install == 'true' }}
+      withhold_runner_secrets: ${{ github.event.pull_request.head.repo.id != github.event.pull_request.base.repo.id }}
+      execute_command: ${{ matrix.execute_command }}
     secrets:
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}

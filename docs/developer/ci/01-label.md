@@ -90,7 +90,7 @@ For AMD, post the whole command with the ROCm selector:
 /rerun-test tests/fast-gpu/kernels/position/test_rope.py --hw rocm
 ```
 
-The plain command uses the CPU/CUDA registration. With `--hw rocm`, the resolver uses an enabled ROCm registration, preferring the original nightly suite when the same file also has a PR-stage registration. The chosen suite supplies the GPU count for Spur. A file with competing enabled nightly registrations fails resolution with the suite names. ROCm file runs use the same default image as ROCm PR CI. The PR body's `ci-image-tag:` applies to CUDA runs only. AMD file requests use the same access group as `/run-ci-amd`.
+The plain command uses the CPU/CUDA registration. With `--hw rocm`, the resolver uses an enabled ROCm registration, preferring the original nightly suite when the same file also has a PR-stage registration. The chosen suite supplies the GPU count for Spur. A file with competing enabled nightly registrations fails resolution with the suite names. ROCm file runs use the same default image as ROCm PR CI. The PR body's `ci-image-tag:` applies to CUDA runs only. AMD file requests use the same access group as `/run-ci-amd`. On pull requests, `run-ci-amd` also [plans file jobs for changed nightly-registered ROCm tests](00-stage.md#rocm-prnightlyweekly-mirror) within the changed-file limit.
 
 Merging the PR cancels its unfinished `Rerun Test` runs, including runs waiting for a runner or queued behind another run of the same file. The trusted `cancel-merged-file-ci.yml` workflow matches the PR number in the file run's name; it leaves completed runs and other PRs alone. Closing without merging does not cancel file runs. While the PR is open, repeated requests for the same file retain their existing queue order.
 

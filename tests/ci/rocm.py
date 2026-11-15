@@ -17,13 +17,15 @@ class RocmStage:
 
 # The unprefixed suite serves pr-test-rocm.yml. The nightly suites serve
 # SGLang's external AMD nightly workflow. Both are available to file runs.
+ROCM_PR_SUITE = "stage-c-4-gpu-mi350"
 ROCM_STAGES = {
-    "stage-c-4-gpu-mi350": RocmStage(4),
+    ROCM_PR_SUITE: RocmStage(4),
     "nightly-stage-c-8-gpu-mi350": RocmStage(8),
     "nightly-stage-c-4-gpu-mi350": RocmStage(4),
     "nightly-stage-c-2-gpu-mi350": RocmStage(2),
 }
 DEFAULT_IMAGE_TAG = "miles-rocm10-mi35x"
+ROCM_CHANGED_FILE_LIMIT = 4
 # Spur's default TIME_LIMIT leaves 15 minutes for the image pull and setup.
 ROCM_FILE_RUN_LIMIT_SECONDS = 3 * 3600 - 15 * 60
 

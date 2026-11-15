@@ -1,6 +1,7 @@
 """Unit tests for `tests/ci/file_run.py`, the /rerun-test resolve step."""
 
 import json
+import shlex
 from dataclasses import replace
 from pathlib import Path
 
@@ -127,6 +128,21 @@ def test_explicit_rocm_selects_one_registration_and_its_spur_allocation(suite, n
     path = "tests/e2e/x/test_a.py"
     rocm = _make(path, backend=HWBackend.ROCM, suite=suite, est_time=2400, nightly=True)
     plan = plan_file_run([_make(path), rocm], path, "", hw="rocm")
+    command = shlex.split(plan.pop("execute_command"))
+    assert command == [
+        "python3",
+        "tests/ci/run_suite.py",
+        "--hw",
+        "rocm",
+        "--suite",
+        suite,
+        "--test-file",
+        path,
+        "--cadence",
+        "release",
+        "--timeout-per-file",
+        "3000",
+    ]
     assert plan == {
         "hw": "rocm",
         "suite": suite,
@@ -332,9 +348,8 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
     assert "FILE_RUN_ROCM_TIMEOUT: ${{ needs.resolve-file-run.outputs.rocm_timeout }}" in report_job
     assert "withhold_runner_secrets: ${{ needs.resolve-file-run.outputs.head_is_fork == 'true' }}" in rocm_job
     assert "num_gpus: ${{ fromJSON(needs.resolve-file-run.outputs.num_gpus) }}" in rocm_job
-    assert "python3 tests/ci/run_suite.py --hw rocm" in rocm_job
-    assert "--cadence release" in rocm_job
-    assert "--test-file '${{ inputs.test_file }}'" in rocm_job
+    assert "execute_command: ${{ needs.resolve-file-run.outputs.execute_command }}" in rocm_job
+    assert "execute_command: ${{ steps.resolve.outputs.execute_command }}" in workflow
     assert "if: always()" in report_job
     assert "python3 tests/ci/run_suite.py --hw cuda" in workflow
     assert "pytest '${{ inputs.test_file }}' -v -x" in workflow
