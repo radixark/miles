@@ -278,6 +278,25 @@ def compute_policy_loss(
     return pg_losses, clipfrac
 
 
+def compute_reinforce_zero_loss(rollout_log_ratio: torch.Tensor, advantages: torch.Tensor) -> torch.Tensor:
+    """Per-token REINFORCE Zero loss `-A * w`, with `w = pi_theta / mu` left unclipped.
+
+    REINFORCE Zero (Hu et al., 2026, https://github.com/hijkzzz/REINFORCE-Zero) corrects policy lag
+    with ordinary token-level importance sampling against the behavior log-probs recorded at rollout
+    time, and no clipping or rejection gates. Its gradient is `-A * w * grad log pi_theta`.
+
+    Args:
+        rollout_log_ratio: `log mu - log pi_theta` per token (the `ppo_kl` of the policy loss when the
+            old log-probs are the rollout log-probs). Carries the gradient of `log pi_theta`.
+        advantages: Detached per-token advantages, zero outside the loss mask.
+
+    Returns:
+        Per-token losses with the shape of `advantages`. The log-ratio is only kept inside
+        `[-20, 20]` so `exp` stays finite; that bound is far outside any ratio PPO-style clipping uses.
+    """
+    return -_safe_exp_neg_ppo_kl(rollout_log_ratio) * advantages
+
+
 def compute_log_probs(
     logits: torch.Tensor,
     tokens: torch.Tensor,

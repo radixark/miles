@@ -12,6 +12,7 @@ from miles.backends.training_utils.loss.hub.math_utils import (
     compute_gspo_kl,
     compute_opsm_mask,
     compute_policy_loss,
+    compute_reinforce_zero_loss,
 )
 from miles.backends.training_utils.loss.hub.response_layout import response_layout
 from miles.backends.training_utils.loss.hub.score_centering_loss import score_centering_loss_function
@@ -189,9 +190,15 @@ def policy_loss_function(
         advantages.new_zeros(()),
     )
 
-    pg_loss, pg_clipfrac = compute_policy_loss(
-        ppo_kl, clean_advantages, args.eps_clip, args.eps_clip_high, args.eps_clip_c
-    )
+    if args.advantage_estimator == "reinforce_zero":
+        # old_log_probs are the rollout log-probs here (validated in arguments.py), so ppo_kl is
+        # log mu - log pi_theta and the ratio is the unclipped importance weight pi_theta / mu.
+        pg_loss = compute_reinforce_zero_loss(ppo_kl, clean_advantages)
+        pg_clipfrac = torch.zeros_like(pg_loss)
+    else:
+        pg_loss, pg_clipfrac = compute_policy_loss(
+            ppo_kl, clean_advantages, args.eps_clip, args.eps_clip_high, args.eps_clip_c
+        )
 
     if args.dump_details is not None:
         from miles.backends.training_utils.metrics.debug_dump import maybe_dump_policy_loss_debug

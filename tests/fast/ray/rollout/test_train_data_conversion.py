@@ -524,6 +524,20 @@ class TestPostProcessRewards:
         expected_std = float(np.std([-1.5, -0.5, 0.5, 1.5]))
         assert abs(np.std(processed) - expected_std) < 1e-5
 
+    def test_reinforce_zero_subtracts_the_group_mean_only(self):
+        # REINFORCE Zero: A_i = R_i - mean of its prompt group, never divided by the group std
+        args = make_args(
+            advantage_estimator="reinforce_zero",
+            rewards_normalization=True,
+            grpo_std_normalization=True,  # GRPO's std scaling must not apply
+            n_samples_per_prompt=4,
+            rollout_batch_size=2,
+        )
+        samples = make_samples_grouped(2, 4, rewards=[1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 8.0])
+        raw, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+        assert raw == [1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 8.0]
+        assert processed == pytest.approx([-1.5, -0.5, 0.5, 1.5, -2.0, -2.0, -2.0, 6.0])
+
     def test_irregular_group_size_uses_explicit_group_index(self):
         """Explicit group identity keeps an irregularly sized group together."""
         args = make_args(

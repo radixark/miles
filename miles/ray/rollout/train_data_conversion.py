@@ -392,7 +392,11 @@ def _post_process_rewards(
         rewards = apply_length_penalty(
             args, samples, raw_rewards, reward_group_segments(args, samples, prompt_group_sizes), log_penalties=True
         )
-    if args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline"] and args.rewards_normalization:
+    # reinforce_zero is mean-centered only: the std scaling below applies to grpo/gspo alone.
+    if (
+        args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline", "reinforce_zero"]
+        and args.rewards_normalization
+    ):
         normalized_rewards = _normalize_rewards_by_rollout(
             args, samples, rewards, prompt_group_sizes, unshaped_rewards=raw_rewards
         )
