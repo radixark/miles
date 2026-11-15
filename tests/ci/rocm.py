@@ -15,16 +15,12 @@ class RocmStage:
     runs_on: tuple[str, ...] = ("linux-miles-mi35x-spur",)
 
 
-# The unprefixed suites serve pr-test-rocm.yml. The nightly suites serve
-# SGLang's external AMD nightly workflow. Both are available to file runs.
-ROCM_PR_SUITES = ("stage-c-2-gpu-mi350", "stage-c-4-gpu-mi350", "stage-c-8-gpu-mi350")
+# Run by pr-test-rocm.yml and, with --cadence nightly, by the external
+# sgl-project/sglang MI350 nightly. File runs use the same suites.
 ROCM_STAGES = {
     "stage-c-2-gpu-mi350": RocmStage(2),
     "stage-c-4-gpu-mi350": RocmStage(4),
     "stage-c-8-gpu-mi350": RocmStage(8),
-    "nightly-stage-c-8-gpu-mi350": RocmStage(8),
-    "nightly-stage-c-4-gpu-mi350": RocmStage(4),
-    "nightly-stage-c-2-gpu-mi350": RocmStage(2),
 }
 DEFAULT_IMAGE_TAG = "miles-rocm10-mi35x"
 ROCM_CHANGED_FILE_LIMIT = 4

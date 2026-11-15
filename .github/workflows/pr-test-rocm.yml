@@ -150,11 +150,11 @@ jobs:
       !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-2-gpu-mi350')
     # Each shard asks Spur for two GPUs, so up to four share a node.
     # run_suite.py balances the shards by est_time. fail-fast: false so one
-    # shard's failure does not cancel the other mid-run.
+    # shard's failure does not cancel the others mid-run.
     strategy:
       fail-fast: false
       matrix:
-        partition_id: [0, 1]
+        partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1]' || '[0,1,2,3]') }}
     uses: ./.github/workflows/_run-ci-rocm.yml
     with:
       runs_on: '["linux-miles-mi35x-spur"]'
@@ -163,7 +163,7 @@ jobs:
       ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw rocm --suite stage-c-2-gpu-mi350
-        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size ${{ strategy.job-total }}
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
         ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
@@ -178,13 +178,14 @@ jobs:
       needs.resolve-ci-policy.result == 'success' &&
       needs.resolve-ci-image.result == 'success' &&
       !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350')
-    # One shard per runner, so the pair works the suite in parallel.
+    # Two shards on regular runs, one per runner; nightly, weekly and release
+    # runs split the larger selection further.
     # run_suite.py balances the shards by est_time. fail-fast: false so one
-    # shard's failure does not cancel the other mid-run.
+    # shard's failure does not cancel the others mid-run.
     strategy:
       fail-fast: false
       matrix:
-        partition_id: [0, 1]
+        partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1]' || '[0,1,2,3,4,5]') }}
     uses: ./.github/workflows/_run-ci-rocm.yml
     with:
       runs_on: '["linux-miles-mi35x-spur"]'
@@ -193,7 +194,7 @@ jobs:
       ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw rocm --suite stage-c-4-gpu-mi350
-        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size ${{ strategy.job-total }}
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
         ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
@@ -210,11 +211,11 @@ jobs:
       !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-mi350')
     # Each shard holds a whole node (launch.sh submits 8-GPU jobs --exclusive).
     # run_suite.py balances the shards by est_time. fail-fast: false so one
-    # shard's failure does not cancel the other mid-run.
+    # shard's failure does not cancel the others mid-run.
     strategy:
       fail-fast: false
       matrix:
-        partition_id: [0, 1]
+        partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1]' || '[0,1,2,3]') }}
     uses: ./.github/workflows/_run-ci-rocm.yml
     with:
       runs_on: '["linux-miles-mi35x-spur"]'
@@ -223,7 +224,7 @@ jobs:
       ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw rocm --suite stage-c-8-gpu-mi350
-        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size ${{ strategy.job-total }}
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
         ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}

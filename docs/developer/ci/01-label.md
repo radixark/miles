@@ -90,7 +90,7 @@ For AMD, post the whole command with the ROCm selector:
 /rerun-test tests/fast-gpu/kernels/position/test_rope.py --hw rocm
 ```
 
-The plain command uses the CPU/CUDA registration. With `--hw rocm`, the resolver uses an enabled ROCm registration, preferring the original nightly suite when the same file also has a PR-stage registration. The chosen suite supplies the GPU count for Spur. A file with competing enabled nightly registrations fails resolution with the suite names. ROCm file runs use the same default image as ROCm PR CI. The PR body's `ci-image-tag:` applies to CUDA runs only. AMD file requests use the same access group as `/run-ci-amd`. On pull requests, `run-ci-amd` also [plans file jobs for changed nightly-registered ROCm tests](00-stage.md#rocm-prnightlyweekly-mirror) within the changed-file limit.
+The plain command uses the CPU/CUDA registration. With `--hw rocm`, the resolver uses the file's enabled ROCm registration, and its suite supplies the GPU count for Spur. A file with more than one enabled ROCm registration fails resolution with the suite names. ROCm file runs use the same default image as ROCm PR CI. The PR body's `ci-image-tag:` applies to CUDA runs only. AMD file requests use the same access group as `/run-ci-amd`. On pull requests, `run-ci-amd` also [plans file jobs for changed ROCm tests outside the selected regular suites](00-stage.md#rocm-prnightlyweekly-mirror) within the changed-file limit.
 
 Merging the PR cancels its unfinished `Rerun Test` runs, including runs waiting for a runner or queued behind another run of the same file. The trusted `cancel-merged-file-ci.yml` workflow matches the PR number in the file run's name; it leaves completed runs and other PRs alone. Closing without merging does not cancel file runs. While the PR is open, repeated requests for the same file retain their existing queue order.
 
@@ -106,7 +106,7 @@ The reaction acknowledges that the request was accepted. When execution finishes
 
 A B200 file rerun joins the same `b200-oma` whole-host queue as PR, scheduled, and release CI, so it cannot overlap either B200 stage. ROCm file reruns share a repository-wide queue that admits one at a time, leaving a runner available for ROCm PR CI.
 
-An explicit file request is the selection: domain labels and the nightly cadence gate do not apply, while a symlinked or `disabled` test, an unregistered path, a ROCm-only registration without the ROCm selector, or a file with more than one registration eligible for the requested backend after suite preference fails the resolve job instead of silently running nothing.
+An explicit file request is the selection: domain labels and the nightly cadence gate do not apply, while a symlinked or `disabled` test, an unregistered path, a ROCm-only registration without the ROCm selector, or a file with more than one registration eligible for the requested backend fails the resolve job instead of silently running nothing.
 
 The dispatched workflow and its reusable workflows come from the reviewed default-branch commit. A trusted resolver reads the separately checked-out PR snapshot without importing it and maps the requested registration to a fixed CPU/CUDA/ROCm suite, runner, image, and timeout. Workflow orchestration and the resolver remain on the default branch; the execution job checks out that same exact SHA, so the test and the CUDA or ROCm harness come from the PR snapshot.
 

@@ -97,8 +97,7 @@ def plan_file_run(all_tests, test_file: str, image_tag: str, *, hw: str = "auto"
         enabled = [t for t in supported if t.disabled is None]
         if not enabled:
             raise FileRunError(f"{test_file} is disabled: {supported[0].disabled}")
-        nightly = [t for t in enabled if t.suite.startswith("nightly-")]
-        supported = nightly or enabled
+        supported = enabled
     if len(supported) > 1:
         suites = ", ".join(sorted(f"{t.backend.name}:{t.suite}" for t in supported))
         scope = "CPU/CUDA" if hw == "auto" else hw.upper()

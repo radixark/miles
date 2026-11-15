@@ -13,7 +13,6 @@ register_cuda_ci(
 )
 
 register_rocm_ci(est_time=60, suite="stage-c-2-gpu-mi350", labels=["amd"])
-register_rocm_ci(est_time=60, suite="nightly-stage-c-2-gpu-mi350", labels=["precision"])
 
 pytest.importorskip("triton")
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")

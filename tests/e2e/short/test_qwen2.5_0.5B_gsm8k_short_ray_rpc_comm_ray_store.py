@@ -12,7 +12,6 @@ register_cuda_ci(
     num_gpus=8,
 )
 register_rocm_ci(est_time=300, suite="stage-c-8-gpu-mi350", labels=["amd"])
-register_rocm_ci(est_time=300, suite="nightly-stage-c-8-gpu-mi350", labels=["short", "rpc-comm"])
 
 
 def _load_base_test() -> ModuleType:

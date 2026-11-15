@@ -15,8 +15,9 @@ register_cuda_ci(
 )
 register_rocm_ci(
     est_time=20,
-    suite="nightly-stage-c-2-gpu-mi350",
+    suite="stage-c-2-gpu-mi350",
     labels=["megatron"],
+    nightly=True,
 )
 
 import argparse

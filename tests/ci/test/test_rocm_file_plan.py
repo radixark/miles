@@ -14,11 +14,10 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=1, suite="stage-a-cpu")
 
 ROOT = Path(__file__).resolve().parents[3]
-PR_SUITE = "stage-c-4-gpu-mi350"
-PR_SUITES = ("stage-c-2-gpu-mi350", PR_SUITE, "stage-c-8-gpu-mi350")
-TWO_GPU = "nightly-stage-c-2-gpu-mi350"
-FOUR_GPU = "nightly-stage-c-4-gpu-mi350"
-EIGHT_GPU = "nightly-stage-c-8-gpu-mi350"
+TWO_GPU = "stage-c-2-gpu-mi350"
+FOUR_GPU = "stage-c-4-gpu-mi350"
+EIGHT_GPU = "stage-c-8-gpu-mi350"
+PR_SUITES = (TWO_GPU, FOUR_GPU, EIGHT_GPU)
 
 
 def _registration(root, path, suite=TWO_GPU, *, labels=("precision",), est_time=1, disabled=None):
@@ -78,13 +77,12 @@ def test_only_amd_opt_in_labels_plan_files(tmp_path, labels, cadence, expected):
         assert jobs[0]["num_gpus"] == "2"
 
 
-def test_renames_use_destination_and_prefer_original_width(tmp_path):
+def test_renames_use_destination_and_registered_width(tmp_path):
     two, four, eight, old, deleted, disabled = (
         f"tests/e2e/test_{s}.py" for s in ("two", "four", "eight", "old", "deleted", "disabled")
     )
     for path, suite in [(two, TWO_GPU), (four, FOUR_GPU), (eight, EIGHT_GPU), (old, FOUR_GPU), (deleted, FOUR_GPU)]:
         _registration(tmp_path, path, suite)
-    _registration(tmp_path, eight, PR_SUITE)
     _registration(tmp_path, disabled, TWO_GPU, disabled="see #1")
     diff = f"A\0{two}\0R100\0{old}\0{four}\0M\0{eight}\0D\0{deleted}\0M\0{disabled}\0".encode()
     jobs, _, _ = _plan(tmp_path, diff, ["run-ci-amd"])
@@ -95,8 +93,7 @@ def test_renames_use_destination_and_prefer_original_width(tmp_path):
 def test_regular_suite_owns_files_it_already_selects(tmp_path, suite):
     both, nightly = ("tests/e2e/test_both.py", "tests/e2e/test_nightly.py")
     _registration(tmp_path, both, suite, labels=("amd",))
-    _registration(tmp_path, both, TWO_GPU)
-    _registration(tmp_path, nightly, FOUR_GPU)
+    _registration(tmp_path, nightly, suite)
     diff = f"M\0{both}\0M\0{nightly}\0".encode()
     jobs, _, _ = _plan(tmp_path, diff, ["run-ci-amd"], skip_suite=False)
     assert [job["test_file"] for job in jobs] == [nightly]

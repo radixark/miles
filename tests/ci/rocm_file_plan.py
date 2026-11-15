@@ -6,7 +6,7 @@ import os
 from tests.ci.ci_policy import RunPolicy, resolve_policy
 from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests, discover_ci_files
 from tests.ci.file_run import FileRunError, RocmFileTimeoutError, plan_file_run
-from tests.ci.rocm import ROCM_CHANGED_FILE_LIMIT, ROCM_PR_SUITES
+from tests.ci.rocm import ROCM_CHANGED_FILE_LIMIT, ROCM_STAGES
 from tests.ci.run_suite import filter_tests
 from tests.ci.stage_selection import ChangedFile, read_changed_files
 
@@ -24,7 +24,7 @@ def plan_jobs(
 ) -> tuple[list[dict[str, str]], list[str]]:
     # For renames and copies, only the destination exists in this plan's scope.
     paths = {change.paths[-1] for change in changed_files if change.status[0] in {"A", "M", "R", "C", "T"}}
-    for suite in ROCM_PR_SUITES:
+    for suite in ROCM_STAGES:
         if suite not in skipped_stages:
             selected, _ = filter_tests(
                 registrations, HWBackend.ROCM, suite, policy.admit_nightly_tests, set(policy.include_labels)

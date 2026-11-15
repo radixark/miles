@@ -2,6 +2,7 @@
 
 import json
 import shlex
+import shutil
 from dataclasses import replace
 from pathlib import Path
 
@@ -121,9 +122,6 @@ def test_rocm_only_file_suggests_explicit_hardware():
         ("stage-c-2-gpu-mi350", 2),
         ("stage-c-4-gpu-mi350", 4),
         ("stage-c-8-gpu-mi350", 8),
-        ("nightly-stage-c-2-gpu-mi350", 2),
-        ("nightly-stage-c-4-gpu-mi350", 4),
-        ("nightly-stage-c-8-gpu-mi350", 8),
     ],
 )
 def test_explicit_rocm_selects_one_registration_and_its_spur_allocation(suite, num_gpus):
@@ -155,23 +153,23 @@ def test_explicit_rocm_selects_one_registration_and_its_spur_allocation(suite, n
     }
 
 
-def test_rocm_prefers_enabled_nightly_allocation_to_the_pr_stage():
+def test_rocm_uses_the_enabled_registration_and_requested_image():
     path = "tests/e2e/x/test_a.py"
-    pr = _make(path, backend=HWBackend.ROCM, suite="stage-c-4-gpu-mi350")
-    nightly = replace(pr, suite="nightly-stage-c-2-gpu-mi350")
-    plan = plan_file_run([pr, nightly], path, "debug", hw="rocm")
-    assert plan["suite"] == nightly.suite
+    two = _make(path, backend=HWBackend.ROCM, suite="stage-c-2-gpu-mi350", nightly=True)
+    plan = plan_file_run([two], path, "debug", hw="rocm")
+    assert plan["suite"] == two.suite
     assert plan["num_gpus"] == "2"
     assert plan["container_image"] == "rocm/sgl-dev:debug"
-    plan = plan_file_run([pr, replace(nightly, disabled="see #1")], path, "", hw="rocm")
-    assert plan["suite"] == pr.suite
+    four = _make(path, backend=HWBackend.ROCM, suite="stage-c-4-gpu-mi350")
+    plan = plan_file_run([four, replace(two, disabled="see #1")], path, "", hw="rocm")
+    assert plan["suite"] == four.suite
 
 
 @pytest.mark.parametrize(
     ("suites", "disabled", "message"),
     [
-        (["nightly-stage-c-2-gpu-mi350", "nightly-stage-c-4-gpu-mi350"], None, "multiple ROCM registrations"),
-        (["nightly-stage-c-2-gpu-mi350"], "see #1", "disabled: see #1"),
+        (["stage-c-2-gpu-mi350", "stage-c-4-gpu-mi350"], None, "multiple ROCM registrations"),
+        (["stage-c-2-gpu-mi350"], "see #1", "disabled: see #1"),
         (["stage-c-4-gpu-unknown"], None, "has no runner mapping"),
     ],
 )
@@ -194,7 +192,7 @@ def test_rocm_all_disabled_registrations_report_the_first_reason():
     path = "tests/e2e/x/test_a.py"
     registrations = [
         _make(path, backend=HWBackend.ROCM, suite="stage-c-4-gpu-mi350", disabled="waiting for #1"),
-        _make(path, backend=HWBackend.ROCM, suite="nightly-stage-c-2-gpu-mi350", disabled="waiting for #2"),
+        _make(path, backend=HWBackend.ROCM, suite="stage-c-2-gpu-mi350", disabled="waiting for #2"),
     ]
     with pytest.raises(FileRunError, match="disabled: waiting for #1"):
         plan_file_run(registrations, path, "", hw="rocm")
@@ -269,7 +267,16 @@ def test_main_writes_github_outputs(monkeypatch, tmp_path):
 
 def test_main_rejects_rocm_file_over_spur_budget_and_reports_the_limit(monkeypatch, tmp_path, capsys):
     output_path = tmp_path / "github-output"
-    monkeypatch.setenv("TEST_FILE", "tests/e2e/long/test_multi_policy_solver_verifier_gsm8k.py")
+    source = tmp_path / "source"
+    test_file = source / "tests" / "e2e" / "long" / "test_over_budget.py"
+    test_file.parent.mkdir(parents=True)
+    test_file.write_text(
+        'register_rocm_ci(est_time=24000, suite="stage-c-4-gpu-mi350", labels=["long"], nightly=True)\n'
+    )
+    (source / "tests" / "ci").mkdir()
+    shutil.copy(Path(__file__).parents[1] / "labels.py", source / "tests" / "ci" / "labels.py")
+    monkeypatch.setenv("TEST_FILE", "tests/e2e/long/test_over_budget.py")
+    monkeypatch.setenv("CI_SOURCE_ROOT", str(source))
     monkeypatch.setenv("CI_HW", "rocm")
     monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
 

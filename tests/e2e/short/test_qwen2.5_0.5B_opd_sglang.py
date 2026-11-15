@@ -15,7 +15,7 @@ register_cuda_ci(
     nightly=True,
     num_gpus=4,
 )
-register_rocm_ci(est_time=300, suite="nightly-stage-c-4-gpu-mi350", labels=["short"])
+register_rocm_ci(est_time=300, suite="stage-c-4-gpu-mi350", labels=["short"], nightly=True)
 
 TIGHT_DEVICE_MEMORY = command_utils.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
 

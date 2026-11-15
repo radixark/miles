@@ -5,7 +5,7 @@ from tests.e2e.sglang.test_session_server_multi_role._common import ModelConfig,
 register_cuda_ci(
     est_time=900, suite="stage-c-2-gpu-h200", labels=["sglang"], hardware=["hopper", "blackwell"], num_gpus=2
 )
-register_rocm_ci(est_time=600, suite="nightly-stage-c-2-gpu-mi350", labels=["sglang"])
+register_rocm_ci(est_time=600, suite="stage-c-2-gpu-mi350", labels=["sglang"], nightly=True)
 register_ci_gate(metric_key="rollout/tito_session_mismatch_rate/v1/assistant_text")
 register_ci_gate(metric_key="rollout/tito_session_mismatch_rate/v2/assistant_text")
 

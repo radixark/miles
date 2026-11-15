@@ -2339,11 +2339,11 @@ def test_report_consumes_rocm_result(monkeypatch, rocm_result, decision):
     status = file_run_status(
         FILE_RUN_CUDA_RESULT="skipped",
         FILE_RUN_ROCM_RESULT=rocm_result,
-        FILE_RUN_SUITE="nightly-stage-c-2-gpu-mi350",
+        FILE_RUN_SUITE="stage-c-2-gpu-mi350",
     )
     result = HANDLER.report_file_run(api, status, EXISTING_COMMENT_ID)
     assert result["decision"] == decision
-    assert "nightly-stage-c-2-gpu-mi350" in api.update_calls[0][1]
+    assert "stage-c-2-gpu-mi350" in api.update_calls[0][1]
 
 
 def test_report_explains_rocm_timeout_rejection(monkeypatch):

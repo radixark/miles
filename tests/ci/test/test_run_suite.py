@@ -693,9 +693,12 @@ class TestRocmWorkflowScopeSeam:
 
         assert "needs: [resolve-ci-policy, resolve-ci-image]" in stage
         assert "allow_self_hosted" not in stage
-        assert "partition_id: [0, 1]" in stage
+        assert (
+            "partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1]' || '[0,1,2,3,4,5]') }}"
+            in stage
+        )
         assert "max-parallel:" not in stage
-        assert "--auto-partition-size 2" in command
+        assert "--auto-partition-size ${{ strategy.job-total }}" in command
         assert "checkout_ref:" not in stage
         assert "--cadence ${{ needs.resolve-ci-policy.outputs.cadence }}" in command
         assert "--labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}" in command
@@ -1269,7 +1272,7 @@ class TestSnapshotHardware:
             ("stage-c-8-gpu-h100", "h100"),
             ("stage-c-2-gpu-h200", "h200"),
             ("stage-c-4-gpu-b200", "b200"),
-            ("nightly-stage-c-2-gpu-mi350", "mi350"),
+            ("stage-c-2-gpu-mi350", "mi350"),
         ],
     )
     def test_execution_suite_selects_the_snapshot_hardware(self, suite: str, hardware: str) -> None:

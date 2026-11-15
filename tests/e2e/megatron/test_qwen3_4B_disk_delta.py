@@ -16,8 +16,9 @@ register_cuda_ci(
 )
 register_rocm_ci(
     est_time=500,
-    suite="nightly-stage-c-4-gpu-mi350",
+    suite="stage-c-4-gpu-mi350",
     labels=["megatron", "weight-update"],
+    nightly=True,
 )
 
 register_ci_gate(metric_key="train/grad_norm")
