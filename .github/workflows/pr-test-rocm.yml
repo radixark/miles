@@ -19,12 +19,9 @@ name: PR Test (ROCm)
 # PR jobs use the same low-trust `pull_request` model as pr-test.yml: checkout
 # tests the merge commit, and GitHub withholds repository secrets from forks.
 #
-# SGLang / Megatron-LM versions are baked into the ROCm image, so a run that
-# names neither keeps them and skips the install step. Naming either one --
-# `ci-megatron-pr:` / `ci-sglang-pr:` in the PR body, or the dispatch inputs --
-# fetches and installs it over the baked copy, the same directives pr-test.yml
-# honours. The refs are fetched from the `origin` of the image's own checkouts,
-# so a ref that lives only on a different remote will not resolve here.
+# Dependency refs use the CUDA resolver. Each nonempty shard checks the
+# requested refs or release lock, then tracks sglang-miles / miles-main.
+# The cluster job installs the resolved refs over the image's baked copies.
 
 on:
   pull_request:
@@ -36,7 +33,7 @@ on:
   workflow_dispatch:
     inputs:
       ci_megatron_pr:
-        description: 'Megatron-LM branch/commit to install over the one baked into the image (default: keep the image)'
+        description: 'Megatron-LM branch/commit to install (empty: use the release lock or default branch)'
         required: false
         type: string
         default: ''
@@ -46,7 +43,7 @@ on:
         type: string
         default: ''
       ci_sglang_pr:
-        description: 'SGLang branch/commit to install over the one baked into the image (default: keep the image)'
+        description: 'SGLang branch/commit to install (empty: use the release lock or default branch)'
         required: false
         type: string
         default: ''
@@ -142,41 +139,12 @@ jobs:
           INPUT_CI_IMAGE_TAG: ${{ github.event.inputs.ci_image_tag || '' }}
         run: python3 -S -m tests.ci.rocm
 
-  resolve-ci-deps:
-    if: github.event.action != 'closed'
-    runs-on: ubuntu-latest
-    outputs:
-      skip_dependency_install: ${{ steps.resolve.outputs.skip_dependency_install }}
-    steps:
-      - name: Resolve whether the image's baked dependencies are overridden
-        id: resolve
-        shell: bash
-        env:
-          PR_BODY: ${{ github.event.pull_request.body || '' }}
-          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
-          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
-        run: |
-          NAMED_BY=""
-          if [ -n "$INPUT_MEGATRON_PR" ] || [ -n "$INPUT_SGLANG_PR" ]; then
-            NAMED_BY="the dispatch inputs"
-          elif [ -n "$PR_BODY" ] && echo "$PR_BODY" | grep -qP '^ci-(megatron|sglang)-pr:\s+\S+'; then
-            NAMED_BY="the pull request body"
-          fi
-          if [ -n "$NAMED_BY" ]; then
-            echo "skip_dependency_install=false" >> "$GITHUB_OUTPUT"
-            echo "Dependency refs named by $NAMED_BY: installing them over the image's baked copies"
-          else
-            echo "skip_dependency_install=true" >> "$GITHUB_OUTPUT"
-            echo "No dependency ref named: keeping the copies baked into the image"
-          fi
-
   stage-c-4-gpu-mi350:
-    needs: [resolve-ci-policy, resolve-ci-image, resolve-ci-deps]
+    needs: [resolve-ci-policy, resolve-ci-image]
     if: |
       always() && !cancelled() &&
       needs.resolve-ci-policy.result == 'success' &&
       needs.resolve-ci-image.result == 'success' &&
-      needs.resolve-ci-deps.result == 'success' &&
       !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350')
     # One shard per runner, so the pair works the suite in parallel.
     # run_suite.py balances the shards by est_time. fail-fast: false so one
@@ -190,7 +158,6 @@ jobs:
       runs_on: '["linux-miles-mi35x-spur"]'
       num_gpus: 4
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
-      skip_dependency_install: ${{ needs.resolve-ci-deps.outputs.skip_dependency_install == 'true' }}
       ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw rocm --suite stage-c-4-gpu-mi350
@@ -203,7 +170,7 @@ jobs:
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
 
   changed-rocm-file:
-    needs: [resolve-ci-policy, resolve-ci-deps]
+    needs: resolve-ci-policy
     if: github.event_name == 'pull_request' && (needs.resolve-ci-policy.outputs.rocm_file_jobs || '[]') != '[]'
     name: ROCm ${{ matrix.test_file }}
     concurrency:
@@ -221,7 +188,6 @@ jobs:
       runs_on: ${{ matrix.runs_on }}
       num_gpus: ${{ fromJSON(matrix.num_gpus) }}
       container_image: ${{ matrix.container_image }}
-      skip_dependency_install: ${{ needs.resolve-ci-deps.outputs.skip_dependency_install == 'true' }}
       withhold_runner_secrets: ${{ github.event.pull_request.head.repo.id != github.event.pull_request.base.repo.id }}
       execute_command: ${{ matrix.execute_command }}
     secrets:

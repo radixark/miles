@@ -165,7 +165,7 @@ def test_gpu_workflow_requires_a_successful_hosted_plan(workflow):
     select = next(step for step in plan["steps"] if step.get("id") == "select")
     assert '${{ inputs.execute_command }} --list-only --github-output "$GITHUB_OUTPUT"' in select["run"]
     assert 'echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"' in select["run"]
-    assert run["needs"] == "plan"
+    assert run["needs"] == ("plan" if workflow == "_run-ci.yml" else ["plan", "deps"])
     assert "needs.plan.result == 'success'" in run["if"]
     assert "needs.plan.outputs.has_tests == 'true'" in run["if"]
     assert not any("--list-only" in step.get("run", "") for step in run["steps"])
