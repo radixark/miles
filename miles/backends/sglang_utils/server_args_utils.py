@@ -1,5 +1,6 @@
 import argparse
 
+from sglang.srt.plugins import load_plugins
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import get_device
 
@@ -24,6 +25,7 @@ def parse_server_args_argv(argv: list[str]) -> ServerArgs:
 
 
 def _make_cli_parser() -> argparse.ArgumentParser:
+    load_plugins()
     parser = argparse.ArgumentParser()
     ServerArgs.add_cli_args(parser)
     return parser
