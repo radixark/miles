@@ -48,7 +48,11 @@ RUN SGLANG_VERSION=$(python3 -c 'import importlib.metadata as m; print(m.version
 # torch_tpu with job-local worlds (google-pytorch/torch_tpu#6110), so a trainer and an engine can share one slice
 # (ICI weight sync); same libtpu as the release. Rebuild: bazel build --config=wheel_release --config=no_rbe
 # //ci/wheel:torch_tpu_wheel on google-pytorch/torch_tpu e8468781a (main, 2026-11-03) with the patch applied.
-RUN url=$(curl -fsSL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${TORCH_TPU_WHEELS_TAG}" \
+# github_token (docker/build.py's BUILD_GITHUB_TOKEN) authenticates the API lookup; builds without it go anonymous
+RUN --mount=type=secret,id=github_token \
+    if [ -s /run/secrets/github_token ]; then set -- -H "Authorization: Bearer $(cat /run/secrets/github_token)"; \
+    else set --; fi && \
+    url=$(curl -fsSL "$@" "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${TORCH_TPU_WHEELS_TAG}" \
     | python3 -c "import json, sys; print(next(a['browser_download_url'] for a in json.load(sys.stdin)['assets'] \
 if a['name'].startswith('torch_tpu-') and a['name'].endswith('.whl')))") && \
     curl -fsSL -o "/tmp/$(basename "$url")" "$url" && \
@@ -82,7 +86,10 @@ RUN git clone https://github.com/radixark/miles.git /root/miles && \
     rm /tmp/requirements-tpu.txt
 
 # miles' router build: the PyPI sglang-router drops return_routed_experts, which rollout routing replay needs
-RUN url=$(curl -fsSL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
+RUN --mount=type=secret,id=github_token \
+    if [ -s /run/secrets/github_token ]; then set -- -H "Authorization: Bearer $(cat /run/secrets/github_token)"; \
+    else set --; fi && \
+    url=$(curl -fsSL "$@" "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
     | python3 -c "import json, sys; print(next(a['browser_download_url'] for a in json.load(sys.stdin)['assets'] \
 if a['name'].startswith('sglang_router-') and a['name'].endswith('.whl')))") && \
     curl -fsSL -o "/tmp/$(basename "$url")" "$url" && \

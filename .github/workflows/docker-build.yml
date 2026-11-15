@@ -262,6 +262,8 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
+        env:
+          BUILD_GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 docker/build.py \
             --variant ${{ matrix.variant }} \
