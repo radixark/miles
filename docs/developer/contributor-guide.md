@@ -186,12 +186,13 @@ runs; any maintainer-applied `run-ci-*` label doubles as the approval.
 
 ## PR-description CI tags
 
-Three directives are read out of the PR description itself, one per line, matched at the
+Four directives are read out of the PR description itself, one per line, matched at the
 start of a line:
 
 | Line in the PR description | Effect |
 |---|---|
 | `ci-image-tag: <tag>` | Run the GPU suites on `radixark/miles:<tag>` instead of `dev`. Must be a bare tag, not a full image reference |
+| `ci-rocm-image-tag: <tag>` | Run the ROCm suites and ROCm file runs on `rocm/sgl-dev:<tag>` instead of `miles-rocm10-mi35x`. Must be a bare tag |
 | `ci-sglang-pr: <ref>` | Check the SGLang tree out at `<ref>` instead of the default `sglang-miles` branch |
 | `ci-megatron-pr: <ref>` | Check Megatron-LM out at `<ref>` instead of the default `miles-main` branch |
 

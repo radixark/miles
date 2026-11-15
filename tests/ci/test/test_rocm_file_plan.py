@@ -30,7 +30,7 @@ def _registration(root, path, suite=TWO_GPU, *, labels=("precision",), est_time=
         )
 
 
-def _plan(root, diff, labels, *, cadence="regular", skip_suite=True):
+def _plan(root, diff, labels, *, cadence="regular", skip_suite=True, pr_body=""):
     changed = root / "changed-files.z"
     changed.write_bytes(diff)
     output = root / "github-output"
@@ -45,6 +45,7 @@ def _plan(root, diff, labels, *, cadence="regular", skip_suite=True):
             "RAW_LABELS": " ".join(labels),
             "CADENCE": cadence,
             "SKIPPED_STAGES": json.dumps(list(PR_SUITES) if skip_suite else []),
+            "PR_BODY": pr_body,
             "GITHUB_OUTPUT": str(output),
             "GITHUB_STEP_SUMMARY": str(summary),
         },
@@ -75,6 +76,23 @@ def test_only_amd_opt_in_labels_plan_files(tmp_path, labels, cadence, expected):
         command = shlex.split(jobs[0]["execute_command"])
         assert command[command.index("--test-file") + 1] == filename
         assert jobs[0]["num_gpus"] == "2"
+
+
+@pytest.mark.parametrize(
+    ("pr_body", "image"),
+    [
+        ("ci-image-tag: pr-1\r\n", "rocm/sgl-dev:miles-rocm10-mi35x"),
+        (
+            "ci-image-tag: pr-1\r\nci-rocm-image-tag: miles-rocm10-mi35x-20261113\r\n",
+            "rocm/sgl-dev:miles-rocm10-mi35x-20261113",
+        ),
+    ],
+)
+def test_file_jobs_use_the_pr_rocm_image(tmp_path, pr_body, image):
+    filename = "tests/e2e/test_pinned.py"
+    _registration(tmp_path, filename)
+    jobs, _, _ = _plan(tmp_path, f"M\0{filename}\0".encode(), ["run-ci-amd"], pr_body=pr_body)
+    assert [job["container_image"] for job in jobs] == [image]
 
 
 def test_renames_use_destination_and_registered_width(tmp_path):

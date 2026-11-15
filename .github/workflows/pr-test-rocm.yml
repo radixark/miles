@@ -52,6 +52,11 @@ on:
         default: ''
   workflow_call:
     inputs:
+      image_tag:
+        description: 'ROCm Docker image tag to run suites in (e.g. a dated miles-rocm10-mi35x-<YYYYMMDD> tag).'
+        required: false
+        type: string
+        default: ''
       ref:
         description: 'Git ref (branch, tag, or SHA) to test, e.g. release/v0.3.0.'
         required: true
@@ -116,6 +121,7 @@ jobs:
         if: github.event_name == 'pull_request' && !inputs.cadence
         env:
           CHANGED_FILES_PATH: ${{ runner.temp }}/changed-files.z
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
           RAW_LABELS: ${{ steps.resolve.outputs.raw_labels }}
           CADENCE: ${{ steps.resolve.outputs.cadence }}
           SKIPPED_STAGES: ${{ steps.resolve.outputs.skipped_stages }}
@@ -138,7 +144,10 @@ jobs:
       - name: Resolve CI image
         id: resolve
         env:
-          INPUT_CI_IMAGE_TAG: ${{ github.event.inputs.ci_image_tag || '' }}
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          # workflow_call image_tag (e.g. a frozen release-CI tag) outranks the
+          # dispatch input, which only exists on manual runs anyway.
+          INPUT_CI_IMAGE_TAG: ${{ inputs.image_tag || github.event.inputs.ci_image_tag || '' }}
         run: python3 -S -m tests.ci.rocm
 
   stage-c-2-gpu-mi350:

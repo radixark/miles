@@ -35,9 +35,19 @@ def container_image(tag: str = "") -> str:
     return f"rocm/sgl-dev:{tag}"
 
 
+def pr_image_tag(pr_body: str) -> str:
+    # ci-image-tag: names a radixark/miles (CUDA) tag, so ROCm reads its own directive.
+    match = re.search(r"^ci-rocm-image-tag:[ \t]+(\S+)", pr_body, flags=re.MULTILINE)
+    return match.group(1) if match else ""
+
+
 def main() -> int:
+    # pr-test.yml's order without its pr-<num> step, since PRs build no ROCm image:
+    # the called workflow's image_tag or the dispatch input, the PR description,
+    # then DEFAULT_IMAGE_TAG.
+    tag = os.environ.get("INPUT_CI_IMAGE_TAG", "") or pr_image_tag(os.environ.get("PR_BODY", ""))
     try:
-        image = container_image(os.environ.get("INPUT_CI_IMAGE_TAG", ""))
+        image = container_image(tag)
     except ValueError as error:
         print(f"::error::{error}", file=sys.stderr)
         return 1

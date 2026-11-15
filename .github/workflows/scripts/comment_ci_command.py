@@ -66,6 +66,12 @@ PR_BODY_PINS = (
         re.compile(r"#[0-9]+|[A-Za-z0-9_][A-Za-z0-9_./-]*"),
     ),
 )
+# ROCm runs take their image from ci-rocm-image-tag:, as pr-test-rocm.yml does;
+# ci-image-tag: names a radixark/miles tag.
+ROCM_PR_BODY_PINS = (
+    ("ci_image_tag", re.compile(r"^ci-rocm-image-tag:\s+(\S+)", re.MULTILINE), PR_BODY_PINS[0][2]),
+    *PR_BODY_PINS[1:],
+)
 # Shapes a policy entry may take. Widening this does not widen what a comment
 # can add: `commands.add_label.allowed_labels` stays an exact default-deny
 # allowlist, and this only rejects malformed entries in it.
@@ -920,17 +926,16 @@ def _handle_clear_labels(context, request):
     }
 
 
-def _pr_body_pins(body):
+def _pr_body_pins(body, table=PR_BODY_PINS):
     pins = {}
-    for input_name, body_pattern, value_pattern in PR_BODY_PINS:
+    for input_name, body_pattern, value_pattern in table:
         match = body_pattern.search(body)
         if match is None:
             continue
         value = match.group(1)
         if value_pattern.fullmatch(value) is None:
-            raise CommentCommandError(
-                f"PR body pin {input_name.replace('_', '-')} has an unsupported value: {value!r}"
-            )
+            directive = body_pattern.pattern.removeprefix("^").split(":", 1)[0]
+            raise CommentCommandError(f"PR body pin {directive} has an unsupported value: {value!r}")
         pins[input_name] = value
     return pins
 
@@ -968,9 +973,7 @@ def _handle_run_test_file(context, request):
     }
     if request.hw != "auto":
         inputs["hw"] = request.hw
-    inputs.update(_pr_body_pins(context.body))
-    if request.hw == "rocm":
-        inputs.pop("ci_image_tag", None)
+    inputs.update(_pr_body_pins(context.body, ROCM_PR_BODY_PINS if request.hw == "rocm" else PR_BODY_PINS))
     workflow_run_url = context.api.create_workflow_dispatch(
         RUN_FILE_WORKFLOW,
         RUN_FILE_WORKFLOW_REF,

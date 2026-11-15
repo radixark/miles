@@ -1701,13 +1701,23 @@ def test_rocm_file_command_dispatches_the_requested_backend():
     ]
 
 
-def test_rocm_file_command_leaves_cuda_image_pin_out_of_dispatch():
+@pytest.mark.parametrize(
+    ("body", "image_tag"),
+    [
+        ("ci-image-tag: pr-42\nci-sglang-pr: #77", None),
+        (
+            "ci-image-tag: pr-42\nci-rocm-image-tag: miles-rocm10-mi35x-20261113\nci-sglang-pr: #77",
+            "miles-rocm10-mi35x-20261113",
+        ),
+    ],
+)
+def test_rocm_file_command_forwards_the_rocm_image_pin_only(body, image_tag):
     target = pull()
-    target["body"] = "ci-image-tag: pr-42\nci-sglang-pr: #77"
+    target["body"] = body
     api = FakeAPI(target, permission="write")
     HANDLER.process_event(event(body=f"{RUN_FILE_BODY} --hw rocm"), policy(), api)
     inputs = api.dispatch_calls[0][2]
-    assert "ci_image_tag" not in inputs
+    assert inputs.get("ci_image_tag") == image_tag
     assert inputs["ci_sglang_pr"] == "#77"
 
 

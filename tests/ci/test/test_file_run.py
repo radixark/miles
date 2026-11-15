@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from tests.ci.ci_register import CIRegistry, HWBackend, register_cpu_ci
 from tests.ci.file_run import CPU_SUITES, CUDA_SUITE_RUNS_ON, FileRunError, main, plan_file_run, resolve_file_run
+from tests.ci.rocm import main as rocm_main
 from tests.ci.run_suite import CI_SUITES
 
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
@@ -283,6 +284,27 @@ def test_main_rejects_rocm_file_over_spur_budget_and_reports_the_limit(monkeypat
     assert main() == 1
     assert output_path.read_text() == "rocm_timeout=30000/9900\n"
     assert "beyond the 9900s ROCm file budget" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("input_tag", "pr_body", "image"),
+    [
+        ("", "", "rocm/sgl-dev:miles-rocm10-mi35x"),
+        (
+            "",
+            "ci-image-tag: pr-1\nci-rocm-image-tag: miles-rocm10-mi35x-20261113",
+            "rocm/sgl-dev:miles-rocm10-mi35x-20261113",
+        ),
+        ("release-tag", "ci-rocm-image-tag: miles-rocm10-mi35x-20261113", "rocm/sgl-dev:release-tag"),
+    ],
+)
+def test_rocm_image_resolver_follows_the_cuda_order(monkeypatch, tmp_path, input_tag, pr_body, image):
+    output_path = tmp_path / "github-output"
+    monkeypatch.setenv("INPUT_CI_IMAGE_TAG", input_tag)
+    monkeypatch.setenv("PR_BODY", pr_body)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    assert rocm_main() == 0
+    assert output_path.read_text() == f"container_image={image}\n"
 
 
 def test_main_fails_closed_on_an_unregistered_file(monkeypatch, tmp_path, capsys):

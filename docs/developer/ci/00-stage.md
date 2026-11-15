@@ -49,7 +49,7 @@ Both PR workflows expose reusable `workflow_call` entry points. Release CI calls
 
 **Image resolution (`resolve-ci-image`).** In `pr-test.yml`, a small `ubuntu-latest` job selects, in order: the called workflow's `image_tag`, the `ci_image_tag` dispatch input, a current `pr-<num>` image, the PR description's `ci-image-tag:`, then `dev`. It validates the result is a bare tag and outputs `radixark/miles:<tag>`. `release-branch-cut.yml` passes the prune-exempt `release-vX.Y.Z-ci` tag recorded in `release-lock.json`.
 
-The ROCm resolver uses its dispatch tag or the shared default in `tests/ci/rocm.py`. Reusable calls and ROCm single-file runs use the same default image. For PRs, it runs only when `stage-c-4-gpu-mi350` is selected. CPU-only PRs skip both CUDA image preparation and ROCm image resolution.
+The ROCm resolver in `tests/ci/rocm.py` selects, in order: the called workflow's `image_tag`, the `ci_image_tag` dispatch input, the PR description's `ci-rocm-image-tag:`, then `DEFAULT_IMAGE_TAG`, the undated `miles-rocm10-mi35x`. It validates the result is a bare tag and outputs `rocm/sgl-dev:<tag>`. PRs build no ROCm image, so there is no `pr-<num>` step, and `ci-image-tag:` stays a CUDA directive. Changed-file jobs and `/rerun-test --hw rocm` read the same `ci-rocm-image-tag:`. For PRs, it runs unless every ROCm stage is skipped. CPU-only PRs skip both CUDA image preparation and ROCm image resolution.
 
 Distinct from image selection, the **`run-ci-image` label** selects the test scope — every enabled tag except `long`, `ft-short`, and `ft-long` — which validates an image bump without selecting those domains implicitly.
 
@@ -106,7 +106,7 @@ Shard sizing and concurrency policy live in [CI Maintenance](../../../.claude/ru
 
 `pr-test-rocm.yml` exposes `pull_request`, exact nightly and weekly crons, `workflow_dispatch`, and `workflow_call`. PR runs use the same low-trust merge-commit model as `pr-test.yml`. It runs `stage-c-2-gpu-mi350`, `stage-c-4-gpu-mi350`, and `stage-c-8-gpu-mi350` through `_run-ci-rocm.yml` on the Spur login-node runners; each shard submits a cluster job for its stage's GPU count to Miles' two 8-GPU MI355X nodes, and each stage splits its tests into two `est_time`-balanced shards on regular runs and four, six, and four on nightly, weekly, and release runs. It runs no CPU tests.
 
-Reusable calls can select a Miles `ref` and cadence, but resolve the same undated `rocm/sgl-dev:miles-rocm10-mi35x` image as the other automatic paths. The release branch-cut workflow does not call ROCm CI or include it in the `release-ci` gate.
+Reusable calls can select a Miles `ref`, cadence, and `image_tag`; without `image_tag` they resolve the same undated `rocm/sgl-dev:miles-rocm10-mi35x` image as the other automatic paths. The release branch-cut workflow does not call ROCm CI or include it in the `release-ci` gate.
 
 The `stage-c-2-gpu-mi350`, `stage-c-4-gpu-mi350`, and `stage-c-8-gpu-mi350` suite jobs each select their own `register_rocm_ci` registrations; CUDA registrations are not inherited. A file has at most one ROCm registration, and a test that should not run on PRs carries `nightly=True`, as on CUDA. PR, nightly, weekly, and release runs consume the shared cadence and label policy: `run-ci-amd` selects the `amd`-labelled subset, other `run-ci-*` labels select matching subsets, nightly admits regular plus `nightly=True` registrations, and weekly or release selects every enabled registration.
 

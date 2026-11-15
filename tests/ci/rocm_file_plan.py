@@ -6,7 +6,7 @@ import os
 from tests.ci.ci_policy import RunPolicy, resolve_policy
 from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests, discover_ci_files
 from tests.ci.file_run import FileRunError, RocmFileTimeoutError, plan_file_run
-from tests.ci.rocm import ROCM_CHANGED_FILE_LIMIT, ROCM_STAGES
+from tests.ci.rocm import ROCM_CHANGED_FILE_LIMIT, ROCM_STAGES, pr_image_tag
 from tests.ci.run_suite import filter_tests
 from tests.ci.stage_selection import ChangedFile, read_changed_files
 
@@ -21,6 +21,7 @@ def plan_jobs(
     policy: RunPolicy,
     raw_labels: set[str],
     skipped_stages: set[str],
+    image_tag: str = "",
 ) -> tuple[list[dict[str, str]], list[str]]:
     # For renames and copies, only the destination exists in this plan's scope.
     paths = {change.paths[-1] for change in changed_files if change.status[0] in {"A", "M", "R", "C", "T"}}
@@ -53,7 +54,7 @@ def plan_jobs(
     jobs = []
     for path, tests in sorted(by_file.items()):
         try:
-            jobs.append({"test_file": path, **plan_file_run(tests, path, "", hw="rocm")})
+            jobs.append({"test_file": path, **plan_file_run(tests, path, image_tag, hw="rocm")})
         except RocmFileTimeoutError as error:
             warnings.append(f"Skipped {error}. Comment reruns share this file budget.")
         except FileRunError as error:
@@ -72,6 +73,7 @@ def main() -> int:
             resolve_policy(os.environ["CADENCE"], labels),
             labels,
             set(json.loads(os.environ["SKIPPED_STAGES"])),
+            pr_image_tag(os.environ.get("PR_BODY", "")),
         )
 
     for warning in warnings:
