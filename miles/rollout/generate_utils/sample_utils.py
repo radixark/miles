@@ -52,6 +52,17 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
         assert x == y, f"{field} mismatch: a.{field}={x}, b.{field}={y}"
         return x
 
+    def _merge_growing_media():
+        # A later turn's prompt holds every media item of an earlier one plus its new items (session
+        # samples in token space), so a's references must start b's; the merged sample keeps b's.
+        x, y = a.multimodal_inputs, b.multimodal_inputs
+        if x == y:
+            return x
+        assert y is not None and all(
+            y.get(key, [])[: len(refs)] == refs for key, refs in (x or {}).items()
+        ), f"multimodal_inputs mismatch: a.multimodal_inputs={x} does not start b.multimodal_inputs={y}"
+        return y
+
     def _per_token(sample: Sample, field: str, default) -> list:
         value = getattr(sample, field)  # config-access-exempt: iterate the explicit sample completion field list
         return value if value is not None else [default] * sample.response_length
@@ -160,7 +171,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             rollout_id=_merge_equal_value("rollout_id"),
             prompt=b.prompt,
             tokens=b.tokens,
-            multimodal_inputs=_merge_equal_value("multimodal_inputs"),
+            multimodal_inputs=_merge_growing_media(),
             multimodal_train_inputs=_merge_equal_value("multimodal_train_inputs"),
             response=a.response + obs_text + b.response,
             response_length=a.response_length + obs_len + b.response_length,

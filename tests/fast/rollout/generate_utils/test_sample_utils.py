@@ -70,6 +70,35 @@ class TestMergeSamples:
         with pytest.raises(AssertionError, match="kv_cache_namespace mismatch"):
             _merge_sample_pair(a=a, b=b, tokenizer=mock_tokenizer)
 
+    @pytest.mark.parametrize(
+        "media_a,media_b",
+        [
+            (None, None),
+            (None, {"images": ["/m/1"]}),
+            ({"images": ["/m/1"]}, {"images": ["/m/1"]}),
+            ({"images": ["/m/1"]}, {"images": ["/m/1", "/m/2"]}),
+        ],
+        ids=["text", "first-image-later", "same", "one-more-image"],
+    )
+    def test_merge_keeps_the_later_turns_media(self, mock_tokenizer, media_a, media_b):
+        """A later turn's prompt holds every earlier media item plus its new ones (session samples)."""
+        a = make_sample(tokens=[1, 2, 10], response_length=1, loss_mask=[1])
+        b = make_sample(tokens=[1, 2, 10, 20, 30], response_length=1, loss_mask=[1])
+        a.multimodal_inputs, b.multimodal_inputs = media_a, media_b
+
+        assert _merge_sample_pair(a, b, mock_tokenizer).multimodal_inputs == media_b
+
+    @pytest.mark.parametrize(
+        "media_b", [None, {"images": ["/m/2"]}, {"images": []}], ids=["dropped", "replaced", "emptied"]
+    )
+    def test_merge_rejects_media_that_do_not_extend(self, mock_tokenizer, media_b):
+        a = make_sample(tokens=[1, 2, 10], response_length=1, loss_mask=[1])
+        b = make_sample(tokens=[1, 2, 10, 20, 30], response_length=1, loss_mask=[1])
+        a.multimodal_inputs, b.multimodal_inputs = {"images": ["/m/1"]}, media_b
+
+        with pytest.raises(AssertionError, match="multimodal_inputs mismatch"):
+            _merge_sample_pair(a, b, mock_tokenizer)
+
     def test_basic_merge(self, mock_tokenizer):
         a = make_sample(
             tokens=[1, 2, 3, 10, 11, 12],

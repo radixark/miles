@@ -242,6 +242,22 @@ class TestSamplesWireCodec:
         assert out_a.tokens == [] and out_b.tokens == []
         assert out_a.tokens is not out_b.tokens
 
+    def test_media_references_cross_the_wire_and_replace_the_input_samples(self):
+        """The server's references match its tokens, so they replace the input sample's; a text sample
+        carries no key, so a text payload is unchanged."""
+        with_media = _computed_sample(multimodal_inputs={"images": ["/shared/ab/ab12", "/shared/cd/cd34"]})
+        text = _computed_sample()
+        payload = encode_samples([with_media, text], {}, None)
+        meta = json.loads(safetensors.numpy.load(payload)["_samples_meta"].tobytes())
+        assert "multimodal_inputs" not in meta["samples"][1]
+        assert encode_samples([text], {}, None) == encode_samples([_computed_sample()], {}, None)
+
+        template = Sample()
+        template.multimodal_inputs = {"images": ["/dataset/image.png"]}
+        out_media, out_text = decode_samples_and_merge_input_sample(payload, template).samples
+        assert out_media.multimodal_inputs == {"images": ["/shared/ab/ab12", "/shared/cd/cd34"]}
+        assert out_text.multimodal_inputs is None
+
     def test_encode_rejects_non_int32_replay_dtype(self):
         sample = _computed_sample(rollout_routed_experts=np.arange(24, dtype=np.int64).reshape(4, 3, 2))
         with pytest.raises(ValueError, match="rollout_routed_experts must have dtype int32"):

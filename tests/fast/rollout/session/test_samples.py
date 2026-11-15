@@ -827,12 +827,48 @@ def _merge_addition(records, accumulated, max_trim_tokens=0):
     return merge_samples_with_addition_r3(_ARGS_R3, samples, records, tok)
 
 
+def _in_token_space(record: SessionRecord, start_len: int, engine_prompt: list[int]) -> SessionRecord:
+    """Mark a record as a token-space request with media: SGLang expanded its placeholders after
+    ``start_len`` and returned ``engine_prompt``, the prompt it ran."""
+    record.request["mm_token_expansion_start_len"] = start_len
+    record.request["return_prompt_token_ids"] = True
+    record.response["choices"][0]["prompt_token_ids"] = engine_prompt
+    return record
+
+
 class TestAdditionR3Assembly:
     """Addition-mode records carry an R3 patch of rows [routed_experts_start_len,
     len(input_ids) + len(output) - 1) instead of a full per-turn tensor;
     `merge_samples_with_addition_r3` concatenates the append-only stream into
     one (len(tokens) - 1, num_layers, topk) tensor after the ordinary merge.
     """
+
+    def test_media_records_offsets_are_in_the_engines_expanded_form(self):
+        """Records sent in token space: the engine ran turn 0's one image placeholder (9) as four tokens,
+        so its rows end at the expanded prompt plus the outputs, minus one, and turn 1, sent as turn 0's
+        expanded checkpoint plus a new text token, continues from there."""
+        pad = 9
+        # Turn 0: [1, 9, 2] sent, [1, 9, 9, 9, 9, 2] run, outputs [7, 8]: rows [0, 7).
+        # Turn 1: the 8 expanded checkpoint tokens plus [3] sent and run, output [9]: rows [7, 9).
+        full = _r3_rows(9, seed=0)
+        expanded0 = [1, pad, pad, pad, pad, 2]
+        first = _in_token_space(
+            _make_record([1, pad, 2], [7, 8], routed_experts=_r3_patch(full[:7]), routed_experts_start_len=0),
+            0,
+            expanded0,
+        )
+        sent1 = expanded0 + [7, 8, 3]
+        second = _in_token_space(
+            _make_record(sent1, [9], routed_experts=_r3_patch(full[7:]), routed_experts_start_len=7), 8, sent1
+        )
+        tok = _mock_tokenizer()
+        turns = compute_samples_from_openai_records(
+            _ARGS_R3, [first, second], tok, accumulated_token_ids=sent1 + [9], use_addition_r3=True
+        )
+        merged = merge_samples_with_addition_r3(_ARGS_R3, turns, [first, second], tok)
+        assert merged.tokens == [1, pad, pad, pad, pad, 2, 7, 8, 3, 9]
+        np.testing.assert_array_equal(merged.rollout_routed_experts, full)
+        merged.validate()
 
     def test_two_patches_reconstruct_full_reference(self):
         """Patches must rebuild byte-for-byte the tensor full-R3 responses give
@@ -1159,6 +1195,28 @@ class TestStoreSessionAssembly:
         assert merged.tokens == accumulated[:14]
         np.testing.assert_array_equal(_routed_experts(merged, objects), full[:13])
         assert [r.key for r in merged.rollout_store_plan.owned_refs] == ["r0", "r1"]
+
+    def test_media_records_count_routed_experts_rows_in_the_engines_expanded_form(self):
+        # The engine ran turn 0's one image placeholder as four tokens: 3 ids sent, 6 run, 2 outputs, so it
+        # stored rows [0, 7). Turn 1 sends the 8 expanded checkpoint tokens plus one: rows [7, 9). Counted on
+        # the TITO form, turn 0 would be expected to hold 4 rows, not the 7 it stored.
+        pad = 9
+        full = _r3_rows(9, seed=0)
+        expanded0 = [1, pad, pad, pad, pad, 2]
+        sent1 = expanded0 + [7, 8, 3]
+        r0, a0 = _store_record("r0", [1, pad, 2], [7, 8], routed_experts=full[:7], routed_experts_start_len=0)
+        r1, a1 = _store_record("r1", sent1, [9], routed_experts=full[7:], routed_experts_start_len=7)
+        _in_token_space(r0, 0, expanded0)
+        _in_token_space(r1, 8, sent1)
+
+        merged = _merge_store([r0, r1], sent1 + [9])
+
+        assert merged.tokens == [1, pad, pad, pad, pad, 2, 7, 8, 3, 9]
+        assert [(s.ref.key, s.start, s.end) for s in merged.rollout_store_plan.fields[R3].segs] == [
+            ("r0", 0, 7),
+            ("r1", 0, 2),
+        ]
+        np.testing.assert_array_equal(_routed_experts(merged, {"r0": a0, "r1": a1}), full)
 
     @pytest.mark.parametrize("max_seq_len", [None, 23])
     def test_a_gap_before_a_record_raises(self, max_seq_len):
