@@ -15,6 +15,7 @@ register_cpu_ci(est_time=1, suite="stage-a-cpu")
 
 ROOT = Path(__file__).resolve().parents[3]
 PR_SUITE = "stage-c-4-gpu-mi350"
+PR_SUITES = ("stage-c-2-gpu-mi350", PR_SUITE, "stage-c-8-gpu-mi350")
 TWO_GPU = "nightly-stage-c-2-gpu-mi350"
 FOUR_GPU = "nightly-stage-c-4-gpu-mi350"
 EIGHT_GPU = "nightly-stage-c-8-gpu-mi350"
@@ -44,7 +45,7 @@ def _plan(root, diff, labels, *, cadence="regular", skip_suite=True):
             "CHANGED_FILES_PATH": str(changed),
             "RAW_LABELS": " ".join(labels),
             "CADENCE": cadence,
-            "SKIPPED_STAGES": json.dumps([PR_SUITE] if skip_suite else []),
+            "SKIPPED_STAGES": json.dumps(list(PR_SUITES) if skip_suite else []),
             "GITHUB_OUTPUT": str(output),
             "GITHUB_STEP_SUMMARY": str(summary),
         },
@@ -90,9 +91,10 @@ def test_renames_use_destination_and_prefer_original_width(tmp_path):
     assert {job["test_file"]: job["num_gpus"] for job in jobs} == {two: "2", four: "4", eight: "8"}
 
 
-def test_regular_suite_owns_files_it_already_selects(tmp_path):
+@pytest.mark.parametrize("suite", PR_SUITES)
+def test_regular_suite_owns_files_it_already_selects(tmp_path, suite):
     both, nightly = ("tests/e2e/test_both.py", "tests/e2e/test_nightly.py")
-    _registration(tmp_path, both, PR_SUITE, labels=("amd",))
+    _registration(tmp_path, both, suite, labels=("amd",))
     _registration(tmp_path, both, TWO_GPU)
     _registration(tmp_path, nightly, FOUR_GPU)
     diff = f"M\0{both}\0M\0{nightly}\0".encode()

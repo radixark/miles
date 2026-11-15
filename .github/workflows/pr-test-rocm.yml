@@ -10,11 +10,9 @@ name: PR Test (ROCm)
 # runs and the full scope for weekly or explicitly called release runs; manual
 # dispatch keeps the full regular MI350 suite.
 #
-# The stage runs on AMD's MI355X cluster: two Spur login-node runners each
-# submit a 4-GPU cluster job per shard (see _run-ci-rocm.yml), so this stage
-# is 4-GPU.
-# CUDA tests that need 8 GPUs get a standalone test_amd_<name>.py with its
-# own 4-GPU CaseConfig rather than an IS_HIP branch in the original.
+# The stages run on AMD's MI355X cluster: two Spur login-node runners each
+# submit one cluster job per shard (see _run-ci-rocm.yml) that asks for the
+# stage's GPU count, so stage-c-{2,4,8}-gpu-mi350 take 2, 4 or 8 GPUs.
 #
 # PR jobs use the same low-trust `pull_request` model as pr-test.yml: checkout
 # tests the merge commit, and GitHub withholds repository secrets from forks.
@@ -125,7 +123,11 @@ jobs:
 
   resolve-ci-image:
     needs: [resolve-ci-policy]
-    if: ${{ !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350') }}
+    # Needed unless every ROCm stage is skipped.
+    if: >-
+      ${{ !(contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-2-gpu-mi350') &&
+      contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350') &&
+      contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-mi350')) }}
     runs-on: ubuntu-latest
     outputs:
       container_image: ${{ steps.resolve.outputs.container_image }}
@@ -138,6 +140,36 @@ jobs:
         env:
           INPUT_CI_IMAGE_TAG: ${{ github.event.inputs.ci_image_tag || '' }}
         run: python3 -S -m tests.ci.rocm
+
+  stage-c-2-gpu-mi350:
+    needs: [resolve-ci-policy, resolve-ci-image]
+    if: |
+      always() && !cancelled() &&
+      needs.resolve-ci-policy.result == 'success' &&
+      needs.resolve-ci-image.result == 'success' &&
+      !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-2-gpu-mi350')
+    # Each shard asks Spur for two GPUs, so up to four share a node.
+    # run_suite.py balances the shards by est_time. fail-fast: false so one
+    # shard's failure does not cancel the other mid-run.
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: [0, 1]
+    uses: ./.github/workflows/_run-ci-rocm.yml
+    with:
+      runs_on: '["linux-miles-mi35x-spur"]'
+      num_gpus: 2
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      ref: ${{ inputs.ref || '' }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw rocm --suite stage-c-2-gpu-mi350
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
+        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
+        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+        ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
+        --enable-retry --max-attempts 2
+    secrets:
+      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
 
   stage-c-4-gpu-mi350:
     needs: [resolve-ci-policy, resolve-ci-image]
@@ -161,6 +193,36 @@ jobs:
       ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw rocm --suite stage-c-4-gpu-mi350
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
+        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
+        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+        ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
+        --enable-retry --max-attempts 2
+    secrets:
+      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+
+  stage-c-8-gpu-mi350:
+    needs: [resolve-ci-policy, resolve-ci-image]
+    if: |
+      always() && !cancelled() &&
+      needs.resolve-ci-policy.result == 'success' &&
+      needs.resolve-ci-image.result == 'success' &&
+      !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-mi350')
+    # Each shard holds a whole node (launch.sh submits 8-GPU jobs --exclusive).
+    # run_suite.py balances the shards by est_time. fail-fast: false so one
+    # shard's failure does not cancel the other mid-run.
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: [0, 1]
+    uses: ./.github/workflows/_run-ci-rocm.yml
+    with:
+      runs_on: '["linux-miles-mi35x-spur"]'
+      num_gpus: 8
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      ref: ${{ inputs.ref || '' }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw rocm --suite stage-c-8-gpu-mi350
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}

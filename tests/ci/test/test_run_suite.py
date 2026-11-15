@@ -606,7 +606,7 @@ class TestWorkflowScopeSeam:
     def test_each_cuda_stage_consumes_the_fail_open_skip_list(self):
         workflow = self._workflow()
         b200_stages = {"stage-c-4-gpu-b200", "stage-c-8-gpu-b200"}
-        cuda_stages = PR_GPU_STAGES - {"stage-c-4-gpu-mi350"} - b200_stages
+        cuda_stages = {stage for stage in PR_GPU_STAGES if not stage.endswith("-mi350")} - b200_stages
         for stage_name in cuda_stages:
             block = workflow.split(f"  {stage_name}:", 1)[1]
             block = re.split(r"^  [A-Za-z_][A-Za-z0-9_-]*:\s*$", block, maxsplit=1, flags=re.MULTILINE)[0]

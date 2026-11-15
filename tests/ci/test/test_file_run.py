@@ -118,7 +118,9 @@ def test_rocm_only_file_suggests_explicit_hardware():
 @pytest.mark.parametrize(
     ("suite", "num_gpus"),
     [
+        ("stage-c-2-gpu-mi350", 2),
         ("stage-c-4-gpu-mi350", 4),
+        ("stage-c-8-gpu-mi350", 8),
         ("nightly-stage-c-2-gpu-mi350", 2),
         ("nightly-stage-c-4-gpu-mi350", 4),
         ("nightly-stage-c-8-gpu-mi350", 8),

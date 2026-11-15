@@ -15,11 +15,13 @@ class RocmStage:
     runs_on: tuple[str, ...] = ("linux-miles-mi35x-spur",)
 
 
-# The unprefixed suite serves pr-test-rocm.yml. The nightly suites serve
+# The unprefixed suites serve pr-test-rocm.yml. The nightly suites serve
 # SGLang's external AMD nightly workflow. Both are available to file runs.
-ROCM_PR_SUITE = "stage-c-4-gpu-mi350"
+ROCM_PR_SUITES = ("stage-c-2-gpu-mi350", "stage-c-4-gpu-mi350", "stage-c-8-gpu-mi350")
 ROCM_STAGES = {
-    ROCM_PR_SUITE: RocmStage(4),
+    "stage-c-2-gpu-mi350": RocmStage(2),
+    "stage-c-4-gpu-mi350": RocmStage(4),
+    "stage-c-8-gpu-mi350": RocmStage(8),
     "nightly-stage-c-8-gpu-mi350": RocmStage(8),
     "nightly-stage-c-4-gpu-mi350": RocmStage(4),
     "nightly-stage-c-2-gpu-mi350": RocmStage(2),

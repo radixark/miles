@@ -27,7 +27,9 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 | `stage-c-8-gpu-h200` | 8× H200 | `["h200","8gpu"]` | 4 regular / 5 otherwise | both resolvers, `stage-a-cpu` |
 | `stage-c-8-gpu-b200` | B200 pool | `["b200","<num_gpus>gpu"]` | one job per file | both resolvers, `stage-a-cpu` |
 | `stage-c-4-gpu-b200` | same B200 pool | `["b200","<num_gpus>gpu"]` | one job per file | same plan, no 8-GPU stage barrier |
+| `stage-c-2-gpu-mi350` | 2× MI355X | `["linux-miles-mi35x-spur"]` | 2 | both resolvers |
 | `stage-c-4-gpu-mi350` | 4× MI355X | `["linux-miles-mi35x-spur"]` | 2 | both resolvers |
+| `stage-c-8-gpu-mi350` | 8× MI355X | `["linux-miles-mi35x-spur"]` | 2 | both resolvers |
 | `nightly-stage-c-2-gpu-mi350` | 2× MI350 | external nightly | — | — |
 | `nightly-stage-c-4-gpu-mi350` | 4× MI350 | external nightly | — | — |
 | `nightly-stage-c-8-gpu-mi350` | 8× MI350 | external nightly | — | — |
@@ -103,23 +105,23 @@ Shard sizing and concurrency policy live in [CI Maintenance](../../../.claude/ru
 
 ## ROCm PR/nightly/weekly mirror
 
-`pr-test-rocm.yml` exposes `pull_request`, exact nightly and weekly crons, `workflow_dispatch`, and `workflow_call`. PR runs use the same low-trust merge-commit model as `pr-test.yml`. It runs `stage-c-4-gpu-mi350` through `_run-ci-rocm.yml` on two 4-GPU MI350 runners and splits tests into two `est_time`-balanced shards. It runs no CPU tests.
+`pr-test-rocm.yml` exposes `pull_request`, exact nightly and weekly crons, `workflow_dispatch`, and `workflow_call`. PR runs use the same low-trust merge-commit model as `pr-test.yml`. It runs `stage-c-2-gpu-mi350`, `stage-c-4-gpu-mi350`, and `stage-c-8-gpu-mi350` through `_run-ci-rocm.yml` on the Spur login-node runners; each shard submits a cluster job for its stage's GPU count to Miles' two 8-GPU MI355X nodes, and each stage splits its tests into two `est_time`-balanced shards. It runs no CPU tests.
 
 Reusable calls can select a Miles `ref` and cadence, but resolve the same undated `rocm/sgl-dev:miles-rocm10-mi35x` image as the other automatic paths. The release branch-cut workflow does not call ROCm CI or include it in the `release-ci` gate.
 
-The `stage-c-4-gpu-mi350` suite job selects its own `register_rocm_ci` registrations. PR, nightly, weekly, and release runs consume the shared cadence and label policy: `run-ci-amd` selects the `amd`-labelled subset, other `run-ci-*` labels select matching subsets, nightly admits regular plus `nightly=True` registrations, and weekly or release selects every enabled registration.
+The `stage-c-2-gpu-mi350`, `stage-c-4-gpu-mi350`, and `stage-c-8-gpu-mi350` suite jobs each select their own `register_rocm_ci` registrations. PR, nightly, weekly, and release runs consume the shared cadence and label policy: `run-ci-amd` selects the `amd`-labelled subset, other `run-ci-*` labels select matching subsets, nightly admits regular plus `nightly=True` registrations, and weekly or release selects every enabled registration.
 
-**Changed ROCm test files.** On a pull request with `run-ci-amd`, `run-ci-all`, or `nightly`, a hosted file planner reads the merge commit's changed paths and ROCm registrations. It uses the [single-file rerun plan](01-label.md#manage-ci-from-pr-comments) for each eligible file outside the selected regular suite. A `long` or `ft-long` registration needs its explicit `run-ci-long` or `run-ci-ft-long` label. The planner reports file-level skips in the job summary. If more than four eligible files remain, it lists them in the summary and creates no file jobs. Automatic and comment file jobs share the same repository-wide queue. With an unavailable diff, the existing suite policy applies.
+**Changed ROCm test files.** On a pull request with `run-ci-amd`, `run-ci-all`, or `nightly`, a hosted file planner reads the merge commit's changed paths and ROCm registrations. It uses the [single-file rerun plan](01-label.md#manage-ci-from-pr-comments) for each eligible file outside the selected regular suites. A `long` or `ft-long` registration needs its explicit `run-ci-long` or `run-ci-ft-long` label. The planner reports file-level skips in the job summary. If more than four eligible files remain, it lists them in the summary and creates no file jobs. Automatic and comment file jobs share the same repository-wide queue. With an unavailable diff, the existing suite policy applies.
 
-Manual dispatch adds `--match-all-labels` and runs the full regular 4-GPU suite. The external nightly coverage of all three prefixed MI350 suites is described below.
+Manual dispatch adds `--match-all-labels` and runs the full regular suites. The external nightly coverage of all three prefixed MI350 suites is described below.
 
 Fork PRs use GitHub's standard `pull_request` protections: checkout tests the merge commit, repository secrets are withheld, and held runs follow the shared maintainer approval flow described in [`01-label.md`](01-label.md).
 
-An 8-GPU CUDA case needs a separate 4-GPU `test_amd_<name>.py` variant rather than an `IS_HIP` branch in the original test.
+An 8-GPU case registers in `stage-c-8-gpu-mi350`; a smaller ROCm layout still goes in a separate `test_amd_<name>.py` variant rather than an `IS_HIP` branch in the original test.
 
-Both runner containers can see all eight host GPUs through `/dev/dri`. Each runner restricts itself to four GPUs with `HIP_VISIBLE_DEVICES`, which `_run-ci-rocm.yml` forwards into the container.
+A 1-, 2- or 4-GPU shard asks the scheduler for that many GPUs, and its container sees only those; up to 8/N such shards share a node. An 8-GPU shard holds a node whole. The number of registered runner processes on the login node bounds how many shards run at once.
 
-**External MI350 nightly.** Miles declares `nightly-stage-c-2-gpu-mi350`, `nightly-stage-c-4-gpu-mi350`, and `nightly-stage-c-8-gpu-mi350` in `CI_SUITES` for the external nightly, and keeps the unprefixed `stage-c-4-gpu-mi350` for its own `pr-test-rocm.yml`. The three prefixed suites are available for [explicit ROCm file reruns](01-label.md#manage-ci-from-pr-comments) and are run on schedule by the external [`sgl-project/sglang` ROCm 10 nightly workflow](https://github.com/sgl-project/sglang/blob/main/.github/workflows/nightly-test-amd-miles-rocm10.yml).
+**External MI350 nightly.** Miles declares `nightly-stage-c-2-gpu-mi350`, `nightly-stage-c-4-gpu-mi350`, and `nightly-stage-c-8-gpu-mi350` in `CI_SUITES` for the external nightly, and keeps the unprefixed `stage-c-{2,4,8}-gpu-mi350` for its own `pr-test-rocm.yml`. The three prefixed suites are available for [explicit ROCm file reruns](01-label.md#manage-ci-from-pr-comments) and are run on schedule by the external [`sgl-project/sglang` ROCm 10 nightly workflow](https://github.com/sgl-project/sglang/blob/main/.github/workflows/nightly-test-amd-miles-rocm10.yml).
 
 ## TPU contract job
 

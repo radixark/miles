@@ -21,7 +21,9 @@ PR_GPU_STAGES = frozenset(
         "stage-c-8-gpu-h200",
         "stage-c-4-gpu-b200",
         "stage-c-8-gpu-b200",
+        "stage-c-2-gpu-mi350",
         "stage-c-4-gpu-mi350",
+        "stage-c-8-gpu-mi350",
     }
 )
 
