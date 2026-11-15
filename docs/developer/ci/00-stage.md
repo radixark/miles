@@ -28,8 +28,8 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 | `stage-c-8-gpu-b200` | B200 pool | `["b200","<num_gpus>gpu"]` | one job per file | both resolvers, `stage-a-cpu` |
 | `stage-c-4-gpu-b200` | same B200 pool | `["b200","<num_gpus>gpu"]` | one job per file | same plan, no 8-GPU stage barrier |
 | `stage-c-2-gpu-mi350` | 2× MI355X | `["linux-miles-mi35x-spur"]` | 2 regular / 4 otherwise | both resolvers |
-| `stage-c-4-gpu-mi350` | 4× MI355X | `["linux-miles-mi35x-spur"]` | 2 regular / 6 otherwise | both resolvers |
-| `stage-c-8-gpu-mi350` | 8× MI355X | `["linux-miles-mi35x-spur"]` | 2 regular / 4 otherwise | both resolvers |
+| `stage-c-4-gpu-mi350` | 4× MI355X | `["linux-miles-mi35x-spur"]` | 4 regular / 6 otherwise | both resolvers |
+| `stage-c-8-gpu-mi350` | 8× MI355X | `["linux-miles-mi35x-spur"]` | 4 | both resolvers |
 
 B200 jobs declare their minimum allocation with `register_cuda_ci(..., num_gpus=N)` for an integer N from 1 to 8. The existing B200 suite names select tests; they do not reserve a fixed partition. `_run-ci-b200.yml` plans all selected files at an exact commit and makes their jobs independently runnable. The host allocates any free GPU set, allowing `4+2+1+1`, `2+2+2+2`, or other fitting combinations. An 8-GPU job requires the whole host. Weekly uses the same scheduling rules. Jobs wait for GPUs after the runner accepts them, so their timeout includes admission waiting. The planner splits large selections into sequential batches whose summed file-timeout plus setup/cleanup allowances stay at or below 23 hours, below the 24-hour `GITHUB_TOKEN` lifetime and 5-day self-hosted job limit. Every job gets its batch's serial budget, covering even the last job to acquire GPUs; per-file execution timeouts remain unchanged. Files within each batch have no matrix parallelism cap.
 
@@ -104,7 +104,7 @@ Shard sizing and concurrency policy live in [CI Maintenance](../../../.claude/ru
 
 ## ROCm PR/nightly/weekly mirror
 
-`pr-test-rocm.yml` exposes `pull_request`, exact nightly and weekly crons, `workflow_dispatch`, and `workflow_call`. PR runs use the same low-trust merge-commit model as `pr-test.yml`. It runs `stage-c-2-gpu-mi350`, `stage-c-4-gpu-mi350`, and `stage-c-8-gpu-mi350` through `_run-ci-rocm.yml` on the Spur login-node runners; each shard submits a cluster job for its stage's GPU count to Miles' two 8-GPU MI355X nodes, and each stage splits its tests into two `est_time`-balanced shards on regular runs and four, six, and four on nightly, weekly, and release runs. It runs no CPU tests.
+`pr-test-rocm.yml` exposes `pull_request`, exact nightly and weekly crons, `workflow_dispatch`, and `workflow_call`. PR runs use the same low-trust merge-commit model as `pr-test.yml`. It runs `stage-c-2-gpu-mi350`, `stage-c-4-gpu-mi350`, and `stage-c-8-gpu-mi350` through `_run-ci-rocm.yml` on the Spur login-node runners; each shard submits a cluster job for its stage's GPU count to Miles' two 8-GPU MI355X nodes, and the 2-, 4-, and 8-GPU stages split their tests into two, four, and four `est_time`-balanced shards on regular runs, and into four, six, and four on every other cadence. It runs no CPU tests.
 
 Reusable calls can select a Miles `ref`, cadence, and `image_tag`; without `image_tag` they resolve the same undated `rocm/sgl-dev:miles-rocm10-mi35x` image as the other automatic paths. The release branch-cut workflow does not call ROCm CI or include it in the `release-ci` gate.
 

@@ -694,7 +694,7 @@ class TestRocmWorkflowScopeSeam:
         assert "needs: [resolve-ci-policy, resolve-ci-image]" in stage
         assert "allow_self_hosted" not in stage
         assert (
-            "partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1]' || '[0,1,2,3,4,5]') }}"
+            "partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1,2,3]' || '[0,1,2,3,4,5]') }}"
             in stage
         )
         assert "max-parallel:" not in stage

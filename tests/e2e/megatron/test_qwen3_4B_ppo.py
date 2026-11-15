@@ -12,7 +12,6 @@ register_rocm_ci(
     est_time=800,
     suite="stage-c-4-gpu-mi350",
     labels=["megatron"],
-    nightly=True,
 )
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "0")))

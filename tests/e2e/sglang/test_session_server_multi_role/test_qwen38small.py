@@ -5,7 +5,7 @@ from tests.e2e.sglang.test_session_server_multi_role._common import ModelConfig,
 register_cuda_ci(
     est_time=1200, suite="stage-c-2-gpu-h200", labels=["sglang"], hardware=["hopper", "blackwell"], num_gpus=2
 )
-register_rocm_ci(est_time=700, suite="stage-c-2-gpu-mi350", labels=["sglang"], nightly=True)
+register_rocm_ci(est_time=700, suite="stage-c-2-gpu-mi350", labels=["sglang"])
 # Each rate covers 32 sessions, so it moves in 1/32 steps and healthy runs land up to 0.125 above the mean.
 register_ci_gate(
     metric_key="rollout/tito_session_mismatch_rate/v1/assistant_text",

@@ -7,7 +7,7 @@ from tests.e2e.megatron.test_glm47_flash._common import CaseConfig, execute, pre
 register_cuda_ci(
     est_time=1200, suite="stage-c-4-gpu-h200", labels=["megatron"], hardware=["hopper", "blackwell"], num_gpus=4
 )
-register_rocm_ci(est_time=1500, suite="stage-c-4-gpu-mi350", labels=["megatron"], nightly=True)
+register_rocm_ci(est_time=1500, suite="stage-c-4-gpu-mi350", labels=["megatron"])
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")

@@ -34,7 +34,6 @@ register_rocm_ci(
     est_time=600,
     suite="stage-c-4-gpu-mi350",
     labels=["miles-plugin", "megatron"],
-    nightly=True,
 )
 
 register_ci_gate(metric_key="train/grad_norm")

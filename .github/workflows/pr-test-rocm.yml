@@ -187,14 +187,14 @@ jobs:
       needs.resolve-ci-policy.result == 'success' &&
       needs.resolve-ci-image.result == 'success' &&
       !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350')
-    # Two shards on regular runs, one per runner; nightly, weekly and release
-    # runs split the larger selection further.
+    # Four shards on regular runs; nightly, weekly and release runs split the
+    # larger selection into six.
     # run_suite.py balances the shards by est_time. fail-fast: false so one
     # shard's failure does not cancel the others mid-run.
     strategy:
       fail-fast: false
       matrix:
-        partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1]' || '[0,1,2,3,4,5]') }}
+        partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1,2,3]' || '[0,1,2,3,4,5]') }}
     uses: ./.github/workflows/_run-ci-rocm.yml
     with:
       runs_on: '["linux-miles-mi35x-spur"]'
@@ -224,7 +224,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1]' || '[0,1,2,3]') }}
+        partition_id: [0, 1, 2, 3]
     uses: ./.github/workflows/_run-ci-rocm.yml
     with:
       runs_on: '["linux-miles-mi35x-spur"]'
