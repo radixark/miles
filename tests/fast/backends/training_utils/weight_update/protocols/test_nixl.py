@@ -34,7 +34,9 @@ def test_a_transfer_still_running_after_the_timeout_fails_its_write(
 ) -> None:
     """NIXL never abandons a transfer itself: a lost rollout engine would hold its write thread, and every later
     write to that engine, forever."""
-    transport = p2p_protocol.P2PTransport(p2p_protocol.NixlTransport(write_timeout=0.05))
+    transport = p2p_protocol.P2PTransport(
+        p2p_protocol.NixlTransport(write_timeout=0.05), transfer_buffer_device=torch.device("cpu")
+    )
     api = make_rollout_api("cell-a", gpu_count=1)
     assignments = assign_rollout_engine_ranks_for_data_replica(
         data_replica_rank=0, data_replica_size=1, engine_gpu_counts=[1]
@@ -69,7 +71,9 @@ def test_a_reconnect_fails_a_write_still_running_to_a_replaced_agent_and_keeps_i
     p2p_sender: Any, p2p_protocol: ModuleType, make_rollout_api: Any, make_cell_updater: Any
 ) -> None:
     """NIXL fails a transfer whose remote agent a reconnect removed, without saying whether it read its source."""
-    transport = p2p_protocol.P2PTransport(p2p_protocol.NixlTransport(write_timeout=10))
+    transport = p2p_protocol.P2PTransport(
+        p2p_protocol.NixlTransport(write_timeout=10), transfer_buffer_device=torch.device("cpu")
+    )
     assignments = assign_rollout_engine_ranks_for_data_replica(
         data_replica_rank=0, data_replica_size=1, engine_gpu_counts=[1]
     )

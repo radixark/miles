@@ -17,9 +17,10 @@ def compute_send_checksums(parameters: Mapping[str, torch.Tensor], names: Sequen
     checksums = {}
     for name in names:
         tensor = parameters[name]
-        assert tensor.device.type in ("cpu", current_platform.device_type), (
-            f"Expected registered host or GPU send buffers, got {tensor.device}"
-        )
+        assert tensor.device.type in (
+            "cpu",
+            current_platform.device_type,
+        ), f"Expected registered host or GPU send buffers, got {tensor.device}"
         checksums[name] = hash_tensor_sha256(tensor)
     return checksums
 

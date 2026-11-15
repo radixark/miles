@@ -58,16 +58,9 @@ class P2PTransport:
     may be released, since only it knows whether a failed write can still read its source.
     """
 
-    def __init__(
-        self,
-        native_transport: NativeTransport,
-        *,
-        transfer_buffer_device: torch.device | None = None,
-    ) -> None:
+    def __init__(self, native_transport: NativeTransport, *, transfer_buffer_device: torch.device) -> None:
         self._native_transport = native_transport
-        self._transfer_buffer_device = (
-            transfer_buffer_device if transfer_buffer_device is not None else native_transport.transfer_buffer_device
-        )
+        self._transfer_buffer_device = transfer_buffer_device
         self._executors_by_rollout_engine_ind: dict[int, ThreadPoolExecutor] = {}
         # the registered tensor stays referenced with its registration, so its allocation outlives it
         self._registrations_by_address: dict[int, tuple[torch.Tensor, Any]] = {}

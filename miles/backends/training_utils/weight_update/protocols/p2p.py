@@ -1,4 +1,5 @@
 import logging
+import os
 from argparse import Namespace
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
@@ -40,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 # one is loaded while the writes of the other are in flight
 _NUM_TRANSFER_BUFFERS = 2
+_ALLOC_CONF_ENV_VARS = ("PYTORCH_ALLOC_CONF", "PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_ALLOC_CONF")
 
 
 class _ReplicaTarget(NamedTuple):
@@ -155,8 +157,8 @@ class UpdateWeightP2P(WeightTransferProtocol):
                     continue
                 param_bytes_by_name = target.model_replica.load_into(buffer, param_names, hf_tensors)
                 if buffer.device.type != "cpu":
-                    # the loads into a GPU buffer are kernels the loading thread queued; the NIC must not read before they ran
-                    torch.accelerator.synchronize(buffer.device)
+                    # the loads into a GPU buffer are kernels on the current stream; the NIC must not read before they ran
+                    torch.accelerator.current_stream(buffer.device).synchronize()
                 sent_checksums = (
                     checksum_utils.compute_send_checksums(param_bytes_by_name, list(param_bytes_by_name))
                     if self.args.check_weight_transfer_checksum
@@ -216,15 +218,14 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 self.is_sender = False
                 return
             if self._transport is None:
+                native_cls = NixlTransport if self.args.p2p_transport == NixlTransport.name else MooncakeTransport
+                transfer_buffer_device = _resolve_transfer_buffer_device(
+                    self.args.p2p_transfer_buffer_device, default=native_cls.transfer_buffer_device
+                )
                 native_transport = (
                     NixlTransport(write_timeout=self.args.p2p_transfer_timeout)
-                    if self.args.p2p_transport == NixlTransport.name
+                    if native_cls is NixlTransport
                     else MooncakeTransport()
-                )
-                transfer_buffer_device = (
-                    current_platform.current_device()
-                    if self.args.p2p_transfer_buffer_device == "gpu"
-                    else native_transport.transfer_buffer_device
                 )
                 self._transport = P2PTransport(native_transport, transfer_buffer_device=transfer_buffer_device)
             remote_shards_by_runner_role = self._transport.connect(
@@ -304,4 +305,32 @@ class UpdateWeightP2P(WeightTransferProtocol):
             register_memory=self._transport.register_memory,
             unregister_memory=self._transport.unregister_memory,
             write_timeout=self.args.p2p_transfer_timeout,
+        )
+
+
+def _resolve_transfer_buffer_device(transfer_buffer_device: str | None, *, default: torch.device) -> torch.device:
+    if transfer_buffer_device is None:
+        device = default
+    elif transfer_buffer_device == "cpu":
+        device = torch.device("cpu")
+    elif transfer_buffer_device == "gpu":
+        device = current_platform.current_device()
+    else:
+        raise ValueError(f"Unsupported --p2p-transfer-buffer-device: {transfer_buffer_device!r}")
+    if device.type != "cpu":
+        _assert_no_expandable_segments()
+    return device
+
+
+def _assert_no_expandable_segments() -> None:
+    enabled_in = [
+        name
+        for name in _ALLOC_CONF_ENV_VARS
+        if "expandable_segments:true" in os.environ.get(name, "").replace(" ", "").lower().split(",")
+    ]
+    if enabled_in:
+        vars_str = ", ".join(f"{name}={os.environ[name]!r}" for name in enabled_in)
+        raise ValueError(
+            f"GPU P2P transfer buffers cannot be registered for RDMA with expandable_segments enabled ({vars_str}); "
+            "disable expandable_segments on the trainer or pass --p2p-transfer-buffer-device cpu."
         )

@@ -198,8 +198,9 @@ def _read_registered_floats(source_ptr: int, length: int) -> list[float]:
         cudart.cudaMemcpy.restype = ctypes.c_int
         host = bytearray(length)
         host_ptr = (ctypes.c_char * length).from_buffer(host)
-        if cudart.cudaMemcpy(ctypes.addressof(host_ptr), source_ptr, length, 4) == 0:
-            return torch.frombuffer(host, dtype=torch.float32).tolist()
+        rc = cudart.cudaMemcpy(ctypes.addressof(host_ptr), source_ptr, length, 4)
+        assert rc == 0, f"cudaMemcpy failed with error {rc}"
+        return torch.frombuffer(host, dtype=torch.float32).tolist()
     return torch.frombuffer(bytearray(ctypes.string_at(source_ptr, length)), dtype=torch.float32).tolist()
 
 
@@ -211,6 +212,15 @@ class _HostTensorWithDevice(torch.Tensor):
         instance = torch.Tensor._make_subclass(cls, torch.empty(buffer_nbytes, dtype=torch.uint8))
         instance._reported_device = device
         return instance
+
+    @classmethod
+    def __torch_function__(cls, func: Any, types: Any, args: Any = (), kwargs: Any = None) -> Any:
+        result = super().__torch_function__(func, types, args, kwargs or {})
+        if isinstance(result, cls):
+            if func is torch.Tensor.cpu:
+                return result.as_subclass(torch.Tensor)
+            result._reported_device = next(arg._reported_device for arg in args if isinstance(arg, cls))
+        return result
 
     @property
     def device(self) -> torch.device:  # type: ignore[override]
@@ -445,7 +455,11 @@ class _P2PSenderHarness:
         )
         if not torch.accelerator.is_available():
             monkeypatch.setattr(p2p_protocol.current_platform, "current_device", lambda: torch.device("cuda", 0))
-            monkeypatch.setattr(torch.accelerator, "synchronize", lambda device=None: None)
+            monkeypatch.setattr(
+                torch.accelerator,
+                "current_stream",
+                lambda device=None: SimpleNamespace(synchronize=lambda: None),
+            )
 
     def loaded_event(self, tp_rank: int) -> threading.Event:
         return self._loaded_events.setdefault(tp_rank, threading.Event())
@@ -454,7 +468,7 @@ class _P2PSenderHarness:
         self,
         *,
         p2p_transfer_timeout: float = _FAILURE_BOUND,
-        p2p_transfer_buffer_device: str = "cpu",
+        p2p_transfer_buffer_device: str | None = None,
         update_weight_buffer_size: int = 1024,
         check_weight_transfer_checksum: bool = False,
     ) -> Any:
@@ -681,7 +695,9 @@ def make_remote_shard() -> Callable[..., Any]:
 
 @pytest.fixture
 def transport(p2p_sender: Any, p2p_protocol: ModuleType, mooncake_module: ModuleType) -> Iterator[Any]:
-    transport = p2p_protocol.P2PTransport(mooncake_module.MooncakeTransport())
+    transport = p2p_protocol.P2PTransport(
+        mooncake_module.MooncakeTransport(), transfer_buffer_device=torch.device("cpu")
+    )
     yield transport
     p2p_sender.transfer_engine.release_all()
     for executor in transport._executors_by_rollout_engine_ind.values():
