@@ -49,6 +49,8 @@ SAMPLES_VALUE_SPEC: dict[str, ValueSpec] = {
     "spec_info": ValueSpec("json"),
     "prefix_cache_info": ValueSpec("json"),
     "metadata": ValueSpec("json"),
+    # Shared media paths per modality (miles.utils.media_refs); only token-space samples with media carry it.
+    "multimodal_inputs": ValueSpec("json"),
 }
 
 # Tree-serving v2 adds `Sample.reward` to the wire.
@@ -158,11 +160,12 @@ def encode_samples(
                     value = value.to_dict()
                 elif field == "prefix_cache_info":
                     value = value.to_dict()
-                elif field == "rollout_store_plan":
+                elif field in ("rollout_store_plan", "multimodal_inputs"):
                     if value is None:
-                        # No key: a payload without plans stays byte-identical.
+                        # No key: a payload without plans or media stays byte-identical.
                         continue
-                    value = value.to_dict()
+                    if field == "rollout_store_plan":
+                        value = value.to_dict()
                 sample_meta[field] = value
                 continue
             if value is None:
@@ -229,6 +232,10 @@ def decode_samples_and_merge_input_sample(
                     # No key means no plan; the server's plan replaces the input sample's.
                     value = sample_meta.get(field)
                     sample.rollout_store_plan = None if value is None else StorePlan.from_dict(value)
+                    continue
+                if field == "multimodal_inputs":
+                    # No key means no media; the server's references match its tokens, so they replace the input's.
+                    sample.multimodal_inputs = sample_meta.get(field)
                     continue
                 value = sample_meta[field]
                 if field == "status":
