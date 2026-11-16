@@ -90,7 +90,9 @@ def configure_sampling_mask_request(request: dict[str, Any]) -> None:
             request.pop(key, None)
 
 
-def decode_flat_sampling_mask(meta_info: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def decode_flat_sampling_mask(
+    meta_info: Mapping[str, Any], *, sampling_logprobs_mode: str
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Support ids, per-token support lengths and log-probs from SGLang's base64 flat sampling mask."""
 
     def decode(key: str, dtype: type) -> np.ndarray:
@@ -104,11 +106,12 @@ def decode_flat_sampling_mask(meta_info: Mapping[str, Any]) -> tuple[np.ndarray,
         raw = pybase64.b64decode(meta_info[f"{key}_b64"], validate=True)
         return np.frombuffer(raw, dtype=wire_dtype).astype(dtype)
 
-    return (
-        decode("output_token_sampling_mask_flat", np.int32),
-        decode("output_token_sampling_mask_lengths", np.int32),
-        decode("output_token_sampling_logprobs_flat", np.float32),
-    )
+    ids = decode("output_token_sampling_mask_flat", np.int32)
+    lengths = decode("output_token_sampling_mask_lengths", np.int32)
+    log_probs = decode("output_token_sampling_logprobs_flat", np.float32)
+    if len(log_probs) != (len(ids) if sampling_logprobs_mode == "support" else len(lengths)):
+        raise ValueError(f"SGLang {sampling_logprobs_mode}-mode sampling log-probs do not align with the support")
+    return ids, lengths, log_probs
 
 
 def append_sampling_metadata(
@@ -129,12 +132,10 @@ def append_sampling_metadata(
         raise ValueError(f"Unsupported sampling logprobs mode: {sampling_logprobs_mode}")
     support_mode = sampling_logprobs_mode == "support"
 
-    ids, lengths, log_probs = decode_flat_sampling_mask(meta_info)
+    ids, lengths, log_probs = decode_flat_sampling_mask(meta_info, sampling_logprobs_mode=sampling_logprobs_mode)
     tokens = np.asarray(output_token_ids, dtype=np.int32)
     if len(lengths) != len(tokens):
         raise ValueError(f"sampling support length {len(lengths)} != token length {len(tokens)}")
-    if len(log_probs) != (len(ids) if support_mode else len(tokens)):
-        raise ValueError(f"SGLang {sampling_logprobs_mode}-mode sampling log-probs do not align with the support")
     offsets = np.concatenate(([0], np.cumsum(lengths)))
     validate_sampling_support(ids=ids, offsets=offsets, sampled_tokens=tokens, exactly_once=support_mode)
     _append_sampling_mask(sample, RolloutSamplingMask(ids=torch.from_numpy(ids), offsets=torch.from_numpy(offsets)))

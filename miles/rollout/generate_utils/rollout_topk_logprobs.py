@@ -67,7 +67,7 @@ def append_rollout_topk_logprobs(
     logps = np.full((n, k), -np.inf, dtype=np.float32)
     # A zero-token turn keeps its empty [0, k] arrays whatever SGLang reports.
     if n and sampling_logprobs_mode == "support":
-        support_ids, lengths, support_logps = decode_flat_sampling_mask(meta)
+        support_ids, lengths, support_logps = decode_flat_sampling_mask(meta, sampling_logprobs_mode="support")
         if len(lengths) != n:
             raise ValueError(
                 "Rollout top-k logprobs collection requires SGLang's sampling support for every generated token"
