@@ -51,6 +51,17 @@ def log_prob_stage(args) -> str:
     return REPLAY_FORWARD if uses_rollout_replay(args) else RECORD
 
 
+def ref_log_prob_stage(args) -> str:
+    """The reference model's pass replays the rollout's routes when the actor
+    does, so the KL to the reference measures weight drift under identical
+    routing instead of the routing difference between the replayed actor and a
+    freely routing reference (0.0096 at step 0 with identical weights on
+    GLM-5.3-Flash). Without rollout replay the reference falls through as before."""
+    if routing_replay_manager.enabled and uses_rollout_replay(args):
+        return REPLAY_FORWARD
+    return FALLTHROUGH
+
+
 @contextmanager
 def stage(name: str):
     previous = routing_replay_manager.stage
