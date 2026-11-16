@@ -12,7 +12,8 @@ from unittest.mock import patch
 import torch
 
 from miles.backends.sglang_utils.gpu_delta import derived
-from miles.backends.sglang_utils.gpu_delta.flashinfer import FlashInferLayout
+from miles.backends.sglang_utils.gpu_delta.kernel_backends import flashinfer as calibration
+from miles.backends.sglang_utils.gpu_delta.kernel_backends.flashinfer import FlashInferLayout
 
 _root = Path(importlib.util.find_spec("sglang").origin).parent / "srt"
 
@@ -73,7 +74,7 @@ def _layer(backend):
 
 
 def _update(layer, backend, quant_mode="w4a4"):
-    return derived.nvfp4_derived_update(layer, FlashInferLayout("nvfp4", backend, True, quant_mode))
+    return calibration.nvfp4_derived_update(layer, FlashInferLayout("nvfp4", backend, True, quant_mode))
 
 
 def _prepare(update, overrides):
@@ -108,7 +109,7 @@ class TestDerivedNvfp4(unittest.TestCase):
 
     def setUp(self):
         self.helpers = patch.object(
-            derived,
+            calibration,
             "_normal_scale_helpers",
             return_value=(
                 self.normal._compute_gemm1_alphas,
@@ -119,14 +120,14 @@ class TestDerivedNvfp4(unittest.TestCase):
         self.addCleanup(self.helpers.stop)
 
         self.cute_patch = patch.object(
-            derived,
+            calibration,
             "_cutedsl_scale_helper",
             return_value=self.cute.resolve_cutedsl_standard_scales,
         )
         self.cute_patch.start()
         self.addCleanup(self.cute_patch.stop)
         self.trt_patch = patch.object(
-            derived,
+            calibration,
             "_trtllm_scale_helper",
             return_value=self.trt._compute_g1_scale_c,
         )
@@ -178,16 +179,20 @@ class TestDerivedNvfp4(unittest.TestCase):
         layer = _layer("cutedsl")
         update = _update(layer, "cutedsl", "w4a16")
         self.assertEqual(len(update.sources), 2)
+        live = [(tensor, tensor.clone(), tensor.data_ptr()) for tensor in (*update.sources, *update.destinations)]
         weight = torch.tensor([[11.0, 13.0], [17.0, 19.0]])
+        weight2 = torch.tensor([23.0, 29.0])
         with patch.object(
-            derived,
+            calibration,
             "_normal_scale_helpers",
             side_effect=AssertionError("W4A16 needs no arithmetic helper"),
         ):
-            copies = _prepare(update, {id(layer.w13_weight_scale_2): weight})
+            copies = _prepare(update, {id(layer.w13_weight_scale_2): weight, id(layer.w2_weight_scale_2): weight2})
         torch.testing.assert_close(_value(copies, layer.g1_alphas), torch.tensor([11.0, 17.0]))
         torch.testing.assert_close(_value(copies, layer.g1_alphas_up), torch.tensor([13.0, 19.0]))
         torch.testing.assert_close(_value(copies, layer._cutedsl_scales[0]), torch.tensor([11.0, 17.0]))
+        torch.testing.assert_close(_value(copies, layer.g2_alphas), torch.tensor([23.0, 29.0]))
+        torch.testing.assert_close(_value(copies, layer._cutedsl_scales[2]), torch.tensor([23.0, 29.0]))
         self.assertTrue(all(copy.destination is not layer._cutedsl_input_scale for copy in copies))
         # MegaMoE W4A16 has the same weight bytes, but no captured input norm.
         layer = _layer("megamoe")
@@ -195,11 +200,30 @@ class TestDerivedNvfp4(unittest.TestCase):
         layer._flashinfer_megamoe_layer._megakernel_config = SimpleNamespace()
         update = _update(layer, "megamoe", "w4a16")
         self.assertEqual((len(update.sources), len(update.destinations)), (2, 3))
-        with patch.object(derived, "_normal_scale_helpers", side_effect=AssertionError):
-            copies = _prepare(update, {id(layer.w13_weight_scale_2): torch.tensor([[11.0, 11.0], [17.0, 17.0]])})
+        live += [(tensor, tensor.clone(), tensor.data_ptr()) for tensor in (*update.sources, *update.destinations)]
+        tied = torch.tensor([[11.0, 11.0], [17.0, 17.0]])
+        with patch.object(calibration, "_normal_scale_helpers", side_effect=AssertionError):
+            copies = _prepare(update, {id(layer.w13_weight_scale_2): tied, id(layer.w2_weight_scale_2): weight2})
         torch.testing.assert_close(_value(copies, layer.g1_alphas), torch.tensor([11.0, 17.0]))
+        torch.testing.assert_close(_value(copies, layer.g2_alphas), torch.tensor([23.0, 29.0]))
         with self.assertRaisesRegex(ValueError, "matching gate/up"):
             _prepare(update, {id(layer.w13_weight_scale_2): weight})
+        # Preparation only returns copies: no live source or destination is written or replaced.
+        for tensor, old, pointer in live:
+            torch.testing.assert_close(tensor, old)
+            self.assertEqual(tensor.data_ptr(), pointer)
+        # TRTLLM serves NVFP4 only as W4A4. CuTe DSL refreshes the 3-tuple of scales its warmup records; this guard
+        # rejects a non-tuple or wrong-length value (identify_layout already rejects an unwarmed wrapper).
+        with self.assertRaisesRegex(ValueError, "^unsupported NVFP4 derived quant mode for trtllm: 'w4a16'$"):
+            _update(_layer("trtllm"), "trtllm", "w4a16")
+        for scales in (None, ()):
+            layer = _layer("cutedsl")
+            layer._cutedsl_scales = scales
+            with (
+                self.subTest(scales=scales),
+                self.assertRaisesRegex(ValueError, "^CuTe DSL scale metadata must be warmed before admission$"),
+            ):
+                _update(layer, "cutedsl", "w4a16")
 
     def test_megamoe_rejects_captured_scalar_change_and_gate_up_mismatch(self):
         layer = _layer("megamoe")
@@ -279,9 +303,9 @@ class TestDerivedNvfp4(unittest.TestCase):
                 update = _update(layer, backend)
                 weights = torch.tensor([[11.0, 13.0], [17.0, 19.0]])
                 with (
-                    patch.object(derived, "_normal_scale_helpers", side_effect=AssertionError),
-                    patch.object(derived, "_cutedsl_scale_helper", side_effect=AssertionError),
-                    patch.object(derived, "_trtllm_scale_helper", side_effect=AssertionError),
+                    patch.object(calibration, "_normal_scale_helpers", side_effect=AssertionError),
+                    patch.object(calibration, "_cutedsl_scale_helper", side_effect=AssertionError),
+                    patch.object(calibration, "_trtllm_scale_helper", side_effect=AssertionError),
                     patch.object(
                         torch,
                         "ones_like",
@@ -350,6 +374,38 @@ class TestDerivedNvfp4(unittest.TestCase):
                 [(source[:1], torch.tensor([9.0])), (source[:1], torch.tensor([9.0]))],
             )
         torch.testing.assert_close(allocation, torch.arange(4, dtype=torch.float32))
+
+
+class TestPatchGeometry(unittest.TestCase):
+    def test_plan_updates_raises_patch_errors(self):
+        allocation = torch.arange(64, dtype=torch.float32)
+        source = allocation[8:40].view(4, 8)
+        update = derived.DerivedUpdate((source,), (torch.zeros(4, 8),), lambda values: values)
+        cases = {
+            "outside its source": [allocation[38:42]],
+            "updates overlap": [source[:, :3], source[1:, 2:4]],
+            "dtype mismatch": [allocation.view(torch.int32)[8:10]],
+        }
+        for message, targets in cases.items():
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                derived.plan_updates((update,), targets)
+        # A stride-0 view writes one element twice, an overlap within one patch.
+        with self.assertRaisesRegex(ValueError, "updates overlap"):
+            derived.plan_updates((update,), [source[0, :1].expand(2)])
+        transposed = derived.DerivedUpdate((source.t(),), (torch.zeros(8, 4),), lambda values: values)
+        with self.assertRaisesRegex(ValueError, "source must be contiguous"):
+            derived.plan_updates((transposed,), [source[:1]])
+
+    def test_plan_updates_admits_disjoint_strided_patches_of_a_large_scale(self):
+        # Two interleaved column patches and a row block of one source; a target of no source is ignored.
+        scale = torch.zeros(1024, 40)
+        targets = [scale[:512, 0::2], scale[:512, 1::2], scale[512:]]
+        update = derived.DerivedUpdate((scale,), (torch.zeros(1024, 40),), lambda values: values)
+        ((planned, sources),) = derived.plan_updates((update,), targets + [torch.zeros(3)])
+        self.assertIs(planned, update)
+        ((original, patches),) = sources
+        self.assertIs(original, scale)
+        self.assertEqual([id(patch) for patch in patches], [id(target) for target in targets])
 
 
 if __name__ == "__main__":

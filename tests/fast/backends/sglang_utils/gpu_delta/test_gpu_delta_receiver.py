@@ -13,7 +13,9 @@ import torch
 
 from miles.backends.sglang_utils.gpu_delta import bindings as byte_layout
 from miles.backends.sglang_utils.gpu_delta import receiver
+from miles.backends.sglang_utils.gpu_delta.derived import PreparedCopy
 from miles.utils.gpu_delta.host_worker import TENSOR_DTYPE
+from miles.utils.gpu_delta.publication import FROZEN_MODULE, STATIC_DRAFT
 
 
 def publication_view(catalog):
@@ -46,7 +48,7 @@ class TestCanonicalPlanCache(unittest.TestCase):
                 inventory={
                     name: {"dtype": "U8", "shape": [2, 4], "encoding": "xor_bytes"} for name in ("local", "foreign")
                 },
-                excluded={"foreign": "expert projection owned by another EP/TP rank"},
+                excluded={"foreign": byte_layout.REMOTE_EXPERT},
                 bindings=[
                     SimpleNamespace(
                         name="local",
@@ -54,10 +56,12 @@ class TestCanonicalPlanCache(unittest.TestCase):
                         is_raw=False,
                         raw_ue8m0=False,
                         layer=None,
+                        live_name=None,
                         storage_pointers=(),
                     )
                 ],
                 derived=[],
+                computed=[],
             ),
         )
         definitions = [
@@ -118,7 +122,8 @@ class TestCanonicalPlanCache(unittest.TestCase):
         for message, mutate in (
             ("canonical tensor plan", lambda _, catalog: catalog.update(plan_digest="invalid")),
             ("missing local tensors", lambda _, catalog: catalog["tensors"].pop(1)),
-            ("unadmitted tensor", lambda backend, _: backend.layout.excluded.update(local="static bundled draft")),
+            ("unadmitted tensor", lambda backend, _: backend.layout.excluded.update(local=STATIC_DRAFT)),
+            ("unadmitted tensor: local", lambda backend, _: backend.layout.excluded.update(local=FROZEN_MODULE)),
         ):
             with self.subTest(message):
                 backend, publication = self.publication()
@@ -294,13 +299,13 @@ class TestReceiverPreparation(unittest.TestCase):
         bindings = [
             byte_layout._direct_binding(
                 name,
-                {"dtype": "U8", "shape": [2, 4]},
+                {"dtype": "U8", "shape": [2, 4], "encoding": "xor_bytes"},
                 torch.zeros(2, 4, dtype=torch.uint8),
             )
             for name in names
         ]
         entries = {b.name: (i, {"nbytes": 8}) for i, b in enumerate(bindings)}
-        table = receiver._BindingTable(SimpleNamespace(bindings=bindings, derived=[]), entries)
+        table = receiver._BindingTable(SimpleNamespace(bindings=bindings, derived=[], computed=[]), entries)
         rows = np.arange(len(bindings))
         backend = SimpleNamespace(batch_plan=None, layers_per_batch=1)
         # This test checks grouping/cache ownership, not Triton launch plans.
@@ -323,17 +328,47 @@ class TestReceiverPreparation(unittest.TestCase):
                 self.assertIs(receiver._plan_layers(backend, table, rows), grouped)
             self.assertEqual(receiver._plan_layers(backend, table, rows[:0]), [])
 
+    def test_standalone_bindings_batch_by_their_live_module(self):
+        # DeepSeek-V4.1's canonical embed and head bind model.embed_tokens and lm_head: each takes its own batch,
+        # as DeepSeek's canonical names do, while other standalone tensors share one.
+        root = torch.nn.Module()
+        root.model = torch.nn.Module()
+        root.model.embed_tokens = torch.nn.Embedding(4, 2)
+        root.model.norm = torch.nn.LayerNorm(2)
+        root.lm_head = torch.nn.Linear(2, 4, bias=False)
+        parameters = byte_layout.ParameterBindings(root)
+        targets = {
+            "embed.weight": "model.embed_tokens.weight",
+            "head.weight": "lm_head.weight",
+            "norm.weight": "model.norm.weight",
+            "model.norm.bias": "model.norm.bias",
+        }
+        bindings = []
+        for name, target in targets.items():
+            shape = list(parameters.params[target].shape)
+            meta = {"dtype": "F32", "shape": shape, "encoding": "xor_bytes" if len(shape) > 1 else "xor_raw_bytes"}
+            bindings.append(parameters.bind(name, meta, target))
+        self.assertEqual(
+            [binding.live_name for binding in bindings],
+            ["model.embed_tokens.weight", "lm_head.weight", "model.norm.weight", None],
+        )
+        entries = {binding.name: (i, {"nbytes": 8}) for i, binding in enumerate(bindings)}
+        table = receiver._BindingTable(SimpleNamespace(bindings=bindings, derived=[], computed=[]), entries)
+        self.assertEqual([rows.tolist() for rows in table.non_layers], [[0], [1], [2, 3]])
+
     def test_binding_table_selects_active_rows_and_derived_sources(self):
         bindings = [
             byte_layout._direct_binding(
                 name,
-                {"dtype": "U8", "shape": [2, 4]},
+                {"dtype": "U8", "shape": [2, 4], "encoding": "xor_bytes"},
                 torch.zeros(2, 4, dtype=torch.uint8),
             )
             for name in ("matrix0", "matrix1")
         ]
         bindings += [
-            byte_layout._direct_binding("raw", {"dtype": "F32", "shape": [1]}, torch.zeros(1)),
+            byte_layout._direct_binding(
+                "raw", {"dtype": "F32", "shape": [1], "encoding": "xor_raw_bytes"}, torch.zeros(1)
+            ),
             byte_layout.TensorBinding(
                 "scale",
                 "U8",
@@ -344,9 +379,9 @@ class TestReceiverPreparation(unittest.TestCase):
                 format="fp8-block128-ue8m0",
             ),
         ]
-        image = SimpleNamespace(source_pointer=bindings[1].storage_pointers[0])
+        image = SimpleNamespace(source_pointers=(bindings[1].storage_pointers[0],))
         table = receiver._BindingTable(
-            SimpleNamespace(bindings=bindings, derived=[image]),
+            SimpleNamespace(bindings=bindings, derived=[image], computed=[]),
             {
                 b.name: (ordinal, {"nbytes": size})
                 for b, ordinal, size in zip(bindings, [2, 0, 3, 1], [8, 8, 4, 1], strict=False)
@@ -355,16 +390,119 @@ class TestReceiverPreparation(unittest.TestCase):
         tensors = np.zeros(4, dtype=TENSOR_DTYPE)
         tensors["changed_bytes"] = [8, 1, 8, 4]
         tensors["frame_count"] = [0, 0, 1, 0]
-        matrices, raw, derived = table.select(tensors)
+        matrices, raw, derived, computed = table.select(tensors)
         np.testing.assert_array_equal(matrices, [0])
         np.testing.assert_array_equal(raw, [2, 3])
-        self.assertEqual(derived, [])
+        self.assertEqual((derived, computed), ([], []))
         tensors["frame_count"][0] = 1
         tensors["changed_bytes"][1] = 0
-        matrices, raw, derived = table.select(tensors)
+        matrices, raw, derived, computed = table.select(tensors)
         np.testing.assert_array_equal(matrices, [0, 1])
         np.testing.assert_array_equal(raw, [2])
-        self.assertEqual(derived, [image])
+        self.assertEqual((derived, computed), ([image], []))
+
+    def test_binding_table_activates_multi_source_computed_images_once(self):
+        bindings = [
+            byte_layout._direct_binding(
+                name, {"dtype": "U8", "shape": [2, 4], "encoding": "xor_bytes"}, torch.zeros(2, 4, dtype=torch.uint8)
+            )
+            for name in ("norm", "proj", "other")
+        ]
+        copy = SimpleNamespace(source_pointers=bindings[2].storage_pointers)
+        image = byte_layout.ComputedImage(
+            "cw", (bindings[0].storage[0], bindings[1].storage[0]), (torch.zeros(2, 4),), lambda a, b: (a.float() * b,)
+        )
+        table = receiver._BindingTable(
+            SimpleNamespace(bindings=bindings, derived=[copy], computed=[image]),
+            {b.name: (ordinal, {"nbytes": 8}) for ordinal, b in enumerate(bindings)},
+        )
+        tensors = np.zeros(3, dtype=TENSOR_DTYPE)
+        for frames, expected in (
+            ([1, 0, 0], ([], [image])),
+            ([0, 1, 0], ([], [image])),
+            ([1, 1, 0], ([], [image])),
+            ([0, 0, 1], ([copy], [])),
+            ([0, 0, 0], ([], [])),
+        ):
+            tensors["frame_count"] = frames
+            *_, derived, computed = table.select(tensors)
+            self.assertEqual((derived, computed), expected, frames)
+
+    def test_refresh_runs_copies_prepared_then_computed_behind_the_sticky_error(self):
+        prepared = receiver.PreparedDelta.__new__(receiver.PreparedDelta)
+        events = []
+        fakes = [SimpleNamespace(refresh=lambda ok, name=name: events.append((name, bool(ok)))) for name in "abc"]
+        prepared.derived, prepared.computed = fakes[:2], fakes[2:]
+        prepared.error = torch.zeros(1, dtype=torch.int32)
+        prepared._refresh_images()
+        self.assertEqual(events, [("a", True), ("b", True), ("c", True)])
+
+        source = torch.linspace(-2, 2, 4)
+        copy = byte_layout.DerivedImage("copy", torch.zeros(4), source)
+        update = PreparedCopy(torch.zeros(2), torch.full((2,), 5.0))
+        computed = byte_layout.ComputedImage("A", (source,), (torch.zeros(4),), lambda log: (-torch.exp(log.float()),))
+        prepared.derived, prepared.computed = [copy, update], [computed]
+        destinations = (copy.destination, update.destination, *computed.destinations)
+        before = [destination.clone() for destination in destinations]
+        prepared.error.fill_(1)
+        prepared._refresh_images()
+        for destination, original in zip(destinations, before, strict=True):
+            self.assertTrue(torch.equal(destination, original))
+        prepared.error.zero_()
+        prepared._refresh_images()
+        self.assertTrue(torch.equal(copy.destination, source))
+        self.assertTrue(torch.equal(update.destination, update.source))
+        self.assertTrue(torch.equal(computed.destinations[0], -torch.exp(source)))
+        # Nothing to refresh never reads the error gate.
+        prepared.derived, prepared.computed, prepared.error = [], [], None
+        prepared._refresh_images()
+
+    def test_copy_images_refresh_from_parameters_that_require_grad(self):
+        # Refresh does not depend on grad mode: the receiver refreshes under no_grad, while tests and manual drivers
+        # may refresh with grad enabled from SGLang's plain nn.Parameter weights (DeepSeek-V4's attn_sink).
+        sink = torch.nn.Parameter(torch.linspace(-2, 2, 4))
+        cache = torch.zeros(6)
+        copy = byte_layout.DerivedImage("sink", cache[:2], sink[2:])
+        copy.refresh(torch.tensor(False))
+        self.assertFalse(cache.any())
+        copy.refresh(torch.tensor(True))
+        self.assertTrue(torch.equal(cache[:2], sink[2:].detach()) and not cache[2:].any())
+        self.assertTrue(sink.requires_grad and sink.grad is None)
+
+    def test_computed_images_refresh_and_verify_bit_views_of_any_destination(self):
+        # FP8 has no CPU where kernel; its NaN and negative-zero payloads must survive the selection.
+        codes = torch.tensor([0x00, 0x7F, 0x80, 0xFF, 0x01, 0x38], dtype=torch.uint8)
+        destinations = (
+            torch.zeros(6, dtype=torch.float8_e4m3fn),
+            torch.zeros(6, dtype=torch.uint8),
+            torch.zeros(3, 2, dtype=torch.int32).T,
+        )
+        image = byte_layout.ComputedImage(
+            "codes",
+            (codes,),
+            destinations,
+            lambda value: (value.view(torch.float8_e4m3fn), value ^ 0x5A, value.int().reshape(2, 3) * -3),
+        )
+        expected = [value.clone() for value in image.values()]
+        image.refresh(torch.tensor(False))
+        for destination in destinations:
+            self.assertFalse(
+                destination.view(torch.uint8).any() if destination.element_size() == 1 else destination.any()
+            )
+        with self.assertRaisesRegex(ValueError, "computed image codes does not reproduce its live consumer"):
+            image.verify()
+        image.refresh(torch.tensor(True))
+        self.assertTrue(torch.equal(destinations[0].view(torch.uint8), codes))
+        self.assertTrue(torch.equal(destinations[1], expected[1]))
+        self.assertTrue(torch.equal(destinations[2], expected[2]))
+        self.assertEqual(destinations[2].stride(), (1, 2))
+        image.verify()
+        destinations[1][3] ^= 1
+        with self.assertRaisesRegex(ValueError, "does not reproduce its live consumer"):
+            image.verify()
+        image.compute = lambda value: (value.view(torch.float8_e4m3fn), value.int(), value.int().reshape(2, 3))
+        with self.assertRaisesRegex(ValueError, "computed image geometry changed: codes"):
+            image.values()
 
     def test_backend_reads_inventory_once_and_drains_all_streams_on_failure(self):
         fake_plan = SimpleNamespace(check_identity=lambda: None, finish=Mock(), bindings=[], excluded={})
@@ -374,12 +512,11 @@ class TestReceiverPreparation(unittest.TestCase):
             patch.dict(receiver.os.environ, GPU_DELTA_LAYERS_PER_BATCH="3"),
             patch.object(receiver, "GpuDeltaLayout", return_value=fake_plan) as layout_type,
             patch("miles.utils.gpu_delta.host.HostArena") as arena_type,
-            patch(
-                "miles.backends.sglang_utils.gpu_delta.checkpoint.read_canonical_checkpoint_inventory",
-                return_value={"weight": {"shape": [1], "dtype": "U8"}},
-            ) as read_inventory,
+            patch.object(receiver, "read_canonical_checkpoint") as read_checkpoint,
         ):
-            backend = receiver.GpuDeltaBackend(model_runner, {"engine_id": "test-engine"})
+            shadows = byte_layout.CanonicalShadows({}, create=True)
+            backend = receiver.GpuDeltaBackend(model_runner, {"engine_id": "test-engine"}, shadows)
+            layout_type.assert_called_once_with(fake_model, read_checkpoint.return_value, shadows)
             self.assertEqual(backend.device, torch.device("cuda", 0))
             self.assertEqual(backend.decoders, {})
             self.assertIsNone(backend.apply_stream)
@@ -388,13 +525,18 @@ class TestReceiverPreparation(unittest.TestCase):
             with patch.dict(receiver.os.environ, GPU_DELTA_LAYERS_PER_BATCH="0"):
                 self.assertEqual(backend.layers_per_batch, 3)
                 with self.assertRaisesRegex(ValueError, "must be positive"):
-                    receiver.GpuDeltaBackend(model_runner, {"engine_id": "invalid"})
-            read_inventory.assert_called_once()
+                    receiver.GpuDeltaBackend(model_runner, {"engine_id": "invalid"}, shadows)
+            read_checkpoint.assert_called_once()
             # Dtype admission rejects at construction, names the rank and creates no host resources.
             layout_type.side_effect = ValueError("mismatched dtypes")
             rejected = {"engine_id": "rejected", "tp_rank": 1, "dp_rank": 2}
             with self.assertRaisesRegex(ValueError, "^tp_rank=1 dp_rank=2: mismatched dtypes$"):
-                receiver.GpuDeltaBackend(model_runner, rejected)
+                receiver.GpuDeltaBackend(model_runner, rejected, shadows)
+            # So does a checkpoint its static policy rejects, before any layout exists.
+            read_checkpoint.side_effect = ValueError("no static-tensor policy")
+            with self.assertRaisesRegex(ValueError, "^tp_rank=1 dp_rank=2: no static-tensor policy$"):
+                receiver.GpuDeltaBackend(model_runner, rejected, shadows)
+            self.assertEqual(layout_type.call_count, 2)
             arena_type.assert_called_once_with("test-engine", 0, {"engine_id": "test-engine"})
             backend.host_arena.prepare_publication.side_effect = ValueError("bad manifest")
             with patch.object(torch.cuda, "device", return_value=nullcontext()):

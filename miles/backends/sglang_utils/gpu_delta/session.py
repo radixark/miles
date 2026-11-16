@@ -44,12 +44,16 @@ class DeltaSession:
     ``prepare`` owns immutable host inputs, small GPU metadata/workspace and CPU
     plans. ``apply`` allocates large decoded slots after the reader fence, joins
     DE/application streams and releases scratch before resume. Error cleanup
-    retains buffers until both streams have drained.
+    retains buffers until both streams have drained. ``shadow_store`` is the
+    canonical shadow store (name -> ``CanonicalShadow``) every backend's
+    ``CanonicalShadows`` view wraps; it outlives ``clear`` so every later
+    admission finds the committed version.
     """
 
-    def __init__(self, identity: dict, backend: Any, initial_version: int = 0):
+    def __init__(self, identity: dict, backend: Any, shadow_store: dict, initial_version: int = 0):
         self.identity = identity
         self.backend = backend
+        self.shadow_store = shadow_store
         self.version = initial_version
         self._update: _Update | None = None
         self._closed_cache = None
@@ -299,6 +303,23 @@ class DeltaSession:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-delta")
 
 
+def _dspark_lm_head_dtype():
+    """SGLang main's ``--speculative-dspark-lm-head-dtype``, read only where the spec namespace declares it.
+
+    Main quantizes the target lm_head once into a cache that the DSPARK draft projects through
+    (``models/dspark.py``), which a weight update would leave stale. The companion SGLang tree declares
+    no such field; its only quantized DSPARK head is ``SGLANG_ROCM_OPT_DSPARK_FP8_LM_HEAD``, gated to
+    ROCm gfx95, which a CUDA receiver never serves. There this returns None and describe is unchanged.
+    """
+    from sglang.srt.arg_groups.fields.spec import Spec
+    from sglang.srt.runtime_context import get_spec
+
+    if "speculative_dspark_lm_head_dtype" in Spec.__struct_fields__:
+        return get_spec().speculative_dspark_lm_head_dtype
+    else:
+        return None
+
+
 def with_gpu_delta_controls(scheduler, dispatcher):
     """Register only delta requests; ordinary handlers remain unchanged."""
     from sglang.srt.runtime_context import get_parallel
@@ -361,10 +382,14 @@ class GpuDeltaSchedulerControl:
             )
 
     def _describe(self, engine_id: str) -> dict:
-        from sglang.srt.runtime_context import get_exec, get_parallel
+        from sglang.srt.runtime_context import get_exec, get_parallel, get_spec
 
         scheduler = self.scheduler
         parallel = get_parallel()
+        # DWDP serves routed experts from per-step copies of peer ranks' weights. Its launch also forces the
+        # local control broadcast rejected next, so reject it first under its own name.
+        if parallel.dwdp_size > 1:
+            raise ValueError("GPU delta does not support DWDP expert weight prefetch")
         if parallel.enable_dp_attention_local_control_broadcast or get_exec().moe.is_ep_scale_joiner:
             raise ValueError("GPU delta requires the global control broadcast without EP scale joiners")
         # PP relays controls only after this handler returns and retains several
@@ -379,6 +404,15 @@ class GpuDeltaSchedulerControl:
             raise ValueError("GPU delta currently requires no LoRA and no disaggregation")
         if scheduler.rust_server is not None:
             raise ValueError("GPU delta endpoints currently require the Python server")
+        if _dspark_lm_head_dtype() is not None:
+            raise ValueError(
+                "GPU delta cannot refresh DSPARK's quantized lm_head cache; unset --speculative-dspark-lm-head-dtype"
+            )
+        # With a token map, the EAGLE worker gives the draft a gathered copy of the target lm_head's hot rows.
+        if get_spec().speculative_token_map is not None:
+            raise ValueError(
+                "GPU delta cannot refresh the draft's hot-token lm_head copy; unset --speculative-token-map"
+            )
         from sglang.srt.model_executor.model_runner_components.weight_updater import (
             _unsupported_derived_weight_cache_error,
         )
@@ -391,6 +425,7 @@ class GpuDeltaSchedulerControl:
         if error is not None:
             raise ValueError(error)
         if self.session is None:
+            from miles.backends.sglang_utils.gpu_delta.bindings import CanonicalShadows
             from miles.backends.sglang_utils.gpu_delta.receiver import GpuDeltaBackend
             from miles.utils.gpu_delta.host import host_cache_id
             from miles.utils.gpu_delta.host_worker import process_start_ticks
@@ -406,16 +441,21 @@ class GpuDeltaSchedulerControl:
                 "dp_rank": 0 if parallel.dp_rank is None else parallel.dp_rank,
                 "pp_rank": parallel.pp_rank,
             }
-            backend = GpuDeltaBackend(runner, identity)
-            self.session = DeltaSession(identity, backend)
+            # A fresh receiver serves the immutable checkpoint, so it may create shadows from it.
+            shadow_store = {}
+            backend = GpuDeltaBackend(runner, identity, CanonicalShadows(shadow_store, create=True))
+            self.session = DeltaSession(identity, backend, shadow_store)
         elif self.session.identity["engine_id"] != engine_id:
             raise ValueError("receiver incarnation belongs to another engine")
         elif self.session.backend is None:
+            from miles.backends.sglang_utils.gpu_delta.bindings import CanonicalShadows
             from miles.backends.sglang_utils.gpu_delta.receiver import GpuDeltaBackend
 
             if self.session._closed_cache is not None:
                 raise ValueError("delta cache removal has not completed")
-            self.session.attach_backend(GpuDeltaBackend(runner, self.session.identity))
+            # After an update only the retained shadows hold the committed version.
+            shadows = CanonicalShadows(self.session.shadow_store, create=self.session.version == 0)
+            self.session.attach_backend(GpuDeltaBackend(runner, self.session.identity, shadows))
         return {
             "identity": self.session.identity,
             "state": self.session.status()["state"],

@@ -10,8 +10,9 @@ See [GPU-accelerated Weight Teleportation](https://humansand.ai/blog/gpu-acceler
 for the end-to-end design and performance motivation.
 
 The receiver implementation is maintained in Miles. SGLang imports its HTTP,
-tokenizer and scheduler hooks directly from Miles. The paired SGLang branch
-requires the matching Miles package in every serving process.
+tokenizer and scheduler hooks directly from Miles. The paired SGLang branch (the
+companion tree below) requires the matching Miles package in every serving process;
+where stated, admission also identifies SGLang main's storage.
 
 `miles.backends.sglang_utils.gpu_delta` owns checkpoint admission, model bindings,
 consumer layouts, preparation, session state and SGLang controls. Shared CUDA
@@ -43,18 +44,104 @@ encoding does not require contacting rollout. The receiver binds the static
 catalog once, checks that all its mutable tensors are present, and reuses the
 binding table on later updates.
 
-`models.py` maps the DeepSeek MLA/DSA family, including GLM's shared runtime
-implementation: canonical name mutation, unequal Q/KV-A fusion, indexer fusion,
-MLA consumer views and static draft exclusions.
-Bundled MTP layer weights and activation calibration stay static; its shared embedding/head buffers follow
-the target. A new model family supplies startup bindings and derived views through
-the same mapping interface. GDN/KDA and other model mappings are not implemented.
+Quantization follows a routed-expert-only contract. Routed experts may be quantized
+in a format their kernel backend admits (`kernel_backends/`, below) and their model
+mapping routes; every other mutable tensor is high precision (BF16 or F32) and served
+unquantized. A shared expert that SGLang fuses into the routed `FusedMoE` counts as one
+of its routed experts. Generic dense binding admits only `UnquantizedLinearMethod`,
+`UnquantizedEmbeddingMethod` or a plain module without a quantization method; every
+quantized dense method is rejected at admission, and F8_E8M0 is not a canonical dtype.
+GPU delta never binds static drafts or frozen modules (below), so it places no
+constraint on their format; SGLang must still load them. Checkpoints that quantize
+dense layers, such as DeepSeek-V4.1's released block-FP8 projections, are out of
+scope; RL runs convert them first. The primary recipe is NVFP4 W4A16 routed experts
+on FlashInfer's CuTe DSL or MegaMoE runner, with every other tensor high precision; the
+receiver tests cover it in depth, and the E2E test serves it on CuTe DSL. The other
+admitted formats and runners are implemented for completeness and future extension,
+with lighter tests.
 
-`bindings.py` owns dense TP/vocabulary slicing and consumer identity snapshots.
-`flashinfer.py` factors native expert layouts into affine byte views. Segments
-exclude padding and preserve the canonical byte order; there is no per-update
-weight or mask permutation. Aliased images receive one XOR; independent consumer
-images each receive it. The admitted FlashInfer matrix is:
+`models/` holds one module per SGLang model implementation, named after the
+`sglang/srt/models` module it mirrors. `_MODEL_MAPPINGS` in `models/__init__.py` lists
+the admitted served architectures and `_STATIC_POLICIES` in
+`miles/utils/gpu_delta/publication.py` the admitted checkpoint architectures (exact
+`config.json` `architectures[0]`); a model needs a row in each. A listed architecture
+is a binding contract, not serving qualification (see the E2E test in the development
+guide). A new implementation supplies startup bindings, derived and computed images
+and aliases through the `ModelMapping` interface in `models/base.py`, plus the static
+policy row of its checkpoints; it is constructed with the session's canonical shadows.
+
+| Module | Served architectures | Mapping-specific contract |
+| --- | --- | --- |
+| `deepseek_v2.py` | `DeepseekV2ForCausalLM`, `DeepseekV3ForCausalLM`, `DeepseekV32ForCausalLM`, `GlmMoeDsaForCausalLM` | The DeepSeek-V2 runtime that DeepSeek and GLM DSA checkpoints share: canonical name mutation, unequal Q/KV-A fusion, indexer fusion and MLA consumer views; its MLA helpers also serve mappings of other `DeepseekV2AttentionMLA` subclasses |
+| `deepseek_v4.py` | `DeepseekV4ForCausalLM`, model type `deepseek_v41` only | DeepSeek-V4.1's BF16 dense projections, with fused rows bound as aliases, and ModelOpt NVFP4 routed experts |
+| `kimi_k3.py` | `KimiK3ForConditionalGeneration`, model type `kimi_k3` only | Kimi-K3's KDA and MLA layers, F32 `o_norm` and attention-residual scores as computed images, and compressed-tensors MXFP4 routed experts |
+
+The DeepSeek-V4.1 and Kimi-K3 mappings mirror SGLang main's loaders on a best-effort
+basis, as placeholders without end-to-end tests yet; end-to-end testing will start from
+them. GDN and other model mappings are not implemented.
+
+Static tensors never carry trainer updates: activation calibration, and the tensors
+a checkpoint's `_STATIC_POLICIES` row derives from its own `config.json`
+(`static_policy`). Those are bundled MTP draft layers, numbered from the decoder
+depth or under a draft namespace such as `mtp.`; computed rotary buffers; and frozen
+modules the trainer never exports. The trainer's plan and every receiver share this
+policy, and an unlisted checkpoint architecture is rejected. The draft's shared
+embedding and head follow the target; a speculative token map, which gives the draft a
+gathered copy of the head, is rejected at admission.
+
+`bindings.py` owns dense TP/vocabulary slicing, routed-expert dispatch, consumer
+identity snapshots, derived and computed consumer images, canonical shadows and the
+loader-shard and alias-group helpers model mappings share;
+`byte_views.py` holds the affine byte views and the storage identity that bindings,
+model mappings and kernel backends share. Segments exclude padding and preserve the
+canonical byte order; there is no per-update weight or mask permutation. Aliased
+images receive one XOR; independent consumer images each receive it.
+
+`kernel_backends/` holds one module per kernel library behind SGLang's MoE runners,
+named after the library. `_MOE_RUNNER_BACKENDS` in `kernel_backends/__init__.py` is
+the only list of admitted `moe_runner_backend` values and the `moe_a2a_backend`
+values admitted with each; values match exactly and an unlisted runner is rejected.
+A new backend supplies identified expert layouts through the `ExpertLayout`
+interface in `kernel_backends/base.py` and summarizes its admitted formats in its own
+subsection below. These are byte-layout contracts for existing inference paths, not
+new inference kernels. Load-time weight quantization and conversion fallbacks are
+rejected.
+
+Attention, routed-expert and shared-expert TP follow their existing loader
+partition groups, including padded expert slices. Each rank decodes complete
+canonical tensors and applies only its admitted byte views. Attention DCP is
+supported within an attention-TP group: its width must divide attention TP.
+DeepSeek/GLM MLA's unquantized replicated Q/K consumers receive the same XOR mask
+through prepared affine views; local K/V caches refresh from the local KV-B shard.
+This adds no apply-time all-gather or kernel specialization. Quantized replicated
+Q projections remain unsupported. On SGLang main the local Q projection is a view
+of its gathered image, so those rows take the XOR once, through that image, and
+the gathered, transposed V image (`w_vc_qrep`) is bound as an affine view.
+Admission detects either tree's storage and rejects any other alias.
+
+Prefill CP reuses those module-owned partitions: CP partners may repeat attention
+views while routed and shared experts retain their own TP groups. The optional
+`enable_cp_decode_attn_tp` optimization is rejected because it caches independent
+weight slices and temporarily swaps live parameter storage. Prefill CP has unit
+coverage; a dedicated serving end-to-end test is not included.
+
+Fixed topology is required when routed experts are bound: no presharded canonical
+checkpoint, EPLB, redundant experts or elastic joiners. The launch MoE runner and
+dispatcher must be a pair `_MOE_RUNNER_BACKENDS` admits. Dense-only mappings do not
+need a MoE configuration. Ordinary globally ordered control broadcast is required;
+local broadcast, LoRA, disaggregated serving or pipeline widths above one,
+shared IPC weight storage, HPC-Ops derived-weight caches, DWDP expert prefetch,
+DSPARK's quantized lm_head cache (SGLang main's `--speculative-dspark-lm-head-dtype`)
+and a speculative token map (`--speculative-token-map`, whose hot-token rows the EAGLE
+worker copies out of the target lm_head for the draft) are rejected at admission.
+Control replies include every original TP/CP/DP participant.
+
+### FlashInfer (`kernel_backends/flashinfer.py`)
+
+FlashInfer's TRTLLM, routed TRTLLM, MXFP4, CuTe DSL and MegaMoE runners share one
+module because they share its row permutations, blocked scale tiles and consumer
+fields. The routed and MXFP4 runners consume TRTLLM storage, so the TRTLLM column
+covers them. The admitted matrix, owned by `_PAIRS` and `identify_layout`, is:
 
 | Native weight format | TRTLLM / routed | CuTe DSL | MegaMoE |
 | --- | --- | --- | --- |
@@ -64,38 +151,50 @@ images each receive it. The admitted FlashInfer matrix is:
 | MXFP4 with MXFP8 activation | Yes | No | Yes |
 | NVFP4 | W4A4 | W4A4 or W4A16 | W4A4 or W4A16 |
 
-These are byte-layout contracts for existing inference paths, not new inference
-kernels. Load-time weight quantization and conversion fallbacks are rejected.
+Non-gated experts bind their up projection to the single W13 slot of the BF16 TRTLLM
+layout: the 32-row shuffle and 128-byte K blocks apply, without a gate/up interleave,
+and a gate projection is rejected.
+
+CuTe DSL serves gated W13 weights and block scales as interleaved up/gate row groups:
+64 rows on the companion tree (`interleave_w13_halves`) and on SGLang main without
+swap-AB. On SM100 and SM103 SGLang main selects FlashInfer's swap-AB layout
+(`use_cutedsl_moe_swap_ab`, FlashInfer 0.7.4 or later), whose
+`interleave_cute_dsl_moe_weights` writes 16-row groups. Admission reads the decision the
+warmed `CuteDslMoEWrapper` records (`swap_ab`; earlier wrappers have only the 64-row
+layout) and rejects that layout, which no CUDA check has compared yet.
+
 Block128 FP8 accepts exact UE8M0 scale values in compact U8 wire storage and expands
 them losslessly into the consumer's FP32 API image; arbitrary FP32 scale factors
 are unsupported. NVFP4 derived calibration reuses the ordinary inference helpers.
 MegaMoE rejects changes to its captured input-normalization scalar and incompatible
-gate/up alphas before any live writes. CuTe wrappers and derived buffers must
-already be initialized. Layout/native tests cover the matrix; full serving
-qualification remains NVFP4 W4A16.
+gate/up alphas before any live writes; under an activation clamp (`gemm1_clamp_limit`),
+TRTLLM NVFP4 likewise rejects untied gate/up global scales. CuTe wrappers, MegaMoE
+kernels and derived buffers must already be initialized; SGLang main builds each
+layer's MegaMoE kernel on its first forward (CUDA graph capture or warmup).
+CPU tests identify every admitted row and replay the expert byte mappings of the
+BF16, NVFP4, MXFP8 and companion-tree MXFP4 layouts. CUDA tests compare the primary
+NVFP4 W4A16 layouts (CuTe DSL on the companion tree; MegaMoE weights and block scales)
+and the BF16, MXFP8 and NVFP4 W4A4 rows on TRTLLM and MegaMoE with SGLang's and
+FlashInfer's own preprocessing, and the block-128 row with the loader's plain halves
+and FP32 scale values. SGLang main's MXFP4 storages and `Mxfp4MoEMethod` are
+identified but not replayed.
 
-Attention, routed-expert and shared-expert TP follow their existing loader
-partition groups, including padded expert slices. Each rank decodes complete
-canonical tensors and applies only its admitted byte views. Attention DCP is
-supported within an attention-TP group: its width must divide attention TP.
-DeepSeek/GLM MLA's unquantized replicated Q/K consumers receive the same XOR mask
-through prepared affine views; local K/V caches refresh from the local KV-B shard.
-This adds no apply-time all-gather or kernel specialization. Quantized replicated
-Q projections remain unsupported.
-
-Prefill CP reuses those module-owned partitions: CP partners may repeat attention
-views while routed and shared experts retain their own TP groups. The optional
-`enable_cp_decode_attn_tp` optimization is rejected because it caches independent
-weight slices and temporarily swaps live parameter storage. Prefill CP has unit
-coverage; a dedicated serving end-to-end test is not included.
-
-Fixed topology is required when routed experts are bound: no presharded canonical
-checkpoint, EPLB, redundant experts or elastic joiners. The selected FlashInfer
-runner must match its dispatcher. Dense-only mappings do not need a MoE
-configuration. Ordinary globally ordered control broadcast is required;
-local broadcast, LoRA, disaggregated serving or pipeline widths above one,
-shared IPC weight storage and HPC-Ops derived-weight caches are rejected at
-admission. Control replies include every original TP/CP/DP participant.
+TRTLLM MXFP4 covers two SGLang methods. `Mxfp4FlashinferTrtllmMoEMethod` serves the
+FP4 routed experts of `Fp8Config` checkpoints. Its loader, like MegaMoE's FP4 experts,
+casts a checkpoint `weight_scale_inv` numerically into FP32 parameters, which does not
+keep U8 codes, so an MXFP4 expert scale named `weight_scale_inv` is rejected; the
+layout tests bind these kernels' scale images from U8 `weight_scale` bytes. The
+companion SGLang tree keeps the loader's FP32 scales and writes the kernel image to
+`w*_weight_scale_inv_shuffled`.
+SGLang main writes its image over `w*_weight_scale_inv`, typed `float8_e4m3fn`, pads the
+intermediate to 128 outside every destination and keeps the GEMM1 clamp on the
+method; its MegaMoE MXFP4 likewise binds the DeepGEMM-packed scales to
+`w*_weight_scale_inv`. Admission identifies the tree from the live scale storage
+and rejects any other. Both trees interleave the gate/up rows only under
+`SGLANG_MXFP4_USE_OFFICIAL_SHUFFLE` (default true); admission rejects the legacy
+shuffle's plain halves. SM100 `Mxfp4MoEMethod` (`_fi_kernel == "trtllm_sm100"`)
+serves MXFP4 experts from separate gate/up halves, with `float8_e4m3fn` scale views;
+its Marlin, DeepGEMM and MegaMoE transforms are rejected.
 
 ## Ownership and lifecycle
 
@@ -178,7 +277,7 @@ transport's target sequence; omission uses the transport target version.
 rank's FIFO release work, closes workers/host allocations and drops
 planning, decoder and stream objects. After every rank acknowledges, one process
 per hostname and host cache ID deletes the shared encoded and prepared caches. Weights,
-publications, committed
+canonical shadows, publications, committed
 version, process identity, small provenance and pause state remain unchanged.
 Describe can recreate the backend at that version. Framework allocator/JIT caches
 are not cleared.
@@ -230,7 +329,23 @@ dtypes; arbitrary edits to served FP32 buffers are outside this contract.
 Preparation performs no live-value validation or host synchronization for dtype
 admission. BF16 widening and the explicit UE8M0-to-FP32 scale representation
 produce physical XOR masks before pause; apply kernels still consume only bytes
-and runtime layout metadata. Downcasts and other numerical casts are not supported.
+and runtime layout metadata.
+
+A model mapping may bind a canonical tensor that the loader serves only through
+arithmetic (for example an F32 weight rounded into a BF16 parameter) to a
+canonical shadow: receiver-owned exact canonical rows on the consumer's device.
+Only a version-0 admission creates a shadow, and its first
+preparation fills it from the immutable checkpoint. The session retains shadows
+across `clear_gpu_delta_state`, so they always hold the committed version; updates
+XOR them like any other raw or matrix target. A computed image rebuilds each
+served value from shadows and live canonical storage with the loader's own
+function. It runs during the pause after the matrix batches, under the sticky
+error gate, and every admission recomputes each computed image and requires
+bytewise equality with its live consumer. Re-admission after version 0 without its
+shadows requires an HF-base restart. Every shadow must feed a computed image, which
+admission rejects otherwise, so computed images and their shadows are
+CUDA-resident; shadows are freed only with the process. Other downcasts and
+numerical casts are not supported.
 
 One engine-host creator reads and optionally SHA256-checks owner files in parallel
 into retained tmpfs slices. Source identity/extent is checked across each read;
@@ -317,7 +432,10 @@ Only omitted frame gaps/tails are zeroed. A fully covered batch skips zeroing; o
 status kernel checks native sizes/statuses before each grouped XOR. Source binding
 requires 16-byte aligned decoded slots, patches the prepared pointer slab and uploads
 it once; a misaligned slot is rejected because there is no fallback descriptor path.
-Derived consumer copies are gated by the sticky error.
+Derived consumer copies are gated by the sticky error. Computed images run in the
+same phase, after the prepared calibration copies. No image reads another derived
+destination; a computed image reads only canonical-bound storage and never overlaps
+a canonical binding.
 Completion joins transfer, decode and apply before scratch release; failed cleanup
 attempts to drain both streams. Foreign tensor aliases retain allocations and registered
 producer/consumer streams are fenced before free in their original CUDA context.
@@ -398,7 +516,7 @@ device bandwidth from host durations.
 | `de_host_input_bytes` | Compressed bytes read directly by DE, not an explicit H2D transfer |
 | `decode_stages`, `decoded_buffers`, `decoded_scratch_bytes`, `decoder_workspace_bytes` | Fixed 2; actual slots (0 for raw-only); total slot bytes; temporary workspace, not peak HBM |
 | `decoded_zero_ranges`, `decoded_zero_bytes` | Omitted canonical ranges cleared before decode |
-| Batch/tensor/group/contract/grid counters | Actual runtime work; kernel cache reuse is a per-rank boolean |
+| Batch/tensor/group/contract/grid counters, `computed_images` | Actual runtime work, including computed images refreshed after the matrix batches; kernel cache reuse is a per-rank boolean |
 
 CPU slab construction and launch prebinding are outside
 `host_apply_kernel_prepare_s`. Shared-cache fields have distinct scopes:

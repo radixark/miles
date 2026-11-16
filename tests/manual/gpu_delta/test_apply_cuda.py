@@ -171,7 +171,7 @@ def case(kind, index):
         target = storage[padding:-padding].view(1, size)
     binding = _direct_binding(
         f"matrix{index}",
-        {"dtype": "U8", "shape": list(canonical_shape)},
+        {"dtype": "U8", "shape": list(canonical_shape), "encoding": "xor_bytes"},
         target,
         slices,
     )

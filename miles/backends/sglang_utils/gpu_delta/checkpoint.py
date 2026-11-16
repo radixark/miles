@@ -6,16 +6,47 @@ discovery, not proof of the current model's weight values. Ordinary loaders and
 model methods are never modified.
 """
 
+import json
+from dataclasses import dataclass
 from pathlib import Path
 
-from miles.utils.gpu_delta.publication import read_safetensors_headers
+import numpy as np
+
+from miles.utils.gpu_delta.publication import StaticPolicy, read_safetensors_headers, static_policy
 
 
-def read_canonical_checkpoint_inventory(model_runner):
-    """Read source names, shapes and dtypes without materializing any tensors.
+@dataclass(frozen=True)
+class CanonicalCheckpoint:
+    """The startup checkpoint as admission reads it: safetensors headers and its own config.json."""
+
+    # name -> {"shape", "dtype"} of every selected tensor.
+    inventory: dict
+    # The checkpoint's static-tensor policy, shared with the trainer's plan.
+    policy: StaticPolicy
+    # name -> (path, offset, nbytes, dtype, shape) of every selected tensor.
+    locations: dict
+
+    def read_rows(self, name, start, stop):
+        """Bytes of rows ``[start, stop)`` of one canonical tensor; only canonical shadows read tensor data."""
+        path, offset, nbytes, _, shape = self.locations[name]
+        if not shape or not 0 <= start < stop <= shape[0] or nbytes % shape[0]:
+            raise ValueError(f"canonical checkpoint rows [{start}, {stop}) are outside {name}{list(shape)}")
+        row = nbytes // shape[0]
+        with open(path, "rb") as source:
+            source.seek(offset + start * row)
+            data = source.read((stop - start) * row)
+        if len(data) != (stop - start) * row:
+            raise ValueError(f"canonical checkpoint tensor is truncated: {name}")
+        return np.frombuffer(data, dtype=np.uint8)
+
+
+def read_canonical_checkpoint(model_runner):
+    """Read source names, shapes, dtypes and the static policy without materializing any tensors.
 
     The source inventory is independent of quantization. Runtime layout admission
-    checks the physical buffers and model mappings separately.
+    checks the physical buffers and model mappings separately. The policy comes from
+    the checkpoint's own config.json, as in the trainer's plan, never from the
+    configuration SGLang serves.
     """
     from sglang.srt.model_loader.loader import DefaultModelLoader, ModelOptModelLoader
     from sglang.srt.model_loader.weight_utils import filter_duplicate_safetensors_files, maybe_add_mtp_safetensors
@@ -49,6 +80,7 @@ def read_canonical_checkpoint_inventory(model_runner):
     folder = Path(model_config.model_path)
     if not folder.is_dir():
         raise ValueError("GPU delta requires the original immutable local checkpoint")
+    policy = static_policy(json.loads((folder / "config.json").read_text()))
     # Match the default loader's primary source (empty prefix, no draft remap).
     # Reuse its index filtering and bundled-MTP rules without invoking downloads,
     # checksum verification, tensor loading, or checkpoint page-cache prefetch.
@@ -60,10 +92,8 @@ def read_canonical_checkpoint_inventory(model_runner):
     files = maybe_add_mtp_safetensors(files, str(folder), "model.safetensors.index.json", model_config.hf_config)
     if not files:
         raise ValueError("GPU delta checkpoint has no selected safetensors shards")
-    inventory = {
-        name: {"shape": shape, "dtype": dtype}
-        for name, (_, _, _, dtype, shape) in read_safetensors_headers(files).items()
-    }
+    locations = read_safetensors_headers(files)
+    inventory = {name: {"shape": shape, "dtype": dtype} for name, (_, _, _, dtype, shape) in locations.items()}
     if not inventory:
         raise ValueError("canonical checkpoint metadata is empty")
-    return inventory
+    return CanonicalCheckpoint(inventory=inventory, policy=policy, locations=locations)

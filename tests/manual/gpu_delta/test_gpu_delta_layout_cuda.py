@@ -3,6 +3,8 @@
 Run with CUDA and the serving image's FlashInfer. These checks are outside the
 update timing path and deliberately use the normal value-layout implementation
 as an independent oracle for the feature-owned byte-mask implementation.
+test_expert_delta_matches_full_loader_layout_and_scale_refresh, the CuTe DSL
+W4A16 expert-delta test, needs the companion SGLang tree (interleave_w13_halves).
 """
 
 import math
@@ -11,97 +13,12 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from tests.manual.gpu_delta.receiver_apply import apply_prepared_masks
 
-from miles.backends.sglang_utils.gpu_delta.flashinfer import FlashInferLayout
+from miles.backends.sglang_utils.gpu_delta.kernel_backends.flashinfer import FlashInferLayout, nvfp4_derived_update
+from miles.utils.gpu_delta.publication import canonical_encoding
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-
-
-def _apply_prepared_masks(bindings, masks, derived=()):
-    """Exercise the prepared grouped path; nvCOMP itself has a separate oracle."""
-    from miles.backends.sglang_utils.gpu_delta.receiver import PreparedDelta, _PreparedBatch
-    from miles.utils.gpu_delta.apply import plan_apply, prepare_status_check
-
-    outputs, size = [], 0
-    for binding, mask in zip(bindings, masks, strict=False):
-        offset = (size + 15) // 16 * 16
-        outputs.append((binding, offset, mask.numel()))
-        size = offset + mask.numel()
-    payload = torch.zeros(size, dtype=torch.uint8, device="cuda")
-    for (_, offset, length), mask in zip(outputs, masks, strict=False):
-        payload[offset : offset + length].copy_(mask.reshape(-1))
-    prepared = PreparedDelta.__new__(PreparedDelta)
-    prepared.error = torch.zeros(1, dtype=torch.int32, device="cuda")
-    decoded = torch.empty(size, dtype=torch.uint8, device="cuda")
-    outputs = [(view, offset, size) for binding, offset, size in outputs for view in binding.apply_bindings()]
-    group = plan_apply(outputs)
-    saved = [(value, value.clone()) for binding in bindings for value in binding.storage]
-    saved.extend((image.destination, image.destination.clone()) for image in derived)
-
-    def apply_derived():
-        for image in derived:
-            torch.where(
-                prepared.error == 0,
-                image.source,
-                image.destination,
-                out=image.destination,
-            )
-
-    apply = None
-    if group is not None:
-        group.prepare_metadata(decoded.device.index)
-        group.bind(decoded)
-        pointers = torch.tensor(
-            list(group.pointer_rows(decoded.data_ptr())),
-            dtype=torch.int64,
-            device="cuda",
-        )
-        metadata = torch.tensor(group.metadata_rows, dtype=torch.int64, device="cuda")
-        apply = group.bind_launch(pointers, metadata, prepared.error)
-    # Compilation and module loading must not execute against live weights.
-    for value, before in saved:
-        torch.testing.assert_close(
-            value.contiguous().view(torch.uint8),
-            before.contiguous().view(torch.uint8),
-            rtol=0,
-            atol=0,
-        )
-    decoder = SimpleNamespace(
-        enqueue=lambda: decoded[:size].copy_(payload),
-        statuses=torch.zeros(1, dtype=torch.int32, device="cuda"),
-        actual_sizes=torch.tensor([size], device="cuda"),
-        expected_sizes=torch.tensor([size], device="cuda"),
-    )
-    batch = _PreparedBatch(
-        decoder,
-        apply,
-        [],
-        prepare_status_check(decoder, prepared.error),
-    )
-    # Prior errors, a new decoder error and a wrong decoded size must suppress
-    # every affine mapping, including padded scale destinations.
-    for prior, status, actual in ((1, 0, size), (0, 1, size), (0, 0, size - 1)):
-        prepared.error.fill_(prior)
-        decoder.statuses.fill_(status)
-        decoder.actual_sizes.fill_(actual)
-        decoder.enqueue()
-        prepared._apply_batch(batch)
-        apply_derived()
-        assert prepared.error.item() == 1
-        for value, before in saved:
-            torch.testing.assert_close(
-                value.contiguous().view(torch.uint8),
-                before.contiguous().view(torch.uint8),
-                rtol=0,
-                atol=0,
-            )
-    prepared.error.zero_()
-    decoder.statuses.zero_()
-    decoder.actual_sizes.fill_(size)
-    decoder.enqueue()
-    prepared._apply_batch(batch)
-    apply_derived()
-    return group
 
 
 @pytest.mark.parametrize("kind", ["ue8m0", "bf16-norm"])
@@ -269,7 +186,7 @@ def _canonical(seed):
 @pytest.mark.parametrize("tp_size,tp_rank", [(1, 0), (2, 1)])
 def test_expert_delta_matches_full_loader_layout_and_scale_refresh(monkeypatch, independent_mma, tp_size, tp_rank):
     from miles.backends.sglang_utils.gpu_delta.bindings import _moe_binding, prepare_raw_xor
-    from miles.backends.sglang_utils.gpu_delta.derived import nvfp4_derived_update, plan_updates, prepare_updates
+    from miles.backends.sglang_utils.gpu_delta.derived import plan_updates, prepare_updates
     from miles.backends.sglang_utils.gpu_delta.receiver import PreparedDelta
 
     monkeypatch.setenv("SGLANG_FLASHINFER_CUTEDSL_NVFP4_W4A16", "1")
@@ -293,9 +210,11 @@ def test_expert_delta_matches_full_loader_layout_and_scale_refresh(monkeypatch, 
                 torch.float8_e4m3fn: "F8_E4M3",
                 torch.float32: "F32",
             }[value.dtype]
+            # The layout's inventory carries canonical_encoding's choice: raw masks for the scalar weight_scale_2.
+            encoding = canonical_encoding(list(value.shape))
             binding = _moe_binding(
                 name,
-                {"dtype": dtype, "shape": list(value.shape)},
+                {"dtype": dtype, "shape": list(value.shape), "encoding": encoding},
                 live,
                 local + 2,
                 projection,
@@ -323,7 +242,7 @@ def test_expert_delta_matches_full_loader_layout_and_scale_refresh(monkeypatch, 
     prepared.error = torch.zeros(1, dtype=torch.int32, device=device)
     prepared._prepare_raw_apply(raw_updates)
     prepared.raw_apply()
-    _apply_prepared_masks(bindings, masks, derived)
+    apply_prepared_masks(bindings, masks, derived)
     from miles.backends.sglang_utils.gpu_delta.bindings import _direct_binding
 
     for dtype in (torch.uint8, torch.bfloat16, torch.float32):
@@ -341,11 +260,12 @@ def test_expert_delta_matches_full_loader_layout_and_scale_refresh(monkeypatch, 
                     torch.float32: "F32",
                 }[dtype],
                 "shape": [12, 20],
+                "encoding": "xor_bytes",
             },
             live_tp,
             [[2, 10], [5, 13]],
         )
-        _apply_prepared_masks([binding], [mask.reshape(-1)])
+        apply_prepared_masks([binding], [mask.reshape(-1)])
         torch.testing.assert_close(live_tp.view(torch.uint8), expected_tp, rtol=0, atol=0)
 
     # Mixed linear lengths, a column-strided source and strided routed targets.
@@ -364,7 +284,7 @@ def test_expert_delta_matches_full_loader_layout_and_scale_refresh(monkeypatch, 
         dense.append(
             _direct_binding(
                 f"model.layers.3.dense{index}.weight",
-                {"dtype": "U8", "shape": [1, size]},
+                {"dtype": "U8", "shape": [1, size], "encoding": "xor_bytes"},
                 target,
             )
         )
@@ -397,7 +317,7 @@ def test_expert_delta_matches_full_loader_layout_and_scale_refresh(monkeypatch, 
             for view in binding.apply_bindings()
             for target in view.destinations
         ]
-        group = _apply_prepared_masks(selected, masks)
+        group = apply_prepared_masks(selected, masks)
         assert len(group.sources) == len(expected_values)
         assert group.tiles == sum(count * math.ceil(contract[0] / 2048) for contract, count in group.contracts)
         if dense_subset is dense:
@@ -445,13 +365,17 @@ def test_scale_binding_matches_loader_padding():
         )
         mask = torch.randint(256, shape, dtype=torch.uint8, device="cuda")
         expected = swizzle_blockscale((values ^ mask).view(torch.float8_e4m3fn))
-        _apply_prepared_masks([binding], [mask.reshape(-1)])
+        apply_prepared_masks([binding], [mask.reshape(-1)])
         torch.testing.assert_close(live[0].view(torch.uint8), expected.view(torch.uint8), rtol=0, atol=0)
 
 
 def test_cached_mla_refresh_survives_graph_replay_and_failure_gate():
     from miles.backends.sglang_utils.gpu_delta.bindings import _direct_binding
-    from miles.backends.sglang_utils.gpu_delta.models import DeepSeekMlaMapping, _with_replicated_projection
+    from miles.backends.sglang_utils.gpu_delta.models.deepseek_v2 import (
+        DcpReplica,
+        mla_derived_images,
+        with_dcp_replicas,
+    )
 
     weight = torch.zeros((2 * (4 + 6), 8), dtype=torch.bfloat16, device="cuda")
     key, value = weight.unflatten(0, (2, 10)).split([4, 6], dim=1)
@@ -463,21 +387,19 @@ def test_cached_mla_refresh_survives_graph_replay_and_failure_gate():
         w_vc=value.contiguous().transpose(1, 2),
         w_kc_qrep=torch.zeros((4, 4, 8), dtype=torch.bfloat16, device="cuda"),
     )
-    plan = DeepSeekMlaMapping.__new__(DeepSeekMlaMapping)
-    plan.derived = []
-    plan._add_derived("attention", attn)
+    derived = list(mla_derived_images("attention", attn))
     # TP4 / DCP2 rank3: local heads6:8 plus gathered K rows for heads4:8.
     # One runtime affine descriptor selects all K rows from the complete
     # canonical [8*(K+V), rank] mask; no per-head kernels or extra collective.
     binding = _direct_binding(
         "model.layers.0.self_attn.kv_b_proj.weight",
-        {"dtype": "BF16", "shape": [80, 8]},
+        {"dtype": "BF16", "shape": [80, 8], "encoding": "xor_bytes"},
         weight,
         [[60, 80], [0, 8]],
     )
-    binding = _with_replicated_projection(binding, attn.w_kc_qrep, 10, 4)
+    binding = with_dcp_replicas(binding, (DcpReplica(attn.w_kc_qrep, 10, (0, 4)),))
     mask = torch.randint(256, (80 * 8 * 2,), dtype=torch.uint8, device="cuda")
-    _apply_prepared_masks([binding], [mask], plan.derived)
+    apply_prepared_masks([binding], [mask], derived)
     expected = mask.view(torch.bfloat16).reshape(8, 10, 8)
     torch.testing.assert_close(
         attn.w_kc_qrep.view(torch.uint8),
@@ -491,12 +413,12 @@ def test_cached_mla_refresh_survives_graph_replay_and_failure_gate():
         rtol=0,
         atol=0,
     )
-    identity = [(d.destination.data_ptr(), d.destination.stride()) for d in plan.derived]
+    identity = [(d.destination.data_ptr(), d.destination.stride()) for d in derived]
     succeeded = torch.tensor(True, device="cuda")
 
     def refresh():
-        for image in plan.derived:
-            torch.where(succeeded, image.source, image.destination, out=image.destination)
+        for image in derived:
+            image.refresh(succeeded)
 
     stream = torch.cuda.Stream()
     stream.wait_stream(torch.cuda.current_stream())
@@ -507,11 +429,11 @@ def test_cached_mla_refresh_survives_graph_replay_and_failure_gate():
     with torch.cuda.graph(graph, stream=stream):
         refresh()
     for success in (True, True, False):
-        before = [d.destination.contiguous().view(torch.uint8).clone() for d in plan.derived]
+        before = [d.destination.contiguous().view(torch.uint8).clone() for d in derived]
         weight.view(torch.uint8).random_(256)
         succeeded.fill_(success)
         graph.replay()
-        for image, original in zip(plan.derived, before, strict=False):
+        for image, original in zip(derived, before, strict=False):
             expected = image.source.contiguous().view(torch.uint8) if success else original
             torch.testing.assert_close(
                 image.destination.contiguous().view(torch.uint8),
@@ -519,7 +441,178 @@ def test_cached_mla_refresh_survives_graph_replay_and_failure_gate():
                 rtol=0,
                 atol=0,
             )
-    assert identity == [(d.destination.data_ptr(), d.destination.stride()) for d in plan.derived]
+    assert identity == [(d.destination.data_ptr(), d.destination.stride()) for d in derived]
+
+
+def test_main_dcp_replicas_apply_once_through_the_kernel():
+    """SGLang main's DCP storage through the prepared CUDA apply: aliased local q_b rows and transposed V."""
+    from miles.backends.sglang_utils.gpu_delta.bindings import _direct_binding
+    from miles.backends.sglang_utils.gpu_delta.models.deepseek_v2 import DcpReplica, with_dcp_replicas
+
+    heads, nope, rope, value_dim, lora = 8, 128, 64, 128, 512
+    old_q, new_q = (torch.randn(heads * (nope + rope), lora, device="cuda").bfloat16() for _ in range(2))
+    old_kv, new_kv = (torch.randn(heads * (nope + value_dim), lora, device="cuda").bfloat16() for _ in range(2))
+    # Attention TP4 / DCP2, rank 3: local heads 6:8; the DCP group gathers heads 4:8. As in SGLang main's
+    # model_runner._prepare_replicated_q_proj, the local q_b rows are this rank's rows of the gathered image
+    # and w_vc_qrep is all_gather(w_vc.contiguous()), i.e. [heads, kv_lora_rank, v_head_dim].
+    q_rows, kv_rows = nope + rope, nope + value_dim
+    q_image = old_q[4 * q_rows : 8 * q_rows].clone()
+    q_local = q_image[2 * q_rows :]
+    kv_local = old_kv[6 * kv_rows :].clone()
+    gathered = old_kv.unflatten(0, (heads, kv_rows))[4:]
+    w_kc_qrep = gathered[:, :nope].contiguous()
+    w_vc_qrep = gathered[:, nope:].transpose(1, 2).contiguous()
+    q = with_dcp_replicas(
+        _direct_binding(
+            "model.layers.0.self_attn.q_b_proj.weight",
+            {"dtype": "BF16", "shape": list(old_q.shape), "encoding": "xor_bytes"},
+            q_local,
+            [[6 * q_rows, 8 * q_rows], [0, lora]],
+        ),
+        (DcpReplica(q_image, q_rows),),
+    )
+    kv = with_dcp_replicas(
+        _direct_binding(
+            "model.layers.0.self_attn.kv_b_proj.weight",
+            {"dtype": "BF16", "shape": list(old_kv.shape), "encoding": "xor_bytes"},
+            kv_local,
+            [[6 * kv_rows, 8 * kv_rows], [0, lora]],
+        ),
+        (
+            DcpReplica(w_kc_qrep, kv_rows, (0, nope)),
+            DcpReplica(w_vc_qrep, kv_rows, (nope, kv_rows), transposed=True),
+        ),
+    )
+    # The gathered image carries the aliased local rows: one segment, one XOR.
+    assert q.storage == (q_image,) and len(q.segments) == 1
+    masks = [
+        (old.view(torch.uint8) ^ new.view(torch.uint8)).reshape(-1) for old, new in ((old_q, new_q), (old_kv, new_kv))
+    ]
+    apply_prepared_masks([q, kv], masks)
+    new_heads = new_kv.unflatten(0, (heads, kv_rows))
+    for live, expected in (
+        (q_image, new_q[4 * q_rows : 8 * q_rows]),
+        (q_local, new_q[6 * q_rows :]),
+        (kv_local, new_kv[6 * kv_rows :]),
+        (w_kc_qrep, new_heads[4:, :nope]),
+        (w_vc_qrep, new_heads[4:, nope:].transpose(1, 2)),
+    ):
+        torch.testing.assert_close(
+            live.contiguous().view(torch.uint8), expected.contiguous().view(torch.uint8), rtol=0, atol=0
+        )
+
+
+def test_canonical_shadow_first_fill_orders_its_allocation_stream_across_threads(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from miles.backends.sglang_utils.gpu_delta.bindings import CanonicalShadows
+    from miles.backends.sglang_utils.gpu_delta.layout import _side_stream
+
+    name, meta = "model.norm.weight", {"dtype": "F32", "shape": [8]}
+    expected = torch.arange(8, dtype=torch.float32)
+    checkpoint = SimpleNamespace(
+        inventory={name: meta}, read_rows=lambda name, start, stop: expected[start:stop].view(torch.uint8).numpy()
+    )
+    target = torch.zeros(8, device="cuda")
+    producer = torch.cuda.Stream()
+    producer.wait_stream(torch.cuda.current_stream())
+    store = {}
+    shadows = CanonicalShadows(store, create=True)
+    with torch.cuda.stream(producer):
+        torch.cuda._sleep(200_000_000)
+        target.fill_(-1)
+        # Model an allocator returning storage with a pending write on its allocation stream.
+        # The returned tensor stays alive; this isolates ordering from allocator cache heuristics.
+        with monkeypatch.context() as patch:
+            patch.setattr(torch, "empty", lambda *args, **kwargs: target)
+            shadow = shadows.get(name, meta, (0, 8), target.device)
+
+    def fill():
+        with torch.cuda.device(target.device), _side_stream((shadow,)):
+            shadows.fill(checkpoint, (name,))
+
+    # Preparation's thread has a different current stream from describe's producer.
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        executor.submit(fill).result()
+    producer.synchronize()
+    torch.testing.assert_close(shadow.cpu(), expected, rtol=0, atol=0)
+
+    # Re-admission retains committed bytes and never refills or waits on the old allocation.
+    shadow.add_(10)
+    retained = CanonicalShadows(store, create=False)
+    assert retained.get(name, meta, (0, 8), target.device) is shadow
+    retained.fill(checkpoint, (name,))
+    torch.testing.assert_close(shadow.cpu(), expected + 10, rtol=0, atol=0)
+
+
+def test_computed_images_survive_graph_replay_and_failure_gate():
+    from miles.backends.sglang_utils.gpu_delta import layout
+    from miles.backends.sglang_utils.gpu_delta.bindings import ComputedImage, ConsumerSnapshot, _direct_binding
+
+    # An FP32 A = -exp(A_log) of a BF16 tensor, and Kimi-K3's F32 o_norm served as BF16 plus an FP32 decode copy.
+    a_log = torch.randn(8, device="cuda").bfloat16()
+    a = -torch.exp(a_log.float())
+    norm = torch.randn(16, device="cuda")
+    norm_bf16 = norm.to(torch.bfloat16)
+    norm_fp32 = norm_bf16.float()
+    images = [
+        ComputedImage("mixer.A", (a_log,), (a,), lambda log: (-torch.exp(log.float()),)),
+        ComputedImage(
+            "o_norm",
+            (norm,),
+            (norm_bf16, norm_fp32),
+            lambda weight: (weight.to(torch.bfloat16), weight.to(torch.bfloat16).float()),
+        ),
+    ]
+    # Admission verifies on a side stream that each image reproduces its consumer bytewise.
+    plan = layout.GpuDeltaLayout.__new__(layout.GpuDeltaLayout)
+    plan.bindings = [
+        _direct_binding("mixer.A_log", {"dtype": "BF16", "shape": [8], "encoding": "xor_raw_bytes"}, a_log),
+        _direct_binding("o_norm.weight", {"dtype": "F32", "shape": [16], "encoding": "xor_raw_bytes"}, norm),
+    ]
+    plan.derived, plan.computed = [], images
+    # The mapping pins the served consumers while binding; computed images write only pinned tensors.
+    plan._parameter_roots, plan._consumers = [], [ConsumerSnapshot(lambda: (a, norm_bf16, norm_fp32))]
+    a.zero_()
+    torch.cuda.current_stream().synchronize()
+    producer = torch.cuda.Stream()
+    with torch.cuda.stream(producer):
+        torch.cuda._sleep(200_000_000)
+        a.copy_(-torch.exp(a_log.float()))
+        # Admission's side stream must observe images just produced by mapping.finish().
+        plan._admit_images([], {})
+    a.view(torch.int32)[3] ^= 1
+    with pytest.raises(ValueError, match="computed image mixer.A does not reproduce its live consumer"):
+        plan._admit_images([], {})
+    a.copy_(-torch.exp(a_log.float()))
+
+    destinations = [destination for image in images for destination in image.destinations]
+    identity = [(destination.data_ptr(), destination.stride()) for destination in destinations]
+    succeeded = torch.tensor(True, device="cuda")
+
+    def refresh():
+        for image in images:
+            image.refresh(succeeded)
+
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        refresh()
+    torch.cuda.current_stream().wait_stream(stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream):
+        refresh()
+    for success in (True, True, False):
+        before = [destination.clone() for destination in destinations]
+        a_log.copy_(torch.randn(8, device="cuda"))
+        norm.copy_(torch.randn(16, device="cuda"))
+        succeeded.fill_(success)
+        graph.replay()
+        torch.cuda.synchronize()
+        expected = [value for image in images for value in image.values()] if success else before
+        for destination, value in zip(destinations, expected, strict=True):
+            assert torch.equal(destination.view(torch.uint8), value.view(torch.uint8))
+    assert identity == [(destination.data_ptr(), destination.stride()) for destination in destinations]
 
 
 def _matrix_canonical(format, seed, hidden, intermediate):
@@ -530,7 +623,7 @@ def _matrix_canonical(format, seed, hidden, intermediate):
         ("up", intermediate, hidden),
         ("down", hidden, intermediate),
     ):
-        packed = format in {"nvfp4", "mxfp4"}
+        packed = format == "nvfp4"
         shape = (2, rows, cols // (2 if packed else 1))
         if format == "bf16":
             weight = torch.randn(shape, device="cuda", generator=rng).bfloat16()
@@ -590,7 +683,6 @@ def _matrix_loader_reference(values, layout, hidden, intermediate):
     if layout.backend == "megamoe":
         from flashinfer.moe_ep import (
             MoEWeightPack,
-            preprocess_mega_weights,
             preprocess_mxfp8_cutedsl_mega_weights,
             preprocess_nvfp4_cutedsl_mega_weights,
         )
@@ -598,7 +690,6 @@ def _matrix_loader_reference(values, layout, hidden, intermediate):
         preprocess = {
             "nvfp4": preprocess_nvfp4_cutedsl_mega_weights,
             "mxfp8": preprocess_mxfp8_cutedsl_mega_weights,
-            "mxfp4": preprocess_mega_weights,
         }[layout.format]
         if layout.format == "nvfp4" and layout.quant_mode == "w4a16":
             from flashinfer.moe_ep import preprocess_bf16_nvfp4_cutedsl_mega_weights
@@ -613,8 +704,7 @@ def _matrix_loader_reference(values, layout, hidden, intermediate):
         transformed = preprocess(weights, intermediate_size=intermediate, hidden_size=hidden)
         for stem, (weight, scale) in zip(("w13", "w2"), transformed, strict=False):
             bind(stem + "_weight", weight)
-            target_scale = "weight_scale_inv_shuffled" if layout.format == "mxfp4" else scale_name
-            bind(stem + "_" + target_scale, scale)
+            bind(stem + "_" + scale_name, scale)
     elif layout.format == "bf16":
         from flashinfer.fused_moe.core import (
             _maybe_get_cached_w3_w1_permute_indices,
@@ -658,21 +748,7 @@ def _matrix_loader_reference(values, layout, hidden, intermediate):
         from sglang.srt.layers.moe.moe_runner.flashinfer_trtllm import align_mxfp8_moe_weights_for_flashinfer_trtllm
 
         align_mxfp8_moe_weights_for_flashinfer_trtllm(layer)
-    elif layout.format == "mxfp4":
-        from sglang.srt.layers.quantization.mxfp4_flashinfer_trtllm_moe import Mxfp4FlashinferTrtllmMoEMethod
-
-        # Inputs are already canonical FP4 bytes; exercise the actual padding
-        # and shuffle method without constructing a server execution context.
-        method = Mxfp4FlashinferTrtllmMoEMethod.__new__(Mxfp4FlashinferTrtllmMoEMethod)
-        method._fp8 = SimpleNamespace(process_weights_after_loading=lambda _: None)
-        method.prefix = "delta_test"
-        method._intermediate_size_unpadded = intermediate
-        method._weights_in_kernel_layout = False
-        layer.quant_method = method
-        layer.register_buffer("_mxfp4_w13_restore_rows", None, persistent=False)
-        layer.register_buffer("_mxfp4_w2_restore_rows", None, persistent=False)
-        method.process_weights_after_loading(layer)
-    else:
+    elif layout.format == "fp8-block128-ue8m0":
         for stem in ("w13", "w2"):
             scale = getattr(layer, stem + "_weight_scale_inv")
             # Numerical powers of two independently check the byte-to-FP32 API conversion.
@@ -680,6 +756,8 @@ def _matrix_loader_reference(values, layout, hidden, intermediate):
                 stem + "_weight_scale_inv",
                 torch.ldexp(torch.ones_like(scale, dtype=torch.float32), scale.int() - 127),
             )
+    else:
+        raise ValueError(f"no native preprocessing reference for {layout}")
     return layer
 
 
@@ -690,27 +768,22 @@ def _matrix_loader_reference(values, layout, hidden, intermediate):
         ("fp8-block128-ue8m0", "trtllm", 256, ""),
         ("nvfp4", "trtllm", 256, "w4a4"),
         ("mxfp8", "trtllm", 256, ""),
-        ("mxfp4", "trtllm", 160, ""),  # separate gate/up and down padding
         ("nvfp4", "megamoe", 256, "w4a4"),
         ("nvfp4", "megamoe", 320, "w4a16"),
         ("mxfp8", "megamoe", 256, ""),
-        ("mxfp4", "megamoe", 256, ""),
     ],
 )
 @pytest.mark.parametrize("tp_size,tp_rank", [(1, 0), (2, 1)])
-def test_flashinfer_matrix_matches_native_preprocessing(
-    format, backend, intermediate, quant_mode, tp_size, tp_rank, monkeypatch
-):
+def test_flashinfer_matrix_matches_native_preprocessing(format, backend, intermediate, quant_mode, tp_size, tp_rank):
     from miles.backends.sglang_utils.gpu_delta.bindings import _moe_binding, prepare_raw_xor
 
-    monkeypatch.setenv("SGLANG_MXFP4_USE_OFFICIAL_SHUFFLE", "true")
     hidden = 384
     layout = FlashInferLayout(
         format,
         backend,
         True,
         quant_mode,
-        up_first=format in {"nvfp4", "mxfp4"} and backend == "trtllm",
+        up_first=format == "nvfp4" and backend == "trtllm",
     )
     old, new = (_matrix_canonical(format, seed, hidden, intermediate * tp_size) for seed in (17, 43))
     local_values = []
@@ -723,15 +796,15 @@ def test_flashinfer_matrix_matches_native_preprocessing(
         local_values.append(local)
     live, expected = (_matrix_loader_reference(values, layout, hidden, intermediate) for values in local_values)
     live.moe_tp_size, live.moe_tp_rank = tp_size, tp_rank
-    live.use_padded_loading = backend == "trtllm" and format != "mxfp4"
+    live.use_padded_loading = backend == "trtllm"
     images = dict(live.named_parameters())
     identity = {name: (value.data_ptr(), value.stride()) for name, value in images.items()}
     before = {name: value.contiguous().view(torch.uint8).clone() for name, value in images.items()}
     bindings, masks, complete = [], [], []
     for (projection, kind), original in old.items():
-        suffix = "weight_packed" if format == "mxfp4" and kind == "weight" else kind
+        suffix = kind
         if kind == "scale":
-            suffix = "weight_scale" if format in {"nvfp4", "mxfp4"} else "weight_scale_inv"
+            suffix = "weight_scale" if format == "nvfp4" else "weight_scale_inv"
         dtype = {
             torch.bfloat16: "BF16",
             torch.uint8: "U8",
@@ -761,17 +834,11 @@ def test_flashinfer_matrix_matches_native_preprocessing(
     if complete:
         for target, mask, _ in complete:
             target.view(torch.uint8).bitwise_xor_(mask.view(target.view(torch.uint8).shape))
-    assert _apply_prepared_masks(bindings, masks) is not None
+    assert apply_prepared_masks(bindings, masks) is not None
     for name, value in expected.named_parameters():
-        if format == "mxfp4" and name.endswith("_weight_scale_inv"):
-            # Native MXFP4 retains loader-only canonical scales separately;
-            # GPU delta owns and updates the shuffled inference images.
-            reference = before[name]
-        else:
-            reference = value.contiguous().view(torch.uint8)
         torch.testing.assert_close(
             images[name].contiguous().view(torch.uint8),
-            reference,
+            value.contiguous().view(torch.uint8),
             rtol=0,
             atol=0,
         )

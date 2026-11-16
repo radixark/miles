@@ -56,7 +56,7 @@ class _Engine:
 
 def _setup(tmp_path, fail=False, frame_bytes=gpu_delta_publication.FRAME_BYTES):
     safetensors.numpy.save_file({"w": np.array([1, 2, 3, 4], dtype=np.uint8)}, tmp_path / "model.safetensors")
-    (tmp_path / "config.json").write_text("{}")
+    (tmp_path / "config.json").write_text('{"architectures": ["DeepseekV3ForCausalLM"], "num_hidden_layers": 1}')
     protocol = gpu_delta.UpdateWeightFromGpuDelta(
         Namespace(
             hf_checkpoint=str(tmp_path),

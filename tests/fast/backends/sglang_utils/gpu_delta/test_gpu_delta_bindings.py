@@ -1,18 +1,28 @@
 """CPU canonical bindings, physical byte layouts, and format admission contracts."""
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.layers.quantization import mxfp4_flashinfer_trtllm_moe
+from tests.fast.fixtures.gpu_delta_fixtures import (
+    apply_segments,
+    blocked_scales_padded,
+    interleave,
+    quantized_layer,
+    shuffled_rows,
+)
 
-from miles.backends.sglang_utils.gpu_delta import flashinfer as fi
 from miles.backends.sglang_utils.gpu_delta.bindings import (
     ConsumerSnapshot,
     TensorBinding,
     _moe_binding,
     prepare_raw_xor,
 )
-from miles.backends.sglang_utils.gpu_delta.flashinfer import DestinationSegment, FlashInferLayout
+from miles.backends.sglang_utils.gpu_delta.byte_views import DestinationSegment, _DtypeMismatch
+from miles.backends.sglang_utils.gpu_delta.kernel_backends import flashinfer as fi
+from miles.backends.sglang_utils.gpu_delta.kernel_backends.flashinfer import FlashInferLayout
 
 
 def _block_scale_layer():
@@ -131,24 +141,13 @@ def test_nvfp4_activation_calibration_stays_frozen_but_weight_scales_are_local()
         _map_global_expert_id_to_local_expert_id=lambda expert: (0 if expert == 2 else -1),
         w13_weight_scale_2=torch.ones(1, 2),
     )
-    layout = FlashInferLayout("nvfp4", "trtllm", True, "w4a4")
-    meta = {"dtype": "F32", "shape": []}
+    layout = FlashInferLayout("nvfp4", "cutedsl", True, "w4a16", True)
+    meta = {"dtype": "F32", "shape": [], "encoding": "xor_raw_bytes"}
     for expert in (2, 3):
         assert _moe_binding("activation", meta, layer, expert, "up", "input_scale", layout) is None
     assert _moe_binding("weight", meta, layer, 3, "up", "weight_scale_2", layout) is None
     binding = _moe_binding("weight", meta, layer, 2, "up", "weight_scale_2", layout)
     assert binding.storage[0].data_ptr() == layer.w13_weight_scale_2[0, 1].data_ptr()
-
-
-def apply_segments(segments, mask):
-    coverage = torch.zeros(mask.shape, dtype=torch.int32, device=mask.device)
-    for segment in segments:
-        (r0, r1), (c0, c1) = segment.slices
-        coverage[r0:r1, c0:c1] += 1
-        source = mask[r0:r1, c0:c1].contiguous().view(torch.uint8)
-        for target in segment.destinations:
-            target.bitwise_xor_(source.reshape(target.shape))
-    assert torch.all(coverage == 1)
 
 
 def test_cutedsl_bindings_preserve_scale_images_padding_and_aliases():
@@ -180,7 +179,7 @@ def test_cutedsl_bindings_preserve_scale_images_padding_and_aliases():
                     f"{stem}_weight": torch.zeros((1, full_rows, cols * 8), dtype=torch.uint8),
                 },
             )
-            layout = fi.FlashInferLayout("nvfp4", "cutedsl", True, "w4a4", True)
+            layout = fi.FlashInferLayout("nvfp4", "cutedsl", True, "w4a16", True)
             layer._map_global_expert_id_to_local_expert_id = lambda expert: expert
             binding = _moe_binding(
                 "scale",
@@ -217,40 +216,141 @@ def test_cutedsl_bindings_preserve_scale_images_padding_and_aliases():
                 assert image.data_ptr() == pointer
 
 
-def test_weight_views_share_one_layout_for_both_activation_modes():
-    for mode in ("w4a4", "w4a16"):
-        original = torch.randint(256, (2, 256, 97), dtype=torch.uint8)
-        layer = SimpleNamespace(w13_weight=original.clone())
-        expected = original.clone()
-        for projection, half in (("up", 0), ("gate", 1)):
-            mask = torch.randint(256, (128, 97), dtype=torch.uint8)
-            segments = fi.expert_destinations(
-                layer,
-                fi.FlashInferLayout("nvfp4", "cutedsl", True, mode, True),
-                1,
-                projection,
-                "weight",
-                mask.shape,
-                "U8",
-            )
-            apply_segments(segments, mask)
-            for start in range(0, 128, 64):
-                expected[1, 2 * start + half * 64 : 2 * start + (half + 1) * 64] ^= mask[start : start + 64]
-        assert torch.equal(layer.w13_weight, expected)
+# FlashInfer's own gated-row interleave, copied verbatim from flashinfer/fused_moe/prepare.py (FlashInfer b88169f8).
+# interleave_cute_dsl_moe_weights(weight, block_scales, swap_ab) applies it along dim 1 to the [up; gate] W13 weights
+# and their row-major block scales: 16-row groups under swap-AB (SM100 and SM103), 64-row groups otherwise.
+def _interleave_linear_and_gate(x: torch.Tensor, group_size: int = 64, dim: int = -1) -> torch.Tensor:
+    """Interleave the linear and gate halves of a SwiGLU gemm1 weight."""
+    sizes = x.size()
+    dim = dim % x.dim()
+    assert sizes[dim] % (group_size * 2) == 0
+    prev_sizes = sizes[:dim]
+    post_sizes = sizes[dim + 1 :]
+    x = x.view(*prev_sizes, 2, sizes[dim] // (group_size * 2), group_size, *post_sizes)
+    x = x.transpose(dim, dim + 1).contiguous().view(*sizes)
+    return x
 
 
 @pytest.mark.parametrize(
-    "image,served_dtype",
+    "swap_ab,tp_size",
     [
-        ("weight", torch.uint8),
-        ("weight", torch.int8),
-        ("weight", torch.float8_e5m2),
-        ("scale", torch.int8),
-        ("mma", torch.float8_e5m2),
+        # The companion tree's FlashInfer 0.7.2 wrapper records no swap-AB; interleave_w13_halves takes 64-row groups.
+        (None, 1),
+        # SGLang main without swap-AB (off SM100/SM103), on MoE TP rank 1 of 2: CuTe DSL splits the canonical rows
+        # without padding, so the rank's layer holds the interleave of its own row slice.
+        (False, 2),
+    ],
+    ids=["companion-tp1", "main-tp2"],
+)
+def test_cutedsl_w13_bindings_follow_flashinfers_gated_interleave(swap_ab, tp_size):
+    # SGLang main's standard CuTe DSL loader stores [up; gate] W13 halves and interleaves the weights and row-major
+    # block scales with interleave_cute_dsl_moe_weights under the swap-AB decision its CuteDslMoEWrapper records;
+    # without swap-AB that interleave takes 64-row groups, as the companion tree's interleave_w13_halves does. It then
+    # swizzles the scales into the image w13_weight_scale aliases and serves that image's MMA layout as
+    # w13_blockscale_mma, a strided view in SGLang main; here the MMA layout has storage of its own, so each image
+    # must receive the XOR.
+    group = 64
+    # Two local experts, each canonical half 384 rows: three 64-row groups per rank at MoE TP2; 7 scale columns pad
+    # to 8.
+    experts, rows, cols = (3, 7), 384, 112
+    tp_rank = tp_size - 1
+    owned = [rows // tp_size * tp_rank, rows // tp_size * (tp_rank + 1)]
+    local_rows = owned[1] - owned[0]
+    canonical = {
+        (expert, projection, suffix): torch.randint(256, (rows, cols // divisor), dtype=torch.uint8)
+        for expert in experts
+        for projection in ("gate", "up")
+        for suffix, divisor in (("weight", 2), ("weight_scale", 16))
+    }
+
+    def interleaved(suffix):
+        halves = [
+            torch.cat(
+                [canonical[expert, "up", suffix][slice(*owned)], canonical[expert, "gate", suffix][slice(*owned)]]
+            )
+            for expert in experts
+        ]
+        return _interleave_linear_and_gate(torch.stack(halves), group_size=group, dim=1)
+
+    def swizzled():
+        return torch.stack(
+            [blocked_scales_padded(scale).view(2 * local_rows, -1) for scale in interleaved("weight_scale")]
+        )
+
+    layer = quantized_layer(
+        "ModelOptNvFp4FusedMoEMethod",
+        _is_cutedsl_v2_standard=True,
+        load_up_proj_weight_first=True,
+        quant_config=SimpleNamespace(is_checkpoint_nvfp4_serialized=True),
+    )
+    layer._cutedsl_wrapper.quant_mode = "w4a16"
+    if swap_ab is not None:
+        layer._cutedsl_wrapper.swap_ab = swap_ab
+    layer.moe_tp_size, layer.moe_tp_rank, layer.use_padded_loading = tp_size, tp_rank, False
+    layer._map_global_expert_id_to_local_expert_id = experts.index
+    layer.w13_weight = interleaved("weight")
+    layer.w13_blockscale_swizzled = layer.w13_weight_scale = swizzled().view(torch.float8_e4m3fn)
+    # The MMA layout's own [expert, row tile, column tile, 32, 4, 4] storage, viewed with its public axes.
+    tiles = swizzled().view(len(experts), 2 * local_rows // 128, -1, 32, 4, 4)
+    layer.w13_blockscale_mma = tiles.permute(3, 4, 1, 5, 2, 0)
+    layout = fi.identify_layout(layer, "flashinfer_cutedsl")
+    assert layout == FlashInferLayout("nvfp4", "cutedsl", True, "w4a16", True)
+    assert layout.pair.group == group
+    for expert in experts:
+        for projection in ("gate", "up"):
+            for suffix, dtype in (("weight", "U8"), ("weight_scale", "F8_E4M3")):
+                # Full-projection masks: the rank's binding selects and applies only its own rows.
+                mask = torch.randint(256, canonical[expert, projection, suffix].shape, dtype=torch.uint8)
+                name = f"model.layers.0.mlp.experts.{expert}.{projection}_proj.{suffix}"
+                binding = _moe_binding(
+                    name, {"dtype": dtype, "shape": list(mask.shape)}, layer, expert, projection, suffix, layout
+                )
+                assert binding.slices == [owned, [0, mask.shape[1]]]
+                for view in binding.apply_bindings():
+                    source = view.selected_bytes(mask.flatten())
+                    for target in view.destinations:
+                        target.bitwise_xor_(source.reshape(target.shape))
+                canonical[expert, projection, suffix] ^= mask
+    # Every canonical gate/up row the rank owns and its block scales sit where FlashInfer's interleave puts them, in
+    # both scale images, and the scale padding stays untouched.
+    assert torch.equal(layer.w13_weight, interleaved("weight"))
+    assert torch.equal(layer.w13_blockscale_swizzled.view(torch.uint8), swizzled())
+    assert torch.equal(tiles, swizzled().view_as(tiles))
+
+
+def test_cutedsl_swap_ab_layout_is_not_admitted():
+    # On SM100 and SM103 SGLang main interleaves 16-row groups (swap-AB), a layout no CUDA check has compared yet;
+    # its warmed wrapper records the decision, made on the CUDA device the experts run on.
+    layer = quantized_layer(
+        "ModelOptNvFp4FusedMoEMethod",
+        _is_cutedsl_v2_standard=True,
+        load_up_proj_weight_first=True,
+        quant_config=SimpleNamespace(is_checkpoint_nvfp4_serialized=True),
+    )
+    layer._cutedsl_wrapper.quant_mode = "w4a16"
+    layer._cutedsl_wrapper.swap_ab = True
+    with pytest.raises(ValueError, match="does not yet admit SGLang main's swap-AB CuTe DSL expert layout"):
+        fi.identify_layout(layer, "flashinfer_cutedsl")
+    # The decision belongs to the CuTe DSL wrapper alone; the TRTLLM layout of the same method is unaffected.
+    assert fi.identify_layout(layer, "flashinfer_trtllm").backend == "trtllm"
+
+
+@pytest.mark.parametrize(
+    "backend,transposed,image,served_dtype",
+    [
+        ("cutedsl", False, "weight", torch.uint8),
+        ("cutedsl", False, "weight", torch.int8),
+        ("cutedsl", False, "weight", torch.float8_e5m2),
+        ("cutedsl", False, "scale", torch.int8),
+        ("cutedsl", False, "mma", torch.float8_e5m2),
+        # SGLang's MegaMoE serves the packed weights as float4_e2m1fn_x2, through a transposed view.
+        ("megamoe", True, "weight", torch.float4_e2m1fn_x2),
     ],
 )
-def test_packed_dtype_admission_preserves_original_storage_types(image, served_dtype):
+def test_packed_dtype_admission_preserves_original_storage_types(backend, transposed, image, served_dtype):
     weight = torch.zeros((1, 128, 32), dtype=torch.uint8)
+    if transposed:
+        weight = weight.transpose(1, 2)
     primary = torch.zeros((128, 4), dtype=torch.uint8)
     mma = primary.view(1, 1, 32, 4, 4).permute(2, 3, 0, 4, 1).unsqueeze(-1)
     mma = mma.clone(memory_format=torch.preserve_format)
@@ -282,7 +382,7 @@ def test_packed_dtype_admission_preserves_original_storage_types(image, served_d
             0,
             "down",
             suffix,
-            FlashInferLayout("nvfp4", "cutedsl", True),
+            FlashInferLayout("nvfp4", backend, True, "w4a16"),
         )
 
     # Binding admits original images, even when the payload has no changed
@@ -297,126 +397,182 @@ def test_packed_dtype_admission_preserves_original_storage_types(image, served_d
 
 
 def test_blocked_scale_bindings_check_only_the_weight_element_width():
-    # A one-byte weight outside its allowed set is reported once, on the weight binding.
+    # A one-byte weight outside its allowed set is reported once, on the weight binding. MegaMoE serves the packed
+    # weights through a transposed view of contiguous [128, 32] rows.
     layer = SimpleNamespace(
-        w2_weight=torch.zeros((1, 128, 32), dtype=torch.uint8).view(torch.float8_e4m3fn),
+        w2_weight=torch.zeros((1, 128, 32), dtype=torch.uint8).transpose(1, 2).view(torch.float8_e4m3fn),
         w2_weight_scale=torch.zeros((1, 512), dtype=torch.uint8),
     )
-    layout = FlashInferLayout("nvfp4", "trtllm", True, "w4a4")
+    layout = FlashInferLayout("nvfp4", "megamoe", True, "w4a16")
     with pytest.raises(fi._DtypeMismatch, match="nvfp4 weight served=torch.float8_e4m3fn"):
         fi.expert_destinations(layer, layout, 0, "down", "weight", (128, 32), "U8")
     assert fi.expert_destinations(layer, layout, 0, "down", "weight_scale", (128, 4), "F8_E4M3")
     # Scale geometry still requires the weight's element width.
-    layer.w2_weight = torch.zeros((1, 128, 16), dtype=torch.int16)
+    layer.w2_weight = torch.zeros((1, 128, 16), dtype=torch.int16).transpose(1, 2)
     with pytest.raises(fi._DtypeMismatch, match="1-byte storage"):
         fi.expert_destinations(layer, layout, 0, "down", "weight_scale", (128, 4), "F8_E4M3")
 
 
-def _quantized_layer(name, **attrs):
-    config = attrs.pop("quant_config", SimpleNamespace())
-    method = type(name, (), {})()
-    method.__dict__.update(
-        runner=None,
-        dequant_fp4_to_fp8=False,
-        convert_mxfp8_to_block=False,
-        use_mxfp8=False,
-        is_fp4_expert=False,
-    )
-    method.__dict__.update(attrs, quant_config=config)
-    if not hasattr(config, "scale_fmt"):
-        config.scale_fmt = None
-        config.weight_block_size = None
-        if not hasattr(config, "is_checkpoint_fp8_serialized"):
-            config.is_checkpoint_fp8_serialized = False
-    return SimpleNamespace(
-        quant_method=method,
-        quant_config=config,
-        moe_runner_config=SimpleNamespace(is_gated=True),
-        _cutedsl_wrapper=SimpleNamespace(quant_mode="w4a4"),
-    )
-
-
 def test_layout_admission_rejects_conversion_and_unsupported_pairs():
-    nv = _quantized_layer(
+    nv = quantized_layer(
         "ModelOptNvFp4FusedMoEMethod",
         _is_cutedsl_v2_standard=True,
         load_up_proj_weight_first=True,
         quant_config=SimpleNamespace(is_checkpoint_nvfp4_serialized=True),
     )
-    assert fi.identify_layout(nv, "flashinfer_trtllm") == fi.identify_layout(nv, "flashinfer_trtllm_routed")
-    assert fi.identify_layout(nv, "flashinfer_cutedsl") == fi.FlashInferLayout("nvfp4", "cutedsl", True, "w4a4", True)
-    assert fi.identify_layout(nv, "flashinfer_trtllm").up_first
-    nv._flashinfer_megamoe_layer = SimpleNamespace(
-        _megakernel_config=type("Sm100_Nvfp4_Nvfp4_Bf16_Cutedsl_MegaMoeConfig", (), {})()
-    )
-    assert fi.identify_layout(nv, "flashinfer_megamoe") == fi.FlashInferLayout("nvfp4", "megamoe", True, "w4a4", False)
-    nv._flashinfer_megamoe_layer._megakernel_config = type("Sm100_Bf16_Nvfp4_Bf16_Cutedsl_MegaMoeConfig", (), {})()
-    assert fi.identify_layout(nv, "flashinfer_megamoe").quant_mode == "w4a16"
+    # Each primary runner serves the activation mode its warmed consumer records: CuTe DSL's wrapper, MegaMoE's config
+    # class.
+    for mode in ("w4a4", "w4a16"):
+        nv._cutedsl_wrapper.quant_mode = mode
+        assert fi.identify_layout(nv, "flashinfer_cutedsl") == FlashInferLayout("nvfp4", "cutedsl", True, mode, True)
+    nv._flashinfer_megamoe_layer = None
+    with pytest.raises(ValueError, match="FlashInfer MegaMoE must be warmed before admission"):
+        fi.identify_layout(nv, "flashinfer_megamoe")
+    for config, mode in (
+        ("Sm100_Nvfp4_Nvfp4_Bf16_Cutedsl_MegaMoeConfig", "w4a4"),
+        ("Sm100_Bf16_Nvfp4_Bf16_Cutedsl_MegaMoeConfig", "w4a16"),
+    ):
+        nv._flashinfer_megamoe_layer = SimpleNamespace(_megakernel_config=type(config, (), {})())
+        assert fi.identify_layout(nv, "flashinfer_megamoe") == FlashInferLayout("nvfp4", "megamoe", True, mode, False)
     nv._flashinfer_megamoe_layer._megakernel_config = object()
     with pytest.raises(ValueError, match="unsupported FlashInfer NVFP4 MegaMoE"):
         fi.identify_layout(nv, "flashinfer_megamoe")
-    nv._cutedsl_wrapper.quant_mode = "w4a16"
-    assert fi.identify_layout(nv, "flashinfer_cutedsl").quant_mode == "w4a16"
+    # CuTe DSL admits only the standard layout of a warmed wrapper in a known mode.
+    nv._cutedsl_wrapper.quant_mode = "fp8"
+    with pytest.raises(ValueError, match="^unsupported CuTe DSL quant mode: fp8$"):
+        fi.identify_layout(nv, "flashinfer_cutedsl")
+    nv._cutedsl_wrapper = None
+    with pytest.raises(ValueError, match="CuTe DSL warmup must initialize its wrapper"):
+        fi.identify_layout(nv, "flashinfer_cutedsl")
+    nv.quant_method._is_cutedsl_v2_standard = False
+    with pytest.raises(ValueError, match="GPU delta requires the standard CuTe DSL layout"):
+        fi.identify_layout(nv, "flashinfer_cutedsl")
     nv.quant_config.is_checkpoint_nvfp4_serialized = False
     with pytest.raises(ValueError, match="on-load"):
         fi.identify_layout(nv, "flashinfer_cutedsl")
-    mx = _quantized_layer(
-        "Fp8MoEMethod",
-        use_mxfp8=True,
-        quant_config=SimpleNamespace(is_checkpoint_fp8_serialized=True),
+
+
+def _secondary_layer(method, *, gated=True, scale_inv=None, gate_up_interleaved=False, **attrs):
+    layer = quantized_layer(method, **attrs)
+    layer.moe_runner_config = SimpleNamespace(is_gated=gated, gate_up_interleaved=gate_up_interleaved)
+    if scale_inv is not None:
+        # The live dtype of the loader's MXFP4 scale parameter tells the SGLang trees' scale storages apart.
+        layer.w13_weight_scale_inv = torch.zeros((1, 2, 2), dtype=scale_inv)
+    return layer
+
+
+def _bf16(gated=True):
+    # load_up_proj_weight_first follows FlashInfer CUTLASS, so TRTLLM's BF16 experts load gate first.
+    return _secondary_layer(
+        "UnquantizedFusedMoEMethod", gated=gated, use_flashinfer_trtllm_moe=True, load_up_proj_weight_first=False
     )
-    assert fi.identify_layout(mx, "flashinfer_megamoe").format == "mxfp8"
-    with pytest.raises(ValueError, match="no native"):
-        fi.identify_layout(mx, "flashinfer_cutedsl")
-    mx.quant_method.convert_mxfp8_to_block = True
-    with pytest.raises(ValueError, match="requantization"):
-        fi.identify_layout(mx, "flashinfer_trtllm")
-    with pytest.raises(ValueError, match="native UE8M0"):
-        fi.identify_layout(_quantized_layer("Fp8MoEMethod"), "flashinfer_trtllm")
 
 
-def test_layout_admission_identifies_bf16_mxfp4_and_block128_rows():
-    bf16 = _quantized_layer(
-        "UnquantizedFusedMoEMethod", use_flashinfer_trtllm_moe=True, load_up_proj_weight_first=True
+def _nvfp4(gated=True):
+    return _secondary_layer(
+        "ModelOptNvFp4FusedMoEMethod",
+        gated=gated,
+        _is_cutedsl_v2_standard=True,
+        load_up_proj_weight_first=gated,
+        quant_config=SimpleNamespace(is_checkpoint_nvfp4_serialized=True),
     )
-    assert fi.identify_layout(bf16, "flashinfer_trtllm") == FlashInferLayout("bf16", "trtllm", True, up_first=True)
-    with pytest.raises(ValueError, match="no native FlashInfer BF16"):
-        fi.identify_layout(bf16, "flashinfer_megamoe")
 
-    # The oracle tests construct this default MXFP4 row directly.
-    shuffled = _quantized_layer("Mxfp4FlashinferTrtllmMoEMethod", _fp8=SimpleNamespace(dequant_fp4_to_fp8=False))
-    assert fi.identify_layout(shuffled, "flashinfer_mxfp4") == FlashInferLayout("mxfp4", "trtllm", True, up_first=True)
-    shuffled.quant_method._fp8.dequant_fp4_to_fp8 = True
-    with pytest.raises(ValueError, match="native packed"):
-        fi.identify_layout(shuffled, "flashinfer_trtllm")
 
-    # Mxfp4MoEMethod's kernel reads the ordinary scale names and owns no clamp tensor.
-    native = _quantized_layer("Mxfp4MoEMethod", _fi_kernel="trtllm_sm100")
-    layout = fi.identify_layout(native, "flashinfer_mxfp4")
-    assert (layout.format, layout.backend, layout.up_first) == ("mxfp4", "trtllm", True)
+def _fp8(*, serialized=True, block128=False, **attrs):
+    # Fp8MoEMethod: block-128 UE8M0 scales, MXFP8 (use_mxfp8) or FP4 experts (is_fp4_expert).
+    config = SimpleNamespace(is_checkpoint_fp8_serialized=serialized)
+    if block128:
+        config.scale_fmt, config.weight_block_size = "ue8m0", [128, 128]
+    return _secondary_layer("Fp8MoEMethod", quant_config=config, **attrs)
+
+
+def _mxfp4(scale_inv, dequant=False):
+    return _secondary_layer(
+        "Mxfp4FlashinferTrtllmMoEMethod", scale_inv=scale_inv, _fp8=SimpleNamespace(dequant_fp4_to_fp8=dequant)
+    )
+
+
+def _mxfp4_method(**flags):
+    # Mxfp4MoEMethod's own SM100 TRTLLM kernel over separate gate/up halves, unless a flag says otherwise.
+    native = {"_fi_kernel": "trtllm_sm100", "use_mega_moe": False, "use_deep_gemm": False, "use_marlin": False}
+    return _secondary_layer("Mxfp4MoEMethod", **(native | flags))
+
+
+def _fp4_experts(scale_inv=None):
+    return _fp8(is_fp4_expert=True, scale_inv=scale_inv)
+
+
+def test_secondary_rows_identify_or_fail_closed(monkeypatch):
+    def identify(layer, runner, official_shuffle):
+        # Both SGLang trees read SGLANG_MXFP4_USE_OFFICIAL_SHUFFLE once, at import.
+        monkeypatch.setattr(mxfp4_flashinfer_trtllm_moe, "_USE_OFFICIAL_SHUFFLE", official_shuffle)
+        return fi.identify_layout(layer, runner)
+
+    def admits(layer, runner, expected, scale=None, official_shuffle=True):
+        layout = identify(layer, runner, official_shuffle)
+        assert layout == expected
+        if scale is not None:
+            # An MXFP4 storage's scale parameter suffix and served dtypes.
+            assert (layout.pair.scale, layout.pair.scale_served) == scale
+        return layout
+
+    def fails_closed(layer, runner, message, official_shuffle=True):
+        with pytest.raises(ValueError, match=message):
+            identify(layer, runner, official_shuffle)
+
+    # One row per admitted secondary storage.
+    admits(_bf16(), "flashinfer_trtllm", FlashInferLayout("bf16", "trtllm", True))
+    admits(_bf16(gated=False), "flashinfer_trtllm", FlashInferLayout("bf16", "trtllm", False))
+    admits(_fp8(block128=True), "flashinfer_trtllm", FlashInferLayout("fp8-block128-ue8m0", "trtllm", True))
+    for runner in ("flashinfer_trtllm", "flashinfer_trtllm_routed"):
+        admits(_nvfp4(), runner, FlashInferLayout("nvfp4", "trtllm", True, "w4a4", True))
+    admits(_nvfp4(gated=False), "flashinfer_cutedsl", FlashInferLayout("nvfp4", "cutedsl", False, "w4a4", True))
+    admits(_fp8(use_mxfp8=True), "flashinfer_trtllm", FlashInferLayout("mxfp8", "trtllm", True))
+    admits(_fp8(use_mxfp8=True), "flashinfer_megamoe", FlashInferLayout("mxfp8", "megamoe", True))
+    # MXFP4: the companion tree keeps the loader's FP32 scales beside its kernel images; SGLang main writes the kernel
+    # image in their place.
+    trtllm = FlashInferLayout("mxfp4", "trtllm", True, up_first=True)
+    megamoe = FlashInferLayout("mxfp4", "megamoe", True)
+    ue8m0, e4m3, i32 = (torch.uint8, torch.int8, torch.float8_e8m0fnu), (torch.float8_e4m3fn,), (torch.int32,)
+    companion = admits(_mxfp4(torch.float32), "flashinfer_mxfp4", trtllm, ("weight_scale_inv_shuffled", ue8m0))
+    # The companion tree registers the GEMM1 clamp on the layer, so the consumer snapshot pins it there.
+    assert companion.pair.consumers == ("_gemm1_clamp_limit_tensor",)
+    trtllm_main = replace(trtllm, override=fi._MXFP4_TRTLLM_MAIN)
+    admits(_mxfp4(torch.float8_e4m3fn), "flashinfer_mxfp4", trtllm_main, ("weight_scale_inv", e4m3))
+    admits(_fp4_experts(torch.float32), "flashinfer_megamoe", megamoe, ("weight_scale_inv_shuffled", i32))
+    megamoe_main = replace(megamoe, override=fi._MXFP4_MEGAMOE_MAIN)
+    admits(_fp4_experts(torch.int32), "flashinfer_megamoe", megamoe_main, ("weight_scale_inv", i32))
+    # Mxfp4MoEMethod prepares its own layout and never reads the shuffle switch; its kernel reads the loader's scale
+    # names and owns no clamp tensor.
+    native = _mxfp4_method()
+    native_layout = replace(trtllm, override=fi._MXFP4_MOE_METHOD)
+    layout = admits(native, "flashinfer_mxfp4", native_layout, ("weight_scale", e4m3), official_shuffle=False)
     for stem in ("w13", "w2"):
         setattr(native, f"{stem}_weight", torch.zeros((1, 64, 32), dtype=torch.uint8))
-        setattr(native, f"{stem}_weight_scale", torch.zeros((1, 128, 4), dtype=torch.uint8))
+        setattr(native, f"{stem}_weight_scale", torch.zeros((1, 128, 4), dtype=torch.float8_e4m3fn))
     *_, w13_scale, w2_scale = fi.consumer_objects(native, layout)
     assert w13_scale is native.w13_weight_scale and w2_scale is native.w2_weight_scale
-    native.quant_method._fi_kernel = "triton"
-    with pytest.raises(ValueError, match="unsupported native MXFP4"):
-        fi.identify_layout(native, "flashinfer_mxfp4")
 
-    fp4 = _quantized_layer("Fp8MoEMethod", is_fp4_expert=True)
-    assert fi.identify_layout(fp4, "flashinfer_megamoe") == FlashInferLayout("mxfp4", "megamoe", True)
-    with pytest.raises(ValueError, match="require its MXFP4 method"):
-        fi.identify_layout(fp4, "flashinfer_trtllm")
-
-    block = _quantized_layer(
-        "Fp8MoEMethod",
-        quant_config=SimpleNamespace(
-            scale_fmt="ue8m0", weight_block_size=[128, 128], is_checkpoint_fp8_serialized=True
-        ),
-    )
-    assert fi.identify_layout(block, "flashinfer_trtllm") == FlashInferLayout("fp8-block128-ue8m0", "trtllm", True)
-    with pytest.raises(ValueError, match="native UE8M0"):
-        fi.identify_layout(block, "flashinfer_megamoe")
+    # One row per fail-closed rule.
+    fails_closed(_bf16(), "flashinfer_megamoe", "no native FlashInfer BF16")
+    fails_closed(_fp8(block128=True), "flashinfer_megamoe", "native UE8M0")
+    fails_closed(_fp8(serialized=False), "flashinfer_trtllm", "native UE8M0")
+    fails_closed(_fp8(serialized=False, use_mxfp8=True), "flashinfer_trtllm", "serialized MXFP8")
+    fails_closed(_fp8(use_mxfp8=True), "flashinfer_cutedsl", "no native FP8/MXFP4 path")
+    fails_closed(_fp8(use_mxfp8=True, convert_mxfp8_to_block=True), "flashinfer_trtllm", "requantization")
+    fails_closed(_mxfp4(torch.float32, dequant=True), "flashinfer_mxfp4", "native packed")
+    # The legacy shuffle keeps [w3; w1] halves, so 254 of 256 w13 rows would sit where group 1 does not map them.
+    legacy = "requires SGLANG_MXFP4_USE_OFFICIAL_SHUFFLE=true"
+    fails_closed(_mxfp4(torch.float32), "flashinfer_mxfp4", legacy, official_shuffle=False)
+    unrecognized = "unrecognized MXFP4 expert scale storage: w13_weight_scale_inv is "
+    fails_closed(_mxfp4(torch.uint8), "flashinfer_mxfp4", unrecognized + "torch.uint8")
+    fails_closed(_fp4_experts(torch.float8_e4m3fn), "flashinfer_megamoe", unrecognized + "torch.float8_e4m3fn")
+    fails_closed(_mxfp4_method(_fi_kernel="triton"), "flashinfer_mxfp4", "unsupported native MXFP4")
+    # MegaMoE rebuilds DeepGEMM weights even beside the flashinfer_mxfp4 runner, whose _fi_kernel stays set.
+    transforms = "does not admit MXFP4 MegaMoE, DeepGEMM or Marlin expert transforms"
+    fails_closed(_mxfp4_method(use_mega_moe=True), "flashinfer_mxfp4", transforms)
+    fails_closed(_mxfp4_method(gate_up_interleaved=True), "flashinfer_mxfp4", "separate gate/up halves")
+    fails_closed(_fp4_experts(), "flashinfer_trtllm", "require its MXFP4 method")
 
 
 @pytest.mark.parametrize(
@@ -454,7 +610,7 @@ def test_nonalias_scale_image_and_incorrect_geometry_fail_closed():
         w2_weight_scale=torch.zeros((1, 128, 4), dtype=torch.uint8),
         w2_blockscale_swizzled=torch.zeros((1, 128, 4), dtype=torch.uint8),
     )
-    layout = fi.FlashInferLayout("nvfp4", "cutedsl", True, "w4a4", True)
+    layout = fi.FlashInferLayout("nvfp4", "cutedsl", True, "w4a16", True)
     with pytest.raises(ValueError, match="does not alias"):
         fi.expert_destinations(layer, layout, 0, "down", "weight_scale", (128, 4), "F8_E4M3")
     layer.w2_weight_scale = layer.w2_blockscale_swizzled
@@ -463,32 +619,6 @@ def test_nonalias_scale_image_and_incorrect_geometry_fail_closed():
     layer.w2_weight = torch.zeros((1, 128), dtype=torch.uint8)
     with pytest.raises(ValueError, match="packed weight geometry"):
         fi.expert_destinations(layer, layout, 0, "down", "weight", (128, 1), "U8")
-
-
-def shuffled_rows(value):
-    # Independent equivalent of FlashInfer's dstToSrcBlk32RowMap index_select.
-    return value.reshape(-1, 8, 4, value.shape[-1]).transpose(1, 2).reshape_as(value)
-
-
-def interleave(value, group):
-    rows, cols = value.shape
-    return value.reshape(2, rows // (2 * group), group, cols).transpose(0, 1).reshape(rows, cols)
-
-
-def blocked_scales(value):
-    # FlashInfer to_blocked: pad, block [128,4], transpose [4,32] row factors.
-    rows, cols = value.shape
-    padded = torch.full(((rows + 127) // 128 * 128, (cols + 3) // 4 * 4), 173, dtype=torch.uint8)
-    padded[:rows, :cols] = value
-    pr, pc = padded.shape
-    return (
-        padded.reshape(pr // 128, 128, pc // 4, 4)
-        .permute(0, 2, 1, 3)
-        .reshape(-1, 4, 32, 4)
-        .transpose(1, 2)
-        .contiguous()
-        .flatten()
-    )
 
 
 @pytest.mark.parametrize(
@@ -510,7 +640,7 @@ def test_trtllm_tp_preserves_padded_loader_offsets(projection, suffix, tp_rank, 
     rows = 2 * partition if projection == "gate" else 128
     cols = (128 if projection == "gate" else partition) // divisor
     logical = torch.zeros(rows, cols, dtype=torch.uint8)
-    physical = blocked_scales(shuffled_rows(logical)) if scale else shuffled_rows(logical)
+    physical = blocked_scales_padded(shuffled_rows(logical)) if scale else shuffled_rows(logical)
     stem = "w13" if projection == "gate" else "w2"
     layer = SimpleNamespace(
         moe_tp_size=tp_size,
@@ -551,7 +681,7 @@ def test_trtllm_tp_preserves_padded_loader_offsets(projection, suffix, tp_rank, 
             logical[:, : 64 // divisor] = mask[:, 128 // divisor :]
     expected = shuffled_rows(logical)
     if scale:
-        expected = blocked_scales(expected)
+        expected = blocked_scales_padded(expected)
     assert torch.equal(physical, expected)
 
 
@@ -569,79 +699,190 @@ def test_trtllm_tp_preserves_padded_loader_offsets(projection, suffix, tp_rank, 
 def test_factored_destinations_match_loader_permutations(fmt, backend, group, up_first):
     # Full independent physical replays prove gate/up order, bytes of BF16,
     # scale row shuffling, both Mega transpose policies, and excluded padding.
+    # W2 takes the same row shuffle, column blocks and transposes as W13, without the gate/up interleave.
     rows, physical_cols = 192, 384
     dtype = "BF16" if fmt == "bf16" else "F8_E4M3" if fmt == "mxfp8" else "U8"
     elem = 2 if fmt == "bf16" else 1
     layout = fi.FlashInferLayout(fmt, backend, True, up_first=up_first)
     divisor = {"nvfp4": 8, "mxfp8": 32, "mxfp4": 16}.get(fmt)
-    original = torch.randint(256, (2 * rows, physical_cols), dtype=torch.uint8)
-    scales = torch.randint(256, (2 * rows, physical_cols // divisor), dtype=torch.uint8) if divisor else None
 
-    def weight_transform(value):
-        value = interleave(value, group)
+    def weight_transform(value, gated):
+        if gated:
+            value = interleave(value, group)
         if backend == "trtllm":
             value = shuffled_rows(value)
         if fmt == "bf16":
-            return value.reshape(2 * rows, physical_cols // 128, 128).transpose(0, 1).contiguous().view(torch.bfloat16)
+            return (
+                value.reshape(value.shape[0], physical_cols // 128, 128)
+                .transpose(0, 1)
+                .contiguous()
+                .view(torch.bfloat16)
+            )
         if backend == "megamoe":
             value = value.T
             if fmt == "mxfp8":
                 value = value.contiguous()
         return value
 
-    def scale_transform(value):
-        value = interleave(value, group)
+    def scale_transform(value, gated):
+        if gated:
+            value = interleave(value, group)
         if backend == "trtllm":
             value = shuffled_rows(value)
-        return blocked_scales(value)
+        return blocked_scales_padded(value)
 
-    actual = weight_transform(original.clone())
-    layer = SimpleNamespace(w13_weight=actual.unsqueeze(0), quant_method=SimpleNamespace())
-    if fmt == "mxfp4":
-        layer.quant_method = type("Mxfp4FlashinferTrtllmMoEMethod", (), {})()
-    if scales is not None:
-        scale_name = {
-            "nvfp4": "w13_weight_scale",
-            "mxfp8": "w13_weight_scale_inv",
-            "mxfp4": "w13_weight_scale_inv_shuffled",
-        }[fmt]
-        setattr(
-            layer,
-            scale_name,
-            scale_transform(scales).unsqueeze(0),
-        )
+    layer = SimpleNamespace()
+    for stem, projections in (("w13", ("gate", "up")), ("w2", ("down",))):
+        gated = stem == "w13"
+        original = torch.randint(256, ((2 if gated else 1) * rows, physical_cols), dtype=torch.uint8)
+        actual = weight_transform(original.clone(), gated)
+        setattr(layer, f"{stem}_weight", actual.unsqueeze(0))
+        scales = None
+        if divisor:
+            scales = torch.randint(256, (original.shape[0], physical_cols // divisor), dtype=torch.uint8)
+            scale_name = {
+                "nvfp4": "weight_scale",
+                "mxfp8": "weight_scale_inv",
+                "mxfp4": "weight_scale_inv_shuffled",
+            }[fmt]
+            setattr(layer, f"{stem}_{scale_name}", scale_transform(scales, gated).unsqueeze(0))
+            if fmt == "mxfp4":
+                setattr(layer, f"{stem}_weight_scale_inv", torch.ones_like(scales, dtype=torch.float32))
+        for projection in projections:
+            half = int((projection == "up") != up_first) if gated else 0
+            # Tail rows and columns create coarse affine rectangles, never padding writes.
+            nr, nc = rows - 3, physical_cols // elem - 3
+            mask = torch.randint(256, (nr, nc * elem), dtype=torch.uint8)
+            segments = fi.expert_destinations(layer, layout, 0, projection, "weight", (nr, nc), dtype)
+            if elem == 2:
+                apply_segments(segments, mask.view(torch.bfloat16))
+            else:
+                apply_segments(segments, mask)
+            original[half * rows : half * rows + nr, : nc * elem] ^= mask
+            assert torch.equal(actual.view(torch.uint8), weight_transform(original, gated).view(torch.uint8))
+            if scales is not None:
+                nc = scales.shape[1] - 1
+                mask = torch.randint(256, (nr, nc), dtype=torch.uint8)
+                segments = fi.expert_destinations(
+                    layer,
+                    layout,
+                    0,
+                    projection,
+                    "weight_scale",
+                    (nr, nc),
+                    "F8_E4M3" if fmt == "nvfp4" else "U8",
+                )
+                apply_segments(segments, mask)
+                scales[half * rows : half * rows + nr, :nc] ^= mask
+                target = fi._scale_parameter(layer, stem, layout)[0]
+                assert torch.equal(target.flatten(), scale_transform(scales, gated))
         if fmt == "mxfp4":
-            layer.w13_weight_scale_inv = torch.ones_like(scales, dtype=torch.float32)
-    for projection in ("gate", "up"):
-        half = int((projection == "up") != up_first)
-        # Tail rows and columns create coarse affine rectangles, never padding writes.
-        nr, nc = rows - 3, physical_cols // elem - 3
-        mask = torch.randint(256, (nr, nc * elem), dtype=torch.uint8)
-        segments = fi.expert_destinations(layer, layout, 0, projection, "weight", (nr, nc), dtype)
-        if elem == 2:
-            apply_segments(segments, mask.view(torch.bfloat16))
-        else:
-            apply_segments(segments, mask)
-        original[half * rows : half * rows + nr, : nc * elem] ^= mask
-        assert torch.equal(actual.view(torch.uint8), weight_transform(original).view(torch.uint8))
-        if scales is not None:
-            nc = scales.shape[1] - 1
-            mask = torch.randint(256, (nr, nc), dtype=torch.uint8)
-            segments = fi.expert_destinations(
-                layer,
-                layout,
-                0,
-                projection,
-                "weight_scale",
-                (nr, nc),
-                "F8_E4M3" if fmt == "nvfp4" else "U8",
+            # The companion tree's FP32 loader scales stay untouched beside the kernel image.
+            assert torch.equal(
+                getattr(layer, f"{stem}_weight_scale_inv"), torch.ones_like(scales, dtype=torch.float32)
             )
-            apply_segments(segments, mask)
-            scales[half * rows : half * rows + nr, :nc] ^= mask
-            target = fi._scale_parameter(layer, "w13", layout)[0]
-            assert torch.equal(target.flatten(), scale_transform(scales))
-    if fmt == "mxfp4":
-        assert torch.equal(layer.w13_weight_scale_inv, torch.ones_like(scales, dtype=torch.float32))
+
+
+def test_non_gated_experts_bind_up_into_the_single_w13_slot():
+    # A non-gated BF16 TRTLLM layer keeps only up in W13: TRTLLM's 32-row shuffle, then 128-byte column blocks.
+    rows, physical_cols = 192, 384
+    original = torch.randint(256, (rows, physical_cols), dtype=torch.uint8)
+
+    def transform(value):
+        blocks = shuffled_rows(value).reshape(rows, physical_cols // 128, 128).transpose(0, 1)
+        return blocks.contiguous().view(torch.bfloat16)
+
+    layer = SimpleNamespace(
+        moe_tp_size=1,
+        _map_global_expert_id_to_local_expert_id=lambda expert: 0,
+        w13_weight=transform(original).unsqueeze(0),
+    )
+    layout = FlashInferLayout("bf16", "trtllm", False)
+    nr, nc = rows - 3, physical_cols // 2 - 3
+    mask = torch.randint(256, (nr, 2 * nc), dtype=torch.uint8)
+    meta = {"dtype": "BF16", "shape": [nr, nc]}
+    binding = _moe_binding("model.layers.0.mlp.experts.0.up_proj.weight", meta, layer, 0, "up", "weight", layout)
+    apply_segments(binding.segments, mask.view(torch.bfloat16))
+    original[:nr, : 2 * nc] ^= mask
+    assert torch.equal(layer.w13_weight[0].view(torch.uint8), transform(original).view(torch.uint8))
+    with pytest.raises(ValueError, match="^non-gated experts have no gate projection$"):
+        _moe_binding("model.layers.0.mlp.experts.0.gate_proj.weight", meta, layer, 0, "gate", "weight", layout)
+
+
+@pytest.mark.parametrize(
+    "layout,transposed",
+    [
+        # The generic rule, on the primary MegaMoE layout, whose packed weights are a transposed view.
+        (FlashInferLayout("nvfp4", "megamoe", True, "w4a16"), True),
+        # Mxfp4FlashinferTrtllmMoEMethod creates FP32 w*_weight_scale_inv parameters that FusedMoE fills by numeric
+        # cast, so U8 codes bound under that name never reach the kernel image unchanged.
+        (FlashInferLayout("mxfp4", "trtllm", True, up_first=True), False),
+    ],
+    ids=["nvfp4-megamoe", "mxfp4-trtllm"],
+)
+def test_fp4_expert_scales_reject_weight_scale_inv(layout, transposed):
+    # Packed FP4 block scales bind only as weight_scale; block-128 and MXFP8 bind weight_scale_inv before this rule.
+    weight = torch.zeros((1, 256, 64), dtype=torch.uint8)
+    layer = SimpleNamespace(
+        moe_tp_size=1,
+        _map_global_expert_id_to_local_expert_id=lambda expert: 0,
+        w13_weight=weight.transpose(1, 2) if transposed else weight,
+    )
+    with pytest.raises(ValueError, match="^unsupported FlashInfer expert suffix: weight_scale_inv$"):
+        _moe_binding(
+            "model.layers.0.mlp.experts.0.up_proj.weight_scale_inv",
+            {"dtype": "U8", "shape": [128, 4]},
+            layer,
+            0,
+            "up",
+            "weight_scale_inv",
+            layout,
+        )
+
+
+@pytest.mark.parametrize(
+    "layout,suffix,dtype,message",
+    [
+        (
+            FlashInferLayout("nvfp4", "megamoe", True, "w4a16"),
+            "weight",
+            "I8",
+            "^checkpoint=I8; nvfp4 weights require canonical U8, served=torch.float4_e2m1fn_x2$",
+        ),
+        (
+            FlashInferLayout("nvfp4", "megamoe", True, "w4a16"),
+            "weight_scale",
+            "U8",
+            "^checkpoint=U8; nvfp4 block scales require canonical F8_E4M3$",
+        ),
+        (
+            FlashInferLayout("nvfp4", "cutedsl", True, "w4a16", True),
+            "weight_scale",
+            "U8",
+            "^checkpoint=U8; NVFP4 block scales require canonical F8_E4M3 bytes$",
+        ),
+    ],
+    ids=["megamoe-weight", "megamoe-scale", "cutedsl-scale"],
+)
+def test_nvfp4_leaves_require_canonical_dtypes(layout, suffix, dtype, message):
+    # Packed weights are U8 only, and the loaders fill F8_E4M3 scale parameters by copy_, which casts any other dtype
+    # numerically. MegaMoE serves the packed weights as float4_e2m1fn_x2 through a transposed view; CuTe DSL checks
+    # its scale dtype before reading any storage.
+    layer = SimpleNamespace(
+        moe_tp_size=1,
+        _map_global_expert_id_to_local_expert_id=lambda expert: 0,
+        w13_weight=torch.zeros((1, 256, 64), dtype=torch.uint8).transpose(1, 2).view(torch.float4_e2m1fn_x2),
+    )
+    with pytest.raises(_DtypeMismatch, match=message):
+        _moe_binding(
+            f"model.layers.0.mlp.experts.0.up_proj.{suffix}",
+            {"dtype": dtype, "shape": [128, 8]},
+            layer,
+            0,
+            "up",
+            suffix,
+            layout,
+        )
 
 
 def test_block128_complete_scale_view_and_consumer_snapshot():
@@ -664,6 +905,13 @@ def test_block128_complete_scale_view_and_consumer_snapshot():
     before = tuple(map(id, fi.consumer_objects(layer, layout)))
     layer._flashinfer_trtllm_gemm1_beta = torch.ones(1)
     assert tuple(map(id, fi.consumer_objects(layer, layout))) != before
+    # A consumer field the pair names may be None, but a missing one is an unsupported layout.
+    del layer._flashinfer_trtllm_gemm1_alpha
+    with pytest.raises(
+        ValueError,
+        match="^unsupported FlashInfer expert layout: SimpleNamespace has no _flashinfer_trtllm_gemm1_alpha$",
+    ):
+        fi.consumer_objects(layer, layout)
     # A block-scale suffix without byte-layout scales is fatal, not a collected dtype mismatch.
     with pytest.raises(ValueError, match="unsupported FlashInfer block-scale format") as error:
         fi.expert_destinations(layer, layout, 0, "up", "weight_scale", (2, 2), "U8")
@@ -707,35 +955,33 @@ def test_megamoe_mxfp4_packed_ue8m0_views():
     assert torch.equal(layer.w13_weight_scale_inv, torch.ones_like(scales, dtype=torch.float32))
 
 
-@pytest.mark.parametrize("backend", ["trtllm", "megamoe"])
-def test_consumer_snapshot_tracks_live_scale_and_clamp_storage(backend):
+@pytest.mark.parametrize("backend", ["cutedsl", "megamoe"])
+def test_consumer_snapshot_tracks_live_scale_storage(backend):
     def scalar():
         return torch.ones(1, dtype=torch.float32)
 
     layer = SimpleNamespace(
+        quant_method=SimpleNamespace(runner=None),
         moe_runner_config=SimpleNamespace(is_gated=True),
         w13_weight=torch.zeros((1, 256, 128), dtype=torch.uint8),
         w2_weight=torch.zeros((1, 128, 128), dtype=torch.uint8),
+        w13_weight_scale=torch.zeros(512, dtype=torch.uint8),
+        w2_weight_scale=torch.zeros(512, dtype=torch.uint8),
+        g1_alphas=scalar(),
+        g1_alphas_up=scalar(),
+        g2_alphas=scalar(),
+        w13_input_scale_quant=scalar(),
+        w2_input_scale_quant=scalar(),
     )
-    if backend == "trtllm":
-        layer.quant_method = type("Mxfp4FlashinferTrtllmMoEMethod", (), {})()
-        layer.quant_method.runner = None
-        layer.w13_weight_scale_inv = scalar()
-        layer.w2_weight_scale_inv = scalar()
-        layer.w13_weight_scale_inv_shuffled = torch.zeros(512, dtype=torch.uint8)
-        layer.w2_weight_scale_inv_shuffled = torch.zeros(512, dtype=torch.uint8)
-        layer._gemm1_clamp_limit_tensor = scalar()
-        layout = fi.FlashInferLayout("mxfp4", backend, True, up_first=True)
-        changed = ("w13_weight_scale_inv_shuffled", "_gemm1_clamp_limit_tensor")
-    else:
-        layer.quant_method = SimpleNamespace(runner=None)
-        layer.w13_weight_scale = torch.zeros(512, dtype=torch.uint8)
-        layer.w2_weight_scale = torch.zeros(512, dtype=torch.uint8)
-        layer.g1_alphas = scalar()
-        layer.g1_alphas_up = scalar()
-        layer.g2_alphas = scalar()
-        layer.w13_input_scale_quant = scalar()
-        layer.w2_input_scale_quant = scalar()
+    if backend == "cutedsl":
+        layer._cutedsl_wrapper = SimpleNamespace(quant_mode="w4a16")
+        layer._cutedsl_scales = (scalar(), scalar(), scalar())
+        layer._cutedsl_input_scale = scalar()
+        layer.w13_blockscale_swizzled = layer.w13_weight_scale
+        layer.w2_blockscale_swizzled = layer.w2_weight_scale
+        layout = FlashInferLayout("nvfp4", backend, True, "w4a16", True)
+        changed = ("_cutedsl_scales",)
+    elif backend == "megamoe":
         # Current MegaMoE stages calibration per forward from the layer; its
         # config no longer owns fc1_alpha/fc2_alpha/fc1_norm_const tensors.
         layer._flashinfer_megamoe_layer = SimpleNamespace(
@@ -748,11 +994,37 @@ def test_consumer_snapshot_tracks_live_scale_and_clamp_storage(backend):
         )
         layer._flashinfer_megamoe_forward = object()
         layer._flashinfer_megamoe_input_norm_const = 1.0
-        layout = fi.FlashInferLayout("nvfp4", backend, True)
+        layout = FlashInferLayout("nvfp4", backend, True, "w4a16")
         changed = ("g1_alphas", "g2_alphas", "w2_input_scale_quant")
+    else:
+        raise ValueError(f"unsupported consumer backend: {backend}")
     for name in changed:
         snapshot = ConsumerSnapshot(lambda: fi.consumer_objects(layer, layout))
         snapshot.check_objects()
-        setattr(layer, name, getattr(layer, name).clone())
+        value = getattr(layer, name)
+        # A rebuilt consumer holds new tensors; a CuTe DSL rewarm stores a new scale tuple.
+        setattr(layer, name, tuple(map(torch.clone, value)) if isinstance(value, tuple) else value.clone())
         with pytest.raises(RuntimeError, match="consumer storage changed"):
             snapshot.check_objects()
+
+
+def test_missing_layout_fields_are_admission_errors():
+    # A field the identified pair names (its scale parameter and consumers) that another SGLang tree lacks is an
+    # unsupported layout: a ValueError, which describe reports with the rank prefix, never an AttributeError.
+    layer = SimpleNamespace(
+        moe_runner_config=SimpleNamespace(is_gated=True),
+        quant_method=SimpleNamespace(runner=None),
+        # MegaMoE serves the packed weights through transposed views.
+        w13_weight=torch.zeros((1, 256, 64), dtype=torch.uint8).transpose(1, 2),
+        w2_weight=torch.zeros((1, 128, 64), dtype=torch.uint8).transpose(1, 2),
+        w13_weight_scale=torch.zeros((1, 256 * 8), dtype=torch.uint8),
+    )
+    layout = FlashInferLayout("nvfp4", "megamoe", True, "w4a16")
+    with pytest.raises(
+        ValueError, match="^unsupported FlashInfer expert layout: SimpleNamespace has no w2_weight_scale$"
+    ):
+        fi.consumer_objects(layer, layout)
+    with pytest.raises(
+        ValueError, match="^unsupported FlashInfer expert layout: SimpleNamespace has no w2_weight_scale$"
+    ):
+        fi.expert_destinations(layer, layout, 0, "down", "weight_scale", (128, 8), "F8_E4M3")

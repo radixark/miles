@@ -11,20 +11,27 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-from miles.backends.sglang_utils.gpu_delta.bindings import TensorBinding, prepare_raw_xor
+from miles.backends.sglang_utils.gpu_delta.bindings import (
+    REMOTE_EXPERT,
+    STATIC_CALIBRATION,
+    TensorBinding,
+    prepare_raw_xor,
+)
+from miles.backends.sglang_utils.gpu_delta.byte_views import _byte_view
+from miles.backends.sglang_utils.gpu_delta.checkpoint import read_canonical_checkpoint
 from miles.backends.sglang_utils.gpu_delta.derived import prepare_updates
-from miles.backends.sglang_utils.gpu_delta.flashinfer import _byte_view
 from miles.backends.sglang_utils.gpu_delta.layout import GpuDeltaLayout
 from miles.utils.gpu_delta import profiling
-from miles.utils.gpu_delta.publication import _CATALOG_FIELDS, plan_digest, tensor_metadata
+from miles.utils.gpu_delta.publication import _CATALOG_FIELDS, COMPUTED_ROTARY, plan_digest, tensor_metadata
+
+# Exclusions a publication may still name; static bundled drafts and frozen modules are never admitted.
+_PUBLISHABLE_EXCLUSIONS = frozenset({None, REMOTE_EXPERT, STATIC_CALIBRATION, COMPUTED_ROTARY})
 
 
 class GpuDeltaBackend:
     """Scheduler-owned plan; large decoded masks exist only during apply."""
 
-    def __init__(self, model_runner, identity):
-        from miles.backends.sglang_utils.gpu_delta.checkpoint import read_canonical_checkpoint_inventory
-
+    def __init__(self, model_runner, identity, shadows):
         self._canonical_plan_digest = None
         self.binding_table = None
         self.batch_plan = None
@@ -32,11 +39,11 @@ class GpuDeltaBackend:
         self.layers_per_batch = int(os.environ.get("GPU_DELTA_LAYERS_PER_BATCH", "1"))
         if self.layers_per_batch < 1:
             raise ValueError("GPU_DELTA_LAYERS_PER_BATCH must be positive")
-        inventory = read_canonical_checkpoint_inventory(model_runner)
         try:
-            self.layout = GpuDeltaLayout(model_runner.model, inventory)
+            checkpoint = read_canonical_checkpoint(model_runner)
+            self.layout = GpuDeltaLayout(model_runner.model, checkpoint, shadows)
         except ValueError as error:
-            # A failed describe may reply without an identity; name the rejecting rank.
+            # A failed describe may reply without an identity; name the rank rejecting its checkpoint or layout.
             raise ValueError(f"tp_rank={identity['tp_rank']} dp_rank={identity['dp_rank']}: {error}") from error
         self.device = torch.device(model_runner.device, model_runner.gpu_id)
         if self.device.type != "cuda" or self.device.index is None:
@@ -90,7 +97,9 @@ class _BindingTable:
         layers, storage_rows = {}, {}
         for row, binding in enumerate(self.bindings):
             if binding.layer is None:
-                module = binding.name.rpartition(".")[0].rpartition(".")[2]
+                # Batch by the live module: DeepSeek-V4.1's canonical embed and head name model.embed_tokens and lm_head.
+                live_name = binding.name if binding.live_name is None else binding.live_name
+                module = live_name.rpartition(".")[0].rpartition(".")[2]
                 non_layers.get(module, non_layers["standalone"]).append(row)
             else:
                 layers.setdefault(binding.layer, []).append(row)
@@ -99,24 +108,29 @@ class _BindingTable:
         self.non_layers = tuple(np.asarray(rows, np.int64) for rows in non_layers.values())
         self.layers = tuple(np.asarray(rows, np.int64) for rows in layers.values())
         self.derived = tuple(layout.derived)
+        self.computed = tuple(layout.computed)
+        # An image refreshes when any binding sharing one of its source storages is active.
         pairs = [
             (row, index)
-            for index, image in enumerate(self.derived)
-            for row in storage_rows.get(image.source_pointer, ())
+            for index, image in enumerate((*self.derived, *self.computed))
+            for pointer in image.source_pointers
+            for row in storage_rows.get(pointer, ())
         ]
-        self.derived_rows, self.derived_indices = np.asarray(pairs, np.int64).reshape(-1, 2).T
+        self.image_rows, self.image_indices = np.asarray(pairs, np.int64).reshape(-1, 2).T
 
     def select(self, tensors):
         local = tensors[self.ordinals]
         matrices = (local["frame_count"] != 0) & ~self.raw
         raw = (local["changed_bytes"] != 0) & self.raw
         active = matrices | raw
-        derived = np.zeros(len(self.derived), dtype=bool)
-        derived[self.derived_indices[active[self.derived_rows]]] = True
+        images = np.zeros(len(self.derived) + len(self.computed), dtype=bool)
+        images[self.image_indices[active[self.image_rows]]] = True
+        copies, computed = images[: len(self.derived)], images[len(self.derived) :]
         return (
             np.flatnonzero(matrices),
             np.flatnonzero(raw),
-            [self.derived[row] for row in np.flatnonzero(derived)],
+            [self.derived[index] for index in np.flatnonzero(copies)],
+            [self.computed[index] for index in np.flatnonzero(computed)],
         )
 
 
@@ -200,12 +214,7 @@ def _qualify_canonical_plan(backend, publication):
         raise ValueError("duplicate canonical tensor")
     definitions = []
     for name, (_, entry) in entries.items():
-        if name not in backend.layout.inventory or backend.layout.excluded.get(name) not in {
-            None,
-            "expert projection owned by another EP/TP rank",
-            "static activation calibration",
-            "loader ignores computed rotary frequencies",
-        }:
+        if name not in backend.layout.inventory or backend.layout.excluded.get(name) not in _PUBLISHABLE_EXCLUSIONS:
             raise ValueError(f"delta publication has an unadmitted tensor: {name}")
         spec = {"name": name, **backend.layout.inventory[name]}
         expected = tensor_metadata(**spec)
@@ -272,7 +281,7 @@ class PreparedDelta:
         self.timings["host_rank_prepare_s"] = self.timings["host_rank_prepare_body_s"]
 
         tensors_started = time.perf_counter()
-        compressed, raw_rows, self.derived = table.select(publication.tensors)
+        compressed, raw_rows, self.derived, self.computed = table.select(publication.tensors)
         previous_plan = backend.batch_plan
         self.static_plans = _plan_layers(backend, table, compressed)
         self.timings["host_batch_plan_reused"] = int(previous_plan is not None and backend.batch_plan is previous_plan)
@@ -305,6 +314,7 @@ class PreparedDelta:
             raw_bytes=int(table.nbytes[raw_rows].sum()),
             raw_h2d_bytes=raw_h2d_bytes,
             compressed_batches=len(self.static_plans),
+            computed_images=len(self.computed),
             decode_stages=2,
             layers_per_batch=backend.layers_per_batch,
             compressed_tensors=self.matrix_tensor_count,
@@ -650,15 +660,7 @@ class PreparedDelta:
                             self._apply_cuda_batches()
                     self.timings["host_matrix_enqueue_s"] = time.perf_counter() - matrices_started
                     with self._phase("derived_refresh"):
-                        if self.derived:
-                            decode_succeeded = self.error.view(()) == 0
-                        for derived in self.derived:
-                            torch.where(
-                                decode_succeeded,
-                                derived.source,
-                                derived.destination,
-                                out=derived.destination,
-                            )
+                        self._refresh_images()
                 done = torch.cuda.Event()
                 done.record(self.stream)
         completion_started = time.perf_counter()
@@ -681,6 +683,15 @@ class PreparedDelta:
             "timings": self.timings,
             "h2d_bytes": self.h2d_bytes,
         }
+
+    def _refresh_images(self):
+        # After the last matrix batch: copies, prepared calibration, then computed images.
+        # The sticky error gate keeps every old value when any decode or apply failed.
+        images = (*self.derived, *self.computed)
+        if images:
+            decode_succeeded = self.error.view(()) == 0
+            for image in images:
+                image.refresh(decode_succeeded)
 
     def _apply_hardware_batches(self):
         # DE writes one decoded slot while the SMs consume the other.
@@ -748,6 +759,7 @@ class PreparedDelta:
         self.cpu_target_groups.clear()
         self.cpu_derived = []
         self.derived = []
+        self.computed = []
         self.apply_bindings.clear()
         self.apply_source_patches.clear()
         self.apply_host_view = None

@@ -10,6 +10,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from miles.backends.sglang_utils.gpu_delta import io as delta_io
 from miles.backends.sglang_utils.gpu_delta import session as delta_runtime
@@ -103,7 +104,7 @@ def make_session():
 
     def make(who=None, backend=None):
         backend = backend or Backend()
-        session = DeltaSession(who or identity(), backend)
+        session = DeltaSession(who or identity(), backend, {})
         instances.append((session, backend))
         return session, backend
 
@@ -439,6 +440,15 @@ def test_scheduler_blocked_timing_excludes_background_prepare(make_session, monk
         ),
         ({"attn_dcp_size": 2}, False, None, ValueError, "DCP groups inside attention TP"),
         ({"pp_size": 2}, False, None, ValueError, "PP1"),
+        ({"dwdp_size": 2}, False, None, ValueError, "DWDP expert weight prefetch"),
+        # DWDP's launch forces the local control broadcast; describe names DWDP itself.
+        (
+            {"dwdp_size": 2, "enable_dp_attention_local_control_broadcast": True},
+            False,
+            None,
+            ValueError,
+            "DWDP expert weight prefetch",
+        ),
         ({}, False, "shared IPC", RuntimeError, "shared IPC"),
         # Prefill CP without CP decode attention TP passes topology admission.
         ({"attn_cp_size": 2}, False, "derived HPC", ValueError, "derived HPC"),
@@ -456,12 +466,19 @@ def test_describe_rejects_topologies_and_weight_caches_before_plan_or_session(
         attn_dcp_size=1,
         enable_cp_decode_attn_tp=False,
         pp_size=1,
+        dwdp_size=1,
     )
     monkeypatch.setattr(runtime_context, "get_parallel", lambda: SimpleNamespace(**(parallel | override)))
     monkeypatch.setattr(
         runtime_context,
         "get_exec",
         lambda: SimpleNamespace(moe=SimpleNamespace(is_ep_scale_joiner=ep_joiner)),
+    )
+    # SGLang main reads its DSPARK lm_head dtype; the companion tree declares none and never reads it.
+    monkeypatch.setattr(
+        runtime_context,
+        "get_spec",
+        lambda: SimpleNamespace(speculative_dspark_lm_head_dtype=None, speculative_token_map=None),
     )
     calls = []
     model = object()
@@ -494,6 +511,97 @@ def test_describe_rejects_topologies_and_weight_caches_before_plan_or_session(
         control._describe("engine-0")
     # Topology rejections precede every weight-cache probe.
     assert calls == {None: [], "shared IPC": ["shared"], "derived HPC": ["shared", "derived"]}[cache]
+    assert control.session is None
+
+
+def _describe_until_weight_caches(monkeypatch, declared, **spec):
+    """A control whose describe passes topology admission and raises at the first weight-cache probe.
+
+    ``declared`` lists the fields of the SGLang tree's spec namespace; also returns the spec fields describe reads.
+    """
+    from sglang.srt import runtime_context
+
+    parallel = SimpleNamespace(
+        enable_dp_attention_local_control_broadcast=False,
+        attn_tp_size=1,
+        attn_cp_size=1,
+        attn_dcp_size=1,
+        enable_cp_decode_attn_tp=False,
+        pp_size=1,
+        dwdp_size=1,
+    )
+    monkeypatch.setattr(runtime_context, "get_parallel", lambda: parallel)
+    monkeypatch.setattr(
+        runtime_context, "get_exec", lambda: SimpleNamespace(moe=SimpleNamespace(is_ep_scale_joiner=False))
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang.srt.arg_groups.fields.spec",
+        SimpleNamespace(Spec=SimpleNamespace(__struct_fields__=declared)),
+    )
+    reads = []
+
+    class Spec:
+        def __getattr__(self, field):
+            reads.append(field)
+            return spec[field]
+
+    monkeypatch.setattr(runtime_context, "get_spec", Spec)
+
+    def check_shared(op):
+        raise RuntimeError("weight-cache probes reached")
+
+    runner = SimpleNamespace(weight_updater=SimpleNamespace(_assert_weight_cache_inactive=check_shared), model=None)
+    scheduler = SimpleNamespace(
+        enable_lora=False,
+        disaggregation_mode=SimpleNamespace(value="null"),
+        rust_server=None,
+        tp_worker=SimpleNamespace(model_runner=runner),
+    )
+    return GpuDeltaSchedulerControl(scheduler), reads
+
+
+@pytest.mark.parametrize(
+    "declared,dtype,rejected",
+    [
+        # The companion tree's spec namespace has no lm_head dtype field; describe never reads one.
+        (False, None, False),
+        # SGLang main: the draft projects through a quantized lm_head cache only when the dtype is set.
+        (True, None, False),
+        (True, "fp8", True),
+        (True, "mxfp8", True),
+    ],
+)
+def test_describe_rejects_dspark_quantized_lm_head_only_where_declared(monkeypatch, declared, dtype, rejected):
+    fields = (
+        "speculative_algorithm",
+        "speculative_dspark_lm_head_dtype" if declared else "speculative_draft_window_size",
+    )
+    control, reads = _describe_until_weight_caches(
+        monkeypatch, fields, speculative_dspark_lm_head_dtype=dtype, speculative_token_map=None
+    )
+    if rejected:
+        with pytest.raises(
+            ValueError, match="DSPARK's quantized lm_head cache; unset --speculative-dspark-lm-head-dtype"
+        ):
+            control._describe("engine-0")
+    else:
+        # The weight-cache probes run only after every spec check admits the launch.
+        with pytest.raises(RuntimeError, match="weight-cache probes reached"):
+            control._describe("engine-0")
+    dspark = ["speculative_dspark_lm_head_dtype"] if declared else []
+    assert reads == dspark + ([] if rejected else ["speculative_token_map"])
+    assert control.session is None
+
+
+def test_describe_rejects_a_speculative_token_map(monkeypatch):
+    # Both trees' EAGLE workers give the draft a gathered copy of the target lm_head's hot-token rows.
+    control, reads = _describe_until_weight_caches(
+        monkeypatch, ("speculative_algorithm",), speculative_token_map="/models/hot_token_ids.pt"
+    )
+    with pytest.raises(ValueError, match="draft's hot-token lm_head copy; unset --speculative-token-map$"):
+        control._describe("engine-0")
+    assert reads == ["speculative_token_map"]
     assert control.session is None
 
 
@@ -806,11 +914,12 @@ def test_describe_binds_published_scheduler_ranks(
         scheduler.rust_server = None
         scheduler.tp_worker = SimpleNamespace(model_runner=runner)
 
-        backends = []
+        backends, shadows = [], []
 
-        def make_backend(model_runner, identity):
+        def make_backend(model_runner, identity, store):
             assert model_runner is runner
             backends.append(identity.copy())
+            shadows.append(store)
             return SimpleNamespace(
                 host_arena=SimpleNamespace(directory=None),
                 close=lambda: None,
@@ -873,9 +982,86 @@ def test_describe_binds_published_scheduler_ranks(
         fresh = control._describe("engine-0")
         assert fresh["identity"] == receipt["identity"] and fresh["version"] == 7
         assert len(backends) == 2 and cache_engines == ["engine-0"]
+        # Both backends share the session's shadow store; only the version-0 one may create shadows.
+        assert [store.create for store in shadows] == [True, False]
+        assert all(store.store is control.session.shadow_store for store in shadows)
         control.session._executor.shutdown(wait=True)
     finally:
         reset_context()
+
+
+def test_shadows_persist_across_clear_and_are_created_only_at_version_zero(monkeypatch):
+    from sglang.srt import runtime_context
+
+    from miles.backends.sglang_utils.gpu_delta.bindings import CanonicalShadows
+
+    parallel = SimpleNamespace(
+        enable_dp_attention_local_control_broadcast=False,
+        attn_tp_size=1,
+        attn_cp_size=1,
+        attn_dcp_size=1,
+        enable_cp_decode_attn_tp=False,
+        pp_size=1,
+        dwdp_size=1,
+        tp_rank=0,
+        dp_rank=None,
+        pp_rank=0,
+    )
+    monkeypatch.setattr(runtime_context, "get_parallel", lambda: parallel)
+    monkeypatch.setattr(
+        runtime_context, "get_exec", lambda: SimpleNamespace(moe=SimpleNamespace(is_ep_scale_joiner=False))
+    )
+    monkeypatch.setattr(
+        runtime_context,
+        "get_spec",
+        lambda: SimpleNamespace(speculative_dspark_lm_head_dtype=None, speculative_token_map=None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang.srt.model_executor.model_runner_components.weight_updater",
+        SimpleNamespace(_unsupported_derived_weight_cache_error=lambda model: None),
+    )
+    monkeypatch.setattr("miles.utils.gpu_delta.host.host_cache_id", lambda engine_id: "shared-host")
+    monkeypatch.setattr("miles.utils.gpu_delta.host_worker.process_start_ticks", lambda: 456)
+    opened = []
+
+    def make_backend(model_runner, identity, shadows):
+        opened.append(shadows)
+        return SimpleNamespace(host_arena=SimpleNamespace(directory=None), close=lambda: None)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "miles.backends.sglang_utils.gpu_delta.receiver",
+        SimpleNamespace(GpuDeltaBackend=make_backend),
+    )
+    runner = SimpleNamespace(
+        model=object(), weight_updater=SimpleNamespace(_assert_weight_cache_inactive=lambda _: None)
+    )
+    scheduler = SimpleNamespace(
+        enable_lora=False,
+        disaggregation_mode=SimpleNamespace(value="null"),
+        rust_server=None,
+        tp_worker=SimpleNamespace(model_runner=runner),
+    )
+    control = GpuDeltaSchedulerControl(scheduler)
+    control._describe("engine-0")
+    (first,) = opened
+    assert isinstance(first, CanonicalShadows) and first.create and first.store is control.session.shadow_store
+    meta, cpu = {"dtype": "F32", "shape": [4]}, torch.device("cpu")
+    tensor = first.get("o_norm.weight", meta, (0, 4), cpu)
+    first.store["o_norm.weight"].filled = True
+    for version, create in ((0, True), (1, False)):
+        # Clear closes the backend but keeps the store; describe re-attaches with the same shadows.
+        control.session.version = version
+        control.session.clear()
+        control.session.release_cache(owner=True)
+        control._describe("engine-0")
+        reopened = opened[-1]
+        assert reopened.store is first.store and reopened.create is create
+        assert reopened.get("o_norm.weight", meta, (0, 4), cpu) is tensor
+    with pytest.raises(ValueError, match="canonical shadow other is unavailable after version 0"):
+        opened[-1].get("other", meta, (0, 4), cpu)
+    control.session._executor.shutdown(wait=True)
 
 
 @pytest.mark.parametrize("outcome", ["resumed", "retained", "apply_failed", "resume_failed"])

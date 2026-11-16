@@ -12,6 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pytest
 import safetensors.numpy
+import torch
+from safetensors.torch import save_file
 
 from miles.utils.gpu_delta import publication
 
@@ -195,28 +197,103 @@ def test_raw_masks_bypass_compression_omit_unchanged_and_cancel(tmp_path, dtype,
     assert writer.payload_metrics["matrix_inner_arena_bytes"] == writer.payload_metrics["matrix_payload_bytes"] == 0
 
 
-def test_checkpoint_prior_is_receiver_independent_and_keeps_frozen_tensors_out(tmp_path):
-    import torch
-    from safetensors.torch import save_file
+@pytest.mark.parametrize(
+    ("name", "reason"),
+    [
+        ("model.layers.0.mlp.down_proj.weight", None),
+        ("model.layers.1.mlp.down_proj.weight", publication.STATIC_DRAFT),
+        ("model.layers.12.self_attn.kv_b_proj.weight", publication.STATIC_DRAFT),
+        ("model.layers.0.self_attn.rotary_emb.inv_freq", publication.COMPUTED_ROTARY),
+        ("model.norm.weight", None),
+        ("lm_head.weight", None),
+    ],
+)
+def test_static_tensor_rule_is_shared_by_sender_and_receivers(name, reason):
+    assert publication.static_tensor_reason(name, publication.StaticPolicy(num_hidden_layers=1)) == reason
 
+
+@pytest.mark.parametrize(
+    "architecture",
+    ["DeepseekV2ForCausalLM", "DeepseekV3ForCausalLM", "DeepseekV32ForCausalLM", "GlmMoeDsaForCausalLM"],
+)
+@pytest.mark.parametrize("model_type", [None, "kimi_k2"])
+def test_deepseek_v2_checkpoints_keep_the_numbered_draft_rule(architecture, model_type):
+    # Kimi-K2 checkpoints declare DeepseekV3ForCausalLM with their own model type.
+    config = {"architectures": [architecture], "model_type": model_type, "num_hidden_layers": 61}
+    assert publication.static_policy(config) == publication.StaticPolicy(num_hidden_layers=61)
+
+
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        ({"num_hidden_layers": 1}, "declares no architectures"),
+        ({"architectures": [], "num_hidden_layers": 1}, "declares no architectures"),
+        (
+            {"architectures": ["Qwen3MoeForCausalLM"], "num_hidden_layers": 1},
+            r"architecture 'Qwen3MoeForCausalLM'; admitted checkpoint architectures: \['DeepseekV2ForCausalLM', ",
+        ),
+    ],
+)
+def test_static_policy_rejects_unlisted_architectures(config, message):
+    with pytest.raises(ValueError, match=message):
+        publication.static_policy(config)
+
+
+@pytest.mark.parametrize(
+    ("shape", "encoding"),
+    [
+        pytest.param([2304, 320], "xor_bytes", id="layers.0.ffn.experts.5.w1.weight_scale"),
+        pytest.param([], "xor_raw_bytes", id="layers.0.ffn.experts.5.w1.weight_scale_2"),
+        pytest.param([1280, 5120], "xor_bytes", id="layers.0.attn.wq_a.weight"),
+        pytest.param([24, 20480], "xor_bytes", id="layers.0.hc_attn_fn"),
+        pytest.param([64], "xor_raw_bytes", id="layers.0.attn.attn_sink"),
+        pytest.param(
+            [3072, 112], "xor_bytes", id="language_model.model.layers.1.block_sparse_moe.experts.0.w1.weight_scale"
+        ),
+        pytest.param([128], "xor_raw_bytes", id="language_model.model.layers.0.self_attn.A_log"),
+        pytest.param([512], "xor_raw_bytes", id="backbone.layers.1.mixer.gate.e_score_correction_bias"),
+        pytest.param([18432, 1, 4], "xor_bytes", id="backbone.layers.0.mixer.conv1d.weight"),
+        pytest.param([], "xor_raw_bytes", id="scalar"),
+    ],
+)
+def test_canonical_encoding_sends_only_scalars_and_vectors_raw(shape, encoding):
+    # canonical_encoding's shape rule, shared by the plan and every receiver layout; the plan's block-128 branch
+    # overrides it for UE8M0 expert scales.
+    assert publication.canonical_encoding(shape) == encoding
+
+
+@pytest.mark.parametrize("dtype", ["F8_E8M0", "F4"])
+def test_published_tensors_never_carry_f8_e8m0_or_sub_byte_f4(dtype):
+    # Only static tensors (DeepSeek-V4.1's drafter and Engram tables) keep F8_E8M0 scales; neither dtype has a row.
+    with pytest.raises(KeyError, match=dtype):
+        publication.tensor_metadata("w", dtype, [2, 2])
+
+
+def test_checkpoint_prior_is_receiver_independent_and_keeps_frozen_tensors_out(tmp_path):
+    # A ModelOpt NVFP4 checkpoint as tools/convert_hf_to_nvfp4.py writes it: decoder routed experts carry packed U8
+    # weights, F8_E4M3 block scales and 0-d F32 weight_scale_2 and input_scale; shared experts, dense tensors and
+    # the bundled draft stay BF16.
     stem = "model.layers.0.mlp.experts.0.gate_proj"
+    shared = "model.layers.0.mlp.shared_experts.gate_proj.weight"
     (tmp_path / "config.json").write_text(
         json.dumps(
             {
+                "architectures": ["GlmMoeDsaForCausalLM"],
                 "num_hidden_layers": 1,
-                "quantization_config": {"quant_method": "fp8", "weight_block_size": [128, 128]},
+                "quantization_config": {"quant_algo": "NVFP4", "quant_method": "modelopt", "group_size": 16},
             }
         )
     )
     save_file(
         {
-            stem + ".weight": torch.zeros((128, 128), dtype=torch.float8_e4m3fn),
-            stem + ".weight_scale_inv": torch.ones((1, 1), dtype=torch.float32),
-            stem + ".input_scale": torch.ones(1),
-            "model.layers.1.mlp.weight": torch.ones((2, 2)),
+            stem + ".weight": torch.zeros((32, 32), dtype=torch.uint8),
+            stem + ".weight_scale": torch.ones((32, 4), dtype=torch.float8_e4m3fn),
+            stem + ".weight_scale_2": torch.tensor(1.0),
+            stem + ".input_scale": torch.tensor(1.0),
+            "model.layers.1.mlp.experts.0.gate_proj.weight": torch.ones((32, 64), dtype=torch.bfloat16),
             "model.layers.0.rotary_emb.inv_freq": torch.ones(2),
-            "model.norm.weight": torch.ones(128, dtype=torch.bfloat16),
-            "model.layers.0.mlp.shared_experts.gate_proj.weight": torch.ones((16, 16), dtype=torch.bfloat16),
+            "model.norm.weight": torch.ones(64, dtype=torch.bfloat16),
+            shared: torch.ones((16, 64), dtype=torch.bfloat16),
         },
         tmp_path / "model.safetensors",
     )
@@ -230,17 +307,58 @@ def test_checkpoint_prior_is_receiver_independent_and_keeps_frozen_tensors_out(t
         )
     )
     # A non-selected conversion artifact must not replace the agreed prior.
-    save_file({"model.norm.weight": torch.zeros(128, dtype=torch.float32)}, tmp_path / "other.safetensors")
+    save_file({"model.norm.weight": torch.zeros(64, dtype=torch.float32)}, tmp_path / "other.safetensors")
     plan = publication.read_checkpoint_plan(tmp_path)
-    by_name = {spec["name"]: spec for spec in plan}
-    assert set(by_name) == {
-        stem + ".weight",
-        stem + ".weight_scale_inv",
-        "model.norm.weight",
-        "model.layers.0.mlp.shared_experts.gate_proj.weight",
+    expected = [
+        (stem + ".weight", "U8", [32, 32], "xor_bytes"),
+        (stem + ".weight_scale", "F8_E4M3", [32, 4], "xor_bytes"),
+        (stem + ".weight_scale_2", "F32", [], "xor_raw_bytes"),
+        (shared, "BF16", [16, 64], "xor_bytes"),
+        ("model.norm.weight", "BF16", [64], "xor_raw_bytes"),
+    ]
+    # Whole specs: the plan drops input scales, the bundled draft and rotary buffers, carries no format, rank
+    # view or layout key, and sends only scalars and vectors raw.
+    assert sorted(plan, key=lambda spec: spec["name"]) == [
+        {"name": name, "dtype": dtype, "shape": shape, "encoding": encoding}
+        for name, dtype, shape, encoding in expected
+    ]
+    assert publication.plan_digest(plan) == publication.plan_digest(plan[::-1])
+
+
+def test_block128_plan_publishes_ue8m0_scales_that_writers_keep(tmp_path):
+    stem = "model.layers.0.mlp.experts.0.gate_proj"
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["DeepseekV3ForCausalLM"],
+                "num_hidden_layers": 1,
+                "quantization_config": {"quant_method": "fp8", "weight_block_size": [128, 128]},
+            }
+        )
+    )
+    save_file(
+        {
+            stem + ".weight": torch.zeros((128, 128), dtype=torch.float8_e4m3fn),
+            stem + ".weight_scale_inv": torch.ones((1, 1), dtype=torch.float32),
+            "model.layers.0.mlp.shared_experts.gate_proj.weight": torch.ones((16, 16), dtype=torch.bfloat16),
+        },
+        tmp_path / "model.safetensors",
+    )
+    by_name = {spec["name"]: spec for spec in publication.read_checkpoint_plan(tmp_path)}
+    # Routed-only block128: the BF16 shared expert keeps no format; the FP8 weight keeps its byte encoding.
+    assert by_name["model.layers.0.mlp.shared_experts.gate_proj.weight"] == {
+        "name": "model.layers.0.mlp.shared_experts.gate_proj.weight",
+        "dtype": "BF16",
+        "shape": [16, 16],
+        "encoding": "xor_bytes",
     }
-    assert "format" not in by_name["model.layers.0.mlp.shared_experts.gate_proj.weight"]
-    assert by_name["model.norm.weight"]["dtype"] == "BF16"
+    assert by_name[stem + ".weight"] == {
+        "name": stem + ".weight",
+        "dtype": "F8_E4M3",
+        "shape": [128, 128],
+        "encoding": "xor_bytes",
+        "format": "fp8-block128-ue8m0",
+    }
     assert by_name[stem + ".weight_scale_inv"] == {
         "name": stem + ".weight_scale_inv",
         "dtype": "U8",
@@ -249,10 +367,6 @@ def test_checkpoint_prior_is_receiver_independent_and_keeps_frozen_tensors_out(t
         "format": "fp8-block128-ue8m0",
         "checkpoint_dtype": "F32",
     }
-    assert by_name[stem + ".weight"]["encoding"] == "xor_bytes"
-    assert by_name["model.norm.weight"]["encoding"] == "xor_raw_bytes"
-    assert all("views" not in spec for spec in plan)
-    assert publication.plan_digest(plan) == publication.plan_digest(plan[::-1])
     # Writers take plan specs directly, including their explicit wire format.
     scale = by_name[stem + ".weight_scale_inv"]
     writer = _writer(tmp_path / "publication")

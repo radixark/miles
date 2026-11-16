@@ -34,16 +34,20 @@ def tiny_receiver(monkeypatch, directory, rank_id, weights, extra):
     and padded views reach the receiver unchanged. F32 parameters keep an F32
     canonical dtype; every other parameter is U8. Parameter storage identities are
     taken before the backend exists, so admission cannot rebind one unnoticed.
+    Also returns the canonical shadow store the backend and its DeltaSession share.
     """
     import torch
 
-    from miles.backends.sglang_utils.gpu_delta import checkpoint
+    from miles.backends.sglang_utils.gpu_delta import receiver
+    from miles.backends.sglang_utils.gpu_delta.bindings import CanonicalShadows
+    from miles.backends.sglang_utils.gpu_delta.checkpoint import CanonicalCheckpoint
     from miles.backends.sglang_utils.gpu_delta.receiver import GpuDeltaBackend
     from miles.utils.gpu_delta.host import host_cache_id
+    from miles.utils.gpu_delta.publication import static_policy
 
     device = torch.device("cuda", torch.cuda.current_device())
     model = torch.nn.Module()
-    model.config = SimpleNamespace(architectures=["DeepseekV3ForCausalLM"], num_hidden_layers=len(weights))
+    model.config = SimpleNamespace(architectures=["DeepseekV3ForCausalLM"])
     model.num_fused_shared_experts = 0
     model.model = torch.nn.Module()
     model.model.layers = torch.nn.ModuleList([torch.nn.Module() for _ in weights])
@@ -55,7 +59,8 @@ def tiny_receiver(monkeypatch, directory, rank_id, weights, extra):
         name: {"dtype": "F32" if value.dtype == torch.float32 else "U8", "shape": list(value.shape)}
         for name, value in model.named_parameters()
     }
-    monkeypatch.setattr(checkpoint, "read_canonical_checkpoint_inventory", lambda _: inventory)
+    policy = static_policy({"architectures": ["DeepseekV3ForCausalLM"], "num_hidden_layers": len(weights)})
+    monkeypatch.setattr(receiver, "read_canonical_checkpoint", lambda _: CanonicalCheckpoint(inventory, policy, {}))
     for name, value in (
         ("GPU_DELTA_HOST_CACHE_DIR", str(Path(directory) / "cache")),
         ("GPU_DELTA_CPU_WORKERS", "4"),
@@ -76,7 +81,9 @@ def tiny_receiver(monkeypatch, directory, rank_id, weights, extra):
     # The serving worker's CUDA device comes from its model runner, never from a parameter.
     runner = SimpleNamespace(model=model, device="cuda", gpu_id=device.index)
     identities = {name: storage_identity(value) for name, value in model.named_parameters()}
-    return model, inventory, identity, GpuDeltaBackend(runner, identity), identities
+    shadow_store = {}
+    backend = GpuDeltaBackend(runner, identity, CanonicalShadows(shadow_store, create=True))
+    return model, inventory, identity, backend, identities, shadow_store
 
 
 def publish(encoder, codec, directory, stream_id, base_version, target_version, inventory, before, after):
@@ -141,7 +148,7 @@ def test_bitcomp_receiver_double_buffer_exact_updates_and_stale_target(codec, re
         tempfile.TemporaryDirectory(prefix="gpu-delta-bitcomp-", dir="/dev/shm") as directory,
         ThreadPoolExecutor(max_workers=1) as prepare_executor,
     ):
-        model, inventory, identity, backend, identities = tiny_receiver(
+        model, inventory, identity, backend, identities, _ = tiny_receiver(
             monkeypatch,
             directory,
             "bitcomp-original-rank",
@@ -246,7 +253,7 @@ def test_hf_relative_snapshots_are_reversible_with_the_same_update_api(monkeypat
         root = Path(directory)
         # 7-byte tail frames, a CPU raw vector and F32 scalars on CPU and CUDA
         # whose derived values are refreshed.
-        model, inventory, identity, backend, identities = tiny_receiver(
+        model, inventory, identity, backend, identities, shadow_store = tiny_receiver(
             monkeypatch,
             directory,
             "snapshot-original",
@@ -274,7 +281,7 @@ def test_hf_relative_snapshots_are_reversible_with_the_same_update_api(monkeypat
         backend.layout.derived.append(DerivedImage("host-vector", derived_vector, model.model.vector))
         consumers = (derived, derived_cpu, derived_vector)
         consumer_pointers = [value.data_ptr() for value in consumers]
-        session = DeltaSession(identity, backend)
+        session = DeltaSession(identity, backend, shadow_store)
         base = {
             name: value.detach().reshape(-1).view(torch.uint8).cpu().pin_memory()
             for name, value in model.named_parameters()
@@ -353,7 +360,7 @@ def test_bitcomp_failed_transaction_requires_fresh_receiver_recovery(failure, mo
         def receiver(incarnation):
             # One 1 MiB frame per layer batch, so a failure can follow a partial apply.
             # Layer 1 and the raw vector are CPU-resident behind paused CUDA mirrors.
-            model, inventory, identity, backend, _ = tiny_receiver(
+            model, inventory, identity, backend, _, shadow_store = tiny_receiver(
                 monkeypatch,
                 directory,
                 f"native-receiver-{incarnation}",
@@ -363,7 +370,7 @@ def test_bitcomp_failed_transaction_requires_fresh_receiver_recovery(failure, mo
                 ],
                 extra={"raw": torch.zeros(17, dtype=torch.uint8)},
             )
-            sessions.append(DeltaSession(identity, backend))
+            sessions.append(DeltaSession(identity, backend, shadow_store))
             return model, inventory, sessions[-1]
 
         def fill_update(model, inventory, session, version):

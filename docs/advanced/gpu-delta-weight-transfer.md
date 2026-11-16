@@ -281,9 +281,23 @@ The next train call cannot emit the same summary again.
 
 ## Limits
 
-- Receiver admission, supported layouts and excluded serving features (pipeline
-  parallelism, CP decode-attention-TP caches, quantized replicated Q projections, EPLB,
-  redundant experts and elastic joins, among others) are listed in the receiver contract.
+- Receiver admission, including its routed-expert-only quantization contract and
+  primary recipe, the admitted model mappings and parallel layouts, and the excluded
+  serving features (pipeline parallelism, CP decode-attention-TP caches, EPLB,
+  redundant experts and elastic joins, among others) are listed in the
+  [receiver contract](https://github.com/radixark/miles/blob/main/miles/backends/sglang_utils/gpu_delta/README.md#admission-and-supported-layouts).
+- The DeepSeek-V4.1 and Kimi-K3 receiver mappings are best-effort placeholders
+  without end-to-end coverage; see the
+  [receiver contract](https://github.com/radixark/miles/blob/main/miles/backends/sglang_utils/gpu_delta/README.md#admission-and-supported-layouts).
+- The trainer's canonical plan and every receiver read one static-tensor policy,
+  `static_policy` in `miles/utils/gpu_delta/publication.py`, selected by the checkpoint's
+  exact `config.json` `architectures[0]`. It decides which tensors never carry an update
+  (bundled MTP drafts, computed rotary buffers and frozen modules); a checkpoint
+  architecture without a policy row is rejected.
+- Frozen modules are tensors the trainer never exports, matched by the static-tensor
+  policy. Receivers keep serving their checkpoint bytes, and an export that includes one
+  fails the plan's inventory check; training them needs a converter and a policy change
+  together.
 - Shared publications last for the run; no automatic stale-file garbage collection is
   added.
 

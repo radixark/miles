@@ -17,7 +17,9 @@ import threading
 import time
 import uuid
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
 import numpy as np
 import orjson
@@ -105,28 +107,140 @@ def make_checkpoint_reader(checkpoint):
     return read
 
 
+STATIC_DRAFT = "static bundled draft"
+COMPUTED_ROTARY = "loader ignores computed rotary frequencies"
+FROZEN_MODULE = "frozen module the trainer never exports"
+
+
+@dataclass(frozen=True)
+class StaticPolicy:
+    """Which canonical tensors of one checkpoint never carry a trainer update.
+
+    ``static_policy`` builds it from the checkpoint's own config.json; the sender plan and every
+    receiver layout read it through ``static_tensor_reason``.
+    """
+
+    # Decoder depth; bundled draft layers numbered from it are static.
+    num_hidden_layers: int
+    # Bundled draft namespace outside the numbered decoder.
+    draft: re.Pattern | None = None
+    # Modules the trainer never exports; the receiver keeps serving their checkpoint bytes.
+    frozen: re.Pattern | None = None
+
+
+_MTP_DRAFT = re.compile(r"^mtp\.")
+# Vision tower and multimodal projector.
+_KIMI_K3_FROZEN = re.compile(r"^(?:vision_tower|mm_projector)\.")
+# Vision tower, aligner, image tokens, vision routing bias and Engram hash tables.
+_DEEPSEEK_V41_FROZEN = re.compile(
+    r"^(?:vision|aligner)\.|^image_(?:start|end|newline)$|\.ffn\.gate\.bias_vl$|\.engram\.embed\."
+)
+
+
+def _deepseek_v2_family_policy(config):
+    # Checkpoints SGLang serves on its DeepSeek-V2 implementation number their bundled drafts from the decoder depth.
+    return StaticPolicy(num_hidden_layers=config["num_hidden_layers"])
+
+
+def _kimi_k3_policy(config):
+    return StaticPolicy(num_hidden_layers=config["text_config"]["num_hidden_layers"], frozen=_KIMI_K3_FROZEN)
+
+
+def _deepseek_v41_policy(config):
+    return StaticPolicy(
+        num_hidden_layers=config["text_config"]["num_hidden_layers"],
+        draft=_MTP_DRAFT,
+        frozen=_DEEPSEEK_V41_FROZEN,
+    )
+
+
+# The only list of admitted checkpoint architectures: each exact config.json ``architectures[0]``
+# and the builder of its static-tensor policy.
+_STATIC_POLICIES = MappingProxyType(
+    {
+        "DeepseekV2ForCausalLM": _deepseek_v2_family_policy,
+        "DeepseekV3ForCausalLM": _deepseek_v2_family_policy,
+        "DeepseekV32ForCausalLM": _deepseek_v2_family_policy,
+        "GlmMoeDsaForCausalLM": _deepseek_v2_family_policy,
+        "KimiK3ForConditionalGeneration": _kimi_k3_policy,
+        "DeepseekV41ForCausalLM": _deepseek_v41_policy,
+    }
+)
+
+
+def static_policy(config):
+    """The static-tensor policy of a checkpoint, from its own config.json.
+
+    Rows of ``_STATIC_POLICIES`` are keyed by the checkpoint's exact ``architectures[0]``, never by
+    the name SGLang serves (it serves DeepseekV41ForCausalLM as DeepseekV4ForCausalLM); receiver
+    model mappings stay keyed by the served name. An unlisted architecture is rejected.
+    """
+    if not config.get("architectures"):
+        raise ValueError("GPU-delta checkpoint config.json declares no architectures")
+    architecture = config["architectures"][0]
+    if architecture == "DeepseekV4ForCausalLM":
+        raise ValueError(
+            f"GPU delta does not admit DeepSeek-V4 checkpoints (model_type {config.get('model_type')!r}); "
+            "DeepSeek-V4.1 checkpoints declare DeepseekV41ForCausalLM"
+        )
+    elif architecture in _STATIC_POLICIES:
+        return _STATIC_POLICIES[architecture](config)
+    else:
+        raise ValueError(
+            f"GPU delta has no static-tensor policy for checkpoint architecture {architecture!r}; "
+            f"admitted checkpoint architectures: {sorted(_STATIC_POLICIES)}"
+        )
+
+
+def static_tensor_reason(name, policy):
+    """Why a canonical tensor never carries a trainer update under ``policy``, or None.
+
+    The sender plan and every receiver layout share this rule: bundled draft layers (numbered from
+    the decoder depth or under the draft namespace), rotary frequencies the loader recomputes, and
+    modules the trainer never exports.
+    """
+    if policy.draft is not None and policy.draft.search(name):
+        return STATIC_DRAFT
+    layer = re.search(r"(?:^|\.)layers\.(\d+)\.", name)
+    if layer and int(layer[1]) >= policy.num_hidden_layers:
+        return STATIC_DRAFT
+    if name.endswith("rotary_emb.inv_freq"):
+        return COMPUTED_ROTARY
+    if policy.frozen is not None and policy.frozen.search(name):
+        return FROZEN_MODULE
+    return None
+
+
+def canonical_encoding(shape):
+    """The wire encoding of a canonical tensor from its checkpoint shape alone.
+
+    Scalars and vectors travel as uncompressed raw masks. The plan's block128 branch normalizes
+    block-FP8 expert scales separately.
+    """
+    if len(shape) <= 1:
+        return "xor_raw_bytes"
+    return "xor_bytes"
+
+
 def read_checkpoint_plan(checkpoint):
     """Canonical bytes agreed by the immutable HF checkpoint, not a receiver.
 
-    Frozen draft weights, computed rotary buffers and static activation
-    calibration are not trainer updates. Rank slicing and backend layouts are
-    receiver-local and never appear in this contract.
+    Static drafts, frozen modules, computed rotary buffers (``static_policy``) and
+    static activation calibration are not trainer updates. Rank slicing and backend
+    layouts are receiver-local and never appear in this contract.
     """
     checkpoint = Path(checkpoint)
     config = json.loads((checkpoint / "config.json").read_text())
+    policy = static_policy(config)
     quantization = config.get("quantization_config") or {}
     block_fp8 = quantization.get("quant_method") == "fp8" and quantization.get("weight_block_size") == [128, 128]
     locations = _checkpoint_locations(checkpoint)
     plan = []
     for name, (_, _, _, dtype, shape) in sorted(locations.items()):
-        layer = re.search(r"(?:^|\.)layers\.(\d+)\.", name)
-        if (layer and int(layer[1]) >= config["num_hidden_layers"]) or name.endswith(
-            ("rotary_emb.inv_freq", ".input_scale")
-        ):
+        # Activation calibration is static too; receivers classify input scales by expert layout, not by name.
+        if static_tensor_reason(name, policy) is not None or name.endswith(".input_scale"):
             continue
-        spec = dict(
-            name=name, dtype=dtype, shape=list(shape), encoding="xor_raw_bytes" if len(shape) <= 1 else "xor_bytes"
-        )
+        spec = dict(name=name, dtype=dtype, shape=list(shape), encoding=canonical_encoding(shape))
         weight_name = name.removesuffix("_scale_inv")
         projection = re.search(r"\.(?:experts\.\d+|shared_experts)\.(?:gate|up|down)_proj\.weight$", weight_name)
         if block_fp8 and projection and locations[weight_name][3] == "F8_E4M3":
