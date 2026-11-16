@@ -58,6 +58,8 @@ def execute():
         "--eval-top-k 1 "
         "--eval-pool-num-engines 1 "
         "--eval-max-in-flight 1 "
+        "--sglang-max-running-requests 64 "
+        "--sglang-server-concurrency 64 "
     )
 
     perf_args = (

@@ -268,6 +268,8 @@ Eval runs on rollout engines, but only on K of them, and only while it runs:
 ```bash
 --eval-pool-num-engines 2  # engines lent to each eval
 --eval-interval K
+--sglang-max-running-requests 32
+--sglang-server-concurrency 32  # at most --sglang-max-running-requests
 --eval-prompt-data aime /path/to/aime.jsonl
 ```
 
@@ -289,6 +291,12 @@ is still running waits for it (`backpressure`) or is skipped (`skip`). The point
 right step and `eval/lag_steps` reports how late it was. The mode needs `train_async.py`
 with `--fully-async`, one served model without prefill/decode disaggregation, engines of
 `--rollout-num-gpus-per-engine` GPUs, and no rollout fault tolerance.
+
+The whole eval is submitted to the K engines at once, up to `--sglang-server-concurrency`
+samples per engine. Samples an engine cannot run wait in its queue, where a wall-clock
+limit such as an agent timeout keeps counting, so the score would depend on K. The mode
+therefore requires `--sglang-max-running-requests` and a `--sglang-server-concurrency` no
+larger than it; the cap applies to training engines too.
 
 ### Mode 3: Dedicated fleet
 

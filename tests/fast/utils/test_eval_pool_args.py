@@ -22,6 +22,7 @@ def _args(**overrides) -> Namespace:
         rollout_external=False,
         rollout_num_gpus_per_engine=1,
         update_weights_interval=1,
+        sglang_server_concurrency=12,
     )
     return Namespace(**(values | overrides))
 
@@ -61,17 +62,21 @@ class TestValidateEvalPool:
             arguments._validate_eval_pool(_args(), checkpoint_backend=True)
 
 
-def _sglang(*, num_models=1, pd=False, gpus_per_engine=1, num_engines=4) -> tuple:
+def _sglang(*, num_models=1, pd=False, gpus_per_engine=1, num_engines=4, max_running_requests=(12,)) -> tuple:
     models = [
         SimpleNamespace(
             name=f"model-{i}",
             has_pd_disaggregation=pd,
-            server_groups=[SimpleNamespace(num_gpus_per_engine=gpus_per_engine)],
+            server_groups=[
+                SimpleNamespace(num_gpus_per_engine=gpus_per_engine, max_running_requests=value)
+                for value in max_running_requests
+            ],
             num_server_cells=lambda scaling: num_engines,
         )
         for i in range(num_models)
     ]
-    return SimpleNamespace(models=models), SimpleNamespace()
+    get_value = lambda name, group: getattr(group, name)  # noqa: E731
+    return SimpleNamespace(models=models, get_value=get_value), SimpleNamespace()
 
 
 class TestCheckEvalPoolEngines:
@@ -86,9 +91,18 @@ class TestCheckEvalPoolEngines:
             (dict(pd=True), "prefill/decode"),
             (dict(gpus_per_engine=2), "--rollout-num-gpus-per-engine"),
             (dict(num_engines=2), "leaves training none"),
+            (dict(max_running_requests=(None,)), "--sglang-max-running-requests set"),
+            (dict(max_running_requests=(12, 8)), r"engine groups: \[12, 8\]"),
         ],
     )
     def test_an_unsupported_engine_layout_is_rejected(self, sglang_kwargs, message):
         sglang, scaling = _sglang(**sglang_kwargs)
         with pytest.raises(AssertionError, match=message):
             arguments._check_eval_pool_engines(_args(), sglang=sglang, sglang_scaling=scaling)
+
+    def test_a_server_concurrency_above_what_an_engine_runs_is_rejected(self):
+        sglang, scaling = _sglang()
+        with pytest.raises(AssertionError, match="--sglang-server-concurrency 512"):
+            arguments._check_eval_pool_engines(
+                _args(sglang_server_concurrency=512), sglang=sglang, sglang_scaling=scaling
+            )

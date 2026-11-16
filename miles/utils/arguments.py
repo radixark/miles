@@ -657,6 +657,14 @@ def _check_eval_pool_engines(
     )
     num_engines = model.num_server_cells(sglang_scaling)
     assert args.eval_pool_num_engines < num_engines, f"{reason} leaves training none of the {num_engines} engines"
+    # the whole eval goes to the carved engines at once; what an engine cannot run waits in its queue,
+    # where wall-clock agent timeouts expire, so an eval score would depend on how few engines were carved
+    max_running_requests = [sglang.get_value("max_running_requests", g) for g in model.server_groups]
+    assert None not in max_running_requests and args.sglang_server_concurrency <= min(max_running_requests), (
+        f"{reason} needs --sglang-max-running-requests set and --sglang-server-concurrency "
+        f"{args.sglang_server_concurrency} at most it (engine groups: {max_running_requests}), "
+        "so each carved engine takes no more eval samples than it runs"
+    )
 
 
 def _compute_init_expected_num_cells(
