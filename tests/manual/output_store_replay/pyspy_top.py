@@ -24,8 +24,9 @@ def main(argv: list[str]) -> None:
         for line in open(path):
             if not line.strip():
                 continue
-            stack, count = line.rstrip("\n").rsplit(" ", 1)
-            frames = [frame for frame in stack.split(";") if frame]
+            stack, _, count = line.rstrip("\n").rpartition(" ")
+            # A thread sampled in native code can have no Python frame.
+            frames = [frame for frame in stack.split(";") if frame] or ["(no Python frame)"]
             if under and not any(under in frame for frame in frames):
                 continue
             total += int(count)
