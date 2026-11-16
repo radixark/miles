@@ -1754,6 +1754,35 @@ class TestStartAndStopCells:
 
 
 class TestStartCellsRollback:
+    async def test_a_worker_that_cannot_be_created_stops_the_launch_of_its_cell(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """The workers after it are never created, and the ones before it are killed with no graceful shutdown."""
+        original_create_actor = ray_worker_manager._BaseActorManager._create_actor
+        attempts = []
+
+        def fail_the_second(self, *args, **kwargs):
+            attempts.append(self.worker_in_cell_index)
+            if len(attempts) == 2:
+                raise RuntimeError("gcs unavailable")
+            return original_create_actor(self, *args, **kwargs)
+
+        manager = RayWorkerManager()
+        with pytest.raises(RuntimeError, match="gcs unavailable"):
+            with pytest.MonkeyPatch.context() as patched:
+                patched.setattr(ray_worker_manager._BaseActorManager, "_create_actor", fail_the_second)
+                await manager.init(
+                    worker_manager_args(),
+                    [_make_spec("engine", num_workers_per_cell=3)],
+                    {},
+                    comm_backend=WorkerCommBackend.RAY,
+                )
+
+        assert attempts == [0, 1]
+        assert len(fake_ray_cluster.handles) == 1
+        assert fake_ray_cluster.handles[0].killed
+        assert fake_ray_cluster.calls_of("shutdown") == []
+
     async def test_a_resume_that_fails_midway_leaves_the_cell_suspended(self, fake_ray_cluster: FakeRayCluster):
         """A half-started cell that still looked alive would never be retried by the heal loop."""
         manager = await _launch([_make_spec("engine")])

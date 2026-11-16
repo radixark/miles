@@ -252,8 +252,28 @@ class _CellManager(Generic[SpecT]):
             )
             for worker_in_cell_index in range(scheduling.num_workers_per_cell)
         ]
-        await self._for_all_actors(lambda a: a.launch_actor())
+        await self._launch_all_or_none()
         self.liveness_scan_task = asyncio.create_task(self._scan_liveness_forever(self.generation))
+
+    async def _launch_all_or_none(self) -> None:
+        """Create the cell's actors one at a time; a launch either creates every one of them or leaves none behind.
+
+        When one cannot be created, the ones already created are killed, without a graceful shutdown since none has
+        run anything yet, the rest are never created, and the error is raised again.
+        """
+        try:
+            for actor in self.actors:
+                await actor.launch_actor()
+        except BaseException:
+            for actor in self.actors:
+                if (handle := actor.actor_handle) is not None:
+                    actor.actor_handle = None
+                    try:
+                        ray.kill(handle)
+                        logger.info(f"Killed actor {handle}")
+                    except Exception as e:
+                        logger.warning(f"Failed to kill actor {handle} ({e})")
+            raise
 
     async def alloc_ports(self) -> None:
         await self._for_all_actors(lambda a: a.alloc_ports())
