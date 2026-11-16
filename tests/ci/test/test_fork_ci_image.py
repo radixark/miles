@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-from tests.ci.ci_policy import resolve_workflow_inputs
 from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=2, suite="stage-a-cpu", labels=[])
@@ -215,16 +214,7 @@ def source(tmp_path, identity):
     git("commit", "-qm", "base")
     base = git("rev-parse", "HEAD")
     (root / "docker/Dockerfile").write_text("FROM scratch\nLABEL pin=fixed\n")
-    (root / "tests/ci").mkdir(parents=True)
-    (root / "tests/ci/labels.py").write_text(
-        "raise RuntimeError('PR imports must not execute')\n"
-        "KNOWN_LABELS: dict[str, str] = {'megatron': 'Megatron tests'}\n"
-    )
-    (root / "tests/e2e").mkdir(parents=True)
-    (root / "tests/e2e/test_new.py").write_text(
-        "raise RuntimeError('PR imports must not execute')\nregister_cuda_ci(est_time=1, suite='stage-b-2-gpu-h200', labels=['megatron'], hardware=['hopper'])\n"
-    )
-    git("add", "docker/Dockerfile", "tests")
+    git("add", "docker/Dockerfile")
     git("commit", "-qm", "fork")
     head = git("rev-parse", "HEAD")
     merge = git("commit-tree", "HEAD^{tree}", "-p", base, "-p", head, "-m", "merge")
@@ -232,17 +222,12 @@ def source(tmp_path, identity):
     request, _, pr = copy.deepcopy(identity)
     request.update(merge_sha=merge, inputs_hash=HANDLER.image_inputs.compute("HEAD", root=root))
     pr["head"]["sha"] = head
-    policy = resolve_workflow_inputs("pull_request", "", '["run-ci-image"]')
-    return root, request, pr, policy
+    return root, request, pr
 
 
-def test_validates_new_pr_registration_without_executing_source(source):
-    root, request, pr, policy = source
-    HANDLER.validate_source(request, pr, policy, root)
-    for labels in ([], ["run-ci"], ["run-ci-unknown"], ["run-on-blackwell"]):
-        cpu_policy = resolve_workflow_inputs("pull_request", "", json.dumps(labels))
-        with pytest.raises(ValueError, match="No CUDA tests"):
-            HANDLER.validate_source(request, pr, cpu_policy, root)
+def test_validates_changed_inputs_without_executing_source(source):
+    root, request, pr = source
+    HANDLER.validate_source(request, pr, root)
 
 
 @pytest.mark.parametrize(
@@ -253,8 +238,8 @@ def test_validates_new_pr_registration_without_executing_source(source):
         (["run-ci-image", "bypass-fastfail"], "failure"),
     ],
 )
-def test_label_removal_preserves_source_selection_and_cpu_gate(monkeypatch, identity, source, labels, cpu):
-    root, request, pr, _ = source
+def test_label_removal_preserves_source_cpu_gate(monkeypatch, identity, source, labels, cpu):
+    root, request, pr = source
     request["labels"] = labels
     pr["labels"] = []
     run = copy.deepcopy(identity[1])
@@ -265,10 +250,8 @@ def test_label_removal_preserves_source_selection_and_cpu_gate(monkeypatch, iden
     )
     stub_api(monkeypatch, (request, run, pr), cpu=cpu)
     parsed = HANDLER.parse_request(archive_request(request))
-    current_pr, fork_policy = HANDLER.current_request(parsed, REPOSITORY)
-    caller_policy = resolve_workflow_inputs("pull_request", "", json.dumps(labels))
-    assert fork_policy == caller_policy
-    HANDLER.validate_source(parsed, current_pr, fork_policy, root)
+    current_pr = HANDLER.current_request(parsed, REPOSITORY)
+    HANDLER.validate_source(parsed, current_pr, root)
 
 
 def test_live_bypass_label_cannot_change_source_cpu_gate(monkeypatch, identity):
@@ -285,29 +268,28 @@ def test_live_bypass_label_cannot_change_source_cpu_gate(monkeypatch, identity):
         "docker/build.py",
         ".dockerignore",
         "docker/Dockerfile.dockerignore",
-        "tests/e2e/test_new.py",
     ],
 )
 def test_source_symlinks_cannot_reach_host_files(source, tmp_path, path):
-    root, request, pr, policy = source
+    root, request, pr = source
     target = tmp_path / "outside"
     target.write_text("host data")
     link = root / path
     link.unlink(missing_ok=True)
     link.symlink_to(target)
     with pytest.raises(Exception, match="symlink"):
-        HANDLER.validate_source(request, pr, policy, root)
+        HANDLER.validate_source(request, pr, root)
 
 
 def test_context_hash_must_match_frozen_source(source):
-    root, request, pr, policy = source
+    root, request, pr = source
     (root / "docker/Dockerfile").write_text("FROM scratch\nLABEL pin=other\n")
     with pytest.raises(ValueError, match="Build context differs"):
-        HANDLER.validate_source(request, pr, policy, root)
+        HANDLER.validate_source(request, pr, root)
 
 
 def test_oci_build_uses_trusted_driver_and_supplied_context(source, monkeypatch):
-    root, request, _, _ = source
+    root, request, _ = source
     spec = importlib.util.spec_from_file_location("build", ROOT / "docker/build.py")
     build = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(build)
@@ -343,13 +325,13 @@ def test_publication_requires_matching_hash_on_both_architectures(identity, monk
 
 @pytest.mark.parametrize("force,remove_fails", [(False, False), (True, False), (True, True)])
 def test_publication_only_consumes_the_original_force_request(source, monkeypatch, capsys, force, remove_fails):
-    root, request, pr, policy = source
+    root, request, pr = source
     request["force_rebuild"] = force
     pr["labels"].append(dict(name="rebuild-ci-image"))
     monkeypatch.setenv("GITHUB_REPOSITORY", REPOSITORY)
     monkeypatch.setenv("REQUEST_JSON", json.dumps(request))
     monkeypatch.setattr(sys, "argv", ["fork_ci_image.py", "finish", "--source", str(root)])
-    monkeypatch.setattr(HANDLER, "current_request", lambda *args: (pr, policy))
+    monkeypatch.setattr(HANDLER, "current_request", lambda *args: pr)
     monkeypatch.setattr(HANDLER, "verify_published", lambda request: None)
     mutations = []
 

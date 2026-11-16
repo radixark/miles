@@ -92,7 +92,7 @@ jobs:
           # Replace the action's default network.host/security.insecure entitlements.
           buildkitd-flags: --oci-worker-net=bridge
           driver-opts: image=moby/buildkit:latest
-      - name: Validate source, CUDA demand, and CPU gate
+      - name: Validate source and CPU gate
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 trusted/.github/workflows/scripts/fork_ci_image.py check-source --source source
