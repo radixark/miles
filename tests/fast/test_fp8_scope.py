@@ -103,12 +103,20 @@ def test_no_extra_exclusions_preserves_existing_conversion(tmp_path, cpu_safeten
         assert torch.equal(actual[name + scale_suffix], scale)
 
 
-def test_an_all_zero_block_quantizes_to_zeros():
-    weight = torch.zeros(128, 256, dtype=torch.bfloat16)
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
+def test_an_all_zero_block_quantizes_to_zeros(dtype):
+    weight = torch.zeros(128, 256, dtype=dtype)
     weight[:, :128] = 1.0
     qweight, scale = converter.quant_fp8(weight, "block", [128, 128])
     assert torch.isfinite(scale).all() and (scale > 0).all()
     assert torch.equal(qweight[:, 128:].float(), torch.zeros(128, 128))
+
+
+@pytest.mark.parametrize("strategy", ["channel", "tensor"])
+def test_an_all_zero_fp16_weight_quantizes_to_zeros(strategy):
+    qweight, scale = converter.quant_fp8(torch.zeros(4, 16, dtype=torch.float16), strategy)
+    assert torch.isfinite(scale).all() and (scale > 0).all()
+    assert torch.equal(qweight.float(), torch.zeros(4, 16))
 
 
 def test_selected_unsupported_block_weight_raises(tmp_path, cpu_safetensors):
