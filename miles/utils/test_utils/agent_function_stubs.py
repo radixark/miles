@@ -10,6 +10,7 @@ import threading
 import time
 from pathlib import Path
 
+from miles.rollout.agentic.agent_function import InfraAbort
 from miles.rollout.agentic.rollout_limits import current_scope, rollout_lock, rollout_semaphore
 
 
@@ -40,6 +41,10 @@ async def fail(**kwargs) -> None:
 
 async def fail_unrebuildably(**kwargs) -> None:
     raise NeedsKeywordError("agent failed on purpose", detail="lost on the way")
+
+
+async def abort_for_infra(**kwargs) -> None:
+    raise InfraAbort("SandboxUnavailable", "the sandbox never came up")
 
 
 async def exit_without_returning(**kwargs) -> None:

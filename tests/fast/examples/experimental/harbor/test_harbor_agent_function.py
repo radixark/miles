@@ -16,6 +16,8 @@ from types import SimpleNamespace
 import harbor_agent_function as haf
 import pytest
 
+from miles.rollout.agentic.agent_function import InfraAbort
+
 
 class _EnvironmentType(str, enum.Enum):
     DOCKER = "docker"
@@ -384,6 +386,84 @@ def test_run_raises_when_no_provider_key_is_resolvable(tasks_dir, fake_harbor, m
 def test_run_scores_a_trial_exception_zero(tasks_dir, fake_harbor):
     fake_harbor.result = RuntimeError("sandbox exploded")
     out = run_async(haf.run("http://s/sessions/s1", [], {}, {"instance_id": "task-1"}))
+    assert out["reward"] == 0.0 and out["exit_status"] == "AgentError"
+
+
+def _failed_trial(exc_type, *, agent_setup=False, agent_execution=False, step_results=None):
+    stamp = SimpleNamespace(started_at=datetime(2026, 1, 1), finished_at=datetime(2026, 1, 1))
+    return SimpleNamespace(
+        exception_info=SimpleNamespace(exception_type=exc_type, exception_message="boom"),
+        verifier_result=None,
+        agent_result=None,
+        environment_setup=stamp,
+        agent_setup=stamp if agent_setup else None,
+        agent_execution=stamp if agent_execution else None,
+        step_results=step_results,
+    )
+
+
+@pytest.mark.parametrize(("agent_setup", "exit_status"), [(False, "SandboxUnavailable"), (True, "AgentSetupFailed")])
+def test_run_discards_a_trial_that_failed_before_its_agent_started(tasks_dir, fake_harbor, agent_setup, exit_status):
+    fake_harbor.result = _failed_trial("EnvironmentStartTimeoutError", agent_setup=agent_setup)
+
+    with pytest.raises(InfraAbort, match="EnvironmentStartTimeoutError: boom") as raised:
+        run_async(haf.run("http://s/sessions/s1", [], {}, {"instance_id": "task-1"}))
+
+    assert raised.value.exit_status == exit_status
+
+
+@pytest.mark.parametrize("exc_type", ["APIConnectionError", "ServiceUnavailableError"])
+def test_run_discards_a_trial_whose_agent_lost_the_model_service(tasks_dir, fake_harbor, exc_type):
+    fake_harbor.result = _failed_trial(exc_type, agent_setup=True, agent_execution=True)
+
+    with pytest.raises(InfraAbort) as raised:
+        run_async(haf.run("http://s/sessions/s1", [], {}, {"instance_id": "task-1"}))
+
+    assert raised.value.exit_status == "ServerUnreachable"
+
+
+@pytest.mark.parametrize(
+    ("exc_type", "exit_status"),
+    [
+        ("AgentTimeoutError", "TimeLimitExceeded"),
+        ("RuntimeError", "AgentError"),
+        ("ApiRateLimitError", "AgentError"),
+        ("ApiInternalServerError", "AgentError"),
+        ("ApiConnectionClosedError", "AgentError"),
+        ("InternalServerError", "AgentError"),
+        ("Timeout", "AgentError"),
+    ],
+)
+def test_run_scores_a_failure_after_the_agent_started_zero(tasks_dir, fake_harbor, exc_type, exit_status):
+    fake_harbor.result = _failed_trial(exc_type, agent_setup=True, agent_execution=True)
+
+    out = run_async(haf.run("http://s/sessions/s1", [], {}, {"instance_id": "task-1"}))
+
+    assert out["reward"] == 0.0 and out["exit_status"] == exit_status
+
+
+def test_run_discards_a_multi_step_trial_whose_step_lost_the_model_service(tasks_dir, fake_harbor):
+    started = SimpleNamespace(started_at=datetime(2026, 1, 1), finished_at=datetime(2026, 1, 1))
+    step = SimpleNamespace(
+        agent_execution=started,
+        exception_info=SimpleNamespace(exception_type="APIConnectionError", exception_message="connection refused"),
+    )
+    fake_harbor.result = _verdict()
+    fake_harbor.result.agent_execution = None
+    fake_harbor.result.step_results = [step]
+
+    with pytest.raises(InfraAbort, match="APIConnectionError: connection refused") as raised:
+        run_async(haf.run("http://s/sessions/s1", [], {}, {"instance_id": "task-1"}))
+
+    assert raised.value.exit_status == "ServerUnreachable"
+
+
+def test_run_counts_a_multi_step_trial_whose_step_ran_as_started(tasks_dir, fake_harbor):
+    step = SimpleNamespace(agent_execution=SimpleNamespace(started_at=datetime(2026, 1, 1), finished_at=None))
+    fake_harbor.result = _failed_trial("RuntimeError", agent_setup=True, step_results=[step])
+
+    out = run_async(haf.run("http://s/sessions/s1", [], {}, {"instance_id": "task-1"}))
+
     assert out["reward"] == 0.0 and out["exit_status"] == "AgentError"
 
 

@@ -214,8 +214,24 @@ async def test_aborted_group_is_classified_before_missing_reward(monkeypatch):
     output, _ = await task
 
     assert [group[0].group_index for group in output.samples] == [2]
-    assert output.metrics["rollout/dynamic_filter/drop_group_has_aborted"] == 1
+    assert output.metrics["rollout/dynamic_filter/drop_group_has_aborted_unknown"] == 1
     assert "rollout/dynamic_filter/drop_group_has_missing_reward" not in output.metrics
+
+
+async def test_an_aborted_group_drops_under_the_cause_it_recorded(monkeypatch):
+    harness = Harness(monkeypatch, make_args(rollout_batch_size=1))
+    task = harness.run()
+    await asyncio.sleep(0)
+
+    harness.submitted_groups[0][0].status = Sample.Status.ABORTED
+    harness.submitted_groups[0][0].metadata = {"exit_status": "SandboxUnavailable"}
+    harness.finish_group(0)
+    await asyncio.sleep(0.01)
+
+    harness.finish_group(1)
+    output, _ = await task
+
+    assert output.metrics["rollout/dynamic_filter/drop_group_has_aborted_SandboxUnavailable"] == 1
 
 
 async def test_backfill_submits_replacement_before_the_group_returns(monkeypatch):
