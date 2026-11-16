@@ -144,7 +144,13 @@ fi
 if [[ -n "${DOCKERHUB_USERNAME:-}" && -n "${DOCKERHUB_TOKEN:-}" ]]; then
     printenv DOCKERHUB_TOKEN | docker login -u "$DOCKERHUB_USERNAME" --password-stdin >/dev/null
 fi
+# CI_IMAGE is a moving tag; remove the build a pull replaces (skipped while in use).
+old_image="$(docker image inspect -f '{{.Id}}' "$CI_IMAGE" 2>/dev/null || true)"
 retry 4 docker pull "$CI_IMAGE"
+if [[ -n "$old_image" && "$old_image" != "$(docker image inspect -f '{{.Id}}' "$CI_IMAGE")" ]]; then
+    docker rmi "$old_image" >/dev/null 2>&1 \
+        && echo "[miles-ci-job] removed old $CI_IMAGE build ${old_image:7:12}" || true
+fi
 
 ENV_ARGS=(-e GITHUB_WORKSPACE=/miles-checkout -e PYTHONPATH=/miles-checkout
           -e GITHUB_STEP_SUMMARY=/miles-checkout/.ci-step-summary.md)
