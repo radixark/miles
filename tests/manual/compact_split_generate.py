@@ -1,35 +1,50 @@
-"""E2E fixture: compact generate fn splitting one rollout execution into two
-training samples that share the parent's rollout_id. Use via
---custom-generate-function-path tests.manual.compact_split_generate.generate"""
-
 import copy
 
+from miles.rollout import sglang_rollout
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_hub.single_turn import generate as single_turn_generate
 from miles.utils.types import Sample
 
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
-    output = await single_turn_generate(input)
-    sample = output.samples
+    sample = (await single_turn_generate(input)).samples
+    return GenerateFnOutput(samples=_split(sample, num_pieces=2))
+
+
+async def generate_one_to_three(input: GenerateFnInput) -> GenerateFnOutput:
+    sample = await sglang_rollout.generate(
+        input.args, input.sample, input.sampling_params, evaluation=input.evaluation
+    )
+    return GenerateFnOutput(samples=_split(sample, num_pieces=1 + sample.index % 3))
+
+
+async def generate_two(input: GenerateFnInput) -> GenerateFnOutput:
+    sample = await sglang_rollout.generate(
+        input.args, input.sample, input.sampling_params, evaluation=input.evaluation
+    )
+    return GenerateFnOutput(samples=_split(sample, num_pieces=2))
+
+
+def _split(sample: Sample, *, num_pieces: int) -> list[Sample]:
     assert isinstance(sample, Sample)
 
     sample.rollout_id = sample.index
-    if sample.response_length < 2 or sample.status == Sample.Status.ABORTED:
-        return GenerateFnOutput(samples=[sample])
+    num_pieces = min(num_pieces, sample.response_length)
+    if num_pieces < 2 or sample.status == Sample.Status.ABORTED:
+        return [sample]
 
     prompt_len = len(sample.tokens) - sample.response_length
-    cut = sample.response_length // 2
-
-    first = copy.deepcopy(sample)
-    first.tokens = sample.tokens[: prompt_len + cut]
-    first.response_length = cut
-    first.loss_mask = sample.loss_mask[:cut] if sample.loss_mask is not None else None
-    if first.rollout_log_probs is not None:
-        first.rollout_log_probs = sample.rollout_log_probs[:cut]
-    first.status = Sample.Status.COMPLETED
-
-    second = copy.deepcopy(sample)
-    second.loss_mask = [0] * cut + list(sample.loss_mask[cut:]) if sample.loss_mask is not None else None
-
-    return GenerateFnOutput(samples=[first, second])
+    loss_mask = sample.loss_mask if sample.loss_mask is not None else [1] * sample.response_length
+    cuts = [sample.response_length * k // num_pieces for k in range(num_pieces + 1)]
+    pieces = []
+    for start, end in zip(cuts, cuts[1:], strict=False):
+        piece = copy.deepcopy(sample)
+        piece.tokens = sample.tokens[: prompt_len + end]
+        piece.response_length = end
+        piece.loss_mask = [0] * start + list(loss_mask[start:end])
+        if sample.rollout_log_probs is not None:
+            piece.rollout_log_probs = sample.rollout_log_probs[:end]
+        if end < sample.response_length:
+            piece.status = Sample.Status.COMPLETED
+        pieces.append(piece)
+    return pieces

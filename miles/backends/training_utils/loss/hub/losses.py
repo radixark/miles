@@ -160,6 +160,8 @@ def policy_loss_function(
             full_old_log_probs=full_old_log_probs,
             advantages=layout.per_sample(advantages),
             loss_masks=batch["loss_masks"],
+            denominators=batch.get("rollout_mask_sums", None),
+            local_loss_masks=layout.per_sample(layout.loss_masks()),
         )
 
     local_loss_masks = layout.loss_masks()

@@ -11,15 +11,24 @@ Covers:
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
-from tests.fast.backends.training_utils.loss.loss_test_utils import make_parallel_state
+from tests.fast.backends.training_utils.loss.loss_test_utils import make_args as make_loss_args
+from tests.fast.backends.training_utils.loss.loss_test_utils import make_batch, make_inputs, make_parallel_state
 from tests.fast.ray.rollout.conftest import make_args, make_sample
 
 from miles.backends.training_utils.data.context_parallel import get_sum_of_sample_mean
+from miles.backends.training_utils.data.rollout import get_num_rollouts
+from miles.backends.training_utils.loss import objective
 from miles.backends.training_utils.metrics import log_utils
-from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data
+from miles.ray.rollout.train_data_conversion import (
+    _num_rollouts_of_single_step,
+    convert_samples_to_train_data,
+    split_train_data_by_dp_raw,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -105,3 +114,57 @@ class TestAggregateTrainLossesNumRollouts:
         losses = [self._mb(2, {"loss": 2.0}), self._mb(2, {"loss": 6.0})]
         out = log_utils.aggregate_train_losses(losses)
         assert math.isclose(out["loss"], 2.0)
+
+
+def _ones(lens: list[int]) -> list[torch.Tensor]:
+    return [torch.ones(n, dtype=torch.int) for n in lens]
+
+
+class TestSplitRolloutsLoseNothing:
+    def test_two_rollouts_in_five_samples_match_the_unsplit_loss(self):
+        per_token = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 10.0, 20.0, 30.0, 40.0])
+        unsplit = get_sum_of_sample_mean([6, 4], [6, 4], _ones([6, 4]))
+        expected = unsplit(per_token).item() / 2
+        split_lens = [1, 2, 3, 1, 3]
+        split = get_sum_of_sample_mean(
+            split_lens, split_lens, _ones(split_lens), denominators=torch.tensor([6.0, 6.0, 6.0, 4.0, 4.0])
+        )
+
+        data = {"tokens": [[0]] * 5, "rollout_ids": [7, 7, 7, 9, 9], "dynamic_global_batch_size": 5}
+        (num_rollouts,) = _num_rollouts_of_single_step(SimpleNamespace(global_batch_size=5, multi_lora=False), data)
+
+        assert num_rollouts == 2
+        assert math.isclose(split(per_token).item() / num_rollouts, expected, rel_tol=1e-6)
+        assert math.isclose(split(per_token).item() / 5, expected * 2 / 5, rel_tol=1e-6)
+
+
+def test_the_loss_divides_by_the_rollout_count_the_training_side_split_stamps(monkeypatch):
+    split_args = SimpleNamespace(
+        global_batch_size=5, balance_data=False, multi_lora=False, backend=SimpleNamespace(global_batch_size=5)
+    )
+    data = {
+        "tokens": [[1, 2]] * 5,
+        "rollout_ids": [7, 7, 7, 9, 9],
+        "dynamic_global_batch_size": 5,
+        "response_lengths": [1] * 5,
+    }
+    (shard,) = split_train_data_by_dp_raw(split_args, data, dp_size=1)
+    (num_rollouts,) = get_num_rollouts(split_args, shard, num_steps=1)
+    del shard["num_rollouts"]
+    assert get_num_rollouts(split_args, shard, num_steps=1) == [5]
+
+    args = make_loss_args(use_dynamic_global_batch_size=True, calculate_per_token_loss=False)
+    inputs = make_inputs(seed=5, batch_size=1, prompt_lens=[3], response_lens=[2], vocab_size=8, args=args)
+    batch = make_batch(inputs, "policy_loss")
+    batch["dynamic_global_batch_size"] = 5
+    monkeypatch.setattr(
+        objective,
+        "get_loss_function",
+        lambda _args, _loss_fn=None: Mock(return_value=(torch.tensor(3.0), {"loss": torch.tensor(0.0)})),
+    )
+    stamped, _, _ = objective.loss_function(args, batch, 1, inputs["policy_logits"], num_rollouts=num_rollouts)
+    unstamped, _, _ = objective.loss_function(args, batch, 1, inputs["policy_logits"], num_rollouts=None)
+
+    assert num_rollouts == 2
+    assert math.isclose(stamped.item(), 3.0 / 2, rel_tol=1e-6)
+    assert math.isclose(unstamped.item(), 3.0 / 5, rel_tol=1e-6)

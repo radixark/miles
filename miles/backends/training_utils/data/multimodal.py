@@ -35,6 +35,29 @@ def _num_image_tokens_from_grid(
     return (h // merge_h) * (w // merge_w)
 
 
+def _kimi_vl_splices(
+    tokens: torch.Tensor, grid_thws: torch.Tensor | None, media_token_id: int = KIMI_VL_MEDIA_TOKEN_ID
+) -> list[tuple[int, int]]:
+    if grid_thws is None or len(grid_thws) == 0:
+        return []
+
+    placeholder_positions = (tokens == media_token_id).nonzero(as_tuple=True)[0].tolist()
+    if len(placeholder_positions) == 0:
+        return []
+
+    num_image_tokens = [_num_image_tokens_from_grid(grid_thw) for grid_thw in grid_thws]
+    if len(placeholder_positions) == sum(num_image_tokens):
+        # Already pre-expanded. Keep this helper idempotent because the same
+        # rollout batch may pass through multiple normalization paths.
+        return []
+    if len(placeholder_positions) != len(num_image_tokens):
+        raise ValueError(
+            f"K25 multimodal sample has {len(placeholder_positions)} media placeholders for {len(num_image_tokens)} "
+            f"grids ({sum(num_image_tokens)} image tokens); expected one placeholder per grid or the expanded count"
+        )
+    return list(zip(placeholder_positions, num_image_tokens, strict=True))
+
+
 def _expand_image_tokens_for_sample(
     tokens: torch.Tensor,
     loss_mask: torch.Tensor,
@@ -42,42 +65,16 @@ def _expand_image_tokens_for_sample(
     media_token_id: int = KIMI_VL_MEDIA_TOKEN_ID,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     # TODO: expansion shifts token indices, so Sample.weight_versions span positions are not remapped and misalign here.
-    if grid_thws is None or len(grid_thws) == 0:
+    splices = _kimi_vl_splices(tokens, grid_thws, media_token_id)
+    if not splices:
         return tokens, loss_mask
 
-    placeholder_positions = (tokens == media_token_id).nonzero(as_tuple=True)[0]
-    if len(placeholder_positions) == 0:
-        return tokens, loss_mask
-
-    num_placeholders = len(placeholder_positions)
-    num_grids = len(grid_thws)
-    expected_total_image_tokens = sum(_num_image_tokens_from_grid(grid_thw) for grid_thw in grid_thws)
-    if num_placeholders == expected_total_image_tokens:
-        # Already pre-expanded. Keep this helper idempotent because the same
-        # rollout batch may pass through multiple normalization paths.
-        return tokens, loss_mask
-    if num_placeholders != num_grids:
-        logger.warning(
-            "K25 multimodal token mismatch before training: placeholders=%s, grids=%s",
-            num_placeholders,
-            num_grids,
-        )
-
-    merge_h, merge_w = _KIMI_VL_MERGE_H, _KIMI_VL_MERGE_W
     prompt_len = len(tokens) - len(loss_mask)
 
     expanded_tokens = tokens.clone()
     expanded_mask = loss_mask.clone()
 
-    for i, pos in enumerate(reversed(placeholder_positions)):
-        pos = pos.item()
-        grid_idx = num_placeholders - 1 - i
-        if grid_idx >= num_grids:
-            continue
-
-        _, h, w = grid_thws[grid_idx].tolist()
-        num_image_tokens = (h // merge_h) * (w // merge_w)
-
+    for pos, num_image_tokens in reversed(splices):
         expanded_placeholder = torch.full(
             (num_image_tokens,), media_token_id, dtype=expanded_tokens.dtype, device=expanded_tokens.device
         )
@@ -119,21 +116,22 @@ INKLING_IMAGE_SENTINEL_ID = -101
 INKLING_AUDIO_SENTINEL_ID = -102
 INKLING_MM_PLACEHOLDER_TOKEN_ID = 200023
 INKLING_MM_AUDIO_PLACEHOLDER_TOKEN_ID = 200025
+_INKLING_MEDIA_SPEC = (
+    (INKLING_IMAGE_SENTINEL_ID, INKLING_MM_PLACEHOLDER_TOKEN_ID, "mm_vision_num_patches", "mm_vision_positions"),
+    (INKLING_AUDIO_SENTINEL_ID, INKLING_MM_AUDIO_PLACEHOLDER_TOKEN_ID, "mm_audio_num_tokens", "mm_audio_positions"),
+)
 
 
-def _expand_inkling_sample(token_tensor, loss_mask, mm, sample_idx: int):
-    """Replace media sentinels with placeholder runs, recording their sample-local positions into mm; idempotent."""
-    spec = (
-        (INKLING_IMAGE_SENTINEL_ID, INKLING_MM_PLACEHOLDER_TOKEN_ID, "mm_vision_num_patches", "mm_vision_positions"),
-        (
-            INKLING_AUDIO_SENTINEL_ID,
-            INKLING_MM_AUDIO_PLACEHOLDER_TOKEN_ID,
-            "mm_audio_num_tokens",
-            "mm_audio_positions",
-        ),
+def _has_inkling_media(multimodal_train_inputs: Sequence[dict[str, torch.Tensor] | None] | None) -> bool:
+    return multimodal_train_inputs is not None and any(
+        mm is not None and any(counts_key in mm for _, _, counts_key, _ in _INKLING_MEDIA_SPEC)
+        for mm in multimodal_train_inputs
     )
+
+
+def _inkling_splices(token_tensor: torch.Tensor, mm, sample_idx: int) -> list[tuple[int, int, int, str]]:
     splices = []
-    for sentinel, placeholder, counts_key, positions_key in spec:
+    for sentinel, placeholder, counts_key, positions_key in _INKLING_MEDIA_SPEC:
         counts = mm.get(counts_key) if mm else None
         positions = (token_tensor == sentinel).nonzero(as_tuple=True)[0]
         if positions.numel() == 0:
@@ -142,17 +140,19 @@ def _expand_inkling_sample(token_tensor, loss_mask, mm, sample_idx: int):
             f"sample {sample_idx}: {positions.numel()} sentinel(s) {sentinel} but "
             f"{counts_key}={'missing' if counts is None else len(counts)}"
         )
-        splices.append((positions.tolist(), [int(c) for c in counts], placeholder, positions_key))
+        splices.extend(
+            (pos, int(n), placeholder, positions_key) for pos, n in zip(positions.tolist(), counts, strict=True)
+        )
+    return sorted(splices)
 
-    if not splices:
+
+def _expand_inkling_sample(token_tensor, loss_mask, mm, sample_idx: int):
+    """Replace media sentinels with placeholder runs, recording their sample-local positions into mm; idempotent."""
+    flat = _inkling_splices(token_tensor, mm, sample_idx)
+    if not flat:
         return token_tensor
 
     prompt_len = len(token_tensor) - len(loss_mask)
-    flat = sorted(
-        (pos, n, placeholder, positions_key)
-        for positions, counts, placeholder, positions_key in splices
-        for pos, n in zip(positions, counts, strict=True)
-    )
     assert all(
         p < prompt_len for p, _, _, _ in flat
     ), "Inkling media sentinels must be in the prompt; found one in the response"
@@ -200,16 +200,37 @@ def _expand_inkling_rollout_data_in_place(rollout_data: RolloutBatch) -> None:
         )
 
 
+def trained_total_lengths(
+    tokens: Sequence[Sequence[int] | torch.Tensor],
+    multimodal_train_inputs: Sequence[dict[str, torch.Tensor] | None] | None,
+    media_token_id: int = KIMI_VL_MEDIA_TOKEN_ID,
+) -> list[int]:
+    if not multimodal_train_inputs:
+        return [len(t) for t in tokens]
+    if _has_inkling_media(multimodal_train_inputs):
+        splices = [
+            _inkling_splices(torch.as_tensor(t), mm, i)
+            for i, (t, mm) in enumerate(zip(tokens, multimodal_train_inputs, strict=True))
+        ]
+    else:
+        grid_inputs = _collect_multimodal_grid_inputs(multimodal_train_inputs)
+        splices = [
+            [] if mm is None else _kimi_vl_splices(torch.as_tensor(t), mm["grid_thws"], media_token_id)
+            for t, mm in zip(tokens, grid_inputs, strict=True)
+        ]
+    return [
+        len(t) + sum(count - 1 for _, count, *_ in sample_splices)
+        for t, sample_splices in zip(tokens, splices, strict=True)
+    ]
+
+
 def expand_multimodal_rollout_data_in_place(
     rollout_data: RolloutBatch,
     media_token_id: int = KIMI_VL_MEDIA_TOKEN_ID,
     qkv_format: str = "thd",
 ) -> None:
     multimodal_train_inputs = rollout_data.get("multimodal_train_inputs", None)
-    if multimodal_train_inputs is not None and any(
-        mm is not None and ("mm_vision_num_patches" in mm or "mm_audio_num_tokens" in mm)
-        for mm in multimodal_train_inputs
-    ):
+    if _has_inkling_media(multimodal_train_inputs):
         _expand_inkling_rollout_data_in_place(rollout_data)
         return
     mm_inputs_list = _collect_multimodal_grid_inputs(multimodal_train_inputs)
