@@ -293,17 +293,21 @@ def run_a_suite(args):
     if args.enable_retry:
         timeout += args.retry_timeout_increase
 
-    # Regression-gate wiring: the store exists only when NEON_DATABASE_URL is
-    # set (CI), so the gate hook is a no-op locally. The resolved cadence is
-    # also supplies the baseline-writing signal. Provenance comes from the GitHub env.
-    gate_store = build_store_from_env()
+    # Each backend uses its own optional Neon URL. Missing/empty URLs skip the
+    # history gate. The resolved cadence supplies the baseline-writing signal;
+    # provenance comes from the GitHub environment.
+    gate_store = build_store_from_env(backend=hw)
     gate_provenance = gate_provenance_from_env()
 
     # The gate collects only when a record directory exists. CI does not set
     # MILES_CI_GATE_RECORD_DIR, so allocate a job-local one whenever a store is
-    # configured (CUDA suites only -- the gate is CUDA-only). The training
+    # configured (CUDA and ROCm suites; ROCm only records, see run_gate_hook). The training
     # subprocesses' CiHistoryBackend and the merge/gate steps read it from env.
-    if gate_store is not None and hw == HWBackend.CUDA and not os.environ.get(CI_GATE_RECORD_DIR_ENV):
+    if (
+        gate_store is not None
+        and hw in (HWBackend.CUDA, HWBackend.ROCM)
+        and not os.environ.get(CI_GATE_RECORD_DIR_ENV)
+    ):
         os.environ[CI_GATE_RECORD_DIR_ENV] = tempfile.mkdtemp(prefix="miles-ci-gate-")
 
     return run_unittest_files(

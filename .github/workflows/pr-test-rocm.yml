@@ -196,6 +196,7 @@ jobs:
         --enable-retry --max-attempts 2
     secrets:
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      AMD_NEON_DATABASE_URL: ${{ secrets.AMD_NEON_DATABASE_URL }}
 
   stage-c-4-gpu-mi350:
     needs: [resolve-ci-policy, resolve-ci-image]
@@ -227,6 +228,7 @@ jobs:
         --enable-retry --max-attempts 2
     secrets:
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      AMD_NEON_DATABASE_URL: ${{ secrets.AMD_NEON_DATABASE_URL }}
 
   stage-c-8-gpu-mi350:
     needs: [resolve-ci-policy, resolve-ci-image]
@@ -257,6 +259,7 @@ jobs:
         --enable-retry --max-attempts 2
     secrets:
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      AMD_NEON_DATABASE_URL: ${{ secrets.AMD_NEON_DATABASE_URL }}
 
   changed-rocm-file:
     needs: [resolve-ci-policy, resolve-ci-image]
@@ -284,3 +287,4 @@ jobs:
       execute_command: ${{ matrix.execute_command }}
     secrets:
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      AMD_NEON_DATABASE_URL: ${{ secrets.AMD_NEON_DATABASE_URL }}

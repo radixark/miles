@@ -49,6 +49,8 @@ on:
     secrets:
       WANDB_API_KEY:
         required: false
+      AMD_NEON_DATABASE_URL:
+        required: false
 
 jobs:
   plan:
@@ -200,9 +202,13 @@ jobs:
           MILES_HARDWARE_PLATFORM: rocm
           GITHUB_COMMIT_NAME: ${{ inputs.ref || github.event.pull_request.head.sha || github.sha }}_${{ github.event.pull_request.number || github.event.inputs.pull_number || 'non-pr' }}
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          AMD_NEON_DATABASE_URL: ${{ secrets.AMD_NEON_DATABASE_URL }}
+          # libpq connect timeout: if the store is unreachable from the cluster, each gated
+          # test loses 10 s instead of psycopg's 130-second default.
+          PGCONNECT_TIMEOUT: '10'
         run: |
           if [ "$WITHHOLD_RUNNER_SECRETS" = "true" ]; then
-            unset HF_TOKEN WANDB_API_KEY
+            unset HF_TOKEN WANDB_API_KEY AMD_NEON_DATABASE_URL
           fi
           bash .github/workflows/scripts/spur/launch.sh --gpus "${{ inputs.num_gpus }}"
 
