@@ -10,6 +10,7 @@ from miles.backends.fsdp_utils import checkpoint
 from miles.backends.fsdp_utils.adaptations import routing_replay
 from miles.backends.fsdp_utils.config import FsdpArgsNamespace
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
+from miles.backends.training_utils.deterministic import enable_deterministic_algorithms
 from miles.backends.training_utils.metrics import train_dump
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRayActor
@@ -70,6 +71,8 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         set_parallel_state(create_fsdp_parallel_state(args))
 
         torch.manual_seed(args.backend.seed)
+        if args.backend.deterministic_mode:
+            _enable_deterministic_mode()
 
         if self.args.debug_rollout_only:
             return 0
@@ -438,6 +441,17 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             model_args.update(batch["multimodal_train_inputs"])
 
         return model_args
+
+
+def _enable_deterministic_mode() -> None:
+    """--deterministic-mode: deterministic kernels, so a step repeats for the same inputs, seeds and topology."""
+    logger.info("FSDPTrainRayActor running in deterministic mode")
+    enable_deterministic_algorithms()
+    # torch's flag cannot reach flash-attn, whose backward pass is nondeterministic unless asked.
+    # transformers passes deterministic=True to the kernel only when this is set, and reads it on
+    # every attention call, so setting it here covers the model this actor loads next. An explicit
+    # value in --train-env-vars wins.
+    os.environ.setdefault("FLASH_ATTENTION_DETERMINISTIC", "1")
 
 
 @torch.no_grad()
