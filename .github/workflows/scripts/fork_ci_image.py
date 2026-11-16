@@ -20,10 +20,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "docker"))
 
 import image_inputs  # noqa: E402
-from tests.ci.ci_policy import resolve_policy, resolve_workflow_inputs  # noqa: E402
-from tests.ci.file_run import collect_snapshot_tests  # noqa: E402
-from tests.ci.hardware import CUDA_STAGES  # noqa: E402
-from tests.ci.stage_selection import select_skipped_gpu_stages  # noqa: E402
+from tests.ci.ci_policy import resolve_workflow_inputs  # noqa: E402
 
 CPU_JOBS = {f"stage-a-cpu ({partition}) / run-cpu" for partition in range(4)}
 REQUEST_KEYS = {"pr", "merge_sha", "inputs_hash", "run_id", "run_attempt", "force_rebuild", "labels"}
@@ -124,7 +121,7 @@ def current_request(request, repository):
             cpu.keys() == CPU_JOBS and all(job["conclusion"] == "success" for job in cpu.values()),
             "CPU A gate did not pass",
         )
-    return pr, policy
+    return pr
 
 
 def resolve_request(event, repository):
@@ -259,7 +256,7 @@ def build_image(request, repository, source):
                 process.wait()
 
 
-def validate_source(request, pr, policy, source):
+def validate_source(request, pr, source):
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=source, text=True).strip()
 
@@ -281,15 +278,6 @@ def validate_source(request, pr, policy, source):
     require(current == request["inputs_hash"], "Requested inputs hash does not match trusted computation")
     require(current != image_inputs.compute("HEAD^1", root=source), "Build inputs match the base")
     require(current == image_inputs.compute(root=source), "Build context differs from the frozen inputs")
-    run_policy = resolve_policy(policy.cadence, set(policy.raw_labels))
-    skipped = select_skipped_gpu_stages(
-        event_name="pull_request",
-        changed_files=None,
-        registrations=collect_snapshot_tests(source),
-        run_policy=run_policy,
-        raw_labels=policy.raw_labels,
-    )
-    require(CUDA_STAGES.keys() - set(skipped), "No CUDA tests selected")
 
 
 def verify_published(request):
@@ -338,8 +326,8 @@ def main():
         return
 
     request = json.loads(os.environ["REQUEST_JSON"])
-    pr, policy = current_request(request, repository)
-    validate_source(request, pr, policy, args.source.resolve())
+    pr = current_request(request, repository)
+    validate_source(request, pr, args.source.resolve())
     if args.mode == "build":
         build_image(request, repository, args.source.resolve())
     elif args.mode == "finish":
