@@ -26,7 +26,9 @@ import httpx
 
 from miles.rollout.agentic import rollout_limits
 from miles.rollout.agentic.errors import InfraAbort, RemoteTraceback
+from miles.rollout.agentic.per_call_worker import StartFn, call_on_started_worker
 from miles.rollout.agentic.remote import SECRET_ENV_VAR, SECRET_FILE_ENV_VAR, call_on_worker
+from miles.utils.function_registry import load_function
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.retry_utils import NonRetryableError
 
@@ -111,7 +113,7 @@ async def call_agent_function(
     **kwargs: Any,
 ) -> Any:
     """Await ``fn(**kwargs)`` on this loop (``inline``), in a child process of its own (``subproc``), or in one on
-    the agent worker at the URL ``worker`` (``worker``, see ``miles.rollout.agentic.worker``).
+    the agent worker ``worker`` names (``worker``, see ``resolve_worker`` and ``miles.rollout.agentic.worker``).
 
     Under ``subproc`` and ``worker``, ``on_child_reports`` receives each item the agent sends with
     ``report_to_caller``, and ``extra_env`` is added to the agent process's environment. In every mode, a
@@ -161,21 +163,33 @@ def rollout_abort_scope(args) -> str:
     return f"{args.sglang_router_ip}:{args.sglang_router_port}"
 
 
-def resolve_worker(worker: str | None) -> str:
+def resolve_worker(worker: str | None) -> str | StartFn:
+    """What ``--custom-agent-function-worker`` names: a fixed agent worker's URL, or a start function that starts one
+    for each call."""
     if not worker:
         raise NonRetryableError("--custom-agent-function-mode worker needs --custom-agent-function-worker")
+    if worker.lower().startswith(("http://", "https://")):
+        try:
+            url = httpx.URL(worker)
+        except httpx.InvalidURL:
+            url = None
+        if (
+            url is None
+            or url.scheme not in ("http", "https")
+            or not url.host
+            or (url.port is not None and not 0 < url.port < 65536)
+        ):
+            raise NonRetryableError(
+                f"--custom-agent-function-worker must be an http(s) URL with a host, got {worker!r}"
+            )
+        return worker
     try:
-        url = httpx.URL(worker)
-    except httpx.InvalidURL:
-        url = None
-    if (
-        url is None
-        or url.scheme not in ("http", "https")
-        or not url.host
-        or (url.port is not None and not 0 < url.port < 65536)
-    ):
-        raise NonRetryableError(f"--custom-agent-function-worker must be an http(s) URL with a host, got {worker!r}")
-    return worker
+        return load_function(worker, sync_required=True)
+    except Exception as exc:
+        raise NonRetryableError(
+            f"--custom-agent-function-worker must be an http(s) URL or a start function's module.fn, got {worker!r}: "
+            f"{exc!r}"
+        ) from exc
 
 
 async def _place(
@@ -189,9 +203,9 @@ async def _place(
     if mode == "inline":
         return await fn(**kwargs)
     if mode == "worker":
-        return await call_on_worker(
-            resolve_worker(worker), fn, kwargs, env=extra_env or {}, on_child_reports=on_child_reports
-        )
+        target = resolve_worker(worker)
+        call = call_on_worker if isinstance(target, str) else call_on_started_worker
+        return await call(target, fn, kwargs, env=extra_env or {}, on_child_reports=on_child_reports)
     # pickled before the process starts, so an unpicklable argument fails here
     call = pickle.dumps(sys.path) + pickle.dumps((fn, kwargs, _CANCEL_GRACE_S, _LEFTOVER_CLEANUP_S))
     proc = await asyncio.create_subprocess_exec(

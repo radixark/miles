@@ -8,7 +8,8 @@ errors count as retryable throttling, and its env-var knobs. Everything that
 makes per-episode sandboxes safe under a fanned-out rollout is provider-blind
 and lives here once:
 
-  ``create_once``          cancel-safe create. ``asyncio.to_thread`` is not
+  ``create_once``          cancel-safe create, from
+                ``miles.rollout.agentic.per_call_worker``. ``asyncio.to_thread`` is not
                 cancellable: when an episode's wall-clock cap cancels the
                 coroutine mid-create, the worker thread keeps running and its
                 (close_fn, url) result would be discarded — leaking a sandbox
@@ -33,16 +34,13 @@ import importlib
 import logging
 import os
 import random
-import threading
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
+from miles.rollout.agentic.per_call_worker import StartFn, create_once
 from miles.rollout.agentic.rollout_limits import rollout_semaphore
-
-# A provider's "start one sandbox" hook: (task_id, tasks_dir) -> (close_fn, base_url).
-StartFn = Callable[[str, str], tuple[Callable[[], None], str]]
 
 # The canonical per-episode backend registry — the launcher and the sibling
 # tools (scan_golden, eval_tbench2_via_api) all resolve through here, so the
@@ -89,36 +87,6 @@ def load_backend(name: str | None) -> "SandboxBackend":
     each — and a provider's SDK is imported only when it is the one selected.
     """
     return importlib.import_module(AGENT_MODULES[resolve_backend(name)]).BACKEND
-
-
-async def create_once(start_fn: StartFn, task_id: str, tasks_dir: str, *, logger: logging.Logger) -> tuple[Any, str]:
-    """One sandbox-create attempt, safe against cancellation mid-create."""
-    result: list[tuple[Any, str]] = []
-    done = threading.Event()
-
-    def _start() -> tuple[Any, str]:
-        try:
-            result.append(start_fn(task_id, tasks_dir))
-        finally:
-            done.set()
-        return result[0]
-
-    try:
-        return await asyncio.to_thread(_start)
-    except asyncio.CancelledError:
-
-        def _reap() -> None:
-            done.wait()
-            for close_fn, _url in result:
-                try:
-                    close_fn()
-                    logger.info(f"Closed sandbox orphaned by cancelled episode: {task_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to close orphaned sandbox for {task_id}: {e}")
-
-        # not a daemon: a subproc agent call waits for it before its process exits
-        threading.Thread(target=_reap, name=f"tb2-sandbox-reap-{task_id}", daemon=False).start()
-        raise
 
 
 def _agent_function():
