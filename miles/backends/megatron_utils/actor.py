@@ -677,7 +677,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 rollout_data, store_get_result = get_rollout_data(
                     args=self.args,
                     rollout_data_ref=rollout_data_ref,
-                    output_store_read=self.output_store_read,
+                    output_store=self.output_store,
                     witness_info=witness_info,
                     token_space_processor=self.token_space_processor,
                     train_parallel_config=get_parallel_state().train_parallel_config(
@@ -779,6 +779,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     data_iterator=data_iterator,
                     num_microbatches=num_microbatches,
                     rollout_data=rollout_data,
+                    output_store=self.output_store,
                     sequence_first=m is routing_replay_manager,
                 )
 
