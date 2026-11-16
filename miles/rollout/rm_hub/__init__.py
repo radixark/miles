@@ -9,18 +9,31 @@ from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
 
-from .deepscaler import get_deepscaler_rule_based_reward, get_gemma_math_reward
+from .deepscaler import REASONING_CLOSERS, get_deepscaler_rule_based_reward, get_gemma_math_reward
 from .f1 import f1_score
 from .gpqa import compute_gpqa_reward
 from .math_dapo_utils import compute_score as compute_score_dapo
 from .math_utils import extract_answer as extract_boxed_answer
 from .math_utils import grade_answer_verl
 
-# `math`, `deepscaler` and `gemma_math` already grade the last `\boxed{}` themselves (deepscaler and
-# gemma_math only after their end-of-reasoning marker), so their `boxed_` variants grade the response
-# unchanged. `dapo` reads `Answer: ...`
+# `math`, `deepscaler` and `gemma_math` already grade the last `\boxed{}` after the reasoning themselves,
+# so their `boxed_` variants grade the response unchanged. `dapo` reads `Answer: ...`
 # instead, so the extracted answer is re-wrapped in that form.
 _BOXED_GRADES_ORIGINAL_RESPONSE = {"math", "deepscaler", "gemma_math"}
+
+
+def _strip_reasoning(response: str) -> str | None:
+    """Return the text after the reasoning segment, or None if a `<think>` block never closes.
+
+    A response without reasoning markers is returned unchanged. Without this, a `\boxed{}` that only
+    appears inside the reasoning is graded as the final answer.
+    """
+    for closer in REASONING_CLOSERS:
+        if closer in response:
+            return response.split(closer)[-1]
+    if "<think>" in response:
+        return None
+    return response
 
 
 async def remote_rm(args, sample: Sample):
@@ -86,7 +99,7 @@ async def async_rm(args, sample: Sample, **kwargs):
     if rm_type.startswith("boxed_"):
         rm_type = rm_type[len("boxed_") :]
         if rm_type not in _BOXED_GRADES_ORIGINAL_RESPONSE:
-            response = extract_boxed_answer(response) or ""
+            response = extract_boxed_answer(_strip_reasoning(response) or "") or ""
             if response and rm_type == "dapo":
                 response = f"Answer: {response}"
 
@@ -101,7 +114,8 @@ async def async_rm(args, sample: Sample, **kwargs):
     elif rm_type == "dapo":
         return compute_score_dapo(response, label)
     elif rm_type == "math":
-        return 1 if grade_answer_verl(response, label) else 0
+        final_response = _strip_reasoning(response)
+        return 1 if final_response is not None and grade_answer_verl(final_response, label) else 0
     elif rm_type == "f1":
         return f1_score(response, label)[0]
     elif rm_type == "gpqa":
