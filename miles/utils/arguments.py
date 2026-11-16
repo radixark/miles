@@ -1419,6 +1419,10 @@ def miles_validate_args(args):
             f"{args.save_interval}, or decay keeps fewer steps than asked."
         )
         assert args.train_backend == "megatron", "--keep-recent-checkpoints relies on megatron's iter_N layout."
+        assert args.save_retain_interval is None, (
+            "--keep-recent-checkpoints cannot be combined with --save-retain-interval, which deletes checkpoints "
+            "on its own schedule, including steps decay keeps or pins. Drop it: --keep-checkpoint-every replaces it."
+        )
         assert args.megatron_config is None, (
             "--keep-recent-checkpoints does not support --megatron-config: its trainers save under "
             "<save>/trainers/<trainer_id>, which decay does not scan."

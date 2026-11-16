@@ -4372,6 +4372,16 @@ def test_dumper_retention_override_is_only_added_for_megatron(backend: str) -> N
         assert args.save_retain_interval is None
 
 
+def test_checkpoint_decay_rejects_megatron_save_retain_interval() -> None:
+    """Megatron's retention deletes on its own schedule, so the steps decay keeps or pins would not survive it."""
+    decay_args = ["--save", "/checkpoints/run", "--save-interval", "20"]
+    decay_args += ["--keep-recent-checkpoints", "2", "--keep-checkpoint-every", "40"]
+
+    miles_validate_args(_parse_megatron_args(decay_args))
+    with pytest.raises(AssertionError, match="cannot be combined with --save-retain-interval"):
+        miles_validate_args(_parse_megatron_args(decay_args + ["--save-retain-interval", "20"]))
+
+
 @pytest.mark.parametrize("backend", ["fsdp", "torchtitan"])
 @pytest.mark.parametrize("detach_heads", [True, False])
 def test_native_backends_own_the_mtp_detach_heads_argument(

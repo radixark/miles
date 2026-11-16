@@ -135,6 +135,7 @@ jobs:
       - name: Build and push pr-<number>-tpu
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          BUILD_GITHUB_TOKEN: ${{ github.token }}
         run: python3 docker/build.py --variant tpu --image-tag custom --custom-tag "pr-${PR_NUMBER}" --push
 
   # one launcher's smoke recipe on a v7x 2x2x1 host of sglang-torchtpu's CI cluster, gated on the pod's exit code
