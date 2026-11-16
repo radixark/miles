@@ -56,6 +56,11 @@ def _parse_anthropic_request(body: bytes) -> AnthropicMessagesRequest:
         payload = json.loads(body)
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
         raise ValueError(f"invalid JSON body: {exc}") from exc
+    if isinstance(payload, dict):
+        output_config = payload.get("output_config")
+        if isinstance(output_config, dict) and output_config.get("format") is not None:
+            raise ValueError("output_config.format is not enabled for this deployment")
+        payload = {key: value for key, value in payload.items() if key not in ("thinking", "output_config")}
     try:
         return AnthropicMessagesRequest.model_validate(payload)
     except ValidationError as exc:
@@ -75,15 +80,9 @@ def _validate_anthropic_content_block(block, *, allow_thinking: bool = False) ->
         raise ValueError("tool_reference content blocks are not enabled for this deployment")
     if block.type == "search_result":
         raise ValueError("search_result content blocks are not enabled for this deployment")
-    if block.type == "tool_result" and block.is_error is True:
-        raise ValueError("tool_result is_error=true is not supported by this endpoint")
 
 
 def _validate_anthropic_features(request: AnthropicMessagesRequest) -> None:
-    if request.thinking is not None:
-        raise ValueError("thinking is not supported by this endpoint")
-    if request.output_config is not None:
-        raise ValueError("output_config is not enabled for this deployment")
     if request.betas:
         raise ValueError("betas is not enabled for this deployment")
     if request.tools:
@@ -140,3 +139,10 @@ def _restore_anthropic_reasoning_history(openai_body: dict, reasoning_history: l
     for message, reasoning_content in zip(assistants, reasoning_history, strict=True):
         if reasoning_content is not None:
             message["reasoning_content"] = reasoning_content
+
+
+def _unescape_anthropic_tool_arguments(openai_body: dict) -> None:
+    for message in openai_body["messages"]:
+        for tool_call in message.get("tool_calls") or []:
+            function = tool_call["function"]
+            function["arguments"] = json.dumps(json.loads(function["arguments"]), ensure_ascii=False)

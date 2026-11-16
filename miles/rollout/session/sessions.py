@@ -35,6 +35,7 @@ from miles.rollout.session.anthropic_adapter import (
     _parse_anthropic_request,
     _restore_anthropic_reasoning_history,
     _strip_anthropic_reasoning_history,
+    _unescape_anthropic_tool_arguments,
 )
 from miles.rollout.session.anthropic_adapter import (
     _validate_anthropic_content_block as _validate_anthropic_content_block,
@@ -219,6 +220,7 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
                 mode="json", exclude_none=True, exclude_unset=True, by_alias=True
             )
             _restore_anthropic_reasoning_history(openai_body_dict, reasoning_history)
+            _unescape_anthropic_tool_arguments(openai_body_dict)
             openai_body = _render_json(openai_body_dict)
         except ValueError as exc:
             # Parsing and JSON encoding failures are invalid Anthropic requests.
