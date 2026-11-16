@@ -127,10 +127,8 @@ def test_a_missing_release_is_created_as_a_draft_and_only_an_rc_is_a_prerelease(
     _fake_gh(tmp_path, "sys.exit(1 if args[:2] == ['release', 'view'] else 0)")
     result, _, log = _run(CREATE, tmp_path, {"VERSION": version, "TAG": f"v{version}"})
     assert result.returncode == 0, result.stderr
-    # split() drops the empty --notes value
-    assert log[-1].split() == (
-        f"release create v{version} --repo radixark/miles --verify-tag --draft --title v{version} --notes{flags}"
-    ).split()
+    call = f"release create v{version} --repo radixark/miles --verify-tag --draft --title v{version} --notes{flags}"
+    assert log[-1].split() == call.split()  # split() drops the empty --notes value
 
 
 def test_an_existing_release_is_left_alone(tmp_path):
