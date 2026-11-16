@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import logging
 import os
 
@@ -10,6 +11,7 @@ from miles.utils.arguments import validate_async_off_policy_correction
 from miles.utils.async_utils import Disposer, eager_create_task, with_disposer
 from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
+from miles.utils.media_refs import release_run_media
 from miles.utils.misc import should_run_periodic_action
 from miles.utils.orchestration_utils import (
     OrchestratorStartupInfo,
@@ -25,6 +27,7 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
     args = startup_info.args
     assert not args.colocate or args.fully_async, "Colocation is only supported for async training with --fully-async."
     validate_async_off_policy_correction(args)
+    disposer.add(functools.partial(release_run_media, args))
     capability = init_orchestration_script(startup_info, disposer=disposer)
     trainer_handles = create_trainer_handles(
         args, trainer_configs=compute_trainer_configs(args), capability=capability

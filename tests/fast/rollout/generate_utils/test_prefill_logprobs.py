@@ -173,3 +173,14 @@ async def test_recompute_samples_batches_by_logprob_start_len(monkeypatch):
     assert calls[1][1]["input_ids"] == [[10, 11, 20], [10, 11, 22]]
     assert calls[3][1]["logprob_start_len"] == 2
     assert calls[3][1]["input_ids"] == [[10, 11, 12, 21]]
+
+
+def test_token_space_prefill_scoring_marks_the_expanded_tokens_as_prefix():
+    sample = Sample(tokens=[1, 9, 9, 9, 9, 2, 20], response_length=1, status=Sample.Status.COMPLETED)
+    sample.multimodal_inputs = {"images": ["/shared/a.png"]}
+    args = SimpleNamespace(lora_rank=0, lora_adapter_path=None, multimodal_token_space_processing=True)
+
+    payload = prefill_logprobs._build_prefill_scoring_payload(args, sample, {})
+
+    assert payload["image_data"] == ["/shared/a.png"]
+    assert payload["mm_token_expansion_start_len"] == len(sample.tokens)

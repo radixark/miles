@@ -1,4 +1,5 @@
 from functools import partial
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -18,6 +19,7 @@ from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutpu
 from miles.ray import placement_group, wiring
 from miles.utils import object_store
 from miles.utils.async_utils import with_disposer
+from miles.utils.media_refs import materialize_media_ref, run_media_dir
 from miles.utils.orchestration_utils import ArgvOrchestratorStartupInfo
 
 
@@ -44,6 +46,7 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
         save_interval=None,
         keep_recent_checkpoints=None,
         save_trigger_sentinel=None,
+        shared_media_dir=None,
         skip_eval_before_train=False,
         start_rollout_id=0,
         use_critic=False,
@@ -421,3 +424,28 @@ class TestOutputStoreRelease:
         await with_disposer(train_driver.train, _startup_info(args))
 
         assert trained_at_release == [(0, [0]), (1, [0, 1]), (2, [0, 1, 2])]
+
+
+class TestRunMedia:
+    async def test_the_run_media_is_removed_once_the_rollout_executor_is_gone(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        events: list[str] = []
+        args = _make_args(num_rollout=1, shared_media_dir=str(tmp_path), run_uuid="run-1")
+        components = _install_driver_fakes(monkeypatch, args, events)
+        written = Path(materialize_media_ref(b"screenshot", run_media_dir(args)))
+        other_run = Path(materialize_media_ref(b"screenshot", str(tmp_path / "run-0")))
+        seen_at_executor_dispose = []
+        dispose_executor = components.rollout_executor._dispose
+
+        async def record_and_dispose() -> None:
+            seen_at_executor_dispose.append(written.exists())
+            await dispose_executor()
+
+        components.rollout_executor._dispose = record_and_dispose
+
+        await with_disposer(train_driver.train, _startup_info(args))
+
+        assert seen_at_executor_dispose == [True]
+        assert not (tmp_path / "run-1").exists()
+        assert other_run.is_file()
