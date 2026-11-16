@@ -93,11 +93,9 @@ async def run(
     """Run one task instance via the NeMo Gym mini_swe_agent_2 server.
 
     Returns the reward dict to merge into sample metadata, or None on a
-    transport failure (timeout, unreachable server). On None the recorded
-    session still becomes a sample; the reward hook then scores it 0.0 via its
-    default. Episodes that never reach the model produce no session records
-    and are ABORTED by the generate layer, so
-    ``--dynamic-sampling-filter-path .. check_no_aborted`` drops their group.
+    timeout, which the policy may have caused: the recorded session still
+    becomes a sample, and the reward hook scores it 0.0 via its default. A
+    failed call to the server raises ``InfraAbort``, which drops the group.
     """
     metadata = metadata or {}
     request_kwargs = request_kwargs or {}
@@ -127,8 +125,9 @@ async def run(
         logger.warning("NeMo Gym /run cancelled (sibling task failure?)")
         return None
     except Exception as e:
-        logger.error(f"NeMo Gym /run failed: {e}")
-        return None
+        from miles.rollout.agentic.agent_function import InfraAbort
+
+        raise InfraAbort("NemoGymFailed", f"NeMo Gym /run failed: {e!r}") from e
 
     return {
         "reward": response.get("reward", 0.0),
