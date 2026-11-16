@@ -44,6 +44,7 @@ from miles.utils.arguments import (
     _resolve_run_uuid,
     _resolve_sample_ownership_check,
     _validate_deploy_component,
+    _validate_fused_lm_head_lora_targets,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
     miles_validate_args,
@@ -1286,6 +1287,87 @@ def test_fused_log_probs_backend_rejects_what_it_does_not_cover(extra, vocab_siz
 
     with pytest.raises(ValueError, match=message):
         validate_log_probs_backend_args(args)
+
+
+def _fused_lm_head_args(extra):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(["--log-probs-backend", "fused_lm_head", "--num-rollout", "1"] + extra + REQUIRED_ARGS)
+    args.vocab_size = 151_936  # a Megatron flag, absent from this parser
+    args.use_sampling_support_replay = False  # derived by miles_validate_args
+    args.overlap_moe_expert_parallel_comm = False  # Megatron flags
+    args.defer_embedding_wgrad_compute = False
+    return args
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (["--true-on-policy-mode"], "fused_lm_head does not support --true-on-policy-mode"),
+        (["--train-backend", "fsdp"], "needs --train-backend megatron"),
+        (["--loss-type", "custom_loss"], "supports --loss-type policy_loss and sft_loss"),
+        (["--loss-type", "score_centering"], "supports --loss-type policy_loss and sft_loss"),
+        (["--multi-lora-n-adapters", "2"], "does not support multi-LoRA"),
+    ],
+    ids=["true_on_policy", "fsdp", "custom_loss", "score_centering", "multi_lora"],
+)
+def test_fused_lm_head_backend_rejects_what_it_does_not_cover(extra, message):
+    with pytest.raises(ValueError, match=message):
+        validate_log_probs_backend_args(_fused_lm_head_args(extra))
+
+
+@pytest.mark.parametrize(
+    ("megatron_flag", "message"),
+    [
+        ("overlap_moe_expert_parallel_comm", "does not support --overlap-moe-expert-parallel-comm"),
+        ("defer_embedding_wgrad_compute", "does not support --defer-embedding-wgrad-compute"),
+    ],
+)
+def test_fused_lm_head_backend_rejects_megatron_schedules_it_breaks(megatron_flag, message):
+    args = _fused_lm_head_args(["--train-backend", "megatron"])
+    setattr(args, megatron_flag, True)
+    with pytest.raises(ValueError, match=message):
+        validate_log_probs_backend_args(args)
+
+
+@pytest.mark.parametrize(
+    ("backend", "lora_rank", "targets", "rejected"),
+    [
+        ("fused_lm_head", 8, ["model.layers.*.self_attn.q_proj", "lm_head"], True),
+        ("fused_lm_head", 8, ["model.layers.*.self_attn.q_proj"], False),
+        ("fused_lm_head", 0, ["lm_head"], False),
+        ("fused", 8, ["lm_head"], False),
+    ],
+    ids=["unembed_adapted", "no_unembed", "lora_off", "other_backend"],
+)
+def test_fused_lm_head_backend_rejects_lora_on_the_output_layer(backend, lora_rank, targets, rejected):
+    args = SimpleNamespace(
+        log_probs_backend=backend,
+        lora_rank=lora_rank,
+        lora_adapter_path=None,
+        hf_lora_targets=targets,
+        hf_checkpoint="unused",
+    )
+    hf_config = SimpleNamespace(to_dict=lambda: {"model_type": "qwen3"})
+    with patch("miles.utils.arguments.load_hf_config", return_value=hf_config):
+        if rejected:
+            with pytest.raises(ValueError, match="does not support LoRA on the output layer"):
+                _validate_fused_lm_head_lora_targets(args)
+        else:
+            _validate_fused_lm_head_lora_targets(args)
+
+
+@pytest.mark.parametrize("loss_type", ["policy_loss", "sft_loss"])
+def test_fused_lm_head_backend_accepts_policy_and_sft_losses_on_megatron(loss_type):
+    validate_log_probs_backend_args(_fused_lm_head_args(["--loss-type", loss_type, "--train-backend", "megatron"]))
+
+
+@pytest.mark.parametrize("mtp_training", [False, True])
+def test_fused_lm_head_backend_warns_once_that_mtp_heads_keep_their_logits(mtp_training, caplog):
+    extra = ["--train-backend", "megatron"] + (["--enable-mtp-training"] if mtp_training else [])
+    with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+        validate_log_probs_backend_args(_fused_lm_head_args(extra))
+    assert caplog.text.count("does not cover the MTP heads") == int(mtp_training)
 
 
 @pytest.mark.parametrize(
