@@ -111,3 +111,22 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/sglang/python
         run: '"$RUNNER_TEMP/venv/bin/python" "$GITHUB_WORKSPACE/tests/ci/wheel_smoke.py" "$GITHUB_WORKSPACE"'
+
+      # the install above leaves the pinned sglang wheel out, so a clash between its requirements and
+      # miles' own would only show at a user's pip install, after a publish that cannot be replaced
+      - name: Resolve the release wheel with its sglang pin
+        if: inputs.version != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SGLANG_WHEEL: ${{ inputs.sglang_wheel }}
+        run: |
+          # shortcut: resolved for this runner's Python 3.12 on x86_64 only; add --python-platform and
+          # --python-version runs if the sglang wheels ever differ in requirements per target
+          read -r NAME URL < <(gh api 'repos/radixark/miles-wheels/releases?per_page=100' --jq \
+            ".[].assets[] | select(.name | startswith(\"sglang-${SGLANG_WHEEL}-cp312-\") and endswith(\"_x86_64.whl\")) | \"\(.name) \(.browser_download_url)\"") || true
+          [ -n "$URL" ] || { echo "::error::no cp312 x86_64 wheel of sglang ${SGLANG_WHEEL} on radixark/miles-wheels"; exit 1; }
+          curl -fsSL --create-dirs -o "$RUNNER_TEMP/sglang-wheel/$NAME" "$URL"
+          uv venv --python 3.12 "$RUNNER_TEMP/resolve"
+          VIRTUAL_ENV="$RUNNER_TEMP/resolve" uv pip install --dry-run \
+            "$(ls "$RUNNER_TEMP"/dist/miles-*-py3-none-any.whl)[torchtitan]" --find-links "$RUNNER_TEMP/sglang-wheel"

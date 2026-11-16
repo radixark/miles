@@ -93,6 +93,16 @@ def test_a_release_stamp_without_a_valid_version_and_sglang_wheel_is_refused(tmp
     assert (tmp_path / "requirements.txt").read_text() == "ray"
 
 
+RESOLVE = _step(SMOKE, "wheel-smoke", "Resolve the release wheel with its sglang pin")
+
+
+def test_a_release_without_the_pinned_sglang_wheel_to_resolve_against_is_refused(tmp_path):
+    _fake_gh(tmp_path, "")  # no matching asset
+    result, _, log = _run(RESOLVE, tmp_path, {"SGLANG_WHEEL": SGLANG_WHEEL, "RUNNER_TEMP": str(tmp_path)})
+    assert result.returncode == 1 and f"no cp312 x86_64 wheel of sglang {SGLANG_WHEEL}" in result.stdout
+    assert log[0].startswith("api repos/radixark/miles-wheels/releases")
+
+
 # --- publish ------------------------------------------------------------------------------------
 
 EXACT = _step(WORKFLOW, "publish", "The dist carries the exact version")
