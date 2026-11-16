@@ -13,7 +13,7 @@ from miles.rollout.reward_shaping import (
 )
 from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
-from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
+from miles.utils.dp_schedule import PAD_ROW_LENGTH, TrainParallelConfig, build_dp_schedule
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.media_refs import has_media
 from miles.utils.object_store import ValueSpec
@@ -435,17 +435,18 @@ def split_train_data_by_dp_scheduled_raw(
     args: Any, data: dict[str, Any], *, train_parallel_config: TrainParallelConfig
 ) -> list[dict[str, Any]]:
     """DP split with the micro-batch schedule precomputed on the rollout side."""
-    total_lengths = [len(t) for t in data["tokens"]]
-    data["total_lengths"] = total_lengths
-
     global_batch_size = data.get("dynamic_global_batch_size", args.global_batch_size)
-    partitions, micro_batch_indices, num_microbatches, num_rollouts = build_dp_schedule(
+    partitions, micro_batch_indices, num_microbatches, num_rollouts, pad_templates = build_dp_schedule(
         args,
         train_parallel_config,
         trained_total_lengths(data["tokens"], data.get("multimodal_train_inputs")),
         global_batch_size=global_batch_size,
         rollout_indices=data["rollout_ids"],
     )
+    if pad_templates:
+        data = _append_pad_rows(data, pad_templates)
+    total_lengths = [len(t) for t in data["tokens"]]
+    data["total_lengths"] = total_lengths
 
     _log_dp_schedule_trim(args=args, data=data, partitions=partitions)
 
@@ -460,6 +461,43 @@ def split_train_data_by_dp_scheduled_raw(
         shard["micro_batch_indices"] = micro_batch_indices[rank]
         shard["num_rollouts"] = num_rollouts
     return shards
+
+
+_PAD_ROW_FIELDS = {
+    "tokens": lambda row: [0] * PAD_ROW_LENGTH,
+    "multimodal_train_inputs": lambda row: None,
+    "multimodal_inputs": lambda row: None,
+    "response_lengths": lambda row: 1,
+    "rewards": lambda row: 0.0,
+    "truncated": lambda row: 0,
+    "loss_masks": lambda row: [0],
+    "rollout_log_probs": lambda row: [0.0],
+    "teacher_log_probs": lambda row: [0.0],
+    "opd_reverse_kl": lambda row: [0.0],
+    "loss_weights": lambda row: [0.0],
+    "advantages": lambda row: [0.0],
+    "target_tokens": lambda row: [0],
+    "weight_versions": lambda row: [],
+    "rollout_topk_token_ids": lambda row: row["rollout_topk_token_ids"][:1],
+    "rollout_topk_lengths": lambda row: row["rollout_topk_lengths"][:1],
+    "rollout_topk_log_probs": lambda row: row["rollout_topk_log_probs"][:1],
+    "rollout_sampling_mask_ids": lambda row: row["rollout_sampling_mask_ids"][
+        : row["rollout_sampling_mask_offsets"][1]
+    ],
+    "rollout_sampling_mask_offsets": lambda row: row["rollout_sampling_mask_offsets"][:2],
+    "rollout_routed_experts": lambda row: row["rollout_routed_experts"][: PAD_ROW_LENGTH - 1],
+    "rollout_indexer_topk": lambda row: row["rollout_indexer_topk"][: PAD_ROW_LENGTH - 1],
+}
+
+
+def _append_pad_rows(data: dict[str, Any], pad_templates: list[int]) -> dict[str, Any]:
+    keys = [key for key in _PER_SAMPLE_SHARD_KEYS if key in data]
+    rows = [{key: data[key][template] for key in keys} for template in pad_templates]
+    padded = {
+        key: list(data[key]) + [_PAD_ROW_FIELDS[key](row) if key in _PAD_ROW_FIELDS else row[key] for row in rows]
+        for key in keys
+    }
+    return data | padded
 
 
 def _log_dp_schedule_trim(*, args, data: dict[str, Any], partitions: list[list[int]]) -> None:
@@ -522,6 +560,42 @@ def _num_rollouts_of_single_step(args, data: dict[str, Any]) -> list[int] | None
     return [num_rollouts]
 
 
+_PER_SAMPLE_SHARD_KEYS = (
+    "tokens",
+    "multimodal_train_inputs",
+    "multimodal_inputs",
+    "response_lengths",
+    "rewards",
+    "truncated",
+    "loss_masks",
+    "round_number",
+    "sample_indices",
+    "lineage_source_sample_indices",
+    "lineage_output_indices",
+    "lineage_output_counts",
+    "rollout_ids",
+    "rollout_mask_sums",
+    "rollout_log_probs",
+    "rollout_topk_token_ids",
+    "rollout_topk_lengths",
+    "rollout_topk_log_probs",
+    "rollout_sampling_mask_ids",
+    "rollout_sampling_mask_offsets",
+    "rollout_routed_experts",
+    "rollout_indexer_topk",
+    "rollout_store_plan",
+    "prompt",
+    "teacher_log_probs",
+    "opd_reverse_kl",
+    "seq_witness_ids",
+    "weight_versions",
+    "adapter_slots",
+    "loss_weights",
+    "advantages",
+    "target_tokens",
+)
+
+
 def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, Any]]:
     """Package one rollout_data shard per DP rank from precomputed partitions."""
     shards = []
@@ -530,40 +604,7 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
         rollout_data = {}
         partition = partitions[i]
         rollout_data["partition"] = partition
-        for key in [
-            "tokens",
-            "multimodal_train_inputs",
-            "multimodal_inputs",
-            "response_lengths",
-            "rewards",
-            "truncated",
-            "loss_masks",
-            "round_number",
-            "sample_indices",
-            "lineage_source_sample_indices",
-            "lineage_output_indices",
-            "lineage_output_counts",
-            "rollout_ids",
-            "rollout_mask_sums",
-            "rollout_log_probs",
-            "rollout_topk_token_ids",
-            "rollout_topk_lengths",
-            "rollout_topk_log_probs",
-            "rollout_sampling_mask_ids",
-            "rollout_sampling_mask_offsets",
-            "rollout_routed_experts",
-            "rollout_indexer_topk",
-            "rollout_store_plan",
-            "prompt",
-            "teacher_log_probs",
-            "opd_reverse_kl",
-            "seq_witness_ids",
-            "weight_versions",
-            "adapter_slots",
-            "loss_weights",
-            "advantages",
-            "target_tokens",
-        ]:
+        for key in _PER_SAMPLE_SHARD_KEYS:
             if key not in data:
                 continue
             val = [data[key][j] for j in partition]

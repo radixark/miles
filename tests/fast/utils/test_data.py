@@ -211,6 +211,7 @@ def _delay_split_args(**overrides: Any) -> Namespace:
         balance_data=False,
         balance_by_flops=False,
         allow_partial_train_step=False,
+        pad_steps_for_dp_alignment=False,
         multi_lora=False,
     )
     fields.update(overrides)

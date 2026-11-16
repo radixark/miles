@@ -18,6 +18,8 @@ from miles.utils.seqlen_balancing import (
 
 logger = logging.getLogger(__name__)
 
+PAD_ROW_LENGTH = 2
+
 
 class TrainParallelConfig(FrozenStrictBaseModel):
     dp_size: int
@@ -34,6 +36,7 @@ class DPSchedule(NamedTuple):
     micro_batch_indices: list[list[list[int]]]
     num_microbatches: list[int]  # (num_steps,): shared micro-batch counts for every rank
     num_rollouts: list[int]  # (num_steps,): distinct rollout counts
+    pad_templates: list[int]
 
 
 @functools.cache
@@ -103,6 +106,7 @@ def build_dp_schedule(
     partitions: list[list[int]] = [[] for _ in range(dp_size)]
     micro_batch_indices: list[list[list[int]]] = [[] for _ in range(dp_size)]
     num_microbatches: list[int] = []
+    pad_templates: list[int] = []
 
     step_start = 0
     for step_i, step_num_rollouts in enumerate(num_rollouts):
@@ -110,7 +114,7 @@ def build_dp_schedule(
         step_start += step_num_rollouts
         sample_indices = [pos for rid in picked_rollouts for pos in rollout_id_to_sample_index[rid]]
         step_lengths = [total_lengths[i] for i in sample_indices]
-        assert len(sample_indices) >= dp_size, (
+        assert len(sample_indices) >= dp_size or args.pad_steps_for_dp_alignment, (
             f"step of {step_num_rollouts} rollouts has {len(sample_indices)} samples < dp_size {dp_size}; "
             f"each step needs at least one sample per rank."
         )
@@ -134,6 +138,14 @@ def build_dp_schedule(
             target = max((len(step_micro_batches) + align_to - 1) // align_to * align_to, align_to)
             if target != len(step_micro_batches):
                 expand_bins_by_splitting(step_micro_batches, target, step_lengths)
+                if args.pad_steps_for_dp_alignment:
+                    for _ in range(target - len(step_micro_batches)):
+                        step_micro_batches.append([len(sample_indices)])
+                        sample_indices.append(len(total_lengths) + len(pad_templates))
+                        step_lengths.append(PAD_ROW_LENGTH)
+                        pad_templates.append(sample_indices[0])
+                        if workloads is not None:
+                            workloads.extend(_calculate_workloads([PAD_ROW_LENGTH], args))
                 assert len(step_micro_batches) == target, (
                     f"dynamic path: could only produce {len(step_micro_batches)} micro-batches after maximal "
                     f"splitting; need {target}. step {step_i} has {len(sample_indices)} samples, below the "
@@ -182,4 +194,5 @@ def build_dp_schedule(
         micro_batch_indices=micro_batch_indices,
         num_microbatches=num_microbatches,
         num_rollouts=num_rollouts,
+        pad_templates=pad_templates,
     )
