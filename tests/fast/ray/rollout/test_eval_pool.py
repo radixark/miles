@@ -206,6 +206,10 @@ class _FakeServer:
     def eval_pinned_cells(self) -> dict:
         return {cell_id: cell for cell_id, cell in self.all_server_cells.items() if cell.is_eval_pinned}
 
+    async def give_back_eval_pinned_cells(self) -> None:
+        for cell in list(self.eval_pinned_cells.values()):
+            await cell.unpin_from_eval()
+
 
 @pytest.fixture
 def router_always_ready(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -278,13 +282,47 @@ class TestCarveOut:
         assert srv.eval_pinned_cells == {}
 
     @pytest.mark.asyncio
-    async def test_a_second_carve_out_while_engines_are_pinned_is_refused(self):
+    async def test_an_engine_that_cannot_report_its_version_skips_the_eval(self):
+        """Raising here would end the training run over one unhealthy engine."""
         cells = [_fake_cell(cell_id=f"engine-{i}", gpu_offset=i) for i in range(4)]
-        pool, _ = _pool(cells)
-        await pool.carve_out()
+        cells[3].api_client.get_weight_version = AsyncMock(side_effect=httpx.ConnectError("engine down"))
+        pool, srv = _pool(cells)
 
-        with pytest.raises(AssertionError, match="still pinned"):
-            await pool.carve_out()
+        carve_out = await pool.carve_out()
+
+        assert carve_out.skip_reason == "unhealthy"
+        assert all(cell.pin_calls == 0 for cell in cells)
+
+    @pytest.mark.asyncio
+    async def test_cells_a_failed_give_back_left_pinned_are_given_back_first(self):
+        """Left pinned, they would never receive another weight update."""
+        cells = [_fake_cell(cell_id=f"engine-{i}", gpu_offset=i) for i in range(5)]
+        cells[4].is_serving = False
+        cells[4].is_eval_pinned = True
+        pool, srv = _pool(cells)
+
+        carve_out = await pool.carve_out()
+
+        assert carve_out.skip_reason is None
+        assert sorted(srv.eval_pinned_cells) == ["engine-2", "engine-3"]
+
+    @pytest.mark.asyncio
+    async def test_cells_that_still_cannot_be_given_back_skip_the_eval(self):
+        cells = [_fake_cell(cell_id=f"engine-{i}", gpu_offset=i) for i in range(5)]
+        cells[4].is_serving = False
+        cells[4].is_eval_pinned = True
+
+        async def broken_unpin():
+            raise RuntimeError("eval router unreachable")
+
+        cells[4].unpin_from_eval = broken_unpin
+        pool, srv = _pool(cells)
+
+        carve_out = await pool.carve_out()
+
+        assert carve_out.skip_reason == "unhealthy"
+        assert list(srv.eval_pinned_cells) == ["engine-4"]
+        assert all(cell.pin_calls == 0 for cell in cells)
 
     @pytest.mark.asyncio
     async def test_the_version_check_rejects_a_pinned_engine_that_moved(self):

@@ -57,11 +57,16 @@ class InferenceControllerEvalPool:
         return EvalFleetInfo(router=self._router, engine_gpu_counts=[self._num_gpus_per_engine] * self._num_engines)
 
     async def carve_out(self) -> EvalPoolCarveOut:
-        """Pin the last ``num_engines`` serving cells for one eval, all at one weight version."""
-        assert not self._srv.eval_pinned_cells, (
-            f"cells {sorted(self._srv.eval_pinned_cells)} are still pinned for a previous eval; "
-            "only one eval runs on carved-out engines at a time"
-        )
+        """Pin the last ``num_engines`` serving cells for one eval, all at one weight version; a failure skips the eval."""
+        try:
+            # cells a failed give-back left pinned get another try here, so they do not stay out of training
+            await self._srv.give_back_eval_pinned_cells()
+            return await self._pin_serving_cells()
+        except Exception:
+            logger.exception("Carving out engines for eval failed; skipping this eval")
+            return EvalPoolCarveOut(weight_version=None, skip_reason="unhealthy")
+
+    async def _pin_serving_cells(self) -> EvalPoolCarveOut:
         serving = sorted(
             (cell for cell in self._srv.all_server_cells.values() if cell.is_serving),
             key=lambda cell: cell.meta.gpu_offset,
@@ -77,17 +82,13 @@ class InferenceControllerEvalPool:
             logger.warning(f"Engines to carve out for eval hold different weight versions: {versions}")
             return EvalPoolCarveOut(weight_version=None, skip_reason="pin_violation")
 
-        pinned: list[ServerCell] = []
         try:
             for cell in cells:
                 await cell.pin_for_eval(eval_router_url=self._router_url)
-                pinned.append(cell)
             await wait_router_generate_ready(self._router_url, headers=self._probe_headers)
         except Exception:
-            logger.exception("Carving out engines for eval failed; giving back the ones already pinned")
-            for cell in pinned:
-                await cell.unpin_from_eval()
-            return EvalPoolCarveOut(weight_version=None, skip_reason="unhealthy")
+            await self._srv.give_back_eval_pinned_cells()
+            raise
         return EvalPoolCarveOut(weight_version=versions[0], skip_reason=None)
 
     async def give_back(self) -> None:
