@@ -294,6 +294,19 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       rm -rf /root/.cargo /root/.rustup /build/sgl-model-gateway /build/gateway_wheels; \
     fi
 
+# ==================== Patch what image scanners flag ====================
+# Third-party image reviews (Trivy, JFrog Xray) block HIGH/CRITICAL findings. This step fixes the
+# ones it can without moving a pinned dependency; findings in SGLang's pins or Ray's vendored files
+# are left to those projects.
+#   - linux-libc-dev, apt: the base image predates Ubuntu's security updates for them.
+#   - /root/.cargo/registry and /root/.cargo/git: crate sources cached by the base image's Rust
+#     builds. Nothing in the image reads them, and their Cargo.lock files pin the flagged crates.
+#   - nltk, oauthlib: unpinned transitive dependencies of the SGLang base.
+RUN apt-get update && \
+    apt-get install -y --only-upgrade linux-libc-dev apt libapt-pkg6.0t64 && \
+    rm -rf /var/lib/apt/lists/* /root/.cargo/registry /root/.cargo/git && \
+    pip install --no-cache-dir "nltk>=3.10.4" "oauthlib>=4.0.1"
+
 # ==================== Reconcile apache-tvm-ffi with sglang's pin ====================
 # sglang v0.5.16 bumped nvidia-cutlass-dsl 4.5.2 -> 4.6.0 while leaving its
 # apache-tvm-ffi pin at 0.1.11. cutlass-dsl 4.6.0's tvm_ffi provider calls
