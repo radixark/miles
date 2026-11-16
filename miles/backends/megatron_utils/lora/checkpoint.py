@@ -763,8 +763,9 @@ def restore_single_lora(
     scheduler_state = training_state.get("opt_param_scheduler")
     if opt_param_scheduler is not None and scheduler_state is not None:
         opt_param_scheduler.load_state_dict(scheduler_state)
-    # older adapter dirs and torchtitan's do not record it
-    ModelCompanionWeightVersionUtils.set_weight_version(model, training_state.get("weight_version", 0))
+    # older adapter dirs and torchtitan's do not record it; they keep the version --load restored
+    if "weight_version" in training_state:
+        ModelCompanionWeightVersionUtils.set_weight_version(model, training_state["weight_version"])
     return AdapterRestore(training_state["iteration"], scheduler_state is not None, training_state["first_rollout"])
 
 

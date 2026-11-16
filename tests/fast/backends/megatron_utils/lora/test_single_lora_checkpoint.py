@@ -116,6 +116,15 @@ def test_a_resume_continues_the_weight_version_its_save_recorded(tmp_path):
     assert ModelCompanionWeightVersionUtils.weight_version([resumed]) == 5
 
 
+def test_a_training_state_without_a_weight_version_keeps_the_one_load_restored(tmp_path):
+    loaded = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+    for _ in range(3):
+        ModelCompanionWeightVersionUtils.bump_weight_version([loaded])
+    with patch(f"{_MODULE}.read_training_state", return_value={"iteration": 4, "first_rollout": 0}):
+        _restore(tmp_path, model=[loaded])
+    assert ModelCompanionWeightVersionUtils.weight_version([loaded]) == 3
+
+
 def test_a_source_without_training_state_restarts_at_rollout_0(tmp_path):
     (iteration, _, _), scheduler, _ = _restore(tmp_path)
     assert iteration is None
