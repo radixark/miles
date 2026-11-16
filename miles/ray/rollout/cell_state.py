@@ -18,6 +18,9 @@ class StateInitializing(FrozenStrictBaseModel):
 
 class StatePendingWeights(FrozenStrictBaseModel):
     addr_info: CellAddrInfo
+    # A serving cell drained out of the router for a weight update returns to
+    # service afterwards; a cell pending since startup does not.
+    resume_serving: bool = False
 
 
 class StateServing(FrozenStrictBaseModel):
