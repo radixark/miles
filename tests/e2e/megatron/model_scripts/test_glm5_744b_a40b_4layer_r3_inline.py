@@ -14,6 +14,7 @@ register_cuda_ci(
     suite="stage-c-2-gpu-h200",
     labels=["megatron", "model-scripts", "replay"],
     hardware=["hopper", "blackwell"],
+    nightly=True,
     num_gpus=2,
 )
 
