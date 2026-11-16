@@ -160,12 +160,14 @@ def encode_samples(
                     value = value.to_dict()
                 elif field == "prefix_cache_info":
                     value = value.to_dict()
-                elif field in ("rollout_store_plan", "multimodal_inputs"):
+                elif field == "rollout_store_plan":
                     if value is None:
-                        # No key: a payload without plans or media stays byte-identical.
+                        # No key: a payload without plans stays byte-identical.
                         continue
-                    if field == "rollout_store_plan":
-                        value = value.to_dict()
+                    value = value.to_dict()
+                elif field == "multimodal_inputs" and value is None:
+                    # No key: a payload without media stays byte-identical.
+                    continue
                 sample_meta[field] = value
                 continue
             if value is None:

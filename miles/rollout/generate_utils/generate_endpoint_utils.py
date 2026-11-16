@@ -89,11 +89,14 @@ def apply_sample_max_response_len(sampling_params: dict[str, Any], sample: Sampl
     return {**sampling_params, "max_new_tokens": limit}
 
 
+MM_TOKEN_EXPANSION_START_LEN = "mm_token_expansion_start_len"
+
+
 def token_space_request_fields(mm_token_expansion_start_len: int) -> dict[str, Any]:
     """Ask SGLang to expand media placeholders after the already expanded prefix and return the prompt IDs."""
     # The request carries every media reference; SGLang matches the placeholders after the prefix
     # to the trailing references, so a resumed request with a fully expanded prefix expands nothing.
-    return {"mm_token_expansion_start_len": mm_token_expansion_start_len, "return_prompt_token_ids": True}
+    return {MM_TOKEN_EXPANSION_START_LEN: mm_token_expansion_start_len, "return_prompt_token_ids": True}
 
 
 def adopt_expanded_prompt_ids(sample: Sample, payload: dict, output: dict) -> None:

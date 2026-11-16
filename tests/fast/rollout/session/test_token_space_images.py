@@ -54,24 +54,33 @@ class TestEngineInputIds:
     # A checkpoint with prompt [1, 9, 2] (9 expands to three 9s in the engine's form) and completion [5, 6].
     CHECKPOINT = [1, 9, 2, 5, 6]
     EXPANDED = [1, 9, 9, 9, 2, 5, 6]
+    CHECKPOINT_ARGS = {
+        "checkpoint_token_ids": CHECKPOINT,
+        "checkpoint_engine_ids": EXPANDED,
+        "checkpoint_completion_len": 2,
+    }
 
     def test_the_first_turn_is_sent_as_rendered(self):
-        assert engine_input_ids([1, 2, 9, 3], [], [], 0) == ([1, 2, 9, 3], 0)
+        assert engine_input_ids(
+            [1, 2, 9, 3], checkpoint_token_ids=[], checkpoint_engine_ids=[], checkpoint_completion_len=0
+        ) == ([1, 2, 9, 3], 0)
 
     def test_the_checkpoint_is_sent_expanded_and_the_new_part_as_rendered(self):
         # Qwen3 appends the newline its stop token lacks, then the new turn with one more image.
         prompt = self.CHECKPOINT + [7, 4, 9, 8]
-        assert engine_input_ids(prompt, self.CHECKPOINT, self.EXPANDED, 2) == (self.EXPANDED + [7, 4, 9, 8], 7)
+        assert engine_input_ids(prompt, **self.CHECKPOINT_ARGS) == (self.EXPANDED + [7, 4, 9, 8], 7)
 
     def test_a_trimmed_trailing_token_is_sent_as_rendered(self):
         # GLM re-renders the ambiguous last token of the completion.
         prompt = [1, 9, 2, 5, 4, 9]
-        assert engine_input_ids(prompt, self.CHECKPOINT, self.EXPANDED, 2) == ([1, 9, 9, 9, 2, 5, 4, 9], 6)
+        assert engine_input_ids(prompt, **self.CHECKPOINT_ARGS) == ([1, 9, 9, 9, 2, 5, 4, 9], 6)
 
     def test_a_prompt_that_cuts_into_the_checkpoint_prompt_raises(self):
         # The engine tails coincide here ([9, 2] in both), so only the completion bound catches it.
         with pytest.raises(TokenizationError, match="cuts into its prompt"):
-            engine_input_ids([1, 4], [1, 9, 2], [1, 9, 9, 2], 0)
+            engine_input_ids(
+                [1, 4], checkpoint_token_ids=[1, 9, 2], checkpoint_engine_ids=[1, 9, 9, 2], checkpoint_completion_len=0
+            )
 
 
 def _skip_off_ci(reason: str):

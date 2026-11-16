@@ -20,6 +20,7 @@ from typing import Any
 import orjson
 from jinja2 import TemplateError
 
+from miles.rollout.generate_utils.generate_endpoint_utils import MM_TOKEN_EXPANSION_START_LEN
 from miles.rollout.generate_utils.rollout_topk_logprobs import configure_rollout_topk_logprobs_request
 from miles.rollout.generate_utils.sampling_mask import validate_sampling_support_request
 from miles.rollout.session.config import SessionServerConfig
@@ -213,12 +214,12 @@ def resolve_request_args_by_config(
             f"routed_experts_start_len={value!r} is not accepted: R3 offsets are computed by the session server"
         )
     request_args.pop("routed_experts_start_len", None)
-    if (value := request_args.get("mm_token_expansion_start_len")) is not None:
+    if (value := request_args.get(MM_TOKEN_EXPANSION_START_LEN)) is not None:
         raise MessageValidationError(
-            f"mm_token_expansion_start_len={value!r} is not accepted: media expansion offsets are computed by the "
-            "session server"
+            f"{MM_TOKEN_EXPANSION_START_LEN}={value!r} is not accepted: media expansion offsets are computed by "
+            "the session server"
         )
-    request_args.pop("mm_token_expansion_start_len", None)
+    request_args.pop(MM_TOKEN_EXPANSION_START_LEN, None)
     if (value := request_args.get("logprob_start_len")) is not None:
         raise MessageValidationError(
             f"logprob_start_len={value!r} is not accepted: not supported on the session chat path"
