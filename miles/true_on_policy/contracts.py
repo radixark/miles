@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .schema import (
-    QWEN3_DENSE_TRUE_ON_POLICY_V1_SCHEMA,
+    QWEN3_DENSE_BLACKWELL_BF16_TRUE_ON_POLICY_V1_SCHEMA,
+    QWEN3_DENSE_HOPPER_BF16_TRUE_ON_POLICY_V1_SCHEMA,
     KernelContract,
     LogprobContract,
     ModelFamily,
@@ -67,13 +68,19 @@ class TrueOnPolicyContract:
         }
 
 
-QWEN3_DENSE_TRUE_ON_POLICY_V1 = TrueOnPolicyContract(
-    schema=QWEN3_DENSE_TRUE_ON_POLICY_V1_SCHEMA,
+QWEN3_DENSE_HOPPER_BF16_TRUE_ON_POLICY_V1 = TrueOnPolicyContract(
+    schema=QWEN3_DENSE_HOPPER_BF16_TRUE_ON_POLICY_V1_SCHEMA,
+)
+
+
+QWEN3_DENSE_BLACKWELL_BF16_TRUE_ON_POLICY_V1 = TrueOnPolicyContract(
+    schema=QWEN3_DENSE_BLACKWELL_BF16_TRUE_ON_POLICY_V1_SCHEMA,
 )
 
 
 _CONTRACT_BY_NAME = {
-    QWEN3_DENSE_TRUE_ON_POLICY_V1.name: QWEN3_DENSE_TRUE_ON_POLICY_V1,
+    QWEN3_DENSE_HOPPER_BF16_TRUE_ON_POLICY_V1.name: QWEN3_DENSE_HOPPER_BF16_TRUE_ON_POLICY_V1,
+    QWEN3_DENSE_BLACKWELL_BF16_TRUE_ON_POLICY_V1.name: QWEN3_DENSE_BLACKWELL_BF16_TRUE_ON_POLICY_V1,
 }
 
 
@@ -83,3 +90,7 @@ def get_true_on_policy_contract(name: str) -> TrueOnPolicyContract:
     except KeyError as exc:
         supported = ", ".join(sorted(_CONTRACT_BY_NAME))
         raise ValueError(f"Unsupported true-on-policy contract {name!r}. Supported contracts: {supported}") from exc
+
+
+def all_true_on_policy_contracts() -> tuple[TrueOnPolicyContract, ...]:
+    return tuple(_CONTRACT_BY_NAME.values())

@@ -207,7 +207,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         model, n = self._build_model_with_attn_bridge(checkpoint_path, self._get_init_weight_context_manager())
         if n > 0:
             logger.info(
-                f"[Rank {dist.get_rank()}] Applied triton attention patch to {n} layer(s) of {checkpoint_path}"
+                f"[Rank {dist.get_rank()}] Applied the {self.args.backend.attn_implementation} attention bridge to {n} layer(s) of {checkpoint_path}"
             )
 
         self.arch_adapter.patch_model(model, self.args)
@@ -217,7 +217,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         return model
 
     def _build_model_with_attn_bridge(self, checkpoint_path: str, init_context):
-        """Build HF model and optionally apply Triton attention bridge patch."""
+        """Build HF model and optionally apply the Triton or FA4 attention bridge patch."""
         if SNAPSHOT_TESTING_ENABLED:
             ConfigSnapshotDumper.dump(
                 stage="checkpoint_load", config={"args": self.args, "load": checkpoint_path, "format": "hf"}
@@ -225,7 +225,10 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         # ROCm-only: on other platforms "triton" falls through to from_pretrained, which rejects
         # it exactly as it did before this path existed.
         use_triton_bridge = self.args.backend.attn_implementation == "triton" and torch.version.hip is not None
-        effective_attn = "eager" if use_triton_bridge else self.args.backend.attn_implementation
+        # "fa4" is SGLang's vendored FlashAttention-4, called the way SGLang's decode calls it, so the
+        # trainer is bitwise the sampler; HF loads with eager and the bridge then swaps it in.
+        use_fa4_bridge = self.args.backend.attn_implementation == "fa4"
+        effective_attn = "eager" if use_triton_bridge or use_fa4_bridge else self.args.backend.attn_implementation
 
         with init_context():
             model = self._get_model_cls().from_pretrained(
@@ -239,6 +242,10 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             from .sglang_attn_bridge.hf_sglang_triton_patch import apply_sglang_triton_attention_patch
 
             patched_layers = apply_sglang_triton_attention_patch(model)
+        elif use_fa4_bridge:
+            from .sglang_attn_bridge.hf_fa4_patch import apply_fa4_attention_patch
+
+            patched_layers = apply_fa4_attention_patch(model)
         return model, patched_layers
 
     def _enable_true_on_policy_optimizations(self, args):

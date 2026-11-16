@@ -6,13 +6,17 @@ from dataclasses import replace
 import torch
 
 from miles.backends.fsdp_utils.adaptations.arch_adapter import ArchAdapter
-from miles.true_on_policy.contracts import QWEN3_DENSE_TRUE_ON_POLICY_V1
+from miles.true_on_policy.contracts import QWEN3_DENSE_BLACKWELL_BF16_TRUE_ON_POLICY_V1, QWEN3_DENSE_HOPPER_BF16_TRUE_ON_POLICY_V1
+
+# the Hopper and Blackwell dense contracts share the precision contract and model math below; they
+# differ in attention
+_DENSE_CONTRACTS = (QWEN3_DENSE_HOPPER_BF16_TRUE_ON_POLICY_V1.name, QWEN3_DENSE_BLACKWELL_BF16_TRUE_ON_POLICY_V1.name)
 
 
 def _uses_formal_contract(args) -> bool:
     return (
         args.true_on_policy_mode
-        and args.sglang.common_value("true_on_policy_contract") == QWEN3_DENSE_TRUE_ON_POLICY_V1.name
+        and args.sglang.common_value("true_on_policy_contract") in _DENSE_CONTRACTS
     )
 
 
@@ -30,10 +34,11 @@ class Qwen3Adapter(ArchAdapter):
     def resolve_precision(self, base, args):
         if not _uses_formal_contract(args):
             return base
+        contract = args.sglang.common_value("true_on_policy_contract")
         if args.backend.fp16:
-            raise ValueError(f"{QWEN3_DENSE_TRUE_ON_POLICY_V1.name} requires bf16 training")
+            raise ValueError(f"{contract} requires bf16 training")
         if not base.keep_fp32_master:
-            raise ValueError(f"{QWEN3_DENSE_TRUE_ON_POLICY_V1.name} requires fp32 master weights")
+            raise ValueError(f"{contract} requires fp32 master weights")
         return replace(
             base, param_dtype=torch.float32, autocast_dtype=torch.bfloat16, sync_dtype_resolver=_resolve_sync_dtype
         )

@@ -67,7 +67,7 @@ def execute() -> None:
 
     true_on_policy_args = (
         "--sglang-enable-deterministic-inference "
-        "--sglang-true-on-policy-contract qwen3_dense_true_on_policy_v1 "
+        "--sglang-true-on-policy-contract qwen3_dense_hopper_bf16_true_on_policy_v1 "
         "--sglang-attention-backend fa3 "
         "--attn-implementation flash_attention_3 "
         "--deterministic-mode "

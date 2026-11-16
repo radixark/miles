@@ -14,7 +14,7 @@ from miles.backends.fsdp_utils.models.qwen3 import (
     apply_qwen3_dense_true_on_policy_patch,
     resolve_qwen3_dense_sync_dtype,
 )
-from miles.true_on_policy.contracts import QWEN3_DENSE_TRUE_ON_POLICY_V1
+from miles.true_on_policy.contracts import QWEN3_DENSE_HOPPER_BF16_TRUE_ON_POLICY_V1
 
 
 def resolve_precision_policy(hf_config, args):
@@ -64,7 +64,7 @@ def test_qwen3_model_patch_is_contract_gated(monkeypatch):
         lambda model: calls.append(model),
     )
     model = object()
-    formal_contract = QWEN3_DENSE_TRUE_ON_POLICY_V1.name
+    formal_contract = QWEN3_DENSE_HOPPER_BF16_TRUE_ON_POLICY_V1.name
 
     for model_type, true_on_policy_mode, contract, fp16 in [
         ("qwen3", False, formal_contract, False),
@@ -141,7 +141,7 @@ def test_qwen3_formal_sync_preserves_post_update_fp32_values():
         SimpleNamespace(
             backend=SimpleNamespace(fp16=False, keep_fp32_master=True),
             true_on_policy_mode=True,
-            sglang=make_sglang_config(true_on_policy_contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name),
+            sglang=make_sglang_config(true_on_policy_contract=QWEN3_DENSE_HOPPER_BF16_TRUE_ON_POLICY_V1.name),
         ),
     )
     model = apply_fp32_master(model, policy.sync_dtype_resolver)
@@ -168,7 +168,7 @@ def test_qwen3_ref_model_uses_fp32_master_storage(monkeypatch):
     args = SimpleNamespace(
         backend=SimpleNamespace(attn_implementation="eager", fp16=False, keep_fp32_master=True),
         true_on_policy_mode=True,
-        sglang=make_sglang_config(true_on_policy_contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name),
+        sglang=make_sglang_config(true_on_policy_contract=QWEN3_DENSE_HOPPER_BF16_TRUE_ON_POLICY_V1.name),
     )
     actor = object.__new__(actor_module.FSDPTrainRayActor)
     actor.args = args

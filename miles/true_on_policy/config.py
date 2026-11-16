@@ -191,6 +191,12 @@ class TrueOnPolicyConfig:
             raise ValueError(f"{self.model_profile.family} does not support PP true-on-policy")
         if self.sglang_target == "fsdp_tp" and not self.model_profile.supports_tp_invariant:
             raise ValueError(f"{self.model_profile.family} does not support TP-invariant true-on-policy")
+        if self.contract.logprob_contract == "sglang_decode":
+            # the FA4 bridge runs the FSDP trainer's attention the way single-GPU SGLang decodes
+            if self.train_backend != "fsdp":
+                raise ValueError(f"{self.contract.name} needs the FSDP trainer")
+            if layout.uses_train_tp or layout.uses_rollout_tp or layout.uses_ulysses_cp or layout.uses_train_pp:
+                raise ValueError(f"{self.contract.name} supports only DP training and single-GPU rollout engines")
 
     def build_kernel_policy(self) -> TrueOnPolicyKernelPolicy:
         return TrueOnPolicyKernelPolicy(
@@ -204,13 +210,12 @@ class TrueOnPolicyConfig:
     def build_launch_plan(self) -> TrueOnPolicyLaunchPlan:
         self.validate()
         kernel_policy = self.build_kernel_policy()
-        miles_args = TrueOnPolicyArgList(
-            (
-                "--deterministic-mode",
-                "--true-on-policy-mode",
-                "--recompute-logprobs-via-prefill",
-            )
-        )
+        miles_args = ("--deterministic-mode", "--true-on-policy-mode")
+        if self.contract.logprob_contract == "sglang_prefill":
+            miles_args += ("--recompute-logprobs-via-prefill",)
+        else:  # sglang_decode: the sampler's logprobs are the trainer's, so the PPO ratio uses them
+            miles_args += ("--use-rollout-logprobs",)
+        miles_args = TrueOnPolicyArgList(miles_args)
 
         if self.train_backend == "megatron":
             megatron_args = kernel_policy.build_megatron_args()

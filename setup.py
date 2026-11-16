@@ -18,6 +18,12 @@ setup(
         "miles.utils.chat_template_utils.templates": ["*.jinja"],
     },
     install_requires=_fetch_requirements("requirements.txt"),
+    # SGLang loads these in every engine process (see miles_plugins/sglang)
+    entry_points={
+        "sglang.srt.plugins": [
+            "miles_true_on_policy = miles_plugins.sglang.true_on_policy:register",
+        ],
+    },
     extras_require={
         "fsdp": [
             "torch>=2.0",

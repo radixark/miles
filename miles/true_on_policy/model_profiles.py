@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .contracts import QWEN3_DENSE_TRUE_ON_POLICY_V1, LogprobContract, ModelFamily, TrueOnPolicyContract
+from .contracts import QWEN3_DENSE_HOPPER_BF16_TRUE_ON_POLICY_V1, LogprobContract, ModelFamily, TrueOnPolicyContract
 
 ParallelLayout = str
 
@@ -75,7 +75,7 @@ QWEN3_DENSE_PROFILE = TrueOnPolicyModelProfile(
     },
     supported_train_layouts=("dp", "tp", "pp", "ulysses_cp"),
     supported_rollout_layouts=("dp", "tp"),
-    contract=QWEN3_DENSE_TRUE_ON_POLICY_V1,
+    contract=QWEN3_DENSE_HOPPER_BF16_TRUE_ON_POLICY_V1,
 )
 
 
