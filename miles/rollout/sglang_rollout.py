@@ -45,6 +45,7 @@ from .generate_utils.generate_endpoint_utils import (
     apply_sample_max_response_len,
     compute_routing_headers,
     get_indexer_topk_from_response,
+    routed_experts_num_layers,
     router_routes_by_key,
     token_space_request_fields,
     truncate_to_max_seq_len,
@@ -307,13 +308,14 @@ async def generate(
             dtype=np.int32,
         )
         _ntok = int(output["meta_info"]["prompt_tokens"]) + len(new_response_tokens) - 1
-        _topk = _re.size // max(1, _ntok * args.num_layers)
-        if _re.size == (_ntok + 1) * args.num_layers * max(1, _topk):
+        _nlayers = routed_experts_num_layers(args, output["meta_info"])
+        _topk = _re.size // max(1, _ntok * _nlayers)
+        if _re.size == (_ntok + 1) * _nlayers * max(1, _topk):
             # stop-edge: sglang also forwarded the final token; its routing rows
             # feed no training position - drop the tail position.
-            _re = _re[: _ntok * args.num_layers * _topk]
-        assert _re.size == _ntok * args.num_layers * _topk, (
-            f"routed_experts buffer {_re.size} != ntok({_ntok}) x layers({args.num_layers}) x topk({_topk}); "
+            _re = _re[: _ntok * _nlayers * _topk]
+        assert _re.size == _ntok * _nlayers * _topk, (
+            f"routed_experts buffer {_re.size} != ntok({_ntok}) x layers({_nlayers}) x topk({_topk}); "
             f"prompt_tokens={output['meta_info'].get('prompt_tokens')} response={len(new_response_tokens)} "
             f"unexpanded_tokens={len(sample.tokens)}"
         )
@@ -321,7 +323,7 @@ async def generate(
             "routed_experts payload is all zeros: the sglang engine did not capture routed experts "
             "(topk-bypassing --moe-runner-backend such as flashinfer_trtllm?)."
         )
-        sample.rollout_routed_experts = _re.reshape(_ntok, args.num_layers, _topk)
+        sample.rollout_routed_experts = _re.reshape(_ntok, _nlayers, _topk)
     if "indexer_topk" in output["meta_info"]:
         sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample)
 
