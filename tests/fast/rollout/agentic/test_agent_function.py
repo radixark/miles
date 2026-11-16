@@ -33,7 +33,8 @@ def _is_running(pid: int) -> bool:
     # a killed process whose new parent has not reaped it yet still answers signal 0
     try:
         return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] not in ("Z", "X")
-    except FileNotFoundError:
+    # reaped before the open, or between the open and the read
+    except (FileNotFoundError, ProcessLookupError):
         return False
 
 
@@ -157,6 +158,42 @@ def test_idle_module_pool_workers_do_not_hold_the_process(tmp_path):
 
     assert asyncio.run(call_and_watch()), "idle pool workers held the agent process"
     assert marker.exists(), "the agent process exited before its pool's queued work ran"
+
+
+def test_an_idle_module_process_pool_does_not_hold_the_process():
+    async def call_and_watch() -> bool:
+        pid = await call_agent_function(stubs.leave_module_process_pool, mode="subproc")
+        return await _wait_until_gone(pid, timeout_s=30)
+
+    assert asyncio.run(call_and_watch()), "an idle process pool held the agent process"
+
+
+def test_a_cleanup_thread_can_still_use_executors_after_the_call(tmp_path):
+    """Closing a sandbox may still need a pool, or asyncio's DNS lookups, after the call returns."""
+    marker = tmp_path / "used"
+
+    async def call_and_watch() -> bool:
+        pid = await call_agent_function(
+            stubs.leave_cleanup_thread_using_executors, mode="subproc", marker=str(marker), delay_s=1.0
+        )
+        return await _wait_until_gone(pid, timeout_s=30)
+
+    assert asyncio.run(call_and_watch()), "the agent process outlived its cleanup"
+    assert marker.exists(), "the cleanup thread could not use an executor after the call"
+    assert marker.read_text() == "pool, asyncio executor"
+
+
+def test_a_thread_the_cleanup_starts_is_waited_for_too(tmp_path):
+    marker = tmp_path / "helper_done"
+
+    async def call_and_watch() -> bool:
+        pid = await call_agent_function(
+            stubs.leave_cleanup_thread_with_a_helper, mode="subproc", marker=str(marker), delay_s=1.0
+        )
+        return await _wait_until_gone(pid, timeout_s=30)
+
+    assert asyncio.run(call_and_watch()), "the agent process outlived its cleanup"
+    assert marker.exists(), "the agent process exited before the thread its cleanup started finished"
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PR_SET_PDEATHSIG exists only on Linux")

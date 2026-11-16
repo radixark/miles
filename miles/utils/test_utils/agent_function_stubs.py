@@ -8,7 +8,7 @@ import os
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 
 from miles.rollout.agentic.rollout_limits import current_scope, rollout_lock, rollout_semaphore
@@ -93,6 +93,41 @@ async def leave_module_pool_work(*, marker: str, delay_s: float, **kwargs) -> in
         Path(marker).touch()
 
     _MODULE_POOL.submit(_log)
+    return os.getpid()
+
+
+# held by the module too; its manager thread waits for work until the pool shuts down
+_MODULE_PROCESS_POOL = ProcessPoolExecutor(max_workers=1)
+
+
+async def leave_module_process_pool(**kwargs) -> int:
+    _MODULE_PROCESS_POOL.submit(os.getpid).result()
+    return os.getpid()
+
+
+async def leave_cleanup_thread_using_executors(*, marker: str, delay_s: float, **kwargs) -> int:
+    def _cleanup() -> None:
+        time.sleep(delay_s)
+        used = [
+            ThreadPoolExecutor(max_workers=1).submit(lambda: "pool").result(),
+            asyncio.run(asyncio.to_thread(lambda: "asyncio executor")),
+        ]
+        Path(marker).write_text(", ".join(used))
+
+    threading.Thread(target=_cleanup, daemon=False).start()
+    return os.getpid()
+
+
+async def leave_cleanup_thread_with_a_helper(*, marker: str, delay_s: float, **kwargs) -> int:
+    def _helper() -> None:
+        time.sleep(delay_s)
+        Path(marker).touch()
+
+    def _cleanup() -> None:
+        time.sleep(delay_s)
+        threading.Thread(target=_helper, daemon=False).start()
+
+    threading.Thread(target=_cleanup, daemon=False).start()
     return os.getpid()
 
 
