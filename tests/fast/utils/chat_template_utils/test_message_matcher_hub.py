@@ -16,6 +16,7 @@ import miles.utils.chat_template_utils as chat_template_utils
 from miles.utils.chat_template_utils import message_matcher_hub, template
 from miles.utils.chat_template_utils.message_matcher_hub import (
     SessionMessageMatcherError,
+    loose_tool_call_ignore_reasoning_message_matches,
     loose_tool_call_message_matches,
     resolve_session_message_matcher,
     role_content_only_message_matches,
@@ -377,6 +378,7 @@ def test_matchers_do_not_mutate_either_input() -> None:
     for matcher in (
         strict_message_matches,
         loose_tool_call_message_matches,
+        loose_tool_call_ignore_reasoning_message_matches,
         role_content_only_message_matches,
     ):
         matcher(stored, replayed)
@@ -387,10 +389,46 @@ def test_matchers_do_not_mutate_either_input() -> None:
 
 
 @pytest.mark.parametrize(
+    "replayed_reasoning",
+    [
+        pytest.param(_MISSING, id="omitted"),
+        pytest.param(None, id="null"),
+        pytest.param("a different thought", id="different"),
+    ],
+)
+def test_loose_tool_call_ignore_reasoning_accepts_any_replayed_reasoning(replayed_reasoning: Any) -> None:
+    stored = _assistant('{"command": "echo hi"}', reasoning_content="thought about it")
+    replayed = _assistant('{"command":"echo hi"}', reasoning_content=replayed_reasoning)
+
+    assert not loose_tool_call_message_matches(stored, replayed)
+    assert loose_tool_call_ignore_reasoning_message_matches(stored, replayed)
+
+
+@pytest.mark.parametrize(
+    "replayed",
+    [
+        pytest.param(_assistant('{"command":"echo hi"}', content="changed"), id="content"),
+        pytest.param(_assistant('{"command":"echo bye"}'), id="arguments"),
+        pytest.param(_assistant('{"command":"echo hi"}', call_id="call-B"), id="call-id"),
+        pytest.param({"role": "user", "content": ""}, id="role"),
+    ],
+)
+def test_loose_tool_call_ignore_reasoning_still_compares_the_rest(replayed: dict[str, Any]) -> None:
+    stored = _assistant('{"command": "echo hi"}', reasoning_content="thought about it")
+
+    assert not loose_tool_call_ignore_reasoning_message_matches(stored, replayed)
+
+
+@pytest.mark.parametrize(
     ("selector", "expected"),
     [
         pytest.param("strict", strict_message_matches, id="strict"),
         pytest.param("loose_tool_call", loose_tool_call_message_matches, id="loose-tool-call"),
+        pytest.param(
+            "loose_tool_call_ignore_reasoning",
+            loose_tool_call_ignore_reasoning_message_matches,
+            id="loose-tool-call-ignore-reasoning",
+        ),
         pytest.param("role_content_only", role_content_only_message_matches, id="role-content-only"),
     ],
 )
