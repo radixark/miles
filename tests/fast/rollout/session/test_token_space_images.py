@@ -1,7 +1,7 @@
 """Images through the session server with --multimodal-token-space-processing.
 
-The stub engine expands media with SGLang's own token-space processor (the Qwen VL strategy, on CPU),
-as a server with --enable-token-space-processor does. The tests check what each turn sends, what the
+The stub engine expands media with SGLang's own token-space processor (on CPU, Qwen3.8's strategy, and
+Inkling's in the flow test), as a server with --enable-token-space-processor does. The tests check what each turn sends, what the
 session stores, and that the trainer rebuilds the engine's pixel values from the collected sample.
 """
 
@@ -11,6 +11,7 @@ import asyncio
 import base64
 import io
 import json
+import os
 import threading
 import uuid
 
@@ -31,10 +32,22 @@ from miles.rollout.session.token_space import engine_input_ids
 from miles.rollout.session.v2.core import SessionCoreV2
 from miles.rollout.session.v2.session_state import SessionRegistryV2
 from miles.utils.chat_template_utils import get_tito_tokenizer
+from miles.utils.chat_template_utils.tito_tokenizer import TEMPLATE_DIR, TITOTokenizerType
 from miles.utils.types import Sample
 
 MODEL = "Qwen/Qwen3.8-27B"
 IMAGE_PAD = "<|image_pad|>"
+# The models the flow test runs: checkpoint, --tito-model, image placeholder, end token, pixel feature.
+FLOW_MODELS = {
+    "qwen3.8": (MODEL, "qwen38small", IMAGE_PAD, "<|im_end|>", "pixel_values"),
+    "inkling": (
+        "thinkingmachines/Inkling-Small",
+        "inkling",
+        "<|unused_200054|>",
+        "<|end_message|>",
+        "vision_patches_bthwc",
+    ),
+}
 
 
 class TestEngineInputIds:
@@ -61,6 +74,13 @@ class TestEngineInputIds:
             engine_input_ids([1, 4], [1, 9, 2], [1, 9, 9, 2], 0)
 
 
+def _skip_off_ci(reason: str):
+    """Skip on a box without SGLang's token-space processor or the Hub; CI has both, so there it fails."""
+    if os.environ.get("CI"):
+        pytest.fail(reason)
+    pytest.skip(reason)
+
+
 def _model_files(model: str) -> str:
     """The model's tokenizer, chat template and processor configs: the token-space processor needs no weights."""
     from huggingface_hub import snapshot_download
@@ -68,12 +88,15 @@ def _model_files(model: str) -> str:
     try:
         return snapshot_download(model, allow_patterns=["*.json", "*.jinja", "*.txt", "*.model"])
     except Exception as e:  # noqa: BLE001 - no network and no cache
-        pytest.skip(f"cannot fetch {model}'s tokenizer and processor files: {e}")
+        _skip_off_ci(f"cannot fetch {model}'s tokenizer and processor files: {e}")
 
 
 def _engine_args(model_path: str):
     """The rollout engines' processor settings, as the training actor reads them from the server args."""
-    pytest.importorskip("sglang.srt.multimodal.token_space_mm_process.processor")
+    try:
+        import sglang.srt.multimodal.token_space_mm_process.processor  # noqa: F401
+    except ImportError as e:
+        _skip_off_ci(f"SGLang's token-space processor is not importable: {e}")
     from miles.backends.training_utils.data.token_space_media_process import RolloutEngineProcessorArgs
 
     return RolloutEngineProcessorArgs(
@@ -96,16 +119,28 @@ def model_path():
     return _model_files(MODEL)
 
 
-@pytest.fixture(scope="module")
-def tokenizer(model_path):
-    """The Qwen3.8 tokenizer with the qwen38small fixed template, as ``--chat-template-path`` installs it."""
+def _fixed_template_tokenizer(model_path: str, tito_model: str):
+    """The tokenizer with the TITO family's fixed template, as ``--chat-template-path`` installs it."""
     from transformers import AutoTokenizer
 
-    from miles.utils.chat_template_utils.tito_tokenizer import TEMPLATE_DIR, Qwen38SmallTITOTokenizer
-
+    tito_cls = TITOTokenizerType.get_tokenizer_class(TITOTokenizerType(tito_model))
     tok = AutoTokenizer.from_pretrained(model_path)
-    tok.chat_template = (TEMPLATE_DIR / Qwen38SmallTITOTokenizer.FIXED_TEMPLATE.template).read_text(encoding="utf-8")
+    tok.chat_template = (TEMPLATE_DIR / tito_cls.FIXED_TEMPLATE.template).read_text(encoding="utf-8")
     return tok
+
+
+def _trainer_processor(engine_args):
+    """The trainer's copy of the engines' token-space processor, built the way the training actor builds it."""
+    from miles.backends.training_utils.data.token_space_media_process import build_trainer_processor
+
+    return build_trainer_processor(
+        engine_args, mm_processor_worker_num=1, mm_io_worker_num=1, device=torch.device("cpu")
+    )
+
+
+@pytest.fixture(scope="module")
+def tokenizer(model_path):
+    return _fixed_template_tokenizer(model_path, "qwen38small")
 
 
 @pytest.fixture(scope="module")
@@ -115,12 +150,7 @@ def engine_args(model_path):
 
 @pytest.fixture(scope="module")
 def trainer_processor(engine_args):
-    """The trainer's copy of the engines' token-space processor, built the way the training actor builds it."""
-    from miles.backends.training_utils.data.token_space_media_process import build_trainer_processor
-
-    return build_trainer_processor(
-        engine_args, mm_processor_worker_num=1, mm_io_worker_num=1, device=torch.device("cpu")
-    )
+    return _trainer_processor(engine_args)
 
 
 @pytest.fixture(scope="module")
@@ -256,18 +286,34 @@ def _samples(core, session_id: str, version: str) -> list[Sample]:
     return decode_samples_and_merge_input_sample(reply.body, Sample(), fields=fields).samples
 
 
+@pytest.fixture(scope="module", params=list(FLOW_MODELS))
+def flow_model(request):
+    model, tito_model, placeholder, end_token, pixel_key = FLOW_MODELS[request.param]
+    model_path = _model_files(model)
+    return {
+        "model": model,
+        "tito_model": tito_model,
+        "placeholder": placeholder,
+        "end_token": end_token,
+        "pixel_key": pixel_key,
+        "tokenizer": _fixed_template_tokenizer(model_path, tito_model),
+        "trainer_processor": _trainer_processor(_engine_args(model_path)),
+    }
+
+
 @pytest.mark.parametrize("version", ["v1", "v2"])
-def test_images_flow_through_the_session_server_in_token_space(
-    version, tokenizer, processor_core, trainer_processor, tmp_path
-):
+def test_images_flow_through_the_session_server_in_token_space(version, flow_model, tmp_path):
     from miles.backends.training_utils.data.token_space_media_process import (
         compute_multimodal_train_inputs,
         resolved_multimodal_train_inputs,
     )
 
-    pad_id = tokenizer.convert_tokens_to_ids(IMAGE_PAD)
-    engine = TokenSpaceEngine(processor_core, tokenizer)
-    core, registry = _make_core(version, tokenizer, engine, tmp_path)
+    tokenizer, trainer_processor = flow_model["tokenizer"], flow_model["trainer_processor"]
+    pad_id = tokenizer.convert_tokens_to_ids(flow_model["placeholder"])
+    engine = TokenSpaceEngine(trainer_processor.core, tokenizer, end_token=flow_model["end_token"])
+    core, registry = _make_core(
+        version, tokenizer, engine, tmp_path, model=flow_model["model"], tito_model=flow_model["tito_model"]
+    )
     session_id = registry.create_session()
     first, second = _data_url(64, 64, (200, 10, 10)), _data_url(96, 64, (5, 5, 5))
 
@@ -299,6 +345,7 @@ def test_images_flow_through_the_session_server_in_token_space(
     assert sample.loss_mask.count(1) == 2 * reply_len, "only the two sampled replies are trained"
     # The sample is turn 2's expanded prompt plus its reply.
     assert sample.tokens == engine.prompts[1] + engine.output_ids
+    assert sample.tokens.count(pad_id) > 2, "each placeholder became a run of image tokens"
 
     # The trainer rebuilds from the references and the expanded tokens what the engine computed.
     built = compute_multimodal_train_inputs(
@@ -310,8 +357,8 @@ def test_images_flow_through_the_session_server_in_token_space(
         device=torch.device("cpu"),
     )
     (train_inputs,) = resolved_multimodal_train_inputs(built.multimodal_train_inputs)
-    assert torch.equal(train_inputs["pixel_values"], engine.outputs[-1]["pixel_values"])
-    assert train_inputs["image_grid_thw"].shape[0] == 2
+    pixel_key = flow_model["pixel_key"]
+    assert torch.equal(train_inputs[pixel_key], engine.outputs[-1][pixel_key])
 
 
 @pytest.mark.parametrize("version", ["v1", "v2"])
