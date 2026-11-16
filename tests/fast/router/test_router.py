@@ -6,7 +6,7 @@ import httpx
 import pytest
 import requests
 import sglang_router
-from fastapi import Request
+from fastapi import FastAPI, Request
 
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
@@ -23,6 +23,7 @@ def make_router_config(router_port: int, **overrides) -> MilesRouterConfig:
         host="127.0.0.1",
         port=router_port,
         health_check_interval=1.0,
+        health_check_timeout=5.0,
         health_check_failure_threshold=3,
         max_connections=100,
         timeout=None,
@@ -390,6 +391,29 @@ class TestHealthCheck:
         url, healthy = asyncio.run(router._check_worker_health("http://127.0.0.1:59999"))
         assert url == "http://127.0.0.1:59999"
         assert healthy is False
+
+    def test_check_worker_health_waits_the_configured_timeout(self, router_factory):
+        app = FastAPI()
+
+        @app.get("/health")
+        async def slow_health():
+            await asyncio.sleep(1.0)
+            return {"status": "ok"}
+
+        server = UvicornThreadServer(app, host="127.0.0.1", port=find_available_port(31000))
+        server.start()
+        try:
+            _, healthy_within_short_timeout = asyncio.run(
+                router_factory(health_check_timeout=0.2)._check_worker_health(server.url)
+            )
+            _, healthy_within_long_timeout = asyncio.run(
+                router_factory(health_check_timeout=3.0)._check_worker_health(server.url)
+            )
+        finally:
+            server.stop()
+
+        assert healthy_within_short_timeout is False
+        assert healthy_within_long_timeout is True
 
     def test_health_check_loop_waits_for_configured_interval(self, router_factory, monkeypatch: pytest.MonkeyPatch):
         """The background health check loop waits the configured interval before every round."""

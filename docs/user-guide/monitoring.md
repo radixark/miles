@@ -113,3 +113,5 @@ The router exposes a small FastAPI surface used internally by Miles:
 | `/workers/{id}` | DELETE | Unregister a worker |
 | `/add_worker`, `/remove_worker`, `/list_workers` | POST / POST / GET | The same, in sgl-router's pre-0.2.2 API |
 | any other path | GET / POST / PUT / DELETE | Proxied to a selected SGLang worker — e.g. `/generate`, `/v1/chat/completions`, `/health`. |
+
+Every `--rollout-health-check-interval` seconds the router probes each worker's `/health`, waiting up to `--rollout-health-check-timeout` seconds. SGLang answers `/health` only once its scheduler produces output, so a busy engine can take several seconds. `--miles-router-health-check-failure-threshold` consecutive failed probes stop routing to that worker.

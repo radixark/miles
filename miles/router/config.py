@@ -7,6 +7,7 @@ class MilesRouterConfig(FrozenStrictBaseModel):
     max_connections: int | None
     timeout: float | None
     health_check_interval: float
+    health_check_timeout: float
     health_check_failure_threshold: int
 
 
@@ -17,5 +18,6 @@ def compute_miles_router_config(args, *, host: str, port: int) -> MilesRouterCon
         max_connections=args.miles_router_max_connections,
         timeout=args.miles_router_timeout,
         health_check_interval=args.rollout_health_check_interval,
+        health_check_timeout=args.rollout_health_check_timeout,
         health_check_failure_threshold=args.miles_router_health_check_failure_threshold,
     )

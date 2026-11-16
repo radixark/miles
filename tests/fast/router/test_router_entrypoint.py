@@ -55,6 +55,7 @@ class TestRunRouter:
             max_connections=11,
             timeout=None,
             health_check_interval=1.0,
+            health_check_timeout=5.0,
             health_check_failure_threshold=2,
         )
         router_recorder = RouterRecorder()
