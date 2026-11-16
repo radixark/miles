@@ -314,7 +314,12 @@ def test_image_jobs_require_their_selected_gpu_stages():
     assert "needs.docker-build.result == 'success'" in resolver
 
     rocm = WORKFLOW.with_name("pr-test-rocm.yml").read_text()
-    resolver = rocm.split("\n  resolve-ci-image:\n", 1)[1].split("\n  stage-c-2-gpu-mi350:\n", 1)[0]
-    assert "needs: [resolve-ci-policy]" in resolver
-    for stage in ("stage-c-2-gpu-mi350", "stage-c-4-gpu-mi350", "stage-c-8-gpu-mi350"):
-        assert f"contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), '{stage}')" in resolver
+    build = rocm.split("\n  docker-build:\n", 1)[1].split("\n  resolve-ci-image:\n", 1)[0]
+    resolver = rocm.split("\n  resolve-ci-image:\n", 1)[1].split("    runs-on:", 1)[0]
+    assert "needs: [resolve-ci-policy]" in build
+    assert "variant: rocm10-mi35x-pr" in build
+    assert "needs: [docker-build]" in resolver
+    assert "needs.docker-build.result == 'success'" in resolver
+    assert "contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-2-gpu-mi350')" in build
+    assert "contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350')" in build
+    assert "contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-mi350')" in build

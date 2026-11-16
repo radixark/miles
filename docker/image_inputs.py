@@ -25,8 +25,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # A build reads exactly these. Anything outside them cannot change the image, so a
-# PR touching only such files reuses the released image. Dockerfile.rocm is absent on
-# purpose: it feeds the rocm/sgl-dev images, not the cu13 multi-arch image built here.
+# PR touching only such files reuses the released image. Dockerfile.rocm is absent
+# from this default set: it feeds the separate ROCm recipes below, not cu13.
 INPUT_GLOBS = (
     "docker/Dockerfile",
     "docker/Dockerfile.rubin",
@@ -37,23 +37,37 @@ INPUT_GLOBS = (
     "requirements.txt",
 )
 
+# ROCm PR builds use the same recipe as the rolling rocm/sgl-dev image.
+# Keep CUDA's existing input set and default hash unchanged.
+ROCM_INPUT_GLOBS = (
+    "docker/Dockerfile.rocm",
+    "docker/Dockerfile.rocm.dockerignore",
+    ".dockerignore",
+    "docker/build.py",
+    "docker/install-kube-tools.sh",
+    "docker/amd_patch/*",
+    "docker/amd/*",
+    "requirements.txt",
+)
+
 LABEL_KEY = "miles.image-inputs"
 
 
-def _matches(path: str) -> bool:
-    return any(fnmatch.fnmatch(path, glob) for glob in INPUT_GLOBS)
+def _matches(path: str, variant: str = "cu13") -> bool:
+    globs = ROCM_INPUT_GLOBS if variant.startswith("rocm") else INPUT_GLOBS
+    return any(fnmatch.fnmatch(path, glob) for glob in globs)
 
 
 def _git(*args: str, root: Path = REPO_ROOT) -> bytes:
     return subprocess.run(["git", *args], cwd=root, check=True, stdout=subprocess.PIPE).stdout
 
 
-def _paths_at(rev: str | None, root: Path = REPO_ROOT) -> list[str]:
+def _paths_at(rev: str | None, root: Path = REPO_ROOT, variant: str = "cu13") -> list[str]:
     if rev is None:
         listing = _git("ls-files", root=root).decode()
     else:
         listing = _git("ls-tree", "-r", "--name-only", rev, root=root).decode()
-    return sorted(p for p in listing.splitlines() if _matches(p))
+    return sorted(p for p in listing.splitlines() if _matches(p, variant))
 
 
 def _content_at(path: str, rev: str | None, root: Path = REPO_ROOT) -> bytes:
@@ -62,10 +76,10 @@ def _content_at(path: str, rev: str | None, root: Path = REPO_ROOT) -> bytes:
     return _git("show", f"{rev}:{path}", root=root)
 
 
-def compute(rev: str | None = None, *, root: Path = REPO_ROOT) -> str:
+def compute(rev: str | None = None, *, root: Path = REPO_ROOT, variant: str = "cu13") -> str:
     """Hash the build inputs in the working tree (``rev=None``) or at a revision."""
     digest = hashlib.sha256()
-    for path in _paths_at(rev, root):
+    for path in _paths_at(rev, root, variant):
         digest.update(path.encode())
         digest.update(b"\0")
         digest.update(hashlib.sha256(_content_at(path, rev, root)).digest())
@@ -104,13 +118,14 @@ def read_label(manifest: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rev", default=None, help="Git revision to hash (default: working tree).")
+    parser.add_argument("--variant", default="cu13", help="Build variant whose inputs to hash.")
     parser.add_argument(
         "--read-label",
         action="store_true",
         help="Read imagetools inspect JSON on stdin and print the hash it recorded.",
     )
     args = parser.parse_args()
-    print(read_label(sys.stdin.read()) if args.read_label else compute(args.rev))
+    print(read_label(sys.stdin.read()) if args.read_label else compute(args.rev, variant=args.variant))
     return 0
 
 

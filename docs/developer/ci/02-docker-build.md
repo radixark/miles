@@ -38,7 +38,7 @@ The CUDA 13 defaults use `lmsysorg/sglang:v0.5.22` and the stable branch `sglang
 
 **Output** — one `radixark/miles` image for the platform buildx targets: the SGLang base, then the Python dependencies declared in `requirements.txt`, Megatron-LM at its branch default or caller-pinned commit, Miles, and the prebuilt wheels (`sgl-router` among them). It also carries `kubectl`, `helm` and `tmux`, which the k8s-native launch path drives the cluster with. A multi-arch build is one `buildx` run executed once per platform — `TARGETARCH` differs each time, so each arch installs its own wheels — and buildx pushes the two as a single manifest.
 
-`docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH`, a ROCm `SGLANG_IMAGE_TAG`, and a `WHEELS_TAG_ROCM` release from `XinyuJiangCMU/miles-wheels-rocm`). All ROCm variants build on the `lmsysorg/sglang` v0.5.22 ROCm releases pinned in `docker/build.py`, so `docker/Dockerfile.rocm` fetches the matching stable branch `sglang-miles`. `rocm724-mi35x` uses the Python 3.12 base and ROCm 7.2.4 wheels from the `rocm724-gfx950-v0.5.20` release. It sets `APPLY_ROCR_VMMFIX=1` to install the point-release-matched ROCr VMM-pause fix; ROCm 10 has the fix upstream. The MI300X / MI325X (`gfx942`) variant `rocm10-mi30x` uses the `rocm10-gfx942-v0.5.20` release. That release holds Transformer Engine, flash-attn and apex built for `gfx942` from the same sources as the `gfx950` shelf, so the variant installs every wheel prebuilt, like `rocm10-mi35x`. It also sets `AITER_PREBUILD_JIT=1`. `docker/amd/prebuild_aiter_jit.py` then builds the bf16 aiter attention kernels that sglang otherwise JIT-compiles on first use: the `mha_batch_prefill` extend modules, and `pa_ragged` decode for GQA ratios 1–16, head sizes 64 and 128, and contexts up to 64K. It builds them for `GPU_ARCH`, because the build host has no GPU.
+`docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH`, a ROCm `SGLANG_IMAGE_TAG`, and a `WHEELS_TAG_ROCM` release from `XinyuJiangCMU/miles-wheels-rocm`). Rolling ROCm variants and the PR variant use the `lmsysorg/sglang` ROCm releases pinned in `docker/build.py`, so `docker/Dockerfile.rocm` fetches the matching stable branch `sglang-miles`. `rocm724-mi35x` uses the Python 3.12 base and ROCm 7.2.4 wheels from the `rocm724-gfx950-v0.5.20` release. It sets `APPLY_ROCR_VMMFIX=1` to install the point-release-matched ROCr VMM-pause fix; ROCm 10 has the fix upstream. The MI300X / MI325X (`gfx942`) variant `rocm10-mi30x` uses the `rocm10-gfx942-v0.5.20` release. That release holds Transformer Engine, flash-attn and apex built for `gfx942` from the same sources as the `gfx950` shelf, so the variant installs every wheel prebuilt, like `rocm10-mi35x`. It also sets `AITER_PREBUILD_JIT=1`. `docker/amd/prebuild_aiter_jit.py` then builds the bf16 aiter attention kernels that sglang otherwise JIT-compiles on first use: the `mha_batch_prefill` extend modules, and `pa_ragged` decode for GQA ratios 1–16, head sizes 64 and 128, and contexts up to 64K. It builds them for `GPU_ARCH`, because the build host has no GPU.
 
 ### `docker/install-kube-tools.sh`
 
@@ -58,6 +58,7 @@ The CUDA 13 defaults use `lmsysorg/sglang:v0.5.22` and the stable branch `sglang
 | `tpu` | `radixark/miles:dev-tpu` | `linux/amd64` | TPU v7x (torch_tpu) — `docker/Dockerfile.tpu` |
 | `rocm724-mi35x` | `rocm/sgl-dev:miles-rocm724-mi35x` | native                       | AMD MI35x (`gfx950`, ROCm 7.2.4) — `docker/Dockerfile.rocm` |
 | `rocm10-mi35x`  | `rocm/sgl-dev:miles-rocm10-mi35x`  | native                       | AMD MI35x (`gfx950`, ROCm 10, ROCm SDK as pip wheels) — `docker/Dockerfile.rocm` |
+| `rocm10-mi35x-pr` | PR CI custom tag: `radixark/miles:pr-<number>-rocm10-mi35x` | `linux/amd64` | Same ROCm recipe; PR CI uses `--image-tag custom --custom-tag pr-<number>` |
 | `rocm10-mi30x`  | `rocm/sgl-dev:miles-rocm10-mi30x`  | native                       | AMD MI300X / MI325X (`gfx942`, ROCm 10) — `docker/Dockerfile.rocm` |
 
 
@@ -86,23 +87,139 @@ Dockerfile changes can be build-tested on the PR itself, before merge, by select
 
 So a rerun, or a push that touches only source files, reuses the image the PR already has instead of rebuilding an identical one. Non-docker PRs are untouched: no PR image, matrix on `dev`, as before.
 
-`docker/image_inputs.py` is the single source of truth for what counts as an input (`docker/Dockerfile`, `docker/Dockerfile.rubin`, `docker/build.py`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, `docker/patch/**`, `requirements.txt`). `Dockerfile.rocm` is deliberately excluded — it feeds the `rocm/sgl-dev` images, not the `cu13` image built here.
+`docker/image_inputs.py` is the single source of truth for what counts as an input. Its default input set serves CUDA; `--variant rocm10-mi35x-pr` selects the separate ROCm input set. ROCm-only inputs do not change the CUDA hash.
 
 To rebuild an eligible PR image when its inputs did not change — a moved base image, a floating dependency, a corrupt push — add the **`rebuild-ci-image`** label alongside a CUDA test request. The label does not select tests or make a PR whose build inputs match the base eligible. Once consumed by a build, it is removed so later runs can reuse the image.
+
+### ROCm PR images
+
+When ROCm stages are selected, `pr-test-rocm.yml` calls the same image workflow
+with `rocm10-mi35x-pr`. It compares the ROCm inputs against the merge's first
+parent, reuses an image with the current inputs label, and builds changed inputs
+on Miles' Spur compute nodes through the trusted publisher. Dockerfile RUN steps use no AMD
+devices; downstream shards pull the published image after verification. The tag is
+`radixark/miles:pr-<number>-rocm10-mi35x`; its recipe derives from
+`rocm10-mi35x`, so the existing rolling ROCm repository stays unchanged.
+
+`tests/ci/rocm.py` owns image resolution: the reusable call's `image_tag`, the
+dispatch `ci_image_tag`, a current PR image, the PR body's
+`ci-rocm-image-tag:`, then the released default. Only the PR tag family uses
+`radixark/miles`; existing ROCm tags use `rocm/sgl-dev`. `ci-image-tag:` continues
+to select CUDA images. A failed build or fork publication blocks image resolution
+and the AMD suites. The `rebuild-ci-image` label applies to eligible ROCm builds
+as it does to CUDA.
+The label is shared: a faster build may consume it before the other hardware's
+image decision, so one label does not guarantee that both variants are forced.
+
+Both same-repository and fork ROCm rebuilds use the trusted publisher below, with the source workflow bound
+to `pr-test-rocm.yml` and the requested recipe restricted to the ROCm PR variant.
+ROCm retains its existing lack of a CPU A gate; CUDA's CPU gate is unchanged.
+The publisher verifies the ROCm image's linux/amd64 config and inputs hash.
+CUDA and ROCm builds for one PR have separate publication concurrency groups.
+Automatic changed-file ROCm jobs also wait for this image and use the resolver's
+output, including when no regular stage is selected. Trusted fork demand checks
+recompute those file jobs from the frozen diff.
+Comment ROCm file reruns check the public tag anonymously through Docker Hub's
+HEAD tag API. Only HTTP 404 selects the released default; authentication, rate
+limit, network and service errors fail the lookup. Hosted Docker login remains
+on the CUDA path.
+
+Closing a same-repository PR removes its CUDA, TPU and ROCm tags. For a fork,
+`docker-pr-tag-cleanup.yml` uses a closed-only `pull_request_target` event to
+delete just its fixed ROCm tag, using the default-branch workflow with no checkout
+or execution of PR code. This trusted cleanup and the trusted publisher changes
+must reach the default branch before fork ROCm publication can work.
 
 ### Fork PR publication
 
 Fork `pull_request` runs do not receive Docker Hub secrets. Their image job uses the same CUDA selection, CPU A success/bypass gate, hash decision, and output contract as same-repository PRs. When a rebuild is needed, it submits an attempt-bound request and waits for trusted publication. Success continues to `resolve-ci-image` and GPU tests in the same CI attempt; a publication failure fails the image job. CPU tests are not rerun.
 
-`build-fork-ci-image.yml` starts on `PR Test`'s `workflow_run.in_progress` event and waits for the request artifact, which is readable before the source run finishes. Only a request allocates a builder. The caller waits for the matching publisher run and its build job to succeed, so an existing tag cannot satisfy a forced rebuild prematurely. The hosted handoff has a 360-minute limit covering queue and build time; the builder retains its 180-minute limit.
+`build-fork-ci-image.yml` starts on `PR Test` or `PR Test (ROCm)`'s `workflow_run.in_progress` event and waits for the request artifact, which is readable before the source run finishes. Only a request allocates a builder. ROCm requests from same-repository PRs use this handoff too; CUDA uses it for forks only. The caller waits for the matching publisher run and its build job to succeed, so an existing tag cannot satisfy a forced rebuild prematurely. The hosted handoff has a 360-minute limit covering queue and build time; the builder retains its 180-minute limit.
 
-The trusted workflow binds the request to its source run and attempt, the open fork PR and current head, the latest matching PR Test run, and the original merge SHA recorded by GitHub for `_build-pr-ci-image.yml`. It resolves selection and fast-fail policy from the request's original PR-event labels, matching the caller even after labels are removed. These labels are policy input from the source workflow, not proof of publishing authority; credential isolation is described below. It checks the CPU gate, including successful jobs retained by partial reruns, and uses trusted code to parse the PR's test registrations without importing them. A later main advance does not change the frozen merge.
+The trusted workflow binds the request to its source run and attempt, the open PR and current head, the latest matching PR Test run, and the original merge SHA recorded by GitHub for `_build-pr-ci-image.yml`. It resolves selection and fast-fail policy from the request's original PR-event labels, matching the caller even after labels are removed. These labels are policy input from the source workflow, not proof of publishing authority; credential isolation is described below. It checks the CPU gate, including successful jobs retained by partial reruns, and uses trusted code to parse the PR's test registrations without importing them. A later main advance does not change the frozen merge.
 
-Host orchestration comes from the default branch. Only the fork Dockerfile and build context enter an isolated BuildKit instance, with no secret forwarding or insecure entitlements. Both architectures are exported as a local OCI layout. BuildKit is removed before Docker Hub login; the publisher copies the layout to the fixed `pr-<num>` tag without running the image and verifies both architectures' inputs hashes. Fork edits to the host build driver, hash reader, or workflow take effect after merge.
+Host orchestration comes from the default branch. Only the PR Dockerfile and build context enter an isolated BuildKit instance, with no secret forwarding or insecure entitlements. CUDA exports both architectures as a local OCI layout; ROCm exports linux/amd64 through the Spur build job described below. BuildKit is removed before Docker Hub login; the publisher copies the layout to its fixed PR tag without running the image and verifies the required platforms' inputs hashes. Fork edits to Python orchestration, the hash reader, or workflow take effect after merge. For ROCm version upgrades, the trusted helper parses the fork's literal `VARIANTS["rocm10-mi35x"]["build_args"]` without executing its Python, checks string keys and values, and passes them as final `--build-arg` overrides. Fork ROCm images allow literal build_args edits in any variant in docker/build.py, so a single PR can upgrade all ROCm variants; only rocm10-mi35x arguments feed the ROCm PR image. Any other code change relative to the frozen merge's first parent is refused. Formatting and comments do not change the compared AST. Computed arguments, malformed values, or removal of a trusted driver's default argument also fail explicitly.
 
-A new request cancels an older build for the same PR. During building, the trusted helper checks every 30 seconds that the source attempt remains active and stops its build process group if it ends or is superseded. The publisher rechecks the live PR and source before publication. Builder and local-output cleanup also run on failure or cancellation. A forced build consumes its original one-shot label, with the same removal-failure warning as same-repository builds.
+A new request cancels an older build for the same PR. During building, the trusted helper checks every 30 seconds that the source attempt remains active and stops its build process group if it ends. A newer publisher cancels the older one; live-PR checks also reject a superseded request. For ROCm, stopping the launcher cancels its exact Slurm job and confirms it has left the queue. The publisher rechecks the live PR and source before publication. Builder and local-output cleanup also run on failure or cancellation. A forced build consumes its original one-shot label, with the same removal-failure warning as same-repository builds.
 
 This path requires `build-fork-ci-image.yml` and its trusted helpers on the default branch. It cannot complete while introduced only on a PR branch. Existing `Approve Trusted CI` handles GitHub's contributor approval hold independently.
+
+### Spur ROCm build and publication boundary
+
+For ROCm, the trusted publisher runs on `linux-miles-mi35x-spur`, a login-node
+runner. `spur/build_image.py` submits one exclusive compute-node job through
+`sbatch`. Builds and ROCm tests read `spur/other-project-nodes.json` to exclude
+the other projects' CI nodes.
+The allocation occupies a whole Miles node, including its GPUs, but Dockerfile
+RUN steps receive no GPU devices. This trades one node's availability for isolation from
+concurrent tests; it does not make the login runner build the image.
+
+The build launcher uses the runner's `SLURM_PARTITION`, `SLURM_ACCOUNT`,
+`SLURM_QOS`, `CI_NODE_SCRATCH`, and optional `CI_SHARED_DIR` settings. Login and
+compute nodes must share the checked-out workspace and output directory. The
+compute node clones the frozen source into private scratch and copies only the
+trusted driver/hash reader there. A job-local Python venv installs `typer`.
+Docker and its Buildx plugin must already be installed on the compute node;
+Python with venv support and Git are also required. The login runner needs
+Python, GitHub CLI, Slurm commands, Docker/Buildx for manifest inspection, and
+`skopeo`. The workflow checks these publishing tools before allocating a node.
+
+Slurm receives `--export=ALL` with a newly constructed environment containing
+only a fixed tool PATH and optional `SLURM_CONF`. It does not inherit runner
+secrets, proxy credentials, `BASH_ENV`, or `BUILD_GITHUB_TOKEN`. This avoids
+`--export=NONE`, which can load the user's login environment ([Slurm sbatch
+reference](https://slurm.schedmd.com/sbatch.html)). The private manifest contains
+source paths, hashes and literal arguments, with no authentication data.
+Build subprocesses get an isolated HOME and empty Docker config. BuildKit uses
+its own `docker-container` instance with bridge networking and no insecure
+entitlements. Cleanup removes only that instance, its volume and private
+scratch, and must succeed before the job writes a successful exit marker.
+There is no global prune or test-container cleanup.
+
+The compute node exports its OCI layout to the private shared run directory.
+The login runner waits for the job to leave Slurm and for its successful exit
+marker, then rechecks the live PR before publication. `DOCKERHUB_USERNAME` and
+`DOCKERHUB_TOKEN` arrive on the login runner from Miles' repository Actions
+secrets, only in the Docker login action after the build. Its config lives in a
+mode-0700 node-local `/tmp/miles-image-auth.*` directory, outside the shared
+workspace/output. `skopeo` copies the layout to the fixed PR tag without running
+it; the publisher verifies the inputs hash before unblocking shards. Cleanup
+removes the auth directory even if cluster cancellation fails. An interrupted
+build is cancelled by its recorded numeric job ID. Cancellation sends
+`scancel` before checking the queue and requires two consecutive empty replies
+before shared files can be removed; one transient empty reply does not confirm
+stoppage. The same two-read rule applies when recovering an ID by unique job
+name. Query errors retain the shared files and fail cleanup. Missing completion
+or failed cleanup blocks publication.
+
+Publication uses the Docker Hub secret on the Spur login runner. Closed-PR tag
+deletion is the explicit exception: the existing trusted hosted
+`docker-pr-tag-cleanup.yml` uses the same secret, as it does for TPU. Anonymous
+ROCm file lookups do not receive this secret.
+
+A Docker Hub token that can write `radixark/miles` can generally overwrite other
+tags in that repository; the fixed PR tag is enforced by trusted code, not a
+per-tag registry permission. Use a dedicated repository-scoped write token.
+The existing ROCm test launcher exports the runner's `.env` Docker Hub
+credentials to test jobs. Keep those credentials pull-only; provision this
+publishing write token as a repository Actions secret. An existing write token
+in the runner's `.env` would remain exposed through that test path.
+The login runner and its administrator remain trusted: root or another process
+with the same Unix identity can read step environment and temporary auth files.
+Mode-0700 shared directories do not isolate jobs running as that same identity,
+and a rootful BuildKit daemon is not a hostile multi-tenant security boundary.
+Repository secrets are withheld from fork source workflows, but a compromised
+Spur host or shared runner account is outside this credential boundary.
+
+Provision enough free Docker storage on the compute node and shared space for
+the OCI output before enabling this path. A prior GPU-free cold build used
+68.385 GiB of sampled BuildKit storage and produced a 48.790 GiB unpacked image;
+the same-recipe published image was about 18.055 GiB compressed. These are
+capacity references, not a bound on future PRs. The job has a two-hour Slurm
+limit and a 150-minute queue/build wait within the publisher's 180-minute limit;
+held jobs or missing completion fail instead of being treated as a usable image.
+Spur submission and publication require a deployment smoke run after these
+trusted helpers reach the default branch.
 
 ## Rolling Docker build (`docker-build.yml`)
 
@@ -118,7 +235,7 @@ This workflow owns the rolling `dev` / `latest` (CUDA) and `dev-tpu` / `latest-t
 ### Triggers: automatic vs manual
 
 - **Automatic** (no human) — the **schedule** (10-minute poll, gated by `check-upstream`) and any **push to `main` that touches `docker/Dockerfile`, `docker/Dockerfile.tpu`, `docker/tpu_patch/**`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, or `requirements.txt`**. The schedule builds `cu13` → `radixark/miles:dev` (multi-arch) and `tpu` → `radixark/miles:dev-tpu` (amd64); a push builds only the variants whose inputs it touched (see `push-variants` above).
-- **Manual** — `workflow_dispatch` (pick one variant — see Trigger a build yourself below) or running `docker/build.py` locally. The `rubin` and ROCm images (`rocm*-mi35x`, `rocm10-mi30x`) have **no automatic path in this repo** (ROCm nightlies live in sgl-project/sglang) (`cu13-x86` / `cu13-aarch64` just rebuild the same `dev` image single-arch).
+- **Manual** — `workflow_dispatch` (pick one variant — see Trigger a build yourself below) or running `docker/build.py` locally. The rolling `rubin` and ROCm images (`rocm*-mi35x`, `rocm10-mi30x`) have **no automatic rolling build in this repo** (ROCm nightlies live in sgl-project/sglang); ROCm PR builds are described above (`cu13-x86` / `cu13-aarch64` just rebuild the same `dev` image single-arch).
 
 `docker/build.py` and `docker/patch/**` participate in PR image validation but are not `main`-push triggers; [Release a Version](/developer/ci/04-release) treats them as manual preflight cases.
 
@@ -133,7 +250,7 @@ This workflow owns the rolling `dev` / `latest` (CUDA) and `dev-tpu` / `latest-t
 
 ### Tags & where it pushes
 
-All images push to **Docker Hub**. CUDA variants → `radixark/miles`; ROCm variants → `rocm/sgl-dev` (a separate namespace). The tag a build writes depends only on `--image-tag` and the variant's postfix:
+All images push to **Docker Hub**. CUDA, TPU and the ROCm PR variant use `radixark/miles`; rolling ROCm variants use `rocm/sgl-dev`. The tag a build writes depends only on `--image-tag` and the variant's postfix:
 
 | variant(s) | `--image-tag dev` writes | `latest` mode writes |
 | --- | --- | --- |

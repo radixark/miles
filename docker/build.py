@@ -98,6 +98,14 @@ VARIANTS = {
     },
 }
 
+# PR images live with Miles' CUDA/TPU PR tags; rolling ROCm tags keep their
+# existing repository and native-platform behavior.
+VARIANTS["rocm10-mi35x-pr"] = {
+    **VARIANTS["rocm10-mi35x"],
+    "image": "radixark/miles",
+    "platforms": ["linux/amd64"],
+}
+
 
 def run(cmd: list[str], dry_run: bool) -> None:
     print(f"+ {' '.join(cmd)}", flush=True)
@@ -173,7 +181,8 @@ def build_and_push(
         cmd += ["--build-arg", spec]
 
     # CI reads this back off the published tag to skip rebuilds whose inputs are unchanged.
-    cmd += ["--label", f"{image_inputs.LABEL_KEY}={image_inputs.compute(root=context)}"]
+    hash_variant = variant if variant.startswith("rocm") else "cu13"
+    cmd += ["--label", f"{image_inputs.LABEL_KEY}={image_inputs.compute(root=context, variant=hash_variant)}"]
 
     for tag in tags:
         cmd += ["-t", tag]
@@ -193,6 +202,7 @@ class Variant(str, Enum):
     tpu = "tpu"
     rocm724_mi35x = "rocm724-mi35x"
     rocm10_mi35x = "rocm10-mi35x"
+    rocm10_mi35x_pr = "rocm10-mi35x-pr"
     rocm10_mi30x = "rocm10-mi30x"
 
 
