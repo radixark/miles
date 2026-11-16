@@ -11,11 +11,14 @@ resolved request as ``turn_args``. A continuation supplies that history to the
 model resolver, which decides which fields inherit or must stay compatible.
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
 import orjson
+from jinja2 import TemplateError
 
 from miles.rollout.generate_utils.rollout_topk_logprobs import configure_rollout_topk_logprobs_request
 from miles.rollout.generate_utils.sampling_mask import validate_sampling_support_request
@@ -42,6 +45,16 @@ def parse_chat_request(body: bytes) -> dict[str, Any]:
         return orjson.loads(body) if body else {}
     except orjson.JSONDecodeError as e:
         raise MessageValidationError(f"invalid JSON body: {e}") from e
+
+
+@contextmanager
+def chat_template_errors_as_validation_errors() -> Iterator[None]:
+    try:
+        yield
+    except (TypeError, TemplateError, ValueError) as e:
+        if isinstance(e, ValueError) and not isinstance(e.__cause__, TemplateError):
+            raise
+        raise MessageValidationError(f"the chat template cannot render this request: {e}") from e
 
 
 @dataclass(frozen=True)
@@ -85,6 +98,11 @@ def prepare_chat_request(
     edit nested values in place, except ``messages``. They are most of the request, no rule
     resolves them, and they become the turn's recorded history, so they are shared read-only.
     """
+    if client_args.get("n") not in (None, 1):
+        raise MessageValidationError(
+            f"n={client_args['n']!r} is not supported: a session records one choice per request, "
+            "so send separate requests instead"
+        )
     owned_args = {key: value if key == "messages" else deepcopy(value) for key, value in client_args.items()}
     request_args, response_intent = resolve_request_args_by_config(owned_args, config, evaluation=evaluation)
     apply_session_sampling_defaults(request_args, sampling_defaults or {}, evaluation=evaluation)
