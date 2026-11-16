@@ -1,10 +1,12 @@
+import time
+
 import pytest
 
 from miles.dashboard import hooks
 from miles.dashboard.hooks import BATCH_MAX_EVENTS, TrajectorySink
 from miles.dashboard.store import Stream, TrajectoryEvent, TrajectoryEventKind
 from miles.utils.lifecycle import TrajectoryLifecycle
-from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+from miles.utils.types import Sample, SampleLineage, WeightVersionSpan, WeightVersionsPerCall
 
 
 class FakeRemoteMethod:
@@ -199,3 +201,26 @@ def test_trajectory_events_roundtrip_store(tmp_path):
     assert [e.ts for e in store.trajectory_events()] == [10.0, 3700.0]
     assert [e.ts for e in store.trajectory_events(t0=3600.0)] == [3700.0]
     assert store.iter_records(Stream.TRAJECTORIES)[0].weight_version == "2"
+
+
+def test_output_samples_land_on_their_source_samples_lane(tmp_path):
+    from miles.dashboard.store import MetricStore
+
+    handle = FakeHandle()
+    sink = TrajectorySink(handle)
+    source = _sample(index=88)
+    output = _sample(index=5)
+    output.lineage = SampleLineage(source_sample_index=88, output_index=0, output_count=1)
+    sink.attempt_start(source)
+    t0 = time.time()
+    output.metadata["lifecycle"] = dict(t0=t0, t1=t0, turn=1)
+    sink.attempt_end([output])
+    sink.flush()
+    store = MetricStore(tmp_path)
+    for event in _pushed(handle):
+        store.append(event)
+    store.flush()
+    [lane] = store.trajectory_lanes(sample_indices={88})
+    assert len(lane["attempts"]) == 1
+    assert [(s["kind"], s["t0"], s["turn"]) for s in lane["segments"]] == [("gen", t0, 1)]
+    assert store.trajectory_lanes(sample_indices={5}) == []

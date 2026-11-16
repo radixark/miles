@@ -103,6 +103,25 @@ after 10 minutes. The collector overwrites
 `{dump-details}/dashboard/sandboxes.json` on every flush, and
 `/api/sandboxes?stale_after_s=N` serves the counts and rows.
 
+## Episodes
+
+A generate function may return several training samples for one
+episode (one per turn, say). The Rollouts view lists each sample under
+**Samples** and each episode once under **Episodes**, keyed by
+`Sample.episode_id`: `Sample.rollout_id`, or `Sample.index` when unset.
+Set the same `rollout_id` on every sample of an episode.
+
+Reward and GRPO group statistics count each episode once, from its
+`episode_reward`. That is the train dump's `raw_reward` when the column
+has one entry per sample or one per episode, else the first non-null of
+`metadata["raw_reward"]`, `metadata["others"]["episode_return"]` and
+`Sample.reward`, each read through `--reward-key` when it is a dict.
+Every sample of an episode should carry the same value; when they differ,
+the last sample's counts and a warning is logged. `reward` stays
+`Sample.reward`, and evaluation groups use it as before. Length and
+truncation statistics stay per sample. Train-dump rows that look like
+zero-loss padding (tokens `[0, 0]`, nothing in the loss mask) are skipped.
+
 ## Develop
 
 ```bash

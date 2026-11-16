@@ -3,6 +3,8 @@ import os
 import shutil
 import statistics
 import time
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import polars as pl
 import pytest
@@ -82,6 +84,22 @@ def test_summary_parquet_cache_hit_and_invalidation(reader, monkeypatch):
     os.utime(next(reader.train_dir.glob("0_*.pt")), (stamp, stamp))
     with pytest.raises(RuntimeError, match="recompute attempted"):
         reader.summary(0)  # source changed -> cache invalidated -> recompute
+
+
+def test_concurrent_cold_summaries_publish_their_own_cache_files(reader, monkeypatch):
+    reader.joined(0)
+    barrier = Barrier(3)
+    write_parquet = pl.DataFrame.write_parquet
+
+    def overlapping_write(frame, path, *args, **kwargs):
+        barrier.wait(timeout=60)
+        return write_parquet(frame, path, *args, **kwargs)
+
+    monkeypatch.setattr(pl.DataFrame, "write_parquet", overlapping_write)
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        frames = list(pool.map(lambda _: reader.summary(0), range(3)))
+    assert all(frame.equals(frames[0]) for frame in frames)
+    assert reader.summary(0).equals(frames[0])
 
 
 def test_groups(reader):
@@ -265,7 +283,12 @@ def test_groups_null_rewards_are_not_zero_std(tmp_path):
     reader.summary = lambda rollout_id, evaluation=False: pl.DataFrame(
         {
             "group_index": [0, 0, 1, 1],
+            "sample_episode_id": [0, 1, 2, 3],
+            "sample_index": [0, 1, 2, 3],
+            "sample_occurrence": [0] * 4,
+            "reward": [0.0] * 4,
             "raw_reward": pl.Series([None] * 4, dtype=pl.Float64),
+            "episode_reward": pl.Series([None] * 4, dtype=pl.Float64),
             "response_length": [1, 2, 3, 4],
             "truncated": [False] * 4,
         }
@@ -568,7 +591,7 @@ class TestSummaryCacheVersioning:
 
         assert rebuilt.equals(expected)
         assert pl.read_parquet(cache_path).equals(expected)
-        assert json.loads(sources_path.read_text())["_summary_version"] == 9
+        assert json.loads(sources_path.read_text())["_summary_version"] == DumpReader.SUMMARY_VERSION
 
     def test_summary_invalidates_a_v8_cache_whose_prefill_lag_paired_calls(self, reader):
         """A v8 cache computed prefill_lag across calls, so it must be rebuilt rather than served."""
@@ -583,7 +606,7 @@ class TestSummaryCacheVersioning:
         rebuilt = reader.summary(0)
 
         assert rebuilt.equals(expected)
-        assert json.loads(sources_path.read_text())["_summary_version"] == 9
+        assert json.loads(sources_path.read_text())["_summary_version"] == DumpReader.SUMMARY_VERSION
 
 
 def test_pre_span_dump_survives_the_full_reader_pipeline(tmp_path):
