@@ -119,12 +119,6 @@ class RunTestFile(NamedTuple):
     hw: str = "auto"
 
 
-class RunRocmTestFile(RunTestFile):
-    """A file request admitted at the AMD label tier."""
-
-    __slots__ = ()
-
-
 class CommandSpec(NamedTuple):
     policy_key: str
     capability: str
@@ -293,9 +287,7 @@ def parse_command(body):
         return AddLabel(match.group(1))
     match = RUN_FILE_COMMAND_PATTERN.fullmatch(command)
     if match is not None:
-        if match.group(2) == "rocm":
-            return RunRocmTestFile(match.group(1), "rocm")
-        return RunTestFile(match.group(1))
+        return RunTestFile(match.group(1), match.group(2) or "auto")
     if any(marker in command for marker in COMMAND_MARKERS):
         raise CommentCommandError(
             "comment must contain one exact /<label>, /rerun-test <test-file> [--hw rocm], /clear-labels, "
@@ -1052,18 +1044,6 @@ COMMAND_REGISTRY = {
     ),
     RunTestFile: CommandSpec(
         "run_test_file",
-        "actions",
-        _handle_run_test_file,
-        None,
-        None,
-        None,
-        True,
-        "test_file",
-        _run_file_value,
-        "+1",
-    ),
-    RunRocmTestFile: CommandSpec(
-        "run_test_file_rocm",
         "actions",
         _handle_run_test_file,
         None,

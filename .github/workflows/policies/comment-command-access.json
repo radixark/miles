@@ -74,9 +74,6 @@
     },
     "run_test_file": {
       "group": "prior_contributor_access"
-    },
-    "run_test_file_rocm": {
-      "group": "add_label_access"
     }
   }
 }

@@ -227,7 +227,6 @@ def policy(
             "clear_labels": {"group": "repo_write_access"},
             "rerun_failed_ci": {"group": "prior_contributor_access"},
             "run_test_file": {"group": "prior_contributor_access"},
-            "run_test_file_rocm": {"group": "add_label_access"},
         },
     }
 
@@ -333,6 +332,14 @@ def test_command_parser_accepts_run_file_command(body, test_file):
     assert HANDLER.parse_command(body) == HANDLER.RunTestFile(test_file)
 
 
+@pytest.mark.parametrize("body", [f"{RUN_FILE_BODY} --hw rocm", f" \n{RUN_FILE_BODY} --hw rocm\t"])
+def test_rocm_file_command_uses_the_shared_request_type(body):
+    request = HANDLER.parse_command(body)
+
+    assert type(request) is HANDLER.RunTestFile
+    assert request == HANDLER.RunTestFile(RUN_FILE_PATH, "rocm")
+
+
 @pytest.mark.parametrize("body", ["", "ordinary review comment", "/Clear-labels", "/unknown-command"])
 def test_command_parser_ignores_unrelated_comments(body):
     assert HANDLER.parse_command(body) is None
@@ -344,7 +351,6 @@ def test_static_registry_owns_policy_capability_and_handler_routing():
         HANDLER.ClearLabels: ("clear_labels", "issues", HANDLER._handle_clear_labels, "none"),
         HANDLER.RerunFailedCI: ("rerun_failed_ci", "actions", HANDLER._handle_rerun_failed_ci, "none"),
         HANDLER.RunTestFile: ("run_test_file", "actions", HANDLER._handle_run_test_file, "+1"),
-        HANDLER.RunRocmTestFile: ("run_test_file_rocm", "actions", HANDLER._handle_run_test_file, "+1"),
     }
     assert set(HANDLER.COMMAND_REGISTRY) == set(expected)
     for request_type, (policy_key, capability, handler, success_reaction) in expected.items():
@@ -388,7 +394,6 @@ def raw_policy():
             "clear_labels": {"group": "repo_write_access"},
             "rerun_failed_ci": {"group": "prior_contributor_access"},
             "run_test_file": {"group": "prior_contributor_access"},
-            "run_test_file_rocm": {"group": "add_label_access"},
         },
     }
 
@@ -620,7 +625,6 @@ def test_checked_in_policy_exposes_exact_labels_and_access_groups():
     assert loaded["commands"]["clear_labels"] == {"group": "repo_write_access"}
     assert loaded["commands"]["rerun_failed_ci"] == {"group": "prior_contributor_access"}
     assert loaded["commands"]["run_test_file"] == {"group": "prior_contributor_access"}
-    assert loaded["commands"]["run_test_file_rocm"] == {"group": "add_label_access"}
     assert all(HANDLER.LABEL_PATTERN.fullmatch(label) for label in labels)
 
 
@@ -696,6 +700,7 @@ def test_add_label_access_user_id_preflight_does_not_require_repository_permissi
     ("body", "request_type"),
     [
         (RUN_FILE_BODY, HANDLER.RunTestFile),
+        (f"{RUN_FILE_BODY} --hw rocm", HANDLER.RunTestFile),
         ("/rerun-failed-ci", HANDLER.RerunFailedCI),
     ],
 )
@@ -1721,14 +1726,29 @@ def test_rocm_file_command_forwards_the_rocm_image_pin_only(body, image_tag):
     assert inputs["ci_sglang_pr"] == "#77"
 
 
-def test_rocm_fork_file_command_uses_the_label_access_tier():
+@pytest.mark.parametrize("selector", ["", " --hw rocm"])
+@pytest.mark.parametrize("grant", ["association", "prior_user", "label_user", "none"])
+def test_fork_file_commands_use_the_same_access_group(selector, grant):
     api = FakeAPI(pull(head_repository_id=HANDLER.REPOSITORY_ID + 1), permission="read")
-    request = event(body=f"{RUN_FILE_BODY} --hw rocm", author_association="CONTRIBUTOR")
-    with pytest.raises(HANDLER.CommentCommandError, match="not authorized"):
-        HANDLER.process_event(request, policy(prior_user_ids=(ACTOR_ID,)), api)
-    assert api.dispatch_calls == []
-    HANDLER.process_event(request, policy(user_ids=(ACTOR_ID,)), api)
-    assert api.dispatch_calls[0][2]["hw"] == "rocm"
+    request = event(
+        body=f"{RUN_FILE_BODY}{selector}",
+        author_association="CONTRIBUTOR" if grant == "association" else "FIRST_TIMER",
+    )
+    access = policy(
+        prior_user_ids=(ACTOR_ID,) if grant == "prior_user" else (),
+        user_ids=(ACTOR_ID,) if grant == "label_user" else (),
+    )
+
+    if grant in ("label_user", "none"):
+        with pytest.raises(HANDLER.CommentCommandError, match="not authorized"):
+            HANDLER.process_event(request, access, api)
+        assert api.dispatch_calls == []
+        return
+
+    HANDLER.process_event(request, access, api)
+
+    assert api.permission_calls == []
+    assert api.dispatch_calls[0][2].get("hw", "auto") == ("rocm" if selector else "auto")
 
 
 def test_file_run_main_reports_the_dispatched_run_without_writing_an_output(monkeypatch, tmp_path, capsys):
