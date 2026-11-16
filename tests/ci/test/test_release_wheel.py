@@ -106,7 +106,7 @@ def test_a_release_without_the_pinned_sglang_wheel_to_resolve_against_is_refused
 # --- publish ------------------------------------------------------------------------------------
 
 EXACT = _step(WORKFLOW, "publish", "The dist carries the exact version")
-CREATE = _step(WORKFLOW, "publish", "Create the release if the tag has none")
+CREATE = _step(WORKFLOW, "publish", "Create a draft release if the tag has none")
 UPLOAD = _step(WORKFLOW, "publish", "Upload the sdist and wheel")
 
 
@@ -120,16 +120,17 @@ def test_publish_wants_the_wheel_named_after_the_exact_version(tmp_path):
 
 @pytest.mark.parametrize(
     "version,flags",
-    [("0.3.0", ""), ("0.3.0.post1", ""), ("0.3.0rc1", " --prerelease --latest=false")],
+    [("0.3.0", ""), ("0.3.0.post1", ""), ("0.3.0rc1", " --prerelease")],
     ids=["final", "post", "rc"],
 )
-def test_a_missing_release_is_created_and_only_an_rc_is_a_prerelease(tmp_path, version, flags):
+def test_a_missing_release_is_created_as_a_draft_and_only_an_rc_is_a_prerelease(tmp_path, version, flags):
     _fake_gh(tmp_path, "sys.exit(1 if args[:2] == ['release', 'view'] else 0)")
     result, _, log = _run(CREATE, tmp_path, {"VERSION": version, "TAG": f"v{version}"})
     assert result.returncode == 0, result.stderr
-    assert log[-1] == (
-        f"release create v{version} --repo radixark/miles --verify-tag --title v{version} --generate-notes{flags}"
-    )
+    # split() drops the empty --notes value
+    assert log[-1].split() == (
+        f"release create v{version} --repo radixark/miles --verify-tag --draft --title v{version} --notes{flags}"
+    ).split()
 
 
 def test_an_existing_release_is_left_alone(tmp_path):

@@ -2,7 +2,8 @@
 name: Release Wheel
 # Builds the miles wheel at v<version> with that exact version and a pin on the sglang-miles wheel the
 # release was tested with, runs the wheel smoke on it, and uploads the sdist and wheel to the v<version>
-# GitHub release, where the pip index on radixark/miles-wheels lists them within the hour.
+# GitHub release (a draft when the tag had none). Once that release is public, the pip index on
+# radixark/miles-wheels lists them within the hour.
 # release-tag.yml dispatches this.
 
 on:
@@ -75,13 +76,14 @@ jobs:
           [ -f "dist/miles-${VERSION}-py3-none-any.whl" ] \
             || { echo "::error::no miles-${VERSION} wheel in the smoke's dist"; exit 1; }
 
-      - name: Create the release if the tag has none
+      # a draft: the release owner writes the notes and publishes it, which is what makes the wheel public
+      - name: Create a draft release if the tag has none
         shell: bash
         run: |
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && exit 0
           FLAGS=()
-          case "$VERSION" in *rc*) FLAGS=(--prerelease --latest=false) ;; esac
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --generate-notes "${FLAGS[@]}"
+          case "$VERSION" in *rc*) FLAGS=(--prerelease) ;; esac
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --title "$TAG" --notes "" "${FLAGS[@]}"
 
       # a published file is never replaced: pinned hashes must keep matching
       - name: Upload the sdist and wheel

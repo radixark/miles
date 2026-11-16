@@ -119,11 +119,17 @@ The current manual interface does not cross-check `version` against `ref`; a mis
 
 ## 6. Verify the published wheel
 
-`release-wheel.yml` builds the pure-Python wheel and sdist at `v${EXACT_VERSION}` with that exact version stamped into `setup.py` (so an rc or post release is its own version) and a dependency on the published `sglang` wheel of the `sglang_commit` in `release-lock.json`, runs the wheel smoke on them (`wheel-smoke.yml`), checks that the wheel resolves together with that `sglang` wheel, and uploads both to the `v${EXACT_VERSION}` GitHub release, creating it when the tag has none yet (as a prerelease for an rc). The pip index on radixark/miles-wheels lists the release within the hour. If `build-wheels.yml` has not published that `sglang` wheel for every Python and arch, the run fails before building; fix the wheel build and re-run. Check that the release carries `miles-${EXACT_VERSION}-py3-none-any.whl` and that the index lists it:
+`release-wheel.yml` builds the pure-Python wheel and sdist at `v${EXACT_VERSION}` with that exact version stamped into `setup.py` (so an rc or post release is its own version) and a dependency on the published `sglang` wheel of the `sglang_commit` in `release-lock.json`, runs the wheel smoke on them (`wheel-smoke.yml`), checks that the wheel resolves together with that `sglang` wheel, and uploads both to the `v${EXACT_VERSION}` GitHub release. When the tag has no release yet, it creates a draft with empty notes (a prerelease for an rc) and never publishes it: write the notes there and publish it as usual. The wheel is public only once the release is, and the pip index on radixark/miles-wheels lists it within the hour after that. Check that the release carries `miles-${EXACT_VERSION}-py3-none-any.whl` and, once it is published, that the index lists it:
 
 ```bash
 gh release view "v${EXACT_VERSION}" --json assets --jq '.assets[].name'
 curl -s https://radixark.github.io/miles-wheels/simple/miles/ | grep "miles-${EXACT_VERSION}"
+```
+
+If `build-wheels.yml` has not published that `sglang` wheel for every Python and arch (the hourly build only takes the head of `sglang-miles`), the run fails before building. Build the locked commit, then re-run:
+
+```bash
+gh workflow run build-wheels.yml -f wheels=sglang -f sglang_ref="$(jq -r .sglang_commit release-lock.json)"
 ```
 
 A published file is never replaced, since installs pin its hash, so a retry only adds what is missing. Only the tag workflow dispatches it; after a manually pushed tag, or to retry, keep the two inputs paired as for the Docker build:
