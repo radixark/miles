@@ -28,6 +28,7 @@ def agentic_train_args(
     session_server_workers: int,
     session_server_port: int = 30000,
     session_server_external_host: str = "",
+    agent_worker: str = "",
 ) -> str:
     """The agentic wiring every Harbor launcher passes to train.py.
 
@@ -37,6 +38,9 @@ def agentic_train_args(
     """
     external_host_arg = (
         f"--session-server-external-host {session_server_external_host} " if session_server_external_host else ""
+    )
+    worker_args = (
+        f"--custom-agent-function-mode worker --custom-agent-function-worker {agent_worker} " if agent_worker else ""
     )
     return (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
@@ -49,10 +53,11 @@ def agentic_train_args(
         f"--session-server-port {session_server_port} "
         f"--session-server-workers {session_server_workers} "
         f"{external_host_arg}"
+        f"{worker_args}"
     )
 
 
-def harbor_env_vars(args) -> dict[str, str]:
+def harbor_env_vars(args, *, agent_worker: bool = False) -> dict[str, str]:
     """The Harbor-side environment for rollout workers, preflighted on the launcher.
 
     HARBOR_ENV_TYPE is passed through untouched (Harbor validates it). The
@@ -88,7 +93,7 @@ def harbor_env_vars(args) -> dict[str, str]:
         env["HARBOR_ENV_KWARGS"] = args.harbor_env_kwargs
     if spec := PROVIDER_CREDENTIALS.get(env_type):
         provision_provider(
-            env, spec, arg_path=getattr(args, spec["arg_attr"], "") or ""
+            env, spec, arg_path=getattr(args, spec["arg_attr"], "") or "", remote=agent_worker
         )  # config-access-exempt: provider registry selects credential fields; launchers may instead use environment credentials
     else:
         # Any other Harbor backend still passes straight through; there is just

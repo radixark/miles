@@ -42,6 +42,8 @@ from typing import Any
 from miles.rollout.agentic.per_call_worker import StartFn, create_once
 from miles.rollout.agentic.rollout_limits import rollout_semaphore
 
+WORKER_ENV = ("OPENENV_*", "TB2_*", "AGENT_*", "SWE_AGENT_MODEL_NAME")
+
 # The canonical per-episode backend registry — the launcher and the sibling
 # tools (scan_golden, eval_tbench2_via_api) all resolve through here, so the
 # accepted names and the "agentenv is the e2b backend" aliasing cannot drift.

@@ -105,3 +105,27 @@ def test_agentic_wiring_is_the_shipped_wiring():
 
     for d in launch_common.agentic_pythonpath_dirs():
         assert Path(d).is_dir(), d
+
+
+def test_with_an_agent_worker_no_local_provider_key_is_needed(monkeypatch):
+    for var in ("E2B_API_KEY", "E2B_API_KEY_FILE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("E2B_API_URL", "https://sandbox-service.example")
+    monkeypatch.setenv("E2B_SANDBOX_URL", "http://sandbox-service")
+
+    env = launch_common.harbor_env_vars(_args(e2b_api_key_file="/nonexistent/api_key"), agent_worker=True)
+
+    assert env["E2B_API_URL"] == "https://sandbox-service.example"
+    assert env["E2B_SANDBOX_URL"] == "http://sandbox-service"
+    assert "E2B_API_KEY_FILE" not in env and "E2B_API_KEY" not in env
+
+
+def test_an_agent_worker_selects_the_worker_mode():
+    args = launch_common.agentic_train_args(
+        tito_model="qwen3", session_server_workers=4, agent_worker="http://w:11100"
+    )
+
+    assert "--custom-agent-function-mode worker --custom-agent-function-worker http://w:11100 " in args
+    assert "--custom-agent-function-mode" not in launch_common.agentic_train_args(
+        tito_model="qwen3", session_server_workers=4
+    )
