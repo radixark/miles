@@ -224,7 +224,7 @@ def _executor_threads() -> set[threading.Thread]:
             threads |= set(futures_thread._threads_queues)
     if (futures_process := sys.modules.get("concurrent.futures.process")) is not None:
         # no module lock here: read as its own exit hook reads it
-        threads |= set(list(futures_process._threads_wakeups))
+        threads |= set(futures_process._threads_wakeups)
     return threads
 
 

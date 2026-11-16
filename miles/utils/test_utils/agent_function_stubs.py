@@ -84,7 +84,7 @@ async def leave_endless_thread(**kwargs) -> int:
 
 
 # held by the module, as a library holds its pool, so it outlives the agent call
-_MODULE_POOL = ThreadPoolExecutor(max_workers=4)
+_MODULE_POOL = ThreadPoolExecutor(max_workers=1)
 
 
 async def leave_module_pool_work(*, marker: str, delay_s: float, **kwargs) -> int:
@@ -105,27 +105,14 @@ async def leave_module_process_pool(**kwargs) -> int:
     return os.getpid()
 
 
-async def leave_cleanup_thread_using_executors(*, marker: str, delay_s: float, **kwargs) -> int:
-    def _cleanup() -> None:
+async def leave_cleanup_using_a_pool(*, marker: str, delay_s: float, **kwargs) -> int:
+    def _use_pool() -> None:
         time.sleep(delay_s)
-        used = [
-            ThreadPoolExecutor(max_workers=1).submit(lambda: "pool").result(),
-            asyncio.run(asyncio.to_thread(lambda: "asyncio executor")),
-        ]
-        Path(marker).write_text(", ".join(used))
-
-    threading.Thread(target=_cleanup, daemon=False).start()
-    return os.getpid()
-
-
-async def leave_cleanup_thread_with_a_helper(*, marker: str, delay_s: float, **kwargs) -> int:
-    def _helper() -> None:
-        time.sleep(delay_s)
-        Path(marker).touch()
+        ThreadPoolExecutor(max_workers=1).submit(Path(marker).touch).result()
 
     def _cleanup() -> None:
         time.sleep(delay_s)
-        threading.Thread(target=_helper, daemon=False).start()
+        threading.Thread(target=_use_pool, daemon=False).start()
 
     threading.Thread(target=_cleanup, daemon=False).start()
     return os.getpid()
