@@ -35,6 +35,8 @@ class CaseConfig:
     cp_size: int = 1
     ep_size: int = 1
     use_r3: bool = False
+    # Send the replay arrays through the output store (--use-output-store) instead of inline.
+    use_output_store: bool = False
     with_ref: bool = False
     colocate: bool = True
     rollout_num_gpus: int | None = None
@@ -156,6 +158,8 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     misc_args += "--colocate " if case.colocate else f"--rollout-num-gpus {case.rollout_num_gpus} "
     if case.with_ref:
         misc_args += f"--ref-load {case.model_dir} --use-kl-loss "
+    if case.use_output_store:
+        misc_args += U.get_output_store_args()
     if case.transfer_mode is not None:
         misc_args += f"--update-weight-transfer-mode {case.transfer_mode} "
     if case.transfer_mode == "disk-delta":

@@ -40,7 +40,8 @@ class FakeWorkerManager:
     def fail_init_for_cell(self, cell_index: int) -> None:
         self._cell_indices_failing_init.add(cell_index)
 
-    def _get_cell_infos(self, *, pool_ids: list[str]) -> dict[str, CellInfo]:
+    def _get_cell_infos(self, *, pool_ids: list[str], category: str | None) -> dict[str, CellInfo]:
+        assert category is None, f"trainer pools are watched by pool id, not by category {category!r}"
         infos: dict[str, CellInfo] = {}
         for pool_id in pool_ids:
             for cell_index in range(self.num_cells):

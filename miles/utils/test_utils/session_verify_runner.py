@@ -11,7 +11,7 @@ pipeline (sglang + miles-router with session support) is launched, ``train`` is
 skipped, and the rollout drives ``session_verify_agent.run_agent`` against the
 session server.
 
-Args flow through miles' canonical ``parse_args`` Namespace.
+CLI args are validated by miles' canonical ``parse_args`` and adapted to a local Namespace.
 
 # Backend choice
 
@@ -43,6 +43,9 @@ SessionWireFormat = Literal["openai", "anthropic"]
 # mismatch types (special_token_count / special_token_type / non_assistant_text)
 # are journaled per sample and rejected by the run-level gate — those must be 0.
 ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD = 0.2
+# How many per-sample assistant_text examples a failed soft gate quotes, so a CI
+# log shows what drifted without the preserved sidecar file.
+_ASSISTANT_MISMATCH_EXAMPLES = 3
 
 PROMPT_DATA_PATH = "/root/datasets/session_multi_role_verify.jsonl"
 LOCAL_MODELS_ROOT = "/root/models"
@@ -167,7 +170,9 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
         f"--actor-num-gpus-per-node {ns.actor_num_gpus_per_node}",
         f"--train-backend {ns.train_backend}",
     ]
-    if getattr(ns, "rollout_num_gpus", None) is not None:
+    if (
+        getattr(ns, "rollout_num_gpus", None) is not None
+    ):  # config-access-exempt: launcher helper accepts namespaces from different CLI providers
         parts.append(f"--rollout-num-gpus {ns.rollout_num_gpus}")
     if ns.sglang_tool_call_parser:
         parts.append(f"--sglang-tool-call-parser {ns.sglang_tool_call_parser}")
@@ -177,7 +182,9 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
         parts.append(f"--sglang-kv-cache-dtype {ns.sglang_kv_cache_dtype}")
     if ns.sglang_mamba_full_memory_ratio is not None:
         parts.append(f"--sglang-mamba-full-memory-ratio {ns.sglang_mamba_full_memory_ratio}")
-    if getattr(ns, "sglang_cuda_graph_max_bs_decode", None) is not None:
+    if (
+        getattr(ns, "sglang_cuda_graph_max_bs_decode", None) is not None
+    ):  # config-access-exempt: launcher helper accepts namespaces from different CLI providers
         parts.append(f"--sglang-cuda-graph-max-bs-decode {ns.sglang_cuda_graph_max_bs_decode}")
     if ns.sglang_cuda_graph_backend_prefill is not None:
         parts.append(f"--sglang-cuda-graph-backend-prefill {ns.sglang_cuda_graph_backend_prefill}")
@@ -195,7 +202,9 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
                 "--sglang-speculative-num-draft-tokens 3",
             ]
         )
-    if getattr(ns, "anthropic_intermediate_system_expectation", None) is not None:
+    if (
+        getattr(ns, "anthropic_intermediate_system_expectation", None) is not None
+    ):  # config-access-exempt: launcher helper accepts namespaces from different CLI providers
         parts.append("--anthropic-intermediate-system-expectation " f"{ns.anthropic_intermediate_system_expectation}")
     if ns.use_session_server:
         # Preserve an explicit version string ("v2"); a bare True stays the bare flag.
@@ -207,7 +216,7 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
         parts.append("--debug-rollout-only")
     if ns.ci_test:
         parts.append("--ci-test")
-    if getattr(ns, "ci_tito_special_token_count_threshold", 0.0):
+    if ns.ci_tito_special_token_count_threshold:
         parts.append(f"--ci-tito-special-token-count-threshold {ns.ci_tito_special_token_count_threshold}")
     if not ns.enable_sample_ownership_checker:
         parts.append("--no-enable-sample-ownership-checker")
@@ -239,7 +248,7 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
     ``args`` MUST be a fully-shaped Namespace carrying miles-canonical field
     names plus the session-verify-specific fields (``session_verify_cycles``,
     ``tool_call_failure_mode``, ``assistant_text_threshold``).  Build it via
-    ``parse_args(add_custom_arguments=session_verify_extras)`` for the CLI
+    the CLI entrypoint's ``_parse_session_verify_args()`` adapter for the CLI
     path or by spreading ``SESSION_VERIFY_INVARIANT_ARGS`` into
     ``argparse.Namespace(...)`` for tests.
 
@@ -281,7 +290,7 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
         assert_session_verify_metrics(
             metrics_path,
             assistant_text_threshold=args.assistant_text_threshold,
-            special_token_count_threshold=getattr(args, "ci_tito_special_token_count_threshold", 0.0),
+            special_token_count_threshold=args.ci_tito_special_token_count_threshold,
             require_append_tool=wire_format == "openai",
         )
     except Exception:
@@ -317,6 +326,7 @@ def assert_session_verify_metrics(
     soft and is checked only against the caller-provided ratio threshold.
     """
     samples_with_mismatch = 0
+    assistant_mismatch_examples: list[dict] = []
     total_samples = 0
     has_append_tool = False
     samples_with_special_token_count_only = 0
@@ -353,6 +363,10 @@ def assert_session_verify_metrics(
             has_append_tool = has_append_tool or "append_tool" in entry.get("driver_events", [])
             if entry.get("had_assistant_mismatch"):
                 samples_with_mismatch += 1
+                if len(assistant_mismatch_examples) < _ASSISTANT_MISMATCH_EXAMPLES and entry.get(
+                    "assistant_mismatch_example"
+                ):
+                    assistant_mismatch_examples.append(entry["assistant_mismatch_example"])
             entry_hard_types = entry.get("hard_mismatch_types", [])
             entry_hard_count = entry.get("hard_mismatch_count", len(entry_hard_types))
             if entry_hard_count or entry_hard_types:
@@ -424,5 +438,6 @@ def assert_session_verify_metrics(
             f"threshold {assistant_text_threshold}.  TITO "
             "tokenization for assistant content has drifted from the chat "
             "template's canonical render — investigate via "
-            "verify_session_tito_tokenizer.py + sample-level mismatch logs."
+            "verify_session_tito_tokenizer.py + sample-level mismatch logs.  "
+            f"First examples (expected vs actual): {assistant_mismatch_examples!r}"
         )

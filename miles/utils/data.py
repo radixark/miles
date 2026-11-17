@@ -5,16 +5,22 @@ import os
 import random
 import re
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from miles.ray.rollout.train_data_conversion import split_train_data_by_dp_raw
+from miles.ray.rollout.train_data_conversion import split_train_data_by_dp
 from miles.utils import object_store
+from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
+from miles.utils.dp_schedule import TrainParallelConfig
+from miles.utils.output_store.trainer_columns import maybe_materialize_store_plans
 from miles.utils.pydantic_utils import StrictBaseModel
+
 from .audit_utils.witness.allocator import WitnessInfo
 
 if TYPE_CHECKING:
+    from radix_transfer_plugins import OutputStore
+
     from miles.backends.training_utils.types import TrainStepOutput
 
 try:
@@ -23,6 +29,7 @@ except ImportError:
     pq = None
 
 from miles.utils import chat_template_utils
+from miles.utils.media_refs import collect_media_refs
 from miles.utils.types import MultimodalTypes, Sample
 
 __all__ = ["Dataset"]
@@ -204,6 +211,8 @@ class Dataset:
         seed=42,
         apply_chat_template=False,
         apply_chat_template_kwargs=None,
+        media_dir=None,
+        token_space_processing=False,
     ):
         origin_samples = []
         for data in read_file(path):
@@ -234,7 +243,11 @@ class Dataset:
             else:
                 output_prompt = prompt
 
-            if processor and isinstance(prompt, list):
+            if token_space_processing and isinstance(prompt, list):
+                # Collected before the chat template turns the messages into text. SGLang expands the media
+                # placeholders and the trainer rebuilds the processor tensors from these references.
+                multimodal_inputs = collect_media_refs(prompt, media_dir)
+            elif processor and isinstance(prompt, list):
                 from miles.utils.processing_utils import process_vision_info
 
                 multimodal_inputs = process_vision_info(prompt, processor)
@@ -276,6 +289,11 @@ class Dataset:
         return len(self.samples)
 
 
+def padded_token_count(num_tokens: int, pad_size: int) -> int:
+    """The length a packed microbatch of `num_tokens` tokens is padded to (get_batch)."""
+    return -(-num_tokens // pad_size) * pad_size
+
+
 def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
     # use first fit to get the number of micro batches
     batches = []
@@ -293,9 +311,11 @@ def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
 def process_rollout_data(
     args,
     rollout_data_ref,
-    dp_rank,
-    dp_size,
+    dp_rank: int,
+    train_parallel_config: TrainParallelConfig,
     witness_info: WitnessInfo | None,
+    *,
+    output_store: "OutputStore | None" = None,
 ) -> tuple[dict, object_store.ObjectStoreGetResult]:
     from miles.ray.rollout.train_data_conversion import process_rollout_data_shard
 
@@ -306,15 +326,38 @@ def process_rollout_data(
         raw = get_result.value
         if (x := witness_info) is not None:
             raw = {**raw, "seq_witness_ids": x.witness_ids}
-        raw = split_train_data_by_dp_raw(args, raw, dp_size=dp_size)
+        with SampleOwnershipRecorder.suppress_drop_logging():
+            raw = split_train_data_by_dp(args, raw, train_parallel_config=train_parallel_config)
+        if args.enable_sample_ownership_checker:
+            assert sum(len(shard["tokens"]) for shard in raw) == len(
+                get_result.value["tokens"]
+            ), "Dropping samples during delayed DP splitting is not supported with the sample ownership checker."
+        if witness_info is not None:
+            _assert_witness_rows(total_rows=len(get_result.value["tokens"]), shards=raw)
         rollout_data = raw[dp_rank]
     else:
-        assert len(rollout_data_ref) == dp_size
+        assert len(rollout_data_ref) == train_parallel_config.dp_size
         assert witness_info is None
         get_result = store.get(rollout_data_ref[dp_rank])
         rollout_data = dict(get_result.value)
 
-    return process_rollout_data_shard(args, rollout_data), get_result
+    try:
+        # In place on this shard's own dict: get_result.value stays as stored.
+        maybe_materialize_store_plans(args, rollout_data, store=output_store)
+        return process_rollout_data_shard(args, rollout_data), get_result
+    except BaseException as e:
+        # The caller releases get_result only once it is returned: an FT retry would leak a buffer per attempt.
+        get_result.__exit__(type(e), e, e.__traceback__)
+        raise
+
+
+def _assert_witness_rows(*, total_rows: int, shards: list[dict[str, Any]]) -> None:
+    kept_rows = sum(len(shard["tokens"]) for shard in shards)
+    assert kept_rows == total_rows, (
+        f"Witness ids were allocated for every row ({total_rows} rows), but the schedule dropped "
+        f"{total_rows - kept_rows} rows; pass --allow-partial-train-step or make the number of distinct "
+        "rollout ids a multiple of --global-batch-size."
+    )
 
 
 class RolloutDataPack(StrictBaseModel):

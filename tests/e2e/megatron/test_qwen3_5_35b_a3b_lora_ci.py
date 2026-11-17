@@ -9,30 +9,33 @@ from miles.utils.external_utils import command_utils
 # Smoke test for scripts/run_qwen3_5_35b_a3b_lora.py on the full Qwen3.5-35B-A3B
 # checkpoint, like the other Qwen3.5 e2e tests (full rollout -> train -> save loop;
 # LoRA targets include the GDN projections). Runs the MoE-expert LoRA matrix —
-# {shared-outer + virtual-experts, per-expert + no-virtual-experts} — and every
-# combination must pass. Functionality, not accuracy; 8 GPUs (TP2, EP=8).
+# {shared-outer + virtual-experts under lora, per-expert + no-virtual-experts under
+# canonical_lora (the Tinker gateway's GDN layout)} — and every combination must pass.
+# Functionality, not accuracy; 8 GPUs (TP2, EP=8).
 
 
-# Stays on 8x H200: on 8x B200 (#3956) the first combo fails the step-0 check_kl
-# with ppo_kl 1.6e-4 against the 1e-8 LoRA limit, where H200 logs 0.0.
+# On 8x B200 (#3956), the first combo failed the step-0 check_kl with ppo_kl
+# 1.6e-4 against the 1e-8 LoRA limit; the H200 baseline logged 0.0.
 register_cuda_ci(
     est_time=1200,
-    suite="stage-c-8-gpu-h200",
+    suite="stage-c-8-gpu-h100",
     labels=["megatron", "model-scripts", "lora"],
     hardware=["hopper", "blackwell"],
     num_gpus=8,
 )
 register_rocm_ci(est_time=900, suite="nightly-stage-c-8-gpu-mi350", labels=["megatron", "model-scripts", "lora"])
 
-# (name, experts_shared_outer_loras, virtual_experts_serving)
+# (name, experts_shared_outer_loras, virtual_experts_serving, lora_type)
 _CONFIGS = [
-    ("shared-outer + virtual-experts", True, True),
-    ("per-expert + no-virtual-experts", False, False),
+    ("shared-outer + virtual-experts", True, True, "lora"),
+    ("per-expert + no-virtual-experts + canonical_lora", False, False, "canonical_lora"),
 ]
 
 
-def _args(shared_outer: bool, virtual_experts: bool) -> ScriptArgs:
-    extra_args = "--ci-test --no-enable-sample-ownership-checker --ci-disable-logprobs-checker "
+def _args(shared_outer: bool, virtual_experts: bool, lora_type: str) -> ScriptArgs:
+    extra_args = (
+        f"--ci-test --no-enable-sample-ownership-checker --ci-disable-logprobs-checker --lora-type {lora_type} "
+    )
     if not virtual_experts:
         extra_args += "--no-sglang-lora-use-virtual-experts "
     # ROCm shared-expert fusion requires per-expert LoRA factors.
@@ -62,11 +65,11 @@ if __name__ == "__main__":
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
     prepare(_args(*_CONFIGS[0][1:]))
-    for name, shared_outer, virtual_experts in _CONFIGS:
+    for name, shared_outer, virtual_experts, lora_type in _CONFIGS:
         print(f"[qwen3.5-lora-ci] ===== combo: {name} =====", flush=True)
         # fresh ray/sglang between combos
         command_utils.default_config().create_backend().exec_command_cpu(
             "ray stop --force || true; pkill -9 sglang || true; sleep 10"
         )
-        execute(_args(shared_outer, virtual_experts))
+        execute(_args(shared_outer, virtual_experts, lora_type))
         print(f"[qwen3.5-lora-ci] ===== combo PASSED: {name} =====", flush=True)

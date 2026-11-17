@@ -272,7 +272,9 @@ class TestReporterWorker:
             async def run(self) -> None:
                 reporting_started.set()
 
-        args = Namespace(env_report_interval_seconds=0)
+        args = Namespace(
+            env_report_interval_seconds=0, save_debug_event_data=None, ci_test=False, ci_disable_config_snapshot=False
+        )
         with patch("os._exit", side_effect=lambda _code: exit_called.set()) as exit_process:
             RegistrationReporterWorker(args=args, reporter=FakeReporter())
 

@@ -36,7 +36,10 @@ def _append_session_verify_record(entry: dict) -> bool:
     payload = (json.dumps(entry) + "\n").encode()
     fd = os.open(
         metrics_path,
-        os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_CLOEXEC", 0),
+        os.O_WRONLY
+        | os.O_APPEND
+        | os.O_CREAT
+        | getattr(os, "O_CLOEXEC", 0),  # config-access-exempt: os.O_CLOEXEC is platform-dependent
         0o600,
     )
     try:
@@ -248,6 +251,14 @@ async def _chat(client, base_url, messages, request_kwargs, *, label):
     return resp.json()
 
 
+def _append_tool_results(messages, tool_calls, counters) -> None:
+    """Answer each of *tool_calls* with the next mock tool result."""
+    for i, tc in enumerate(tool_calls):
+        result_idx = (counters["tool_result_count"] + i) % len(MOCK_TOOL_RESULTS)
+        messages.append({"role": "tool", "content": MOCK_TOOL_RESULTS[result_idx], "tool_call_id": tc["id"]})
+    counters["tool_result_count"] += len(tool_calls)
+
+
 async def _chat_complete(client, base_url, messages, request_kwargs, *, label):
     for retry in range(_MAX_INCOMPLETE_TURN_RETRIES + 1):
         attempt_kwargs = request_kwargs
@@ -317,20 +328,17 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
         for step_idx, action in enumerate(schedule):
             label = f"Step {step_idx + 1} {action.value}"
 
+            # Answer a tool call before a step that appends another turn:
+            # strict renderers (DeepSeek V4 / V4.1) reject an unanswered call.
+            if action not in (DriverAction.TOOL_RESULT, DriverAction.ROLLBACK) and assistant.get("tool_calls"):
+                _append_tool_results(messages, assistant["tool_calls"], counters)
+                events.append("append_tool")
+
             if action is DriverAction.TOOL_RESULT:
                 tool_calls = assistant.get("tool_calls") or []
                 if tool_calls:
                     consecutive_failure_rollbacks = 0
-                    for i, tc in enumerate(tool_calls):
-                        result_idx = (counters["tool_result_count"] + i) % len(MOCK_TOOL_RESULTS)
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "content": MOCK_TOOL_RESULTS[result_idx],
-                                "tool_call_id": tc["id"],
-                            }
-                        )
-                    counters["tool_result_count"] += len(tool_calls)
+                    _append_tool_results(messages, tool_calls, counters)
                     events.append("append_tool")
                 else:
                     # Model emitted no tool_calls — apply the configured fallback.
@@ -497,8 +505,12 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     """
     tito_model = input.args.tito_model
     allowed_roles = list(fixed_template_append_roles(tito_model))
-    cycles = getattr(input.args, "session_verify_cycles", DEFAULT_CYCLES)
-    failure_mode = getattr(input.args, "tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE)
+    cycles = getattr(
+        input.args, "session_verify_cycles", DEFAULT_CYCLES
+    )  # config-access-exempt: optional custom session-verification hook argument
+    failure_mode = getattr(
+        input.args, "tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE
+    )  # config-access-exempt: optional custom session-verification hook argument
     # Sample.metadata is mutable even when the outer dataclass is frozen.
     input.sample.metadata["tito_model"] = tito_model
     input.sample.metadata["session_verify_cycles"] = cycles

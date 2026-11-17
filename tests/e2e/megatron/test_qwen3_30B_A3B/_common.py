@@ -29,6 +29,8 @@ class CaseConfig:
     use_bridge: bool = False
     use_r3: bool = False
     use_mooncake: bool = False
+    # Send the replay arrays through the output store (--use-output-store) instead of inline.
+    use_output_store: bool = False
     max_tokens_per_gpu: int = 8192
     colocate: bool = True
     rollout_num_gpus: int = None
@@ -236,7 +238,9 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     if case.fully_async:
         misc_args += "--fully-async "
 
-    if case.use_mooncake:
+    if case.use_output_store:
+        misc_args += command_utils.get_output_store_args()
+    elif case.use_mooncake:
         misc_args += command_utils.get_mooncake_object_store_args()
 
     if case.use_deepep:

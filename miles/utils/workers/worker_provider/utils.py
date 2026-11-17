@@ -30,13 +30,22 @@ async def apply_cell_observation(
         await add(cell_id, observed)
 
 
-def build_rpc_handle(*, worker_class: type, addrs: NamedHostAndPorts) -> BaseWorkerHandle:
+def build_rpc_handle(
+    *, worker_class: type, addrs: NamedHostAndPorts, expected_boot_uuid: str | None = None
+) -> BaseWorkerHandle:
     assert (
         RPC_PORT_NAME in addrs
     ), f"a worker addressed by {sorted(addrs)} has no {RPC_PORT_NAME!r} port to be called through"
-    return RpcWorkerHandle(worker_class, server_url=addrs[RPC_PORT_NAME].addr, require_stable_boot_uuid=True)
+    return RpcWorkerHandle(
+        worker_class,
+        server_url=addrs[RPC_PORT_NAME].addr,
+        require_stable_boot_uuid=True,
+        expected_boot_uuid=expected_boot_uuid,
+    )
 
 
-def build_rpc_handle_of_worker_info(info: WorkerInfo) -> BaseWorkerHandle:
+def build_rpc_handle_of_worker_info(info: WorkerInfo, *, expected_boot_uuid: str | None = None) -> BaseWorkerHandle:
     assert info.worker_class is not None, f"{info.name} is not served, so its rpc methods are unknown"
-    return build_rpc_handle(worker_class=load_function(info.worker_class), addrs=info.self_addrs)
+    return build_rpc_handle(
+        worker_class=load_function(info.worker_class), addrs=info.self_addrs, expected_boot_uuid=expected_boot_uuid
+    )

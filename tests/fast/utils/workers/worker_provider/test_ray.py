@@ -155,10 +155,12 @@ class TestRayWorkerProviderGetWorkerInfos:
 @dataclass
 class _FakeCellInfosMethod:
     answers: list[Any]
-    calls: list[list[str]] = field(default_factory=list)
+    calls: list[list[str] | None] = field(default_factory=list)
+    categories: list[str | None] = field(default_factory=list)
 
-    def remote(self, *, pool_ids: list[str]) -> Any:
-        self.calls.append(list(pool_ids))
+    def remote(self, *, pool_ids: list[str] | None, category: str | None) -> Any:
+        self.calls.append(None if pool_ids is None else list(pool_ids))
+        self.categories.append(category)
         answer = self.answers[min(len(self.calls) - 1, len(self.answers) - 1)]
         if isinstance(answer, Exception):
             return _raised(answer)
@@ -300,15 +302,16 @@ class TestRayWorkerProviderWatchCellsInitialSync:
 
         assert handle.get_cell_infos.calls == [["inference-engine-0-0"]]
 
-    async def test_watching_without_pool_ids_fails_before_contacting_manager(self):
-        """A provider built for address lookups only must refuse to watch rather than watch nothing."""
+    async def test_watching_without_pool_ids_asks_for_every_pool_of_its_category(self):
+        """Engine pools come and go as the run scales, so a category watcher must not be pinned to a pool list."""
         handle = _make_watching_handle({})
-        provider = RayWorkerProvider(worker_manager_handle=handle)
+        provider = RayWorkerProvider(worker_manager_handle=handle, category="inference-engine")
 
-        with pytest.raises(AssertionError, match="without the pool_ids"):
-            await provider.watch_cells(_RecordingReconciler())
-
-        assert handle.get_cell_infos.calls == []
+        stop = await provider.watch_cells(_RecordingReconciler())
+        try:
+            assert (handle.get_cell_infos.calls, handle.get_cell_infos.categories) == ([None], ["inference-engine"])
+        finally:
+            await stop()
 
     async def test_only_the_requested_pools_are_asked_for(self):
         """The controller must not observe cells belonging to someone else."""

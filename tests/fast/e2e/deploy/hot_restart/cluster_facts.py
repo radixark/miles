@@ -1,9 +1,4 @@
-from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import (
-    STATEFUL_SET_KIND,
-    ClusterSnapshot,
-    PodFact,
-    WorkloadFact,
-)
+from tests.utils.deploy.hot_restart.cluster_observer import STATEFUL_SET_KIND, ClusterSnapshot, PodFact, WorkloadFact
 
 NAMESPACE: str = "rl"
 RELEASE: str = "miles-run-demo-all"
@@ -24,6 +19,7 @@ def cluster_snapshot(
         pods=tuple(pods),
         workloads=tuple(workloads),
         trainer_boot_uuid=trainer_boot_uuid,
+        orchestrator_state_file=None,
         reads_missing=reads_missing,
     )
 
@@ -43,6 +39,7 @@ def workload_fact(
     return WorkloadFact(
         kind=kind,
         name=name,
+        uid=f"uid-{name}",
         generation=generation,
         pod_template_fingerprint=pod_template_fingerprint,
         restart_at=restart_at,

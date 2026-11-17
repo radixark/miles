@@ -47,7 +47,7 @@ class StaticInferenceEngineWorkerProvider(BaseWorkerProvider):
 
     async def init(self) -> None:
         urls = _compute_external_engine_urls(self._args)
-        engines = await _discover_external_engines(urls, api_key=self._args.sglang_api_key)
+        engines = await _discover_external_engines(urls, api_key=self._args.sglang.base_args["api_key"])
         _assert_engines_match_args(self._args, engines=engines)
 
         self._cells = _compute_cells(args=self._args, engines=engines)
@@ -134,7 +134,7 @@ def _compute_cells(*, args: Any, engines: list[_ExternalEngineInfo]) -> dict[str
                     worker_type=engine.worker_type.value,
                     num_gpus_per_engine=engine.num_gpus,
                     gpu_offset=gpu_offset,
-                    sglang_api_key=args.sglang_api_key,
+                    sglang_api_key=args.sglang.base_args["api_key"],
                     needs_offload=False,
                     update_weights=True,
                 ),
@@ -248,20 +248,6 @@ async def _fetch_server_info_with_retry(
 
 
 def _assert_engines_match_args(args: Any, *, engines: list[_ExternalEngineInfo]) -> None:
-    discovered_total = sum(engine.num_gpus for engine in engines)
-    assert discovered_total == args.rollout_num_gpus, (
-        f"the external engines report {discovered_total} gpus in total "
-        f"({[(engine.url, engine.num_gpus) for engine in engines]}), but --rollout-num-gpus is "
-        f"{args.rollout_num_gpus}. That argument sizes the placement group and the router, so let it "
-        f"describe the fleet that is actually running"
-    )
-
-    reported_gpus = {engine.num_gpus for engine in engines}
-    assert reported_gpus == {args.rollout_num_gpus_per_engine}, (
-        f"external engines report {sorted(reported_gpus)} gpus each, expected "
-        f"{args.rollout_num_gpus_per_engine} (--rollout-num-gpus-per-engine)"
-    )
-
     pd_engine_urls = [engine.url for engine in engines if engine.worker_type != WorkerType.REGULAR]
     assert bool(pd_engine_urls) == args.rollout_external_router_pd, (
         f"the router is launched in PD mode iff --rollout-external-router-pd is set "

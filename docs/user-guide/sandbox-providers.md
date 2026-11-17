@@ -15,6 +15,7 @@ one.
 | [Daytona](https://www.daytona.io/) | ✓ | ✓ | ✓ | ✓ |
 | [E2B](https://e2b.dev/) | ✓ | | | ✓ |
 | [Modal](https://modal.com/) | ✓ | | | ✓ |
+| [Novita](https://docs.novita.ai/) | ✓ | | | ✓ |
 
 The rest of this page is how to set each provider up. Its SDK is installed per
 recipe; the recipe README has that line.
@@ -77,3 +78,14 @@ For OpenEnv TB2, `cpus` and `memory_mb` from each task's `task.toml` become
 Modal resource requests, not hard limits. They preserve the task's guaranteed
 resource contract while still allowing the sandbox to burst above the request
 when its host has spare capacity.
+
+## Novita
+
+```bash
+mkdir -p ~/.config/novita && echo <key> > ~/.config/novita/api_key   # or export NOVITA_API_KEY
+```
+
+With nothing else set, the SDK talks to the `us-phx-1` region.
+`NOVITA_DOMAIN=sandbox.novita.ai` selects the legacy `us-virginia-1` region;
+`NOVITA_API_URL` and `NOVITA_SANDBOX_URL` override the two endpoints for an
+internal deployment.

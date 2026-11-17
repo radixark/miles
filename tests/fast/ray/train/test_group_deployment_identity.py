@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,12 +15,12 @@ pytestmark = pytest.mark.asyncio
 
 def _controller(identity: DeploymentIdentity) -> TrainerController:
     return TrainerController(
+        args=SimpleNamespace(
+            trainer_id="actor", trainer_role="actor", kl_coef=0, use_kl_loss=False, use_opd=False, opd_type="megatron"
+        ),
         deployment_identity=identity,
         cell_provider=MagicMock(spec=BaseWorkerProvider),
         cell_operations=MagicMock(spec=BaseCellOperations),
-        trainer_id="actor",
-        role="actor",
-        with_ref=False,
     )
 
 

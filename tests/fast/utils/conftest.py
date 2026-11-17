@@ -1,8 +1,10 @@
 from argparse import Namespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
+from miles.utils import object_store
 from miles.utils.external_utils.ray_job import _run_launcher_owned_job
 from miles.utils.tracking_utils.base import TrackingBackend, TrackingManager
 
@@ -38,3 +40,15 @@ class _TrackingResource(TrackingBackend):
 class _FailingTracking(_TrackingResource):
     def init(self, args: Namespace, *, primary: bool = True, **kwargs: Any) -> None:
         raise RuntimeError("tracking backend unavailable")
+
+
+@pytest.fixture
+def mooncake_reader(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    transfer = Mock()
+    monkeypatch.setattr(object_store, "_MOONCAKE_AVAILABLE", True)
+    monkeypatch.setattr(
+        object_store, "MooncakeDistributedStore", Mock(return_value=Mock(setup=Mock(return_value=0))), raising=False
+    )
+    monkeypatch.setattr(object_store, "MooncakeBundleTransfer", Mock(return_value=transfer), raising=False)
+    monkeypatch.setattr(object_store, "import_ref", lambda ref: ref, raising=False)
+    return transfer

@@ -36,20 +36,23 @@ def mask_truncated_zero_reward(args: Namespace, data: list[list[Sample]]) -> Non
     """
     global _warned_dict_reward
     total = masked = 0
-    for sample in iter_samples(data):
-        total += 1
-        if not args.reward_key and isinstance(sample.reward, dict):
-            # No scalar to compare without --reward-key; leave the sample in the loss.
-            if not _warned_dict_reward:
-                logger.warning(
-                    "mask_truncated_zero_reward: rewards are dicts and --reward-key is not set, "
-                    "so those samples are never masked"
-                )
-                _warned_dict_reward = True
-            continue
-        reward = sample.get_reward_value(args) if sample.reward is not None else None
-        if is_cut_off(sample) and (reward is None or reward <= 0):
-            sample.remove_sample = True
-            masked += 1
+    # ``data`` is a list of groups. With session server v2, a group entry is itself a list of
+    # samples (one per session branch), so open each group with ``iter_samples``.
+    for group in data:
+        for sample in iter_samples(group):
+            total += 1
+            if not args.reward_key and isinstance(sample.reward, dict):
+                # No scalar to compare without --reward-key; leave the sample in the loss.
+                if not _warned_dict_reward:
+                    logger.warning(
+                        "mask_truncated_zero_reward: rewards are dicts and --reward-key is not set, "
+                        "so those samples are never masked"
+                    )
+                    _warned_dict_reward = True
+                continue
+            reward = sample.get_reward_value(args) if sample.reward is not None else None
+            if is_cut_off(sample) and (reward is None or reward <= 0):
+                sample.remove_sample = True
+                masked += 1
     if masked:
         logger.info(f"mask_truncated_zero_reward: left {masked}/{total} cut-off zero-reward samples out of the loss")

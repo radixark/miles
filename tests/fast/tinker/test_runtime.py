@@ -1,9 +1,12 @@
 """Runtime translation preserves datum order, sampling parameters, and token logprobs."""
 
+import httpx
 import pytest
 import torch
 
+from miles.backends.training_utils.checkpoint.adapter.commit import tenant_digest as library_digest
 from miles.tinker.core.types import UserInputError
+from miles.tinker.core.utils import tenant_digest as gateway_digest
 from miles.tinker.runtime import (
     MilesBackend,
     _build_train_data,
@@ -12,9 +15,31 @@ from miles.tinker.runtime import (
     _slot_failure,
     _to_sequence,
     _topk_prompt_logprobs,
+    classify_lora_groups,
 )
 from miles.tinker.server.proto_codec import encode_sample_response
+from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
+from tinker import types as tinker_types
 from tinker.proto.response_conv import deserialize_sample_response
+
+
+async def test_sampling_preserves_engine_client_error_details(monkeypatch):
+    async def rejected(*args):
+        response = httpx.Response(
+            400, text="prompt is too long", request=httpx.Request("POST", "http://router/generate")
+        )
+        response.raise_for_status()
+
+    monkeypatch.setattr("miles.tinker.runtime.post", rejected)
+    payload = {
+        "prompt_tokens": [1],
+        "sampling_params": tinker_types.SamplingParams(max_tokens=1).model_dump(),
+        "num_samples": 1,
+        "prompt_logprobs": False,
+        "topk_prompt_logprobs": 0,
+    }
+    with pytest.raises(UserInputError, match="prompt is too long"):
+        await MilesBackend(None, "http://router", lora_layout=None).sample(payload, None)
 
 
 def _datum(tokens: list[int], **extra) -> dict:
@@ -43,7 +68,7 @@ class TestBuildTrainData:
 
 
 async def test_forward_backward_merges_worker_replicas():
-    backend = MilesBackend(trainer=None, router_url="http://router")
+    backend = MilesBackend(trainer=None, router_url="http://router", lora_layout=None)
     per_datum = [
         {"sample_index": 1, "loss": 2.0, "logprobs": torch.tensor([-0.2])},
         {"sample_index": 0, "loss": 1.0, "logprobs": torch.tensor([-0.1])},
@@ -64,17 +89,14 @@ class TestGenerateRequest:
     def _request(self, params: dict, **payload_extra) -> dict:
         payload = {
             "prompt_tokens": [1, 2],
-            "sampling_params": params,
+            # the gateway forwards every SDK field (decode_sample_request)
+            "sampling_params": tinker_types.SamplingParams(**params).model_dump(),
             "num_samples": 1,
             "prompt_logprobs": False,
             "topk_prompt_logprobs": 0,
             **payload_extra,
         }
-        return MilesBackend(None, "http://router")._generate_request(payload, lora_name="m@1")
-
-    def test_max_tokens_is_required(self):
-        with pytest.raises(UserInputError, match="max_tokens"):
-            self._request({})
+        return MilesBackend(None, "http://router", lora_layout=None)._generate_request(payload, lora_name="m@1")
 
     def test_params_map_to_sglang_names(self):
         request = self._request({"max_tokens": 8, "temperature": 0.0, "seed": 7})
@@ -138,7 +160,7 @@ class TestEngineResponseParsing:
 
 
 async def test_forward_only_runs_the_requested_loss():
-    backend = MilesBackend(trainer=None, router_url="http://router")
+    backend = MilesBackend(trainer=None, router_url="http://router", lora_layout=None)
     captured = {}
 
     async def fake_call_trainer(method, batch_id, train_data):
@@ -172,7 +194,7 @@ class TestPadToDpMultiple:
 
 
 async def test_forward_backward_pads_the_batch_and_drops_padding_outputs():
-    backend = MilesBackend(trainer=None, router_url="http://router", dp_size=2)
+    backend = MilesBackend(trainer=None, router_url="http://router", lora_layout=None, dp_size=2)
     seen = {}
 
     async def fake_call_trainer(method, batch_id, train_data):
@@ -199,3 +221,58 @@ def test_an_aborted_sample_fails_instead_of_passing_as_a_stop():
     """A truncated sequence fed to RL as a completed sample corrupts training data silently."""
     response = {"meta_info": {"output_token_logprobs": [(-0.1, 11)], "finish_reason": {"type": "abort"}}}
     assert "abort" in _to_sequence(response)["error"]
+
+
+@pytest.mark.parametrize("tenant", ["tenant-a", "", "ключ/with spaces"])
+def test_the_gateway_digests_a_tenant_as_the_library_checks_it(tenant):
+    """Core (stdlib-only) writes the digest the library's ownership check recomputes; the two must agree."""
+    assert gateway_digest(tenant) == library_digest(tenant)
+
+
+def test_lora_groups_come_from_the_recorded_targets():
+    qwen3 = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})
+    assert classify_lora_groups(("model.layers.0.self_attn.q_proj", "lm_head"), qwen3) == {
+        "train_attn": True,
+        "train_mlp": False,
+        "train_unembed": True,
+    }
+    with pytest.raises(UserInputError, match="in no LoRA group"):
+        classify_lora_groups(("model.layers.0.input_layernorm",), qwen3)
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"model_type": "mimo_v2", "num_hidden_layers": 2, "moe_layer_freq": [0, 1]},
+        {
+            "model_type": "kimi_k2",
+            "num_hidden_layers": 2,
+            "n_routed_experts": 4,
+            "first_k_dense_replace": 1,
+            "n_shared_experts": 0,
+            "q_lora_rank": None,
+        },
+    ],
+    ids=["mimo_v2", "kimi_k2"],
+)
+def test_a_per_expert_familys_stacked_expert_targets_count_as_mlp(config):
+    # the layout names routed experts per expert (experts.*.down_proj); a checkpoint records them stacked
+    layout = get_hf_lora_targets(config)
+    flags = classify_lora_groups(("model.layers.1.mlp.experts.down_proj",), layout)
+    assert flags == {"train_attn": False, "train_mlp": True, "train_unembed": False}
+
+
+def test_a_fused_modules_components_count_as_its_group():
+    gdn = get_hf_lora_targets(
+        {
+            "model_type": "qwen3_5_text",
+            "num_hidden_layers": 1,
+            "layer_types": ["linear_attention"],
+            "linear_num_key_heads": 1,
+            "linear_key_head_dim": 2,
+            "linear_num_value_heads": 1,
+            "linear_value_head_dim": 3,
+        }
+    )
+    flags = classify_lora_groups(("model.layers.0.linear_attn.in_proj_q",), gdn)
+    assert flags == {"train_attn": True, "train_mlp": False, "train_unembed": False}

@@ -1,4 +1,5 @@
 import json
+import os
 from argparse import Namespace
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
@@ -19,7 +20,21 @@ def is_lora_weight_name(name: str) -> bool:
 
 def is_lora_enabled(args: Namespace) -> bool:
     """Check if LoRA is enabled based on arguments."""
-    return getattr(args, "lora_rank", 0) > 0 or getattr(args, "lora_adapter_path", None) is not None
+    return args.lora_rank > 0 or args.lora_adapter_path is not None
+
+
+def exports_hf_snapshots(args: Namespace) -> bool:
+    """The trainer writes HF snapshots: --save-hf and eval snapshots."""
+    return args.save_hf is not None or (args.eval_uses_snapshots and args.eval_hf_dir is not None)
+
+
+def reads_adapter_slots(args: Namespace, save: str | None) -> bool:
+    """HF exports, multi-LoRA sampler exports or a single-LoRA adapter dir (save, --lora-adapter-path) read slots."""
+    return (
+        exports_hf_snapshots(args)
+        or is_multi_lora_enabled(args)
+        or (is_lora_enabled(args) and (save is not None or args.lora_adapter_path is not None))
+    )
 
 
 def lora_rollout_enabled(args: Namespace) -> bool:
@@ -28,7 +43,7 @@ def lora_rollout_enabled(args: Namespace) -> bool:
     Gates everything rollout-facing: SGLang's ``enable_lora``, the per-request
     ``lora_path``, and the adapter weight sync. Training-side LoRA is unaffected.
     """
-    return is_lora_enabled(args) and not getattr(args, "lora_train_only", False)
+    return is_lora_enabled(args) and not args.lora_train_only
 
 
 def engine_loads_adapter_from_disk(args: Namespace) -> bool:
@@ -38,7 +53,21 @@ def engine_loads_adapter_from_disk(args: Namespace) -> bool:
 
 def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
     """LoRA + --colocate + --lora-base-cpu-backup all set."""
-    return is_lora_enabled(args) and getattr(args, "colocate", False) and getattr(args, "lora_base_cpu_backup", False)
+    return is_lora_enabled(args) and args.colocate and args.lora_base_cpu_backup
+
+
+def lora_colocated_engine_keeps_base(args: Namespace) -> bool:
+    """The colocated engines hold the frozen LoRA base across pauses: a host backup, or
+    weights that are never released."""
+    return lora_base_cpu_backup_enabled(args) or (args.colocate and not args.offload_rollout)
+
+
+def lora_sync_sends_base(args: Namespace) -> bool:
+    """A colocated LoRA weight sync re-sends the frozen base unless the engines keep it; the
+    weight checker always rewrites every tensor, and --lora-train-only syncs as full weights."""
+    return (
+        not lora_rollout_enabled(args) or args.check_weight_update_equal or not lora_colocated_engine_keeps_base(args)
+    )
 
 
 def save_adapter_to_disk(out_dir, config: dict, tensors: dict) -> None:
@@ -48,7 +77,10 @@ def save_adapter_to_disk(out_dir, config: dict, tensors: dict) -> None:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     (out / "adapter_config.json").write_text(json.dumps(config, indent=2))
-    safetensors.torch.save_file(tensors, str(out / "adapter_model.safetensors"))
+    # engines may read the dir while it is written (an RL --save exports into its committed dir): never a partial file
+    partial = out / "adapter_model.safetensors.partial"
+    safetensors.torch.save_file(tensors, str(partial))
+    os.replace(partial, out / "adapter_model.safetensors")
 
 
 def build_lora_config(args, *, target_modules):
@@ -77,7 +109,7 @@ class AdapterSpec:
 
 
 def is_multi_lora_enabled(args: Any) -> bool:
-    return getattr(args, "multi_lora", False)
+    return args.multi_lora
 
 
 # Leaf module names that can live inside MoE experts (they also name the dense MLP

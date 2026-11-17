@@ -21,7 +21,7 @@ hf download
   --local-dir /root/datasets/aime-2025
 
 ### 5
-[multi_node num_nodes=None] PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
+[multi_node num_nodes=1] PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --nproc-per-node 4
   --master-addr {{master_addr}}
   --master-port 23456

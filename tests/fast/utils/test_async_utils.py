@@ -873,3 +873,114 @@ class TestKeepingASecondaryFailureWhereNotesDoNotExist:
 
         assert "Additional task failure while cancelling peers" in caplog.text
         assert "RuntimeError: cleanup exploded" in caplog.text
+
+
+class TestCancellableTasks:
+    async def test_results_follow_input_order_and_completed_calls_survive_later_cancellation(self) -> None:
+        """Completed RPC batches retain their results when later batches are cancelled."""
+        calls = async_utils.CancellableTasks()
+        first = asyncio.get_running_loop().create_future()
+        second = asyncio.get_running_loop().create_future()
+        task = asyncio.create_task(calls.gather([first, second], timeout=None))
+        second.set_result("second")
+        first.set_result("first")
+
+        assert await task == ["first", "second"]
+        calls.cancel()
+        assert first.result() == "first"
+        assert second.result() == "second"
+        assert await calls.gather([], timeout=None) == []
+
+    async def test_worker_failure_cancels_siblings_and_preserves_the_original_error(self) -> None:
+        """One failed RPC cannot leave sibling futures pending after its batch exits."""
+        calls = async_utils.CancellableTasks()
+        failed = asyncio.get_running_loop().create_future()
+        pending = asyncio.get_running_loop().create_future()
+        error = RuntimeError("worker failed")
+        failed.set_exception(error)
+
+        with pytest.raises(RuntimeError) as caught:
+            await calls.gather([failed, pending], timeout=None)
+
+        assert caught.value is error
+        assert pending.cancelled()
+
+    async def test_repeated_cancellation_reaches_every_concurrent_batch_and_allows_later_calls(self) -> None:
+        """Cancelling a cell drains all current batches without poisoning subsequent task registration."""
+        calls = async_utils.CancellableTasks()
+        pending = [asyncio.get_running_loop().create_future() for _ in range(2)]
+        batches = [asyncio.create_task(calls.gather([future], timeout=None)) for future in pending]
+        await asyncio.sleep(0)
+
+        calls.cancel()
+        calls.cancel()
+        outcomes = await asyncio.wait_for(asyncio.gather(*batches, return_exceptions=True), timeout=1)
+
+        assert all(isinstance(outcome, asyncio.CancelledError) for outcome in outcomes)
+        assert all(future.cancelled() for future in pending)
+        later = asyncio.get_running_loop().create_future()
+        later.set_result("new batch")
+        assert await calls.gather([later], timeout=None) == ["new batch"]
+
+    async def test_timeout_cancels_every_submitted_future(self) -> None:
+        """A timed-out RPC batch releases all submitted work before reporting its timeout."""
+        calls = async_utils.CancellableTasks()
+        pending = [asyncio.get_running_loop().create_future() for _ in range(2)]
+
+        with pytest.raises(TimeoutError):
+            await calls.gather(pending, timeout=0)
+
+        assert all(future.cancelled() for future in pending)
+
+
+class TestDynamicLimitSemaphore:
+    async def test_shrinking_the_limit_waits_for_existing_holders_before_admitting_more(self) -> None:
+        """Scale-down preserves in-flight work and blocks new work until the observed limit permits it."""
+        limit = [2]
+        semaphore = async_utils.DynamicLimitSemaphore(lambda: limit[0])
+        await semaphore.__aenter__()
+        await semaphore.__aenter__()
+        limit[0] = 1
+        waiter = asyncio.create_task(semaphore.__aenter__())
+        await asyncio.sleep(0)
+        assert not waiter.done()
+
+        await semaphore.__aexit__(None, None, None)
+        await asyncio.sleep(0)
+        assert not waiter.done()
+        await semaphore.__aexit__(None, None, None)
+
+        assert await asyncio.wait_for(waiter, timeout=1) is semaphore
+        await semaphore.__aexit__(None, None, None)
+
+    async def test_cancelling_a_waiter_does_not_consume_capacity(self) -> None:
+        """A cancelled generation request cannot reduce the capacity available to future requests."""
+        semaphore = async_utils.DynamicLimitSemaphore(lambda: 1)
+        async with semaphore:
+            waiter = asyncio.create_task(semaphore.__aenter__())
+            await asyncio.sleep(0)
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+
+        assert await asyncio.wait_for(semaphore.__aenter__(), timeout=1) is semaphore
+        await semaphore.__aexit__(None, None, None)
+
+    async def test_growing_the_limit_admits_new_work_before_existing_work_finishes(self) -> None:
+        """Scale-up is read at acquisition rather than retaining the construction-time capacity."""
+        limit = [1]
+        semaphore = async_utils.DynamicLimitSemaphore(lambda: limit[0])
+        async with semaphore:
+            limit[0] = 2
+            assert await asyncio.wait_for(semaphore.__aenter__(), timeout=1) is semaphore
+            await semaphore.__aexit__(None, None, None)
+
+    async def test_a_failed_holder_returns_its_capacity(self) -> None:
+        """A generation error cannot leak the only slot and deadlock the next request."""
+        semaphore = async_utils.DynamicLimitSemaphore(lambda: 1)
+        with pytest.raises(RuntimeError, match="generation failed"):
+            async with semaphore:
+                raise RuntimeError("generation failed")
+
+        assert await asyncio.wait_for(semaphore.__aenter__(), timeout=1) is semaphore
+        await semaphore.__aexit__(None, None, None)

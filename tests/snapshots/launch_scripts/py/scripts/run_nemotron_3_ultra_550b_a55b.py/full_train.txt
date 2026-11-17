@@ -123,3 +123,4 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --actor-num-gpus-per-node 8
   --rollout-num-gpus 8
   --dump-details /root/shared_data/260101-000000-000/dump_details   
+  --deploy-component all

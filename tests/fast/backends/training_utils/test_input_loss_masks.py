@@ -57,8 +57,7 @@ def test_mask_alignment_survives_packing_and_cp(
         for position, token_id in enumerate(token_ids.tolist()):
             input_weights[token_id] = weights[position]
 
-    monkeypatch.setattr(torch.cuda, "current_device", lambda: torch.device("cpu"))
-    monkeypatch.setattr(torch.Tensor, "cuda", lambda self, *args, **kwargs: self)
+    monkeypatch.setattr(data_utils.current_platform, "current_device", lambda: torch.device("cpu"))
     total = 0
     seen_tokens = []
     for cp_rank in range(cp_size):

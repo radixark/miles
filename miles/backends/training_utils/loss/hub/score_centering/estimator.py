@@ -58,7 +58,9 @@ class ScoreCenteringMetrics:
 
     def as_log_dict(self) -> dict[str, torch.Tensor]:
         """Map existing log names to the tensors without copying their storage."""
-        return {f"sc_{field.name}": getattr(self, field.name) for field in fields(self)}
+        return {
+            f"sc_{field.name}": getattr(self, field.name) for field in fields(self)
+        }  # config-access-exempt: metric field name comes from dataclasses.fields on this record
 
 
 def score_centering_loss(inputs: ScoreCenteringInputs) -> tuple[torch.Tensor, ScoreCenteringMetrics]:

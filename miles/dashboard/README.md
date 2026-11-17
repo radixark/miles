@@ -61,6 +61,48 @@ Views:
   first generated token, + a selectable metric-vs-position chart, loss-masked
   regions dimmed).
 
+- **Sandboxes** — shown once an agent function reports a sandbox (see
+  below): how many sandboxes are healthy, erroring or stale, and a table of
+  them with their last error and when they last ran a command. A healthy
+  sandbox is stale when it has not reported for longer than a configurable
+  number of minutes (also settable as `#/sandboxes?stale_min=N`; for a
+  finished run, measured from the last snapshot).
+
+## Report sandbox health
+
+Agentic rollouts that run each trial in a sandbox can make its health
+visible by calling `report_sandbox` from the agent / custom generate
+function: when the sandbox starts, after each command it runs, on an error,
+and on teardown. The call is cheap, never raises, and is a no-op when the
+dashboard is disabled. It works with any sandbox backend: `provider` and
+`sandbox_id` are free-form labels, and miles never talks to the provider.
+Under `--custom-agent-function-mode subproc` the agent process sends each
+report to the rollout process as it is made, so a hung call still shows up.
+
+```python
+from miles.dashboard.hooks import report_sandbox
+
+
+async def run_trial(trial_id: str, task: str, env) -> float:
+    report_sandbox(trial_id, task=task, provider=env.name, sandbox_id=env.id)
+    try:
+        for command in commands_for(task):
+            await env.exec(command)
+            report_sandbox(trial_id)  # heartbeat: sets "last executed"
+        return await verify(env)
+    except Exception as e:
+        report_sandbox(trial_id, status="error", error=f"{type(e).__name__}: {e}")
+        raise
+    finally:
+        await env.close()
+        report_sandbox(trial_id, status="finished")
+```
+
+Only the latest state of each sandbox is kept; finished sandboxes drop out
+after 10 minutes. The collector overwrites
+`{dump-details}/dashboard/sandboxes.json` on every flush, and
+`/api/sandboxes?stale_after_s=N` serves the counts and rows.
+
 ## Develop
 
 ```bash
@@ -77,3 +119,52 @@ producers (Timer sinks / rollout hooks / NVML samplers / sglang scraper)
 dump .pt + dashboard_columns/*.parquet + trajectory/*.jsonl   [written by training]
     -> serve.py: MetricStore + DumpReader -> FastAPI -> static SPA
 ```
+
+## Read bounds
+
+Live streams are hourly JSONL partitions; the server keeps the newest
+`MetricStore.PARTITION_CACHE_BLOCKS` (24) parsed per stream and tails the open
+one. Every request is sized by its window, never by the run's length:
+
+- Timeline windows are at most `MAX_WINDOW_S` (4 h). Phases read the window's
+  partitions plus `MAX_WINDOW_S` past its end (a phase lands in its end hour);
+  intervals still open come from an index built once and advanced on new bytes.
+- Run-long engine series (the Metrics `sglang` category) come from a view
+  thinned to at most `2 * SCRAPES_PER_ENGINE` scrapes per engine, built from
+  appended bytes only. Metric names come from `engine_catalog.json`, written by
+  the collector as it sees new names.
+- The engine overlay fetches only the engines on the selected lanes.
+- Advisories judge the trailing `MAX_WINDOW_S` before the newest engine scrape;
+  the abort alarm reads run totals only once it fires. The timeline renders
+  without waiting for them and, in follow mode, refreshes them every 30 s.
+- The Rollouts table builds 200 rows at a time.
+
+What still scales with history or step size: the first Metrics `sglang` query
+(it folds the whole run once), step summaries (one `torch.load` of the step's
+train dumps), and the lifecycle heatmap and trajectory reads, which parse
+trajectory rows as objects.
+
+## Simulating a large run
+
+`tests/manual/dashboard_simulator/` replays a real `--dump-details` run widened to N
+GPUs: every calibration GPU, engine and train rank becomes N/calibration copies,
+each rollout step carries that many times the samples, and the actor's DP size
+grows with it. All bytes are written by miles' own code (sinks, collector,
+`save_debug_rollout_data`, the train-data DP split and dump functions) on a
+virtual clock, so a 26 h run generates in minutes to hours; only per-token
+training values are synthetic. A x1 replay matches its calibration row for row.
+
+```bash
+python -m tests.manual.dashboard_simulator generate --gpus 256 --hours 26 --out <dir> \
+    --calibration <real dump> --actor-tp-size 2 --actor-pp-size 4 --actor-cp-size 4 --max-tokens-per-gpu 8192
+python -m tests.manual.dashboard_simulator bench-static --dump-details <dir>      # every endpoint, cold / warm
+python -m tests.manual.dashboard_simulator bench-follow --dump-details <copy>     # serve --follow + live appends
+python -m tests.manual.dashboard_simulator bench-collector --metrics-page <page> --engines 128
+python tests/manual/dashboard_simulator/browser.py --url http://127.0.0.1:7788 --dump-details <dir>
+```
+
+`bench-follow` appends new hour partitions, so run it on a hardlink copy
+(`cp -al`). The actor flags are the calibration launcher's: a dashboard dump
+does not record them. `--rollout-dumps-last-hours` / `--train-dumps-last-hours`
+keep only recent steps' dumps; the reader opens one step at a time, so older
+steps cost disk, not request time.

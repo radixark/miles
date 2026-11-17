@@ -213,7 +213,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-server-concurrency 1024
   --sglang-max-running-requests 256
   --sglang-chunked-prefill-size 1024
-  --sglang-cuda-graph-max-bs 256 
+  --sglang-cuda-graph-max-bs-decode 256 
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --accumulate-allreduce-grads-in-fp32
@@ -223,6 +223,5 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --actor-num-gpus-per-node 4
   --num-gpus-per-node 4
   --colocate
-  --use-fault-tolerance
-  --dump-details /root/shared_data/260101-000000-000/dump_details
-  --disable-weights-backuper   
+  --dump-details /root/shared_data/260101-000000-000/dump_details   
+  --deploy-component all

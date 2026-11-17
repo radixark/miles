@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Any
 
 import httpx
+import orjson
 
 from miles.utils.http_utils import GeneralHttpClientProvider
 
@@ -71,6 +72,39 @@ async def wait_server_healthy(server_url, api_key):
         await asyncio.sleep(2)
 
 
+def _update_weights_from_tensor_payload(
+    serialized_named_tensors: list[str],
+    load_format: str | None,
+    flush_cache: bool,
+    weight_version: str | None,
+    selector: str,
+) -> dict:
+    payload = {
+        "serialized_named_tensors": serialized_named_tensors,
+        "load_format": load_format,
+        "flush_cache": flush_cache,
+        "selector": selector,
+    }
+    if weight_version is not None:
+        payload["weight_version"] = weight_version
+    return payload
+
+
+def encode_update_weights_from_tensor_body(
+    serialized_named_tensors: list[str],
+    load_format: str | None = None,
+    flush_cache: bool = False,
+    weight_version: str | None = None,
+    selector: str = "all",
+) -> bytes:
+    """The ``update_weights_from_tensor`` body, encoded once to post to many engines."""
+    return orjson.dumps(
+        _update_weights_from_tensor_payload(
+            serialized_named_tensors, load_format, flush_cache, weight_version, selector
+        )
+    )
+
+
 @dataclasses.dataclass(frozen=True)
 class SGLangApiClient:
     server_url: str
@@ -80,25 +114,40 @@ class SGLangApiClient:
     def _headers(self) -> dict[str, str]:
         return _compute_headers(self.api_key)
 
-    async def _make_request(self, endpoint: str, payload: dict | None = None, *, timeout: float | None = None):
+    async def _make_request(
+        self,
+        endpoint: str,
+        payload: dict | None = None,
+        *,
+        timeout: float | None = None,
+        body: bytes | None = None,
+    ):
         """Make a POST request to the specified endpoint with the given payload.
 
         Args:
             endpoint: The API endpoint to call
             payload: The JSON payload to send (default: empty dict)
+            body: An already JSON-encoded payload, sent as is instead of ``payload``
 
         Returns:
             The JSON response from the server
         """
         url = f"{self.server_url}/{endpoint}"
         bound: dict[str, float] = {} if timeout is None else dict(timeout=timeout)
-        response = await GeneralHttpClientProvider.client().post(
-            url, json=payload or {}, headers=self._headers, **bound
-        )
+        if body is None:
+            response = await GeneralHttpClientProvider.client().post(
+                url, json=payload or {}, headers=self._headers, **bound
+            )
+        else:
+            response = await GeneralHttpClientProvider.client().post(
+                url, content=body, headers={**self._headers, "Content-Type": "application/json"}, **bound
+            )
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
-            if hasattr(e, "add_note"):
+            if hasattr(
+                e, "add_note"
+            ):  # config-access-exempt: exception notes are unavailable on older Python versions
                 e.add_note(f"{response.text=}")
             raise
         if not response.content:
@@ -139,18 +188,16 @@ class SGLangApiClient:
         Note: The model should be on GPUs rather than CPU for this functionality to work properly.
         If you encounter issues, ensure your model is loaded on GPU devices rather than CPU.
         """
-        payload = {
-            "serialized_named_tensors": serialized_named_tensors,
-            "load_format": load_format,
-            "flush_cache": flush_cache,
-            "selector": selector,
-        }
-        if weight_version is not None:
-            payload["weight_version"] = weight_version
         return await self._make_request(
             "update_weights_from_tensor",
-            payload,
+            _update_weights_from_tensor_payload(
+                serialized_named_tensors, load_format, flush_cache, weight_version, selector
+            ),
         )
+
+    async def update_weights_from_tensor_encoded(self, body: bytes):
+        """``update_weights_from_tensor`` with a body from ``encode_update_weights_from_tensor_body``."""
+        return await self._make_request("update_weights_from_tensor", body=body)
 
     async def get_remote_instance_transfer_engine_info(self, rank: int, role: str):
         # TODO: will be changed to `remote_instance_transfer_engine_info` when the sglang side is ready.
@@ -292,6 +339,12 @@ class SGLangApiClient:
             {"lora_name": lora_name, "config_dict": config_dict, "pinned": pinned},
         )
 
+    async def load_lora_adapter(self, lora_name: str, lora_path: str, pinned: bool = False, upsert: bool = False):
+        """Load a PEFT adapter directory. With ``upsert``, a same-name adapter is replaced in place."""
+        return await self._make_request(
+            "load_lora_adapter", {"lora_name": lora_name, "lora_path": lora_path, "pinned": pinned, "upsert": upsert}
+        )
+
     async def release_memory_occupation(self, tags: list[str] = None):
         """Release memory occupation. Available tags: weights, kv_cache."""
         await self.flush_cache()
@@ -310,12 +363,19 @@ class SGLangApiClient:
         )
 
     async def check_weights(
-        self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
+        self,
+        action: str,
+        allow_quant_error: bool = False,
+        selector: str = "all",
+        skip_list: list[str] | None = None,
+        names: list[str] | None = None,
     ):
         payload = {"action": action, "allow_quant_error": allow_quant_error, "selector": selector}
         if skip_list is not None:
             # sglang's CheckWeightsReqInput names this field `skip_tensor_list`.
             payload["skip_tensor_list"] = skip_list
+        if names is not None:
+            payload["names"] = names
         return await self._make_request("weights_checker", payload)
 
     async def pull_weights(self, target_version: int, local_checkpoint_dir: str, source_dir: str):

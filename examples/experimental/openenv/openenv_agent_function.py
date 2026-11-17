@@ -108,7 +108,7 @@ MESSAGE_TIMEOUT_S = float(os.getenv("OPENENV_MESSAGE_TIMEOUT_S", "1200"))
 # generation) and stall the whole rollout batch (a step finishes only when the
 # slowest of all concurrent episodes returns). An episode exceeding this cap is
 # terminated (its coroutine cancelled) and scored reward 0.
-_MAX_ROLLOUT_TIME_S = float(os.getenv("OPENENV_MAX_ROLLOUT_TIME_SECONDS", "3600"))
+MAX_ROLLOUT_TIME_S = float(os.getenv("OPENENV_MAX_ROLLOUT_TIME_SECONDS", "3600"))
 
 
 def _is_retryable_env_error(e: BaseException) -> bool:
@@ -141,14 +141,22 @@ def _strip_fence(text: str) -> str:
 
 def _obs_field(result: Any, name: str) -> str:
     """Read an Observation field off a StepResult, tolerating shape differences."""
-    obs = getattr(result, "observation", result)
-    return str(getattr(obs, name, "") or "")
+    obs = getattr(
+        result, "observation", result
+    )  # config-access-exempt: OpenEnv clients return either a step result wrapper or a direct observation
+    return str(
+        getattr(obs, name, "") or ""
+    )  # config-access-exempt: OpenEnv environments define different observation text fields
 
 
 def _obs_info(result: Any) -> dict:
     """Read the Observation's info dict off a StepResult (empty when absent)."""
-    obs = getattr(result, "observation", result)
-    return getattr(obs, "info", None) or {}
+    obs = getattr(
+        result, "observation", result
+    )  # config-access-exempt: OpenEnv clients return either a step result wrapper or a direct observation
+    return (
+        getattr(obs, "info", None) or {}
+    )  # config-access-exempt: OpenEnv observation schemas may omit auxiliary info
 
 
 # Lazy import so the file loads without the env client present at import time.
@@ -337,7 +345,9 @@ async def multi_turn(
         #     valid, which is exactly why it must not be trusted: source
         #     preflight is impossible against a remote server, so this marker
         #     is the contract check.
-        raw_reward = getattr(eval_result, "reward", None)
+        raw_reward = getattr(
+            eval_result, "reward", None
+        )  # config-access-exempt: OpenEnv grading responses may omit reward when evaluation fails
         eval_error = _obs_field(eval_result, "error")
         harness = str(_obs_info(eval_result).get("harness", ""))
         if raw_reward is None or eval_error or harness != "tests/test.sh":
@@ -427,10 +437,10 @@ async def run_for_training(
         # during cancellation cleanup.
         reward, agent_metrics = await asyncio.wait_for(
             run_episode_fn(policy, model_name, messages, request_kwargs, metadata),
-            timeout=_MAX_ROLLOUT_TIME_S,
+            timeout=MAX_ROLLOUT_TIME_S,
         )
     except asyncio.TimeoutError:
-        logger.warning(f"OpenEnv tbench2 episode exceeded {_MAX_ROLLOUT_TIME_S:.0f}s; " "terminating with reward 0")
+        logger.warning(f"OpenEnv tbench2 episode exceeded {MAX_ROLLOUT_TIME_S:.0f}s; " "terminating with reward 0")
         # eval_report empty: the episode was cancelled before evaluate ever
         # ran, so there is no pytest report to surface.
         return {

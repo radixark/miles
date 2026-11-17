@@ -1,11 +1,12 @@
 from unittest.mock import MagicMock
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args
+from tests.fast.ray.rollout.conftest import FakeInferenceTopologyProvider, make_args
 
 from miles.ray.rollout import rollout_executor as executor_module
 from miles.ray.rollout.rollout_executor import RolloutExecutor
 from miles.rollout.session.types import SessionServerInstance
+from miles.utils.args.component_rollout import InferenceRuntimeImmutState, InferenceRuntimeMutState
 from miles.utils.init_once import InitOnce, InitState
 
 pytestmark = pytest.mark.asyncio
@@ -30,7 +31,9 @@ class TestInitRunsExactlyOnce:
             args=args,
             router_providers=[],
             session_server_provider=MagicMock(),
-            inference_controller_provider=MagicMock(),
+            inference_controller_provider=FakeInferenceTopologyProvider(
+                InferenceRuntimeImmutState(engine_count=1, gpu_count=1)
+            ),
         )
 
         async def resolve_router(args, *, router_providers) -> dict:
@@ -53,6 +56,7 @@ class TestInitRunsExactlyOnce:
             await executor.init()
 
         assert args.session_server_instances == [SessionServerInstance(addr="eval-session:5000")]
+        assert args.inference_runtime_mut_state == InferenceRuntimeMutState(engine_count=1, gpu_count=1)
 
     async def test_a_constructed_executor_reports_itself_uninitialized(self):
         """The constructor the run really uses is what has to leave the guard clear."""
@@ -73,3 +77,39 @@ class TestInitRunsExactlyOnce:
         """An executor process the previous script initialized is about to be replaced, not re-initialized."""
         with pytest.raises(AssertionError, match="stale worker"):
             await _inited_executor().init()
+
+
+def _fresh_executor() -> RolloutExecutor:
+    return RolloutExecutor(
+        args=make_args(),
+        router_providers=[],
+        session_server_provider=None,
+        inference_controller_provider=FakeInferenceTopologyProvider(
+            InferenceRuntimeImmutState(engine_count=1, gpu_count=1)
+        ),
+    )
+
+
+async def test_disposing_an_executor_that_never_initialized_is_a_no_op() -> None:
+    """The driver may dispose it after a startup failure elsewhere, before its init created anything to dispose."""
+    executor = _fresh_executor()
+
+    await executor.dispose()
+
+    assert executor._init_once.state is InitState.NOT_INITED
+
+
+async def test_disposing_an_executor_whose_init_failed_still_sweeps_the_output_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure after init connected the output store must not leak what the run wrote to it."""
+    executor = _fresh_executor()
+    executor._delete_store_refs = MagicMock()
+    swept = []
+    monkeypatch.setattr(executor, "_sweep_output_store", lambda: swept.append(True))
+    with pytest.raises(RuntimeError), executor._init_once.guarding():
+        raise RuntimeError("data source failed to load")
+
+    await executor.dispose()
+
+    assert swept == [True]

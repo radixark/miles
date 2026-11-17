@@ -5,6 +5,7 @@
 import typer
 from tests.e2e.ft.conftest_ft import scenario_random_crash
 from tests.e2e.ft.conftest_ft.cli_options import (
+    FaultTriggersOption,
     ModeOption,
     NumStepsOption,
     RolloutCrashIntervalSecondsOption,
@@ -22,6 +23,7 @@ def run_ci(
     num_steps: NumStepsOption = scenario_random_crash.DEFAULT_NUM_STEPS,
     trainer_crash_interval_seconds: TrainerCrashIntervalSecondsOption = scenario_random_crash.DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS,
     rollout_crash_interval_seconds: RolloutCrashIntervalSecondsOption = scenario_random_crash.DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS,
+    requested_triggers: FaultTriggersOption = None,
 ) -> None:
     scenario_random_crash.run_ci(
         mode,
@@ -30,6 +32,7 @@ def run_ci(
         trainer_crash_interval_seconds=trainer_crash_interval_seconds,
         rollout_crash_interval_seconds=rollout_crash_interval_seconds,
         fully_async=True,
+        requested_triggers=requested_triggers,
     )
 
 

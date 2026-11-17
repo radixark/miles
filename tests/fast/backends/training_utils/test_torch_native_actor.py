@@ -1,13 +1,24 @@
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 import torch
+import torch.distributed as dist
+from tests.ci.ci_register import register_cpu_ci
+from tests.fast.backends.training_utils.loss.loss_test_utils import make_args
+from tests.fast.dist_utils import init_gloo, run_multiprocess
 
+from miles.backends.training_utils.data.rollout import DataIterator
+from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set_parallel_state
 from miles.backends.training_utils.torch_native import actor as base_module
 from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRayActor
 from miles.backends.training_utils.torch_native.offload import _map_optimizer_state
+from miles.backends.training_utils.torch_native.step_runner import LinearStepRunner, StepMetrics
+from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
+from miles.utils.timer import Timer
+
+register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 
 _MODULE = "miles.backends.training_utils.torch_native.actor"
 
@@ -54,6 +65,7 @@ class _Provider(TorchNativeTrainRayActor):
             qkv_format="thd",
             ci_test=False,
             use_sampling_support_replay=False,
+            save_debug_train_data=None,
         )
         self.model_parts = [MagicMock()]
         self.optimizers = [object()]
@@ -75,7 +87,7 @@ def step(monkeypatch):
         FALLTHROUGH="fallthrough",
         REPLAY_BACKWARD="replay_backward",
         stage=lambda name: _recording(stages, name),
-        fill=MagicMock(side_effect=lambda *a, **k: stages.append("fill")),
+        attach=MagicMock(side_effect=lambda *a, **k: stages.append("attach")),
         log_prob_stage=lambda args: "replay_forward",
         rewind=MagicMock(side_effect=lambda: stages.append("rewind")),
         reset=MagicMock(side_effect=lambda: stages.append("reset")),
@@ -95,7 +107,9 @@ def step(monkeypatch):
         "_optimizer_steps",
         lambda self, runner, it, n, rollout_id: calls["steps"].append(runner),
     )
-    monkeypatch.setattr(base_module, "compute_advantages_and_returns", lambda args, data: data.update(adv=True))
+    monkeypatch.setattr(
+        base_module, "compute_advantages_and_returns", lambda args, data, **_kwargs: data.update(adv=True)
+    )
     monkeypatch.setattr(base_module, "log_rollout_data", lambda rid, args, data: None)
     monkeypatch.setattr(base_module, "timer", _noop_timer)
     return calls
@@ -110,7 +124,7 @@ def test_the_rollout_step_runs_ref_then_actor_then_optimizer_under_the_right_sta
     actor._train_core(rollout_id=3, rollout_data=rollout_data)
 
     assert step["stages"] == [
-        "fill",
+        "attach",
         "enter:fallthrough",
         "enter:ref",
         "exit:ref",
@@ -120,12 +134,183 @@ def test_the_rollout_step_runs_ref_then_actor_then_optimizer_under_the_right_sta
         "rewind",
         "enter:replay_backward",
         "exit:replay_backward",
-        "reset",
     ]
     assert step["log_probs"] == [(actor.ref_runner, "ref_"), (actor.runner, "")]
     assert step["steps"] == [actor.runner]
     assert rollout_data == {"ref_log_probs": [1], "log_probs": [1], "adv": True}
-    assert step["replay"].fill.call_args.kwargs["align"] is actor.align_token_side_channel
+    assert step["replay"].attach.call_args.kwargs["align"] is actor.align_token_side_channel
+
+
+@pytest.mark.parametrize("dumps_train_data", [True, False])
+def test_only_a_rank_that_owns_its_rollout_slice_dumps_train_data(step, monkeypatch, dumps_train_data):
+    """torchtitan's CP peers share one rollout, so only one of them writes the dump."""
+    dump = MagicMock()
+    monkeypatch.setattr(base_module.train_dump, "save_debug_train_data", dump)
+    actor = _Provider()
+    actor.dumps_train_data = dumps_train_data
+
+    actor._train_core(rollout_id=3, rollout_data={})
+
+    assert dump.called == dumps_train_data
+
+
+def test_the_step_resets_the_replay_queues_even_when_training_fails(step, monkeypatch):
+    actor = _Provider()
+    actor.output_store = None
+    actor._before_train = lambda: None
+    monkeypatch.setattr(TorchNativeTrainRayActor, "train_parallel_config", None)
+    monkeypatch.setattr(base_module, "get_rollout_data", lambda **kwargs: ({}, nullcontext()))
+    monkeypatch.setattr(base_module, "inverse_timer", _noop_timer)
+
+    def fail(self, rollout_id, rollout_data):
+        raise RuntimeError("the forward failed")
+
+    monkeypatch.setattr(TorchNativeTrainRayActor, "_train_core", fail)
+
+    with pytest.raises(RuntimeError, match="the forward failed"):
+        actor.train(3, rollout_data_ref=object())
+
+    assert step["stages"] == ["reset"]
+
+
+_VOCAB_SIZE = 11
+# per DP rank, (prompt length, response loss mask) per sample; one sample per micro-batch
+_LOCAL_ROLLOUTS = (
+    ((3, [1, 1, 1, 1]), (2, [1, 0, 1]), (4, [1, 1, 1, 1, 1, 1])),
+    ((2, [1, 1]), (5, [0, 0, 0]), (1, [1, 1, 1, 1, 1, 0, 1])),
+)
+_NUM_MICROBATCHES = [2, 1]
+
+
+def _local_samples(rank: int) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    generator = torch.Generator().manual_seed(rank)
+    return [
+        (torch.randint(_VOCAB_SIZE, (prompt_len + len(mask),), generator=generator), torch.tensor(mask))
+        for prompt_len, mask in _LOCAL_ROLLOUTS[rank]
+    ]
+
+
+def _per_token_mean_nll(model: torch.nn.Module, samples: list[tuple[torch.Tensor, torch.Tensor]]) -> torch.Tensor:
+    nll, num_tokens = 0, 0
+    for tokens, mask in samples:
+        response = tokens[-len(mask) :]
+        log_probs = model(tokens)[-len(mask) - 1 : -1].log_softmax(-1).gather(-1, response[:, None]).squeeze(-1)
+        nll = nll - (log_probs * mask).sum()
+        num_tokens += max(int(mask.sum()), 1)
+    return nll / num_tokens
+
+
+def _cpu_batch(data_iterator, keys, *_args, **_kwargs) -> dict:
+    batch = data_iterator.get_next(keys)
+    return {**batch, "unconcat_tokens": batch["tokens"]}
+
+
+def _train_one_dp_rank(rank: int, world_size: int, port: int) -> None:
+    init_gloo(rank, world_size, port=port)
+    trivial = GroupInfo(rank=0, size=1, group=None)
+    dp = GroupInfo(rank=rank, size=world_size, group=dist.group.WORLD)
+    set_parallel_state(
+        ParallelState(
+            intra_dp=dp,
+            intra_dp_cp=dp,
+            cp=trivial,
+            tp=trivial,
+            pp=trivial,
+            ep=trivial,
+            etp=trivial,
+            indep_dp=trivial,
+            is_pp_last_stage=True,
+        )
+    )
+    torch.manual_seed(0)
+    model = torch.nn.Embedding(_VOCAB_SIZE, _VOCAB_SIZE)
+    step_grads = []
+
+    def average_grads_over_dp() -> StepMetrics:
+        # FSDP2's reduce-scatter averages the gradients over DP
+        dist.all_reduce(model.weight.grad)
+        step_grads.append(model.weight.grad / world_size)
+        return StepMetrics(grad_norm=0.0)
+
+    actor = _Provider()
+    actor.args = make_args(
+        loss_type="sft_loss",
+        calculate_per_token_loss=True,
+        use_sampling_support_replay=False,
+        data_pad_size_multiplier=1,
+        ci_test=False,
+    )
+    samples = _local_samples(rank)
+    rollout_data = {
+        "tokens": [tokens for tokens, _ in samples],
+        "loss_masks": [mask for _, mask in samples],
+        "total_lengths": [len(tokens) for tokens, _ in samples],
+        "response_lengths": [len(mask) for _, mask in samples],
+    }
+    runner = LinearStepRunner(
+        lambda batch: model(torch.cat(batch["tokens"])).unsqueeze(0),
+        lambda: model.zero_grad(set_to_none=True),
+        average_grads_over_dp,
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(base_module, "get_batch", _cpu_batch)
+        patch.setattr(base_module, "aggregate_train_losses", lambda losses: {})
+        patch.setattr(base_module, "log_train_step", lambda **kwargs: None)
+        # the gloo ranks have no accelerator to reduce the token counts on
+        patch.setattr(base_module.platforms.current_platform, "current_device", lambda: torch.device("cpu"))
+        actor._optimizer_steps(runner, DataIterator(rollout_data, micro_batch_size=1), _NUM_MICROBATCHES, rollout_id=0)
+
+    samples_per_rank = [_local_samples(r) for r in range(world_size)]
+    expected_grads = []
+    step_start = 0
+    for microbatches in _NUM_MICROBATCHES:
+        step_samples = [
+            sample
+            for rank_samples in samples_per_rank
+            for sample in rank_samples[step_start : step_start + microbatches]
+        ]
+        expected_grads.append(torch.autograd.grad(_per_token_mean_nll(model, step_samples), model.weight)[0])
+        step_start += microbatches
+    torch.testing.assert_close(torch.stack(step_grads), torch.stack(expected_grads))
+
+
+def test_the_compile_warmup_runs_the_step_passes_but_leaves_the_weights_logs_and_timers_alone(step, monkeypatch):
+    """--compile-warmup runs a real step's passes on a synthetic shard, and rollout 0 still trains from the same state."""
+    actor = _Provider()
+    actor.ref_runner = object()
+    actor._ref_context = lambda: _recording(step["stages"], "ref")
+    actor.runner = MagicMock()
+    actor.runner.forward_backward_step.side_effect = lambda batches, loss: Timer().add("actor_train", 5.0) or []
+    log_train_step = MagicMock()
+    monkeypatch.setattr(base_module, "log_train_step", log_train_step)
+    monkeypatch.setattr(base_module, "log_rollout_data", MagicMock(side_effect=AssertionError("rollout logged")))
+    monkeypatch.setattr(base_module, "get_data_iterator", lambda args, parts, data: ([_DataIterator()], [1]))
+    monkeypatch.setattr(base_module, "_count_step_loss_tokens", lambda it, n: [None] * len(n))
+    monkeypatch.setattr(base_module.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(base_module, "response_layout_type", lambda args: SimpleNamespace(sample_device=None))
+    monkeypatch.setattr(base_module, "process_rollout_data_shard", lambda args, shard: {**shard, "processed": True})
+    prepared = []
+    monkeypatch.setattr(
+        base_module, "prepare_rollout_data", lambda args, shard, *, sample_device: prepared.append(shard) or shard
+    )
+    monkeypatch.setattr(Timer(), "timers", {"train_wait": 1.0})
+
+    actor._compile_warmup_passes({"bucket": 2048})
+
+    # the passes scored the processed shard: log-probs and advantages were added to it
+    assert len(prepared) == 1 and prepared[0]["processed"] and prepared[0]["adv"]
+    assert actor.runner.forward_backward_step.call_count == 1
+    actor.runner.apply_step.assert_not_called()
+    log_train_step.assert_not_called()
+    # the gradients are zeroed before the step and freed after it
+    assert actor.runner.zero_grad.call_count == 2
+    assert step["log_probs"] == [(actor.ref_runner, "ref_"), (actor.runner, "")]
+    assert Timer().timers == {"train_wait": 1.0}
+
+
+def test_per_token_loss_gradient_is_the_mean_over_every_token_of_the_step():
+    """Torch-native per-token gradients match Megatron's: the step's DP-global token mean, not a token sum."""
+    run_multiprocess(_train_one_dp_rank)
 
 
 def test_moving_optimizer_state_does_not_grow_state_for_parameters_that_have_none():
@@ -158,10 +343,13 @@ class TestPublishedWeightVersion:
         monkeypatch.setattr(base_module, "print_memory", lambda message: None)
         monkeypatch.setattr(base_module, "clear_memory", lambda: None)
 
-        result = TorchNativeTrainRayActor.update_weights.__wrapped__(actor, info)
+        result = TorchNativeTrainRayActor.update_weights.__wrapped__(
+            actor, info, debug_weight_update_id="update-1", rollout_id=1
+        )
 
         expected_version = previous_version + int(completed)
-        assert result == expected_version
+        assert result.weight_version == expected_version
+        assert result.failed_cell_ids == ()
         assert actor._published_weight_version == expected_version
         actor.weight_updater.update_weights.assert_called_once_with(weight_version=previous_version + 1)
         if expected_version:
@@ -181,7 +369,42 @@ class TestPublishedWeightVersion:
         monkeypatch.setattr(base_module, "print_memory", lambda message: None)
 
         with pytest.raises(RuntimeError, match="transfer failed"):
-            TorchNativeTrainRayActor.update_weights.__wrapped__(actor, SimpleNamespace(rollout_engines=[]))
+            TorchNativeTrainRayActor.update_weights.__wrapped__(
+                actor, SimpleNamespace(rollout_engines=[]), debug_weight_update_id="update-1", rollout_id=1
+            )
 
         assert actor._published_weight_version == 3
+        actor.weight_updater.verify_engine_version.assert_not_called()
+
+
+class TestFailedTargetStopsTraining:
+    @pytest.mark.parametrize("ci_test", [False, True])
+    @pytest.mark.parametrize("failed_cell_ids", [("cell-b",), ("cell-a", "cell-b")])
+    def test_any_failed_target_raises_before_verification(
+        self, monkeypatch: pytest.MonkeyPatch, ci_test: bool, failed_cell_ids: tuple[str, ...]
+    ) -> None:
+        """TorchNative must stop on target failures even when another target succeeds."""
+        actor = _Provider()
+        actor.args.debug_train_only = False
+        actor.args.ci_test = ci_test
+        actor._published_weight_version = 3
+        actor.weight_updater = MagicMock()
+        error = ConnectionError(f"Failed update targets: {failed_cell_ids}")
+        cell_updater = _RolloutCellUpdater(
+            args=SimpleNamespace(ft_components=[]), cell_id=failed_cell_ids[0], api_client=None
+        )
+        actor.weight_updater.update_weights.side_effect = lambda **kwargs: cell_updater.mark_errored(error)
+        monkeypatch.setattr(base_module, "print_memory", lambda message: None)
+
+        with pytest.raises(ConnectionError) as raised:
+            TorchNativeTrainRayActor.update_weights.__wrapped__(
+                actor,
+                SimpleNamespace(rollout_engines=[object(), object()]),
+                debug_weight_update_id="update-4",
+                rollout_id=1,
+            )
+
+        assert raised.value is error
+        assert actor._published_weight_version == 3
+        assert all(cell_id in str(raised.value) for cell_id in failed_cell_ids)
         actor.weight_updater.verify_engine_version.assert_not_called()

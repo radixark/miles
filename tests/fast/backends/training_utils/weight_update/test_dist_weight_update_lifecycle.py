@@ -7,8 +7,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
+from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
+from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils import async_utils
+from miles.utils.args.runtime import TrainerConfig
 
 _UPDATER_MODULE = "miles.backends.training_utils.weight_update.updater"
 _SESSION_MODULE = "miles.backends.training_utils.weight_update.session"
@@ -72,7 +76,11 @@ def _make_engines(
 
 
 def _make_updater(
-    engines: list[_RecordingApiClient], *, pause_generation_mode: str = "retract", begin_sync_result: bool = True
+    engines: list[_RecordingApiClient],
+    *,
+    pause_generation_mode: str = "retract",
+    begin_sync_result: bool = True,
+    weight_update_ft: bool = False,
 ) -> WeightUpdater:
     begin_sync_versions: list[int] = []
 
@@ -86,6 +94,13 @@ def _make_updater(
         is_sender=True,
         group_name="test",
         rollout_engines=engines,
+        cell_updaters_of_cell_id=create_rollout_cell_updaters(
+            args=Namespace(
+                ft_components=["weight_update"] if weight_update_ft else [], update_weight_engine_request_timeout=10.0
+            ),
+            rollout_engines=engines,
+            engine_cell_ids=[f"cell-{index}" for index in range(len(engines))],
+        ),
         required_placement=MagicMock(),
         supports_lora=False,
         begin_sync=begin_sync,
@@ -97,13 +112,14 @@ def _make_updater(
     )
     iterator = MagicMock()
     iterator.iter_hf_weights.return_value = iter([])
-    args = Namespace(
+    args = TrainerConfig.model_construct(
         pause_generation_mode=pause_generation_mode,
         check_lora_weight_equal=False,
-        sglang_speculative_algorithm=None,
+        sglang=SglangConfig(models=[], base_args={"speculative_algorithm": None}),
         enable_mtp_training=False,
         fully_async=False,
         colocate=True,
+        update_weight_transfer_mode="broadcast",
     )
     with patch(f"{_UPDATER_MODULE}.get_weight_transfer_protocol", return_value=protocol):
         return WeightUpdater(
@@ -124,6 +140,8 @@ def _run(updater: WeightUpdater, *, rank: int = 0, weight_version: int = 1) -> N
         patch(f"{_UPDATER_MODULE}.get_gloo_group", return_value=MagicMock()),
     ):
         dist_mock.get_rank.return_value = rank
+        dist_mock.get_world_size.return_value = 1
+        dist_mock.all_gather_object.side_effect = lambda results, value, group: results.__setitem__(0, value)
         return updater.update_weights(weight_version=weight_version)
 
 
@@ -211,61 +229,44 @@ class TestWeightUpdateSessionFrame:
         assert _phases(calls) == ["pause_generation", "begin_weight_update"] + _FINALIZE_PHASES
         assert _kwargs_of(calls, "pause_generation") == [{"mode": "in_place"}] * _ENGINE_COUNT
 
-    def test_a_failed_pause_opens_no_update_session(self):
-        """A session opened on an engine that never paused would load weights under generation."""
+    @pytest.mark.parametrize("failed_method", _PREPARE_PHASES + _FINALIZE_PHASES[:-1])
+    @pytest.mark.parametrize("failed_engine_index", [0, 1])
+    def test_a_failed_cell_stops_while_healthy_cells_complete_the_frame(
+        self, failed_method: str, failed_engine_index: int
+    ) -> None:
+        """A broken cell never advances past its failed phase while healthy cells publish and resume."""
         calls: list[tuple[int, str, dict]] = []
-        updater = _make_updater(_make_engines(calls, failing_method="pause_generation"))
+        updater = _make_updater(
+            _make_engines(calls, failing_method=failed_method, failing_engine_index=failed_engine_index),
+            weight_update_ft=True,
+        )
 
-        with pytest.raises(RuntimeError, match="pause_generation failed"):
+        updater.args = updater.args.model_copy(update={"colocate": False, "update_weight_transfer_mode": "p2p"})
+        _run(updater)
+
+        phases = _PREPARE_PHASES + _FINALIZE_PHASES
+        for engine_index in range(_ENGINE_COUNT):
+            cell = updater.protocol.cell_updaters_of_cell_id[f"cell-{engine_index}"]
+            observed = [name for index, name, _kwargs in calls if index == engine_index]
+            if engine_index == failed_engine_index:
+                assert cell.is_errored
+                assert str(cell._error) == f"{failed_method} failed"
+                assert observed == phases[: phases.index(failed_method)]
+            else:
+                assert not cell.is_errored
+                assert observed == phases
+
+    def test_a_trainer_protocol_failure_still_aborts_before_engine_publication(self) -> None:
+        """A trainer-wide transfer failure must escape without publishing or resuming any engine."""
+        calls: list[tuple[int, str, dict]] = []
+        updater = _make_updater(_make_engines(calls))
+        updater.protocol.finalize.side_effect = RuntimeError("trainer transfer failed")
+
+        with pytest.raises(RuntimeError, match="trainer transfer failed"):
             _run(updater)
 
-        assert _phases(calls) == ["pause_generation"]
-        assert _engines_called(calls, "pause_generation") == [1]
-
-    def test_a_failed_flush_opens_no_update_session(self):
-        """A session opened over a stale cache would serve tokens generated from the old weights."""
-        calls: list[tuple[int, str, dict]] = []
-        updater = _make_updater(_make_engines(calls, failing_method="flush_cache"))
-
-        with pytest.raises(RuntimeError, match="flush_cache failed"):
-            _run(updater)
-
-        assert _phases(calls) == ["pause_generation", "flush_cache"]
-        assert _engines_called(calls, "flush_cache") == [1]
-
-    def test_a_failed_begin_prevents_the_update_from_starting(self):
-        """A begin failure must escape instead of letting weight transfer proceed with a closed engine."""
-        calls: list[tuple[int, str, dict]] = []
-        updater = _make_updater(_make_engines(calls, failing_method="begin_weight_update", failing_engine_index=1))
-
-        with pytest.raises(RuntimeError, match="begin_weight_update failed"):
-            _run(updater)
-
-        assert _phases(calls) == _PREPARE_PHASES
-        assert _engines_called(calls, "begin_weight_update") == [0]
-        updater.protocol.send_bucket.assert_not_called()
-
-    def test_a_failed_session_close_neither_publishes_the_version_nor_resumes(self):
-        """An engine that resumed without a post-load pass would serve packed weights."""
-        calls: list[tuple[int, str, dict]] = []
-        updater = _make_updater(_make_engines(calls, failing_method="end_weight_update"))
-
-        with pytest.raises(RuntimeError, match="end_weight_update failed"):
-            _run(updater)
-
-        assert _phases(calls) == _PREPARE_PHASES + ["end_weight_update"]
-        assert _engines_called(calls, "end_weight_update") == [1]
-
-    def test_a_failed_version_publication_does_not_resume(self):
-        """An engine resuming under a version it never acknowledged would mislabel its samples."""
-        calls: list[tuple[int, str, dict]] = []
-        updater = _make_updater(_make_engines(calls, failing_method="update_weight_version"))
-
-        with pytest.raises(RuntimeError, match="update_weight_version failed"):
-            _run(updater)
-
-        assert _phases(calls) == _PREPARE_PHASES + ["end_weight_update", "update_weight_version"]
-        assert _engines_called(calls, "update_weight_version") == [1]
+        for engine_index in range(_ENGINE_COUNT):
+            assert [name for index, name, _kwargs in calls if index == engine_index] == _PREPARE_PHASES
 
     def test_non_source_rank_issues_no_requests(self):
         """Every rank runs the updater, but only rank 0 may drive the engines."""
@@ -316,3 +317,69 @@ class TestExplicitWeightVersion:
 
         assert result is False
         assert calls == []
+
+
+class TestPreparationFailure:
+    @pytest.mark.parametrize("failed_method", _PREPARE_PHASES)
+    @pytest.mark.parametrize("colocate", [False, True])
+    def test_non_partial_transfers_stop_before_sending(self, failed_method: str, colocate: bool) -> None:
+        """A failed preparation must prevent writes to an engine that is not ready."""
+        updater = _make_updater(_make_engines([], failing_method=failed_method))
+        updater.args = updater.args.model_copy(update={"colocate": colocate})
+        updater._hf_weight_iterator.iter_hf_weights.return_value = iter([{"weight": object()}])
+
+        with pytest.raises(RuntimeError, match=f"{failed_method} failed"):
+            _run(updater)
+
+        updater.protocol.send_bucket.assert_not_called()
+        updater.protocol.finalize.assert_not_called()
+
+
+class TestFinalizationFailure:
+    @pytest.mark.parametrize("failed_method", _FINALIZE_PHASES)
+    def test_non_ft_finalization_errors_abort_the_update(self, failed_method: str) -> None:
+        """A failed close, version publication, or resume must not return a successful update."""
+        updater = _make_updater(_make_engines([], failing_method=failed_method))
+
+        with pytest.raises(RuntimeError, match=f"{failed_method} failed"):
+            _run(updater)
+
+        updater.protocol.after_engines_resumed.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "base_algorithm, group_algorithm, selector", [("EAGLE", None, "target"), (None, "EAGLE", "all")]
+)
+def test_weight_sync_keeps_the_global_selector_with_group_overrides(
+    base_algorithm: str | None, group_algorithm: str | None, selector: str
+) -> None:
+    """Per-group overrides do not change the existing global weight-update selection."""
+    calls: list[tuple[int, str, dict]] = []
+    updater = _make_updater(_make_engines(calls))
+    sglang = SglangConfig(
+        base_args={"speculative_algorithm": base_algorithm},
+        models=[
+            ModelConfig(
+                name="eval",
+                model_path="/model",
+                update_weights=False,
+                server_groups=[
+                    ServerGroupConfig(
+                        worker_type=WorkerType.REGULAR,
+                        num_gpus_per_engine=1,
+                        overrides={"speculative_algorithm": group_algorithm},
+                        needs_offload=False,
+                    )
+                ],
+            )
+        ],
+    )
+    updater.args = updater.args.model_copy(update={"sglang": sglang})
+    updater.protocol.connect = MagicMock()
+    updater.connect_rollout_engines([], None, None, [])
+    assert updater.protocol.connect.call_args.kwargs["selector"] == selector
+
+    _run(updater)
+    begins = [kwargs for _, name, kwargs in calls if name == "begin_weight_update"]
+    assert len(begins) == _ENGINE_COUNT
+    assert all(kwargs["selector"] == selector for kwargs in begins)

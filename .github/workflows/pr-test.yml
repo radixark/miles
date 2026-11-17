@@ -127,7 +127,9 @@ jobs:
           CHANGED_FILES_PATH: ${{ runner.temp }}/changed-files.z
         run: python -m tests.ci.ci_policy
 
-  # Selected CUDA tests need an image after the fast CPU gate completes.
+  # Runs after the fast CPU gate whether or not CUDA tests are selected, so a PR
+  # that changes the image inputs always build-tests its image; `docker-decide`
+  # makes this a no-op when the inputs match the base.
   # Nightly, weekly, and bypass-fastfail preserve their cross-stage exception.
   docker-build:
     needs: [resolve-ci-policy, stage-a-cpu]
@@ -135,7 +137,6 @@ jobs:
       always() && !cancelled() &&
       github.event.action != 'closed' &&
       needs.resolve-ci-policy.result == 'success' &&
-      needs.resolve-ci-policy.outputs.needs_cuda_image == 'true' &&
       (needs.stage-a-cpu.result == 'success' ||
          needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
     # Scoped to this call: a build consumes the one-shot rebuild-ci-image label by
@@ -150,9 +151,13 @@ jobs:
   # Gate on this build alone. Without an `if` the default success() spans the whole
   # dependency closure, so a stage-a-cpu failure skipped this and every GPU stage even
   # on a nightly, whose policy sets bypass_fastfail precisely to keep them running.
+  # Only selected CUDA tests consume the resolved image.
   resolve-ci-image:
-    needs: [docker-build]
-    if: always() && !cancelled() && needs.docker-build.result == 'success'
+    needs: [resolve-ci-policy, docker-build]
+    if: |
+      always() && !cancelled() &&
+      needs.docker-build.result == 'success' &&
+      needs.resolve-ci-policy.outputs.needs_cuda_image == 'true'
     runs-on: ubuntu-latest
     outputs:
       container_image: ${{ steps.resolve.outputs.container_image }}
@@ -259,7 +264,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0]' || '[0,1]') }}
+        partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1]' || '[0,1,2]') }}
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h100", "8gpu"]'
@@ -285,7 +290,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        partition_id: [0, 1, 2, 3]
+        partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1,2,3]' || '[0,1,2,3,4]') }}
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h200", "8gpu"]'

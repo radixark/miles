@@ -34,17 +34,12 @@ _UNLINKED_BEFORE_THE_RULE: frozenset[tuple[str, str]] = frozenset(
         ("tests/e2e/deploy/test_hot_restart_realistic_gsm8k.py", "stage-c-8-gpu-h200"),
         ("tests/e2e/deploy/test_split_deterministic.py", "stage-c-8-gpu-h200"),
         ("tests/e2e/deploy/test_split_multi_policy.py", "stage-c-4-gpu-h200"),
-        ("tests/e2e/ft/test_random_crash__kill_rollout__dp4__colocate.py", "stage-c-8-gpu-h200"),
         ("tests/e2e/ft/test_random_crash__kill_train__dp2_cp2__moe_5layer.py", "stage-c-8-gpu-h200"),
         (
             "tests/e2e/ft/test_random_crash__kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer.py",
             "stage-c-8-gpu-h200",
         ),
-        ("tests/e2e/ft/test_random_crash__kill_train_rollout__dp2_cp2.py", "stage-c-8-gpu-h200"),
-        ("tests/e2e/ft/test_random_crash_fully_async__kill_train_rollout__dp2_cp2.py", "stage-c-8-gpu-h200"),
         ("tests/e2e/ft/test_realistic_gsm8k__kill_train_rollout.py", "stage-c-8-gpu-h200"),
-        ("tests/e2e/ft/test_realistic_gsm8k_fully_async__kill_train_rollout.py", "stage-c-8-gpu-h200"),
-        ("tests/e2e/ft/test_rollout_deterministic__kill_rollout__dp4__colocate.py", "stage-c-8-gpu-h200"),
         ("tests/e2e/ft/test_trainer_deterministic__kill_train__dp2_cp2__moe_5layer.py", "stage-c-8-gpu-h200"),
         (
             "tests/e2e/ft/test_trainer_deterministic__kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer.py",
@@ -69,7 +64,6 @@ _UNLINKED_BEFORE_THE_RULE: frozenset[tuple[str, str]] = frozenset(
         ),
         ("tests/e2e/megatron/model_scripts/test_deepseek_v32_5layer_mxfp8.py", "stage-c-8-gpu-b200"),
         ("tests/e2e/megatron/model_scripts/test_glm5_1_744b_a40b_6layer_lora_ci.py", "stage-c-8-gpu-h200"),
-        ("tests/e2e/megatron/model_scripts/test_glm5_2_744b_a40b_5layer_lora_ci.py", "stage-c-4-gpu-h200"),
         ("tests/e2e/megatron/model_scripts/test_glm5_3_flash_4layer_ci.py", "stage-c-8-gpu-h200"),
         (
             "tests/e2e/megatron/test_glm47_flash/test_amd_spec_mtptrain_r3_bf16_sgl_tp4_meg_tp2pp2.py",

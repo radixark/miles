@@ -1,3 +1,4 @@
+import functools
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -53,6 +54,20 @@ class HfWeightMapping:
                     ), f"HF target binding does not support one-to-many conversion of {checkpoint_name!r}"
                     return target
         return checkpoint_name
+
+
+@functools.cache
+def build_hf_namespace_predicate(hf_checkpoint: str) -> Callable[[str], bool]:
+    """Whether a checkpoint weight name exists in the HF namespace LoRA targets are selected in: the HF
+    model's parameters, or for a custom HF implementation without conversion rules the checkpoint's own
+    modules (compared by module, so quantized suffixes like ``weight_packed`` still match)."""
+    from miles.utils.hf_utils.config import load_hf_config
+
+    mapping = HfWeightMapping.from_config(load_hf_config(hf_checkpoint))
+    if mapping.parameter_names:
+        return lambda name: mapping.model_parameter(name) in mapping.parameter_names
+    modules = frozenset(name.rpartition(".")[0] for name in get_checkpoint_weight_map(hf_checkpoint))
+    return lambda name: name.rpartition(".")[0] in modules
 
 
 def get_checkpoint_weight_map(checkpoint_dir: str | Path) -> dict[str, str]:

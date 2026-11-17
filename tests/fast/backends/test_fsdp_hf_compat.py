@@ -26,13 +26,14 @@ def _adapter(model_type):
     return resolve_arch_adapter(SimpleNamespace(model_type=model_type))
 
 
-def _packed_boundaries(*lengths):
-    """The boundary fields `get_batch` records for documents of these lengths."""
-    cu_seqlens_host = tuple(itertools.accumulate(lengths, initial=0))
+def _packed_boundaries(*lengths, pad=0):
+    """The boundary fields `get_batch` records for documents of these lengths, then its pad segment."""
+    cu_seqlens_host = tuple(itertools.accumulate([*lengths, *([pad] if pad else [])], initial=0))
     return dict(
         cu_seqlens=torch.tensor(cu_seqlens_host, dtype=torch.int32),
         cu_seqlens_host=cu_seqlens_host,
-        max_seqlen=max(lengths),
+        max_seqlen=max(lengths + (pad,)),
+        num_documents=len(lengths),
     )
 
 
@@ -338,7 +339,9 @@ def test_hf_packing_kwargs_match_the_padding_free_collator():
 
     collator = DataCollatorWithFlattening(return_tensors="pt", return_flash_attn_kwargs=True, return_seq_idx=True)
     flattened = collator([{"input_ids": [1, 2, 3]}, {"input_ids": [4, 5]}, {"input_ids": [6, 7, 8, 9]}])
-    kwargs = hf_packing_kwargs(**_packed_boundaries(3, 2, 4))
+    boundaries = _packed_boundaries(3, 2, 4)
+    del boundaries["num_documents"]
+    kwargs = hf_packing_kwargs(**boundaries)
 
     assert set(kwargs) == HF_PACKING_KWARG_NAMES
     for name, value in kwargs.items():
@@ -349,13 +352,96 @@ def test_hf_packing_kwargs_match_the_padding_free_collator():
             assert value == expected, name
 
 
-def test_only_gated_deltanet_archs_pass_packing_kwargs():
+@pytest.mark.parametrize("pad", [0, 1, 7])
+def test_attention_boundaries_are_the_ones_hf_derives_from_position_ids(pad):
+    """True-on-policy's bitwise match relies on HF's own boundaries; a max_length below a segment's length
+    would leave its rows unwritten, as a 7-token pad tail kept as one segment would."""
+    from transformers.modeling_flash_attention_utils import prepare_fa_kwargs_from_position_ids
+
+    from miles.backends.fsdp_utils.adaptations.packing import hf_attention_packing_kwargs
+
+    boundaries = _packed_boundaries(3, 2, pad=pad)
+    del boundaries["max_seqlen"]
+    kwargs = hf_attention_packing_kwargs(**boundaries)
+    position_ids = torch.tensor([[0, 1, 2, 0, 1, *([0] * pad)]])
+    (hf_cu_seqlens, _), (hf_max_length, _) = prepare_fa_kwargs_from_position_ids(position_ids)
+
+    assert kwargs["cu_seq_lens_q"].tolist() == hf_cu_seqlens.tolist()
+    assert type(kwargs["max_length_q"]) is int and kwargs["max_length_q"] == int(hf_max_length) == 3
+
+
+def test_each_arch_passes_the_packing_kwargs_its_modeling_reads():
     boundaries = _packed_boundaries(2, 3)
     for model_type in ("qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text", "qwen3_next"):
         assert "seq_idx" in _adapter(model_type).packing_kwargs(**boundaries), model_type
+    # stock HF attention: varlen boundaries, max_length an int
+    for model_type in ("glm4_moe_lite", "qwen3", "qwen3_moe", "qwen3_vl"):
+        kwargs = _adapter(model_type).packing_kwargs(**boundaries)
+        assert set(kwargs) == {"cu_seq_lens_q", "cu_seq_lens_k", "max_length_q", "max_length_k"}, model_type
+        assert type(kwargs["max_length_q"]) is int and kwargs["max_length_q"] == 3, model_type
     # NemotronH resets through its own patch; other archs (including remote code) keep their stock inputs.
-    for model_type in ("nemotron_h", "glm4_moe_lite", "qwen3", "qwen3_vl", "some_remote_lm"):
+    for model_type in ("nemotron_h", "some_remote_lm"):
         assert _adapter(model_type).packing_kwargs(**boundaries) == {}, model_type
+
+
+def test_qwen3_attention_receives_the_packed_boundaries(monkeypatch):
+    """Without them HF re-derives the boundaries per layer and hands FlashAttention-4 a tensor max_length."""
+    from transformers import AttentionInterface, Qwen3Config
+    from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
+
+    seen = []
+
+    def attention_stand_in(module, query, key, value, attention_mask, scaling=None, **kwargs):
+        seen.append(kwargs)
+        out = torch.nn.functional.scaled_dot_product_attention(query, key, value, scale=scaling, enable_gqa=True)
+        return out.transpose(1, 2), None
+
+    # not a "flash" name, which transformers would resolve to a real FlashAttention kernel
+    monkeypatch.setitem(AttentionInterface._global_mapping, "attention_stand_in", attention_stand_in)
+    cfg = Qwen3Config(
+        vocab_size=64,
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=8,
+    )
+    cfg._attn_implementation = "attention_stand_in"
+    model = Qwen3ForCausalLM(cfg).eval()
+
+    with torch.no_grad():
+        model(
+            input_ids=torch.arange(5).view(1, 5),
+            position_ids=torch.tensor([[0, 1, 2, 0, 1]]),
+            **_adapter("qwen3").packing_kwargs(**_packed_boundaries(3, 2)),
+        )
+
+    assert len(seen) == cfg.num_hidden_layers
+    for kwargs in seen:
+        assert kwargs["cu_seq_lens_q"].tolist() == [0, 3, 5]
+        assert type(kwargs["max_length_q"]) is int and kwargs["max_length_q"] == 3
+
+
+def test_qwen3_vl_keeps_packing_kwargs_out_of_its_vision_tower():
+    """The text rows' packing kwargs must not reach the vision tower."""
+    calls = []
+
+    class Tower(torch.nn.Module):
+        def forward(self, pixels, **kwargs):
+            calls.append(kwargs)
+
+    model = torch.nn.Module()
+    model.model = torch.nn.Module()
+    model.model.visual = Tower()
+    adapter = _adapter("qwen3_vl")
+    adapter.patch_model(model, None)
+    wrapped = model.model.visual.forward
+    adapter.patch_model(model, None)
+    assert model.model.visual.forward is wrapped  # idempotent across the actor and ref model
+
+    model.model.visual(None, grid_thw=1, **adapter.packing_kwargs(**_packed_boundaries(3, 2)))
+    assert calls == [{"grid_thw": 1}]
 
 
 _TINY_QWEN3_5_TEXT = dict(
@@ -374,31 +460,32 @@ _TINY_QWEN3_5_TEXT = dict(
 )
 
 
-def test_gated_deltanet_kernels_receive_packed_boundaries():
+def test_gated_deltanet_kernels_receive_packed_boundaries(monkeypatch):
     # HF's Qwen3.5 forwards the padding-free kwargs to its GatedDeltaNet kernels; no patch in between.
     import torch.nn.functional as F
     from transformers import Qwen3_5TextConfig
+    from transformers.models.qwen3_5 import modeling_qwen3_5
     from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM
 
     cfg = Qwen3_5TextConfig(**_TINY_QWEN3_5_TEXT)
     cfg._attn_implementation = "eager"
     model = Qwen3_5ForCausalLM(cfg).eval()
     _adapter("qwen3_5_text").patch_model(model, None)  # text-only: no vision tower to guard
-    gdn = model.model.layers[0].linear_attn
     seen = {}
 
-    def conv(x, weight, bias, activation, seq_idx=None):
+    def conv(x, weight, bias, activation=None, seq_idx=None, **kwargs):
         seen["seq_idx"] = seq_idx
         return F.silu(F.conv1d(F.pad(x, (weight.shape[-1] - 1, 0)), weight.unsqueeze(1), bias, groups=x.shape[1]))
 
-    chunk = gdn.chunk_gated_delta_rule
+    chunk = modeling_qwen3_5.torch_chunk_gated_delta_rule
 
     def chunk_rule(*args, cu_seqlens=None, **kwargs):
         seen["cu_seqlens"] = cu_seqlens
         return chunk(*args, **kwargs)
 
-    gdn.causal_conv1d_fn = conv
-    gdn.chunk_gated_delta_rule = chunk_rule
+    # The GatedDeltaNet forward calls these module-level kernels, which transformers resolves at import.
+    monkeypatch.setattr(modeling_qwen3_5, "causal_conv1d_fn", conv)
+    monkeypatch.setattr(modeling_qwen3_5, "torch_chunk_gated_delta_rule", chunk_rule)
 
     packing_kwargs = _adapter("qwen3_5_text").packing_kwargs(**_packed_boundaries(3, 2))
     with torch.no_grad():
@@ -409,16 +496,16 @@ def test_gated_deltanet_kernels_receive_packed_boundaries():
 
 
 def test_qwen3_5_vision_tower_never_sees_language_model_packing_kwargs(monkeypatch):
-    """HF hands the language model's kwargs to the vision tower, whose flash attention sets its own
-    `cu_seq_lens_q`; without the guard a packed batch with an image raises."""
+    """HF hands the language model's kwargs to the vision tower. Its flash attention overrides the
+    boundary kwargs with its own, but the rest (`seq_idx`) still arrives unless the guard drops it."""
     import torch.nn.functional as F
     from transformers import AttentionInterface, Qwen3_5Config
     from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForConditionalGeneration
 
-    vision_cu_seqlens = []
+    vision_calls = []
 
     def flash_stand_in(module, query, key, value, attention_mask, scaling=None, cu_seq_lens_q=None, **kwargs):
-        vision_cu_seqlens.append(cu_seq_lens_q.tolist())
+        vision_calls.append({"cu_seq_lens_q": cu_seq_lens_q.tolist(), **kwargs})
         return F.scaled_dot_product_attention(query, key, value, scale=scaling).transpose(1, 2), None
 
     # a "flash" name sends the vision tower down its varlen branch without needing flash-attn on CPU
@@ -456,8 +543,8 @@ def test_qwen3_5_vision_tower_never_sees_language_model_packing_kwargs(monkeypat
         **adapter.packing_kwargs(**_packed_boundaries(3, 4)),
     )
     with torch.no_grad():
-        with pytest.raises(TypeError, match="multiple values for keyword argument 'cu_seq_lens_q'"):
-            model(**inputs)
+        model(**inputs)
+        assert "seq_idx" in vision_calls.pop()  # unguarded, the text rows' document ids reach the tower
 
         adapter.patch_model(model, None)
         wrapped = model.model.visual.forward
@@ -465,7 +552,9 @@ def test_qwen3_5_vision_tower_never_sees_language_model_packing_kwargs(monkeypat
         assert model.model.visual.forward is wrapped  # idempotent across the actor and ref model
         model(**inputs)
 
-    assert vision_cu_seqlens == [[0, 4]]  # the image's own patch boundaries, not the packed text rows
+    (call,) = vision_calls
+    assert call["cu_seq_lens_q"] == [0, 4]  # the image's own patch boundaries, not the packed text rows
+    assert "seq_idx" not in call
 
 
 import transformers
@@ -515,3 +604,19 @@ def test_text_only_remote_code_routes_to_causal_lm():
 
 def test_native_causal_lm_resolves_concrete_class():
     assert _model_cls(model_type="qwen3") is transformers.Qwen3ForCausalLM
+
+
+@pytest.mark.skip(reason="Snapshot testing is disabled by op48-277")
+def test_first_training_snapshot_is_recorded_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FSDP records its trainer configuration only at the first training entry."""
+    from miles.backends.fsdp_utils import actor as actor_module
+
+    actor = object.__new__(FSDPTrainRayActor)
+    actor.args = object()
+    actor.role = "actor"
+    actor._config_snapshot_train_recorded = False
+    recorded = []
+    monkeypatch.setattr(actor_module.ConfigSnapshotDumper, "dump", lambda **values: recorded.append(values))
+    actor._before_train()
+    actor._before_train()
+    assert recorded == [{"stage": "train_first_step", "config": {"args": actor.args, "role": "actor"}}]

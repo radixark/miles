@@ -6,12 +6,13 @@ import os
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 import zipfile
 from pathlib import Path
 
 import pytest
 import yaml
-from tests.ci.ci_policy import resolve_workflow_inputs
 from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=2, suite="stage-a-cpu", labels=[])
@@ -106,6 +107,36 @@ def archive_request(request, filename="request.json"):
     return data.getvalue()
 
 
+def test_api_paginates_without_forwarding_the_token(monkeypatch):
+    monkeypatch.setenv("GH_TOKEN", "secret")
+    first = f"{HANDLER.API_URL}/repos/{REPOSITORY}/actions/runs?per_page=1"
+    pages = {
+        first: (
+            b'{"workflow_runs": [1]}',
+            '<https://api.github.com/page2>; rel="next", <https://api.github.com/page2>; rel="last"',
+        ),
+        "https://api.github.com/page2": (b'{"workflow_runs": [2]}', ""),
+    }
+    requests = []
+
+    def urlopen(request, timeout):
+        requests.append(request)
+        body, link = pages[request.full_url]
+        response = io.BytesIO(body)
+        response.headers = {"Link": link}
+        return response
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    assert HANDLER.api(f"repos/{REPOSITORY}/actions/runs?per_page=1", collection="workflow_runs") == [1, 2]
+    assert [request.full_url for request in requests] == [first, "https://api.github.com/page2"]
+    assert all(request.unredirected_hdrs == {"Authorization": "Bearer secret"} for request in requests)
+    # Artifact downloads redirect to blob storage; the redirected request must not carry the token.
+    redirected = urllib.request.HTTPRedirectHandler().redirect_request(
+        requests[0], None, 302, "Found", {}, "https://blob.example/artifact.zip"
+    )
+    assert not redirected.has_header("Authorization")
+
+
 def test_request_is_bounded_data(identity):
     request, _, _ = identity
     assert HANDLER.parse_request(archive_request(request)) == request
@@ -138,12 +169,14 @@ def test_request_archive_cannot_select_another_run(monkeypatch, identity):
         "api",
         lambda *args, **kwargs: [dict(name="fork-ci-image-123-2", expired=False, size_in_bytes=1000, id=55)],
     )
-    monkeypatch.setattr(subprocess, "check_output", lambda *args, **kwargs: archive_request(dict(request, run_id=124)))
+    monkeypatch.setattr(
+        HANDLER, "open_api", lambda *args, **kwargs: io.BytesIO(archive_request(dict(request, run_id=124)))
+    )
     with pytest.raises(ValueError, match="another attempt"):
         HANDLER.resolve_request(dict(workflow_run=run), REPOSITORY)
 
 
-def stub_api(monkeypatch, identity, *, cpu="success", latest=123):
+def stub_api(monkeypatch, identity, *, cpu="success", newer=None):
     request, run, pr = identity
     calls = []
 
@@ -156,7 +189,7 @@ def stub_api(monkeypatch, identity, *, cpu="success", latest=123):
         if path.endswith("/actions/workflows/pr-test.yml"):
             return dict(id=99)
         if "/runs?" in path:
-            return [dict(run, id=latest)]
+            return [run] + ([dict(run, id=124, **newer)] if newer is not None else [])
         if "/jobs?filter=all" in path:
             return [dict(name=name, conclusion=cpu, run_attempt=1) for name in HANDLER.CPU_JOBS]
         raise AssertionError(path)
@@ -191,10 +224,17 @@ def test_partial_rerun_failure_overrides_old_cpu_success(monkeypatch, identity):
         HANDLER.current_request(identity[0], REPOSITORY)
 
 
-def test_rejects_superseded_runs(monkeypatch, identity):
-    stub_api(monkeypatch, identity, latest=124)
+@pytest.mark.parametrize("newer", [dict(status="queued"), dict(status="completed", conclusion="action_required")])
+def test_rejects_superseded_runs(monkeypatch, identity, newer):
+    stub_api(monkeypatch, identity, newer=newer)
     with pytest.raises(ValueError, match="superseded"):
         HANDLER.current_request(identity[0], REPOSITORY)
+
+
+def test_cancelled_newer_run_does_not_supersede(monkeypatch, identity):
+    # Two label events at once: the higher-numbered run entered the concurrency group first and was cancelled.
+    stub_api(monkeypatch, identity, newer=dict(status="completed", conclusion="cancelled"))
+    assert HANDLER.current_request(identity[0], REPOSITORY) == identity[2]
 
 
 @pytest.fixture
@@ -215,16 +255,7 @@ def source(tmp_path, identity):
     git("commit", "-qm", "base")
     base = git("rev-parse", "HEAD")
     (root / "docker/Dockerfile").write_text("FROM scratch\nLABEL pin=fixed\n")
-    (root / "tests/ci").mkdir(parents=True)
-    (root / "tests/ci/labels.py").write_text(
-        "raise RuntimeError('PR imports must not execute')\n"
-        "KNOWN_LABELS: dict[str, str] = {'megatron': 'Megatron tests'}\n"
-    )
-    (root / "tests/e2e").mkdir(parents=True)
-    (root / "tests/e2e/test_new.py").write_text(
-        "raise RuntimeError('PR imports must not execute')\nregister_cuda_ci(est_time=1, suite='stage-b-2-gpu-h200', labels=['megatron'], hardware=['hopper'])\n"
-    )
-    git("add", "docker/Dockerfile", "tests")
+    git("add", "docker/Dockerfile")
     git("commit", "-qm", "fork")
     head = git("rev-parse", "HEAD")
     merge = git("commit-tree", "HEAD^{tree}", "-p", base, "-p", head, "-m", "merge")
@@ -232,17 +263,12 @@ def source(tmp_path, identity):
     request, _, pr = copy.deepcopy(identity)
     request.update(merge_sha=merge, inputs_hash=HANDLER.image_inputs.compute("HEAD", root=root))
     pr["head"]["sha"] = head
-    policy = resolve_workflow_inputs("pull_request", "", '["run-ci-image"]')
-    return root, request, pr, policy
+    return root, request, pr
 
 
-def test_validates_new_pr_registration_without_executing_source(source):
-    root, request, pr, policy = source
-    HANDLER.validate_source(request, pr, policy, root)
-    for labels in ([], ["run-ci"], ["run-ci-unknown"], ["run-on-blackwell"]):
-        cpu_policy = resolve_workflow_inputs("pull_request", "", json.dumps(labels))
-        with pytest.raises(ValueError, match="No CUDA tests"):
-            HANDLER.validate_source(request, pr, cpu_policy, root)
+def test_validates_changed_inputs_without_executing_source(source):
+    root, request, pr = source
+    HANDLER.validate_source(request, pr, root)
 
 
 @pytest.mark.parametrize(
@@ -253,8 +279,8 @@ def test_validates_new_pr_registration_without_executing_source(source):
         (["run-ci-image", "bypass-fastfail"], "failure"),
     ],
 )
-def test_label_removal_preserves_source_selection_and_cpu_gate(monkeypatch, identity, source, labels, cpu):
-    root, request, pr, _ = source
+def test_label_removal_preserves_source_cpu_gate(monkeypatch, identity, source, labels, cpu):
+    root, request, pr = source
     request["labels"] = labels
     pr["labels"] = []
     run = copy.deepcopy(identity[1])
@@ -265,10 +291,8 @@ def test_label_removal_preserves_source_selection_and_cpu_gate(monkeypatch, iden
     )
     stub_api(monkeypatch, (request, run, pr), cpu=cpu)
     parsed = HANDLER.parse_request(archive_request(request))
-    current_pr, fork_policy = HANDLER.current_request(parsed, REPOSITORY)
-    caller_policy = resolve_workflow_inputs("pull_request", "", json.dumps(labels))
-    assert fork_policy == caller_policy
-    HANDLER.validate_source(parsed, current_pr, fork_policy, root)
+    current_pr = HANDLER.current_request(parsed, REPOSITORY)
+    HANDLER.validate_source(parsed, current_pr, root)
 
 
 def test_live_bypass_label_cannot_change_source_cpu_gate(monkeypatch, identity):
@@ -285,29 +309,28 @@ def test_live_bypass_label_cannot_change_source_cpu_gate(monkeypatch, identity):
         "docker/build.py",
         ".dockerignore",
         "docker/Dockerfile.dockerignore",
-        "tests/e2e/test_new.py",
     ],
 )
 def test_source_symlinks_cannot_reach_host_files(source, tmp_path, path):
-    root, request, pr, policy = source
+    root, request, pr = source
     target = tmp_path / "outside"
     target.write_text("host data")
     link = root / path
     link.unlink(missing_ok=True)
     link.symlink_to(target)
     with pytest.raises(Exception, match="symlink"):
-        HANDLER.validate_source(request, pr, policy, root)
+        HANDLER.validate_source(request, pr, root)
 
 
 def test_context_hash_must_match_frozen_source(source):
-    root, request, pr, policy = source
+    root, request, pr = source
     (root / "docker/Dockerfile").write_text("FROM scratch\nLABEL pin=other\n")
     with pytest.raises(ValueError, match="Build context differs"):
-        HANDLER.validate_source(request, pr, policy, root)
+        HANDLER.validate_source(request, pr, root)
 
 
 def test_oci_build_uses_trusted_driver_and_supplied_context(source, monkeypatch):
-    root, request, _, _ = source
+    root, request, _ = source
     spec = importlib.util.spec_from_file_location("build", ROOT / "docker/build.py")
     build = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(build)
@@ -343,20 +366,20 @@ def test_publication_requires_matching_hash_on_both_architectures(identity, monk
 
 @pytest.mark.parametrize("force,remove_fails", [(False, False), (True, False), (True, True)])
 def test_publication_only_consumes_the_original_force_request(source, monkeypatch, capsys, force, remove_fails):
-    root, request, pr, policy = source
+    root, request, pr = source
     request["force_rebuild"] = force
     pr["labels"].append(dict(name="rebuild-ci-image"))
     monkeypatch.setenv("GITHUB_REPOSITORY", REPOSITORY)
     monkeypatch.setenv("REQUEST_JSON", json.dumps(request))
     monkeypatch.setattr(sys, "argv", ["fork_ci_image.py", "finish", "--source", str(root)])
-    monkeypatch.setattr(HANDLER, "current_request", lambda *args: (pr, policy))
+    monkeypatch.setattr(HANDLER, "current_request", lambda *args: pr)
     monkeypatch.setattr(HANDLER, "verify_published", lambda request: None)
     mutations = []
 
     def api(path, *, method):
         mutations.append((path, method))
         if remove_fails:
-            raise subprocess.CalledProcessError(1, ["gh", "api"])
+            raise urllib.error.HTTPError(path, 404, "Not Found", None, None)
 
     monkeypatch.setattr(HANDLER, "api", api)
     HANDLER.main()
@@ -368,6 +391,7 @@ def test_observer_waits_past_an_old_attempt_job(monkeypatch, identity):
     request, run, _ = identity
     responses = iter([None, request])
     sleeps = []
+    monkeypatch.setattr(HANDLER, "find_publisher", lambda *args: None)
     monkeypatch.setattr(HANDLER, "resolve_request", lambda *args: next(responses))
     monkeypatch.setattr(HANDLER.time, "sleep", sleeps.append)
     monkeypatch.setattr(
@@ -377,7 +401,7 @@ def test_observer_waits_past_an_old_attempt_job(monkeypatch, identity):
             [dict(name="docker-build / docker-build", run_attempt=1, status="completed")] if "/jobs?" in path else run
         ),
     )
-    assert HANDLER.wait_request(dict(workflow_run=run), REPOSITORY) == request
+    assert HANDLER.wait_request(dict(workflow_run=run), REPOSITORY, 999) == request
     assert sleeps == [30]
 
 
@@ -389,6 +413,7 @@ def test_observer_stops_without_a_request(monkeypatch, identity, ended):
         current["status"] = "completed"
     elif ended == "new-attempt":
         current["run_attempt"] += 1
+    monkeypatch.setattr(HANDLER, "find_publisher", lambda *args: None)
     monkeypatch.setattr(HANDLER, "resolve_request", lambda *args: None)
     monkeypatch.setattr(
         HANDLER,
@@ -400,7 +425,7 @@ def test_observer_stops_without_a_request(monkeypatch, identity, ended):
         ),
     )
     monkeypatch.setattr(HANDLER.time, "sleep", lambda seconds: pytest.fail("No request can arrive"))
-    assert HANDLER.wait_request(dict(workflow_run=run), REPOSITORY) is None
+    assert HANDLER.wait_request(dict(workflow_run=run), REPOSITORY, 999) is None
 
 
 def publisher_run(**updates):
@@ -452,13 +477,22 @@ def test_waiter_correlates_publisher_and_waits_for_build_completion(monkeypatch,
     calls, sleeps = stub_publisher(
         monkeypatch,
         identity,
-        listings=[wrong, [publisher_run(status="in_progress", conclusion=None)]],
+        # A later duplicate trigger (id 1000) must not displace the earliest publisher.
+        listings=[wrong, [publisher_run(id=1000), publisher_run(status="in_progress", conclusion=None)]],
         result=publisher_run(),
     )
     HANDLER.wait_build(request, REPOSITORY)
     assert sleeps == [30, 30]
     assert any("/999/jobs?" in path for path in calls)
     assert all("/rerun" not in path for path in calls)
+
+
+@pytest.mark.parametrize("run_id, publishes", [(999, True), (1000, False)])
+def test_only_the_earliest_trigger_of_an_attempt_publishes(monkeypatch, identity, run_id, publishes):
+    request, run, _ = identity
+    stub_publisher(monkeypatch, identity, listings=[[publisher_run(id=1000), publisher_run()]])
+    monkeypatch.setattr(HANDLER, "resolve_request", lambda *args: request)
+    assert HANDLER.wait_request(dict(workflow_run=run), REPOSITORY, run_id) == (request if publishes else None)
 
 
 @pytest.mark.parametrize("conclusion", ["failure", "cancelled", "timed_out"])
@@ -561,6 +595,10 @@ def test_workflow_preserves_gate_and_build_publish_boundary():
         < names.index("Remove the builder before introducing publishing credentials")
         < names.index("Login to Docker Hub for publication")
     )
+    # docker-build runners cannot apt-install skopeo; publication runs a digest-pinned skopeo image.
+    publish = next(step for step in steps if step.get("name") == "Publish the PR image without executing it")
+    assert "quay.io/skopeo/stable:" in publish["run"] and "@sha256:" in publish["run"]
+    assert all("apt-get" not in step.get("run", "") or "skopeo" not in step["run"] for step in steps)
     buildx = next(step for step in steps if step.get("id") == "buildx")
     assert buildx["with"]["buildkitd-flags"] == "--oci-worker-net=bridge"
     assert "network=host" not in buildx["with"]["driver-opts"]

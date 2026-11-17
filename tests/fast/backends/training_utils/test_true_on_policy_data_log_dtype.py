@@ -1,6 +1,7 @@
 from argparse import Namespace
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from miles.backends.training_utils.data import context_parallel
@@ -10,17 +11,26 @@ from miles.backends.training_utils.metrics import log_utils
 
 def test_true_on_policy_rollout_logprob_dtype_follows_training_precision():
     assert (
-        data_utils._rollout_logprob_dtype(Namespace(true_on_policy_mode=True, bf16=True, fp16=False)) is torch.bfloat16
+        data_utils._rollout_logprob_dtype(
+            Namespace(true_on_policy_mode=True, backend=Namespace(bf16=True, fp16=False))
+        )
+        is torch.bfloat16
     )
     assert (
-        data_utils._rollout_logprob_dtype(Namespace(true_on_policy_mode=True, bf16=False, fp16=True)) is torch.float16
+        data_utils._rollout_logprob_dtype(
+            Namespace(true_on_policy_mode=True, backend=Namespace(bf16=False, fp16=True))
+        )
+        is torch.float16
     )
     assert (
-        data_utils._rollout_logprob_dtype(Namespace(true_on_policy_mode=False, bf16=True, fp16=False)) is torch.float32
+        data_utils._rollout_logprob_dtype(
+            Namespace(true_on_policy_mode=False, backend=Namespace(bf16=True, fp16=False))
+        )
+        is torch.float32
     )
 
 
-def test_true_on_policy_log_checker_passes_when_values_and_dtype_match(monkeypatch):
+def _log_true_on_policy_rollout(monkeypatch, *, rollout_top_logprobs_num: int = 0) -> dict:
     captured = {}
     parallel_state = SimpleNamespace(
         tp=SimpleNamespace(rank=0),
@@ -52,6 +62,7 @@ def test_true_on_policy_log_checker_passes_when_values_and_dtype_match(monkeypat
             ci_disable_logprobs_checker=False,
             trainer_model_id=None,
             true_on_policy_mode=True,
+            rollout_top_logprobs_num=rollout_top_logprobs_num,
             qkv_format="thd",
             log_multi_turn=False,
             log_passrate=False,
@@ -59,8 +70,18 @@ def test_true_on_policy_log_checker_passes_when_values_and_dtype_match(monkeypat
         ),
         rollout_data,
     )
+    return captured["log_dict"]
 
-    assert captured["log_dict"]["log_probs"] == captured["log_dict"]["rollout_log_probs"]
+
+def test_true_on_policy_log_checker_passes_when_values_and_dtype_match(monkeypatch):
+    log_dict = _log_true_on_policy_rollout(monkeypatch)
+    assert log_dict["log_probs"] == log_dict["rollout_log_probs"]
+
+
+def test_true_on_policy_top_k_check_fails_when_the_actor_skipped_it(monkeypatch):
+    # rollout top-k candidates were recorded, but no actor emitted the top-k metrics (e.g. a backend without the check)
+    with pytest.raises(AssertionError, match="did not score the rollout top-k candidates"):
+        _log_true_on_policy_rollout(monkeypatch, rollout_top_logprobs_num=128)
 
 
 def test_sampling_mask_csr_payload_is_not_averaged_as_a_metric(monkeypatch):

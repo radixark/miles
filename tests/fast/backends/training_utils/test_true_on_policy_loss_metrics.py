@@ -3,12 +3,15 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from tests.fast.fixtures.args_fixtures import ConfigNamespace
 
 from miles.backends.training_utils.loss.hub import losses as loss_utils
+from miles.backends.training_utils.loss.hub import response_layout as layout_utils
+from miles.utils.args.custom_function import CustomFunctionConfig
 
 
 def _make_args(*, use_rollout_logprobs: bool) -> Namespace:
-    return Namespace(
+    return ConfigNamespace(
         use_rollout_logprobs=use_rollout_logprobs,
         use_sampling_support_replay=False,
         skip_actor_forward_only=False,
@@ -18,9 +21,11 @@ def _make_args(*, use_rollout_logprobs: bool) -> Namespace:
         use_tis=False,
         eps_clip=0.2,
         eps_clip_high=0.2,
+        eps_clip_c=None,
+        dump_details=None,
         custom_tis_function_path=None,
         custom_pg_loss_reducer_function_path=None,
-        calculate_per_token_loss=False,
+        backend=Namespace(calculate_per_token_loss=False),
         qkv_format="thd",
         entropy_coef=0.0,
         use_kl_loss=False,
@@ -49,12 +54,12 @@ def _make_batch(*, old_log_probs: torch.Tensor, rollout_log_probs: torch.Tensor)
 
 def _patch_single_rank_loss_helpers(monkeypatch):
     monkeypatch.setattr(
-        loss_utils,
+        layout_utils,
         "get_local_response_loss_masks",
         lambda total_lengths, response_lengths, loss_masks, qkv_format="thd", max_seq_lens=None: loss_masks,
     )
     monkeypatch.setattr(
-        loss_utils,
+        layout_utils,
         "compute_ess_ratio_contribution",
         lambda *, ppo_kl, **kwargs: ppo_kl.new_tensor(1.0),
     )
@@ -97,7 +102,7 @@ def test_train_rollout_logprob_abs_diff_uses_trainer_scores(
     )
     _patch_single_rank_loss_helpers(monkeypatch)
     monkeypatch.setattr(
-        loss_utils,
+        layout_utils,
         "get_log_probs_and_entropy",
         lambda *args, **kwargs: {
             "log_probs": [train_log_probs.clone()],
@@ -150,7 +155,7 @@ def test_policy_loss_only_backpropagates_through_current_policy(monkeypatch, use
         return {"log_probs": [logits.flatten()[:2].sin()]}
 
     monkeypatch.setattr(
-        loss_utils,
+        layout_utils,
         "get_log_probs_and_entropy",
         fake_get_log_probs_and_entropy,
     )
@@ -189,7 +194,7 @@ def test_kl_loss_does_not_backpropagate_through_reference_scores(monkeypatch):
     )
     _patch_single_rank_loss_helpers(monkeypatch)
     monkeypatch.setattr(
-        loss_utils,
+        layout_utils,
         "get_log_probs_and_entropy",
         lambda logits, *args, **kwargs: {"log_probs": [logits.flatten()[:2].sin()]},
     )
@@ -210,7 +215,7 @@ def test_kl_loss_does_not_backpropagate_through_reference_scores(monkeypatch):
 def test_custom_tis_can_ignore_missing_trainer_scored_log_probs(monkeypatch):
     args = _make_args(use_rollout_logprobs=True)
     args.use_tis = True
-    args.custom_tis_function_path = "tests.custom_tis"
+    args.custom_tis_function_path = CustomFunctionConfig(path="tests.custom_tis")
     batch = _make_batch(
         old_log_probs=torch.tensor([0.10, 0.20]),
         rollout_log_probs=torch.tensor([0.12, 0.22]),
@@ -224,7 +229,7 @@ def test_custom_tis_can_ignore_missing_trainer_scored_log_probs(monkeypatch):
     )
     _patch_single_rank_loss_helpers(monkeypatch)
     monkeypatch.setattr(
-        loss_utils,
+        layout_utils,
         "get_log_probs_and_entropy",
         lambda logits, *args, **kwargs: {"log_probs": [logits.flatten()[:2].sin()]},
     )
@@ -236,7 +241,7 @@ def test_custom_tis_can_ignore_missing_trainer_scored_log_probs(monkeypatch):
 
     monkeypatch.setattr(loss_utils, "load_function", lambda path: custom_tis)
     monkeypatch.setattr(
-        loss_utils,
+        layout_utils,
         "get_sum_of_sample_mean",
         lambda *args, **kwargs: lambda tensor: tensor.float().mean(),
     )
@@ -272,7 +277,7 @@ def test_zero_weighted_entropy_nan_does_not_poison_policy_loss(monkeypatch):
         assert kwargs["with_entropy"] is False
         return {"log_probs": [torch.tensor([0.10, 0.20], dtype=torch.float32)]}
 
-    monkeypatch.setattr(loss_utils, "get_log_probs_and_entropy", fake_get_log_probs_and_entropy)
+    monkeypatch.setattr(layout_utils, "get_log_probs_and_entropy", fake_get_log_probs_and_entropy)
     monkeypatch.setattr(
         loss_utils,
         "compute_policy_loss",
@@ -310,7 +315,7 @@ def test_zero_weighted_kl_nan_does_not_poison_policy_loss(monkeypatch):
     )
     _patch_single_rank_loss_helpers(monkeypatch)
     monkeypatch.setattr(
-        loss_utils,
+        layout_utils,
         "get_log_probs_and_entropy",
         lambda *args, **kwargs: {
             "log_probs": [torch.tensor([0.10, 0.20], dtype=torch.float32)],
@@ -351,7 +356,7 @@ def test_masked_nonfinite_ppo_terms_do_not_poison_policy_loss(monkeypatch):
     )
     _patch_single_rank_loss_helpers(monkeypatch)
     monkeypatch.setattr(
-        loss_utils,
+        layout_utils,
         "get_log_probs_and_entropy",
         lambda *args, **kwargs: {
             "log_probs": [torch.tensor([0.10, float("nan")], dtype=torch.float32)],

@@ -143,6 +143,5 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --num-gpus-per-node 8
   --no-check-for-nan-in-loss-and-grad
   --check-weight-update-skip-list vision_tower. mm_projector.
-  --check-weight-update-allow-quant-error
-  --save /personal/checkpoints/260101-000000-000
-  --save-interval 50   
+  --check-weight-update-allow-quant-error   
+  --deploy-component all

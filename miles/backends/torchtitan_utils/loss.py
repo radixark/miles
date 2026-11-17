@@ -3,13 +3,7 @@ from dataclasses import dataclass
 
 import torch
 from torch.distributed._functional_collectives import all_gather_single_autograd
-from torch.distributed.tensor import DTensor
 from torchtitan.components.loss import BaseLoss
-from torchtitan.distributed.context_parallel import cp_shard
-
-
-def _gather_over_mesh(tensor: torch.Tensor, mesh) -> torch.Tensor:
-    return all_gather_single_autograd(tensor, 0, mesh.get_group())
 
 
 class RLLossAdapter(BaseLoss):
@@ -17,34 +11,20 @@ class RLLossAdapter(BaseLoss):
     class Config(BaseLoss.Config):
         pass
 
-    def __init__(self, config: Config, *, compile_config=None):
+    def __init__(self, config: Config):
         self.config = config
         self._batches: list | None = None
         self._closure: Callable | None = None
         self._is_training = True
         self._results: dict[int, object] = {}
         self._cp_mesh = None
-        self._cp_balancer = "headtail"
-        self._cp_restore: dict[int, torch.Tensor] = {}
         self._grad_scale = 1.0
 
-    def set_context_parallel(self, mesh, balancer_type: str) -> None:
+    def set_context_parallel(self, mesh) -> None:
         self._cp_mesh = mesh
-        self._cp_balancer = balancer_type
-        self._cp_restore = {}
 
     def set_gradient_scale(self, scale: float) -> None:
         self._grad_scale = scale
-
-    def _restore_indices(self, seq_len: int, device) -> torch.Tensor:
-        cached = self._cp_restore.get(seq_len)
-        if cached is None:
-            positions = torch.arange(seq_len, device=device).unsqueeze(0)
-            (local,), _ = cp_shard(self._cp_mesh, (positions,), None, self._cp_balancer)
-            order = _gather_over_mesh(local.flatten(), self._cp_mesh)
-            cached = order.argsort()
-            self._cp_restore[seq_len] = cached
-        return cached
 
     def arm(self, batches: list, closure: Callable, *, is_training: bool) -> None:
         self._batches, self._closure, self._is_training = batches, closure, is_training
@@ -56,23 +36,10 @@ class RLLossAdapter(BaseLoss):
             raise RuntimeError(f"the schedule never ran microbatch(es) {missing}")
         return [self._results[i] for i in range(len(self._batches))]
 
-    def _gather_context_parallel(self, pred: torch.Tensor) -> torch.Tensor:
-        gathered = _gather_over_mesh(pred.transpose(0, 1).contiguous(), self._cp_mesh)
-        gathered = gathered.transpose(0, 1)
-        restore = self._restore_indices(gathered.shape[1], gathered.device)
-        return gathered.index_select(1, restore)
-
-    def __call__(self, pred, target, global_valid_tokens=None, **kwargs):
-        if isinstance(pred, DTensor):
-            for placement in pred.placements:
-                if not (placement.is_shard() and placement.dim in (pred.ndim - 1, -1)):
-                    raise RuntimeError(
-                        f"expected vocab-sharded logits (Shard({pred.ndim - 1})), got {pred.placements}"
-                    )
-            pred = pred.to_local()
-
+    def __call__(self, pred, target, **kwargs):
         if self._cp_mesh is not None:
-            pred = self._gather_context_parallel(pred)
+            pred = all_gather_single_autograd(pred, 0, self._cp_mesh.get_group())
+        pred = pred.unsqueeze(0)
 
         index = int(target.flatten()[0])
         batch = self._batches[index]

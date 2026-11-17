@@ -39,58 +39,66 @@ class _Router(TokenChoiceTopKRouter):
     """A real router with the attributes its forward reads, and nothing else.
 
     Subclassing the real class matters: install() finds routers by type and
-    rebinds torchtitan's own forward, so the queue is exercised through the code
-    that actually runs in training.
+    swaps the expert selection torchtitan's own forward calls, so the queue is
+    exercised through the code that actually runs in training.
     """
 
     def __init__(self):
         nn.Module.__init__(self)
         self.gate = _Gate()
-        self.score_func = "softmax"
-        self.num_expert_groups = None
+        self.score_func = nn.Softmax(dim=-1)
+        self.num_experts = 8
         self.top_k = 2
         self.route_norm = False
+        self.route_norm_epsilon = 1e-20
         self.route_scale = 1.0
-        self._debug_force_load_balance = False
+        self.aux_loss = None
+        self.register_buffer("tokens_per_expert_E", torch.zeros(8, device="cuda"), persistent=False)
 
 
 class _Part(nn.Module):
-    """A model part with one router, like a pipeline stage's submodule."""
+    """A model part with one router at decoder layer ``layer``, like a pipeline stage's submodule."""
 
-    def __init__(self):
+    def __init__(self, layer: int = 0):
         super().__init__()
-        self.layers = nn.ModuleDict({"0": _Router()})
+        self.layers = nn.ModuleDict({str(layer): _Router()})
 
     def forward(self, scores):
-        _, expert_ids, _ = self.layers["0"](scores)
+        (router,) = self.layers.values()
+        _, expert_ids, _ = router(scores)
         return expert_ids
 
 
 @pytest.fixture
-def part():
+def replay_manager():
     routing_replay_manager.enabled = True
     routing_replay_manager.enable_check_replay_result = False
     routing_replay_manager.stage = shared_replay.REPLAY_FORWARD
     routing_replay_manager.replays = []
-    part = _Part()
-    routing_replay.install([part])
-    yield part
+    yield routing_replay_manager
     routing_replay_manager.enabled = False
     routing_replay_manager.replays = []
     routing_replay_manager.stage = shared_replay.FALLTHROUGH
 
 
+@pytest.fixture
+def part(replay_manager):
+    part = _Part()
+    routing_replay.install([part])
+    return part
+
+
 def _queue_microbatches(count):
-    """Queue one entry per microbatch, entry k naming expert k."""
-    replay = routing_replay_manager.replays[0]
-    for k in range(count):
-        replay.record(torch.full((4, 2), k, dtype=torch.long))
-    return replay
+    """Queue one entry per microbatch in every replay, entry k naming expert k."""
+    for replay in routing_replay_manager.replays:
+        for k in range(count):
+            replay.record(torch.full((4, 2), k, dtype=torch.long))
+    return routing_replay_manager.replays[0]
 
 
 def test_each_microbatch_replays_its_own_entry(part):
     _queue_microbatches(3)
-    scores = torch.rand(1, 4, 8, device="cuda")
+    scores = torch.rand(4, 8, device="cuda")
 
     with routing_replay.consumption_guard([part], 3):
         for expected in range(3):
@@ -99,7 +107,7 @@ def test_each_microbatch_replays_its_own_entry(part):
 
 def test_the_schedules_metadata_forward_does_not_consume(part):
     _queue_microbatches(2)
-    scores = torch.rand(1, 4, 8, device="cuda")
+    scores = torch.rand(4, 8, device="cuda")
 
     with routing_replay.consumption_guard([part], 2):
         routing_replay.bypass_schedule_initialization([part])
@@ -115,7 +123,7 @@ def test_consecutive_passes_share_one_queue(part):
     """The queues are filled per rollout and read across its optimizer steps, so
     a pass is held to how far it advanced, not to where it ended up."""
     _queue_microbatches(4)
-    scores = torch.rand(1, 4, 8, device="cuda")
+    scores = torch.rand(4, 8, device="cuda")
 
     for step in range(2):
         with routing_replay.consumption_guard([part], 2):
@@ -127,7 +135,7 @@ def test_the_bypass_ends_at_the_first_real_microbatch(part):
     """The probing forward and the backward that follows it both fall through;
     the next forward is microbatch 0 and replays again."""
     _queue_microbatches(2)
-    scores = torch.rand(1, 4, 8, device="cuda")
+    scores = torch.rand(4, 8, device="cuda")
 
     with routing_replay.consumption_guard([part], 2):
         routing_replay.bypass_schedule_initialization([part])
@@ -153,12 +161,39 @@ def test_a_recompute_pass_that_lost_its_place_is_reported(part):
 
 def test_a_stray_forward_is_reported(part):
     _queue_microbatches(3)
-    scores = torch.rand(1, 4, 8, device="cuda")
+    scores = torch.rand(4, 8, device="cuda")
 
     with pytest.raises(RuntimeError, match="advanced 3 times over a pass of 2"):
         with routing_replay.consumption_guard([part], 2):
             for _ in range(3):
                 part(scores)
+
+
+def test_each_part_stages_only_its_own_routers(replay_manager):
+    """A part's forward stages its routers' ids for the microbatch; a second part on the
+    rank (virtual pipeline stages) must not advance them, or every later lookup shifts."""
+    parts = [_Part(0), _Part(1)]
+    routing_replay.install(parts)
+    _queue_microbatches(2)
+    scores = torch.rand(4, 8, device="cuda")
+
+    with routing_replay.consumption_guard(parts, 2):
+        for expected in range(2):
+            for part in parts:
+                assert part(scores).unique().tolist() == [expected]
+    assert all(replay.staged_forward_ids is None for replay in replay_manager.replays)
+
+
+def test_the_train_pass_stages_the_forward_and_leaves_the_backward_cursor(part):
+    replay = _queue_microbatches(2)
+    scores = torch.rand(4, 8, device="cuda")
+
+    routing_replay_manager.stage = shared_replay.REPLAY_BACKWARD
+    with routing_replay.consumption_guard([part], 2):
+        for expected in range(2):
+            assert part(scores).unique().tolist() == [expected]
+            assert replay.staged_forward_ids is None
+    assert replay.backward_index == 0
 
 
 def test_the_reference_model_is_left_alone(part):

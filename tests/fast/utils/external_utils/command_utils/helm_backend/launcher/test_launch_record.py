@@ -9,6 +9,10 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.launch_recor
 from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan
 from miles.utils.external_utils.command_utils.helm_backend.naming import RunFiles
+from miles.utils.workers.argv_utils import ORCHESTRATOR_CONFIG_FLAG
+from miles.utils.workers.connection_config import StaticConnConfig
+from miles.utils.workers.serving.utils import parse_orchestrator_argv
+from miles.utils.workers.serving.worker_config import OrchestratorWorkerConfig
 
 RUN_ID = "260101-000000-000"
 VALUES_FILE = Path("/shared/miles-runs") / RUN_ID / "values" / "values-1.yaml"
@@ -21,11 +25,16 @@ def _plan(**overrides) -> LaunchPlan:
         namespace="rl",
         state_file=str(Path("/shared/miles-runs") / RUN_ID / "state" / "orchestrator-1.state"),
         worker_argv=["--rollout-num-gpus", "8"],
-        orchestrator_command=["python", "/repo/train.py", "--rollout-num-gpus", "8"],
+        orchestrator_command=_orchestrator_command({"rollout_num_gpus": 8}),
         env={"PYTHONUNBUFFERED": "1"},
     )
     fields.update(overrides)
     return LaunchPlan(**fields)
+
+
+def _orchestrator_command(args: dict) -> list[str]:
+    payload = OrchestratorWorkerConfig(args=args, static_connections=StaticConnConfig())
+    return ["python", "/repo/train.py", ORCHESTRATOR_CONFIG_FLAG, payload.model_dump_json()]
 
 
 def _record(*, reachable_at=None, **overrides):
@@ -44,11 +53,23 @@ class TestComputeLaunchRecord:
         """The record lands on a shared disk and in the wandb config, so a key in argv would leak twice."""
         record = _record(
             worker_argv=["--wandb-key", "s3cret"],
-            orchestrator_command=["python", "/repo/train.py", "--wandb-key=s3cret"],
+            orchestrator_command=_orchestrator_command({"wandb_key": "s3cret"}),
         )
 
         assert "s3cret" not in json.dumps([*record.worker_argv, *record.orchestrator_command])
         assert "redacted-sha256:" in record.worker_argv[1]
+
+    def test_hides_a_secret_inside_the_orchestrator_payload(self) -> None:
+        """Redacting by flag name cannot see into the payload json, so its config values are redacted instead."""
+        record = _record(orchestrator_command=_orchestrator_command({"wandb_key": "s3cret", "rollout_num_gpus": 8}))
+
+        recorded = parse_orchestrator_argv(record.orchestrator_command)
+        assert recorded.args["wandb_key"].startswith("redacted-sha256:")
+        assert recorded.args["rollout_num_gpus"] == 8
+
+    def test_records_no_orchestrator_command_for_a_release_without_one(self) -> None:
+        """A deployment of workers carries no orchestration script, and there is no payload to redact."""
+        assert _record(orchestrator_command=[], state_file="").orchestrator_command == []
 
     def test_hides_a_secret_environment_variable(self) -> None:
         record = _record(env={"HF_TOKEN": "t0ken", "PYTHONUNBUFFERED": "1"})

@@ -136,7 +136,7 @@ class TestReapLeakedAcceleratorProcesses:
         killed by its own reaper; only the CUDA suite runner opts in."""
         calls = _count_reaps(monkeypatch)
 
-        ci_utils.run_unittest_files(one_passing_file, timeout_per_file=30)
+        ci_utils.run_unittest_files(one_passing_file, snapshot_hardware="cpu", timeout_per_file=30)
 
         assert calls == []
 
@@ -147,7 +147,9 @@ class TestReapLeakedAcceleratorProcesses:
         left holding the accelerators."""
         calls = _count_reaps(monkeypatch)
 
-        ci_utils.run_unittest_files(one_passing_file, timeout_per_file=30, reap_leftovers=True)
+        ci_utils.run_unittest_files(
+            one_passing_file, snapshot_hardware="cpu", timeout_per_file=30, reap_leftovers=True
+        )
 
         assert calls == ["reaped"]
 

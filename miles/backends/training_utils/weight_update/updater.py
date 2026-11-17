@@ -16,10 +16,13 @@ import torch
 import torch.distributed as dist
 from tqdm import tqdm
 
+from miles.backends.sglang_utils.arguments import sglang_attention_dp_enabled
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.conn_status import ConnStatusManager
 from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
+from miles.backends.training_utils.weight_update.receiver_pool import ReceiverPools
+from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
 from miles.backends.training_utils.weight_update.session import (
     begin_weight_update,
     end_weight_update,
@@ -75,20 +78,32 @@ class WeightUpdater:
             assert lora_sync_config is not None
         self._lora_sync_config = lora_sync_config
         self._registered_adapters: set[str] = set()
+        self._receiver_pools = ReceiverPools()
+
+    def receiver_pool(self, pool_id: str):
+        return self._receiver_pools.activate(self, pool_id)
+
+    def mark_trainer_stale(self) -> None:
+        self._receiver_pools.mark_trainer_stale(self)
 
     def connect_rollout_engines(
         self,
         rollout_engines: Sequence[SGLangApiClient],
-        engine_gpu_counts: Sequence[int] | None = None,
-        engine_gpu_offsets: Sequence[int] | None = None,
+        engine_gpu_counts: Sequence[int] | None,
+        engine_gpu_offsets: Sequence[int] | None,
+        engine_cell_ids: Sequence[str],
     ) -> None:
         self.protocol.connect(
-            rollout_engines,
-            engine_gpu_counts,
-            engine_gpu_offsets,
-            self.parallel_state,
-            self._hf_weight_iterator.placement,
-            weight_update_selector(self.args),
+            rollout_engines=rollout_engines,
+            engine_gpu_counts=engine_gpu_counts,
+            engine_gpu_offsets=engine_gpu_offsets,
+            engine_cell_ids=engine_cell_ids,
+            parallel_state=self.parallel_state,
+            placement=self._hf_weight_iterator.placement,
+            selector=weight_update_selector(
+                speculative_algorithm=self.args.sglang.base_args["speculative_algorithm"],
+                enable_mtp_training=self.args.enable_mtp_training,
+            ),
         )
         assert self.protocol.is_sender is not None, "connect() must set is_sender"
         self._registered_adapters.clear()
@@ -104,6 +119,7 @@ class WeightUpdater:
             info.rollout_engines,
             engine_gpu_counts=info.engine_gpu_counts,
             engine_gpu_offsets=info.engine_gpu_offsets,
+            engine_cell_ids=info.engine_cell_ids,
         )
         self.conn_status.mark_reconnected(info.snapshot_cell_id_to_hashes)
         dist.barrier(group=get_gloo_group())
@@ -131,17 +147,24 @@ class WeightUpdater:
         adapters = self._get_updated_adapters()
 
         driver = dist.get_rank() == 0
+        cell_updaters = list(protocol.cell_updaters_of_cell_id.values())
         if protocol.use_weight_update_session and driver:
-            maybe_pause_engines(self.args, protocol.rollout_engines)
+            maybe_pause_engines(self.args, cell_updaters)
             self._register_new_lora_adapters(protocol.rollout_engines, adapters)
-            begin_weight_update(protocol.rollout_engines, weight_update_selector(self.args), sync_base=sync_base)
+            begin_weight_update(
+                cell_updaters,
+                weight_update_selector(
+                    speculative_algorithm=self.args.sglang.base_args["speculative_algorithm"],
+                    enable_mtp_training=self.args.enable_mtp_training,
+                ),
+                sync_base=sync_base,
+            )
+        _mark_cells_errored_on_any_rank(cell_updaters)
         dist.barrier(group=get_gloo_group())
 
         checksums = {name: {} for name, _ in adapters} if self.is_lora and self.args.check_lora_weight_equal else None
-        if checksums is not None:
-            assert (
-                self._hf_weight_iterator.placement.gather_pp
-            ), "the LoRA checksum manifest is recorded on one rank, which must hold the full adapter"
+        # a full gather gives rank 0 the whole adapter; a PP-local sync splits it across senders
+        records_checksums = protocol.is_sender and (driver or not self._hf_weight_iterator.placement.gather_pp)
         with timer("update_weights_implementation"):
             pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
             for bucket in self._hf_weight_iterator.iter_hf_weights(
@@ -151,19 +174,23 @@ class WeightUpdater:
                 materialize=protocol.is_sender,
             ):
                 if protocol.is_sender:
-                    if driver and checksums is not None:
+                    if checksums is not None and records_checksums:
                         record_lora_checksums(bucket, checksums)
                     protocol.send_bucket(bucket)
                     pbar.update(1)
             protocol.after_base_weights()
             dist.barrier(group=get_gloo_group())
+        if checksums is not None:
+            checksums = _gather_lora_checksums(checksums)
 
         with timer("finalize_and_resume_engines"):
             protocol.finalize(weight_version)
+            _mark_cells_errored_on_any_rank(cell_updaters)
             if protocol.use_weight_update_session and driver:
-                end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
-                set_weight_version(protocol.rollout_engines, weight_version)
-                maybe_resume_engines(self.args, protocol.rollout_engines)
+                end_weight_update(cell_updaters, expected_lora_checksums=checksums)
+                set_weight_version(cell_updaters, weight_version)
+                maybe_resume_engines(self.args, cell_updaters)
+            _mark_cells_errored_on_any_rank(cell_updaters)
             dist.barrier(group=get_gloo_group())
         protocol.after_engines_resumed()
         return True
@@ -187,5 +214,42 @@ class WeightUpdater:
             config = self._lora_sync_config
             if adapter is not None:
                 config = config | {"r": adapter.rank, "lora_alpha": adapter.alpha}
-            register_lora_adapter(rollout_engines, lora_name=lora_name, lora_config=config)
+            register_lora_adapter(
+                rollout_engines,
+                lora_name=lora_name,
+                lora_config=config,
+                pinned=sglang_attention_dp_enabled(
+                    attn_dp_size=self.args.sglang.base_args["attn_dp_size"],
+                    enable_dp_attention=self.args.sglang.base_args["enable_dp_attention"],
+                    dp_size=self.args.sglang.base_args["dp_size"],
+                ),
+            )
             self._registered_adapters.add(lora_name)
+
+
+def _gather_lora_checksums(checksums: dict[str, dict[str, str]]) -> dict[str, dict[str, str]] | None:
+    """Union of every sender's manifest, on rank 0; a PP-local sync splits the adapter across senders."""
+    group = get_gloo_group()
+    gathered = [None] * dist.get_world_size(group) if dist.get_rank() == 0 else None
+    dist.gather_object(checksums, gathered, dst=0, group=group)
+    if gathered is None:
+        return None
+    merged = {name: {} for name in checksums}
+    for sender_checksums in gathered:
+        for name, entries in sender_checksums.items():
+            merged[name].update(entries)
+    return merged
+
+
+def _mark_cells_errored_on_any_rank(cell_updaters: Sequence[_RolloutCellUpdater]) -> set[str]:
+    group = get_gloo_group()
+    errored_cell_ids_per_rank: list[list[str] | None] = [None] * dist.get_world_size(group=group)
+    dist.all_gather_object(errored_cell_ids_per_rank, [u.cell_id for u in cell_updaters if u.is_errored], group=group)
+
+    errored_cell_ids = {cell_id for cell_ids in errored_cell_ids_per_rank for cell_id in cell_ids}
+    for cell_updater in cell_updaters:
+        if cell_updater.cell_id in errored_cell_ids and not cell_updater.is_errored:
+            cell_updater.mark_errored(
+                RuntimeError(f"another trainer rank failed to update cell {cell_updater.cell_id}")
+            )
+    return errored_cell_ids

@@ -33,8 +33,8 @@ class ContainerRun(NamedTuple):
     running: bool
 
 
-def selected_pods(namespace: str, selector: str) -> list[Pod]:
-    listed = Kubectl.get_json("pods", return_type=PodList, namespace=namespace, selector=selector)
+def selected_pods(namespace: str, selector: str, *, timeout: float | None = None) -> list[Pod]:
+    listed = Kubectl.get_json("pods", return_type=PodList, namespace=namespace, selector=selector, timeout=timeout)
     return listed.items if listed is not None else []
 
 

@@ -1,5 +1,7 @@
 import itertools
+import logging
 import re
+import time
 from argparse import Namespace
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -8,6 +10,9 @@ import torch
 import torch.distributed as dist
 from tqdm import tqdm
 
+from miles.backends.megatron_utils.lora.native import export_lora_hf_named
+from miles.backends.megatron_utils.lora.native.modules.linear import iter_adapters, iter_slot_adapters
+from miles.backends.megatron_utils.lora.slots import slice_lora_to_rank
 from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
 from miles.backends.megatron_utils.sglang import monkey_patch_torch_reductions
@@ -19,7 +24,11 @@ from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.test_utils.fault_injector.controller import reach_fault_hook
+from miles.utils.test_utils.fault_injector.models import FaultHookName
 from miles.utils.types import ParamInfo
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -51,7 +60,7 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             edp = parallel.edp
             assert edp is not None, "Expert data parallel state is required for MoE weight updates"
             owner_infos = _partition_expert_infos(
-                expert_infos, num_local_experts=self.args.num_experts // ep_size, edp_size=edp.size
+                expert_infos, num_local_experts=self.args.backend.num_experts // ep_size, edp_size=edp.size
             )
             # At ETP1, TP x DP x CP is exactly EP x EDP. Borrow Megatron's
             # combined group to avoid repacking between EP and EDP gathers.
@@ -125,17 +134,26 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
         return units
 
     def _export_pp_local_lora(self, adapter):
-        assert adapter is None, "multi-LoRA export requires --megatron-to-hf-mode bridge"
-        # TODO: will rewrite in native lora refactor
-        if "kimi_k3" in self.model_name.lower():
-            from miles_plugins.models.kimi_k3.lora import export_kimi_k3_lora_hf_chunks
-
-            return [named_tensor for chunk in export_kimi_k3_lora_hf_chunks(self.model) for named_tensor in chunk]
-        if "inkling" in (self.args.custom_model_provider_path or ""):
-            from miles_plugins.models.inkling.lora import export_inkling_lora_hf_named
-
-            return export_inkling_lora_hf_named(self.model)
-        raise NotImplementedError(f"Raw LoRA export is not implemented for model {self.model_name!r}")
+        started = time.perf_counter()
+        if adapter is None:
+            exported = export_lora_hf_named(iter_adapters(self.model))
+        else:
+            exported = [
+                (name, slice_lora_to_rank(name, tensor, adapter.rank))
+                for name, tensor in export_lora_hf_named(iter_slot_adapters(self.model, adapter.slot))
+            ]
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            peak_b = max(
+                (tensor.abs().max().item() for name, tensor in exported if name.endswith("lora_B.weight")),
+                default=0.0,
+            )
+            logger.info(
+                "[lora-native] exported %d adapter tensors in %.1f ms (max|lora_B|=%.3e)",
+                len(exported),
+                (time.perf_counter() - started) * 1e3,
+                peak_b,
+            )
+        return exported
 
     def _convert_to_hf_param_units(self, named_params: Sequence[tuple[str, torch.Tensor]]):
         for name, param in named_params:
@@ -234,6 +252,7 @@ def _gather_megatron_expert_batch(
     handles = []
     for i, param in enumerate(etp_gathered):
         buffers = [torch.empty_like(param, device=torch.cuda.current_device()) for _ in range(ep.size)]
+        reach_fault_hook(FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER)
         handles.append(dist.all_gather(buffers, param, group=ep.group, async_op=True))
         for ep_rank, ep_names in enumerate(all_names):
             all_gathered[ep_rank].append((ep_names[i], buffers[ep_rank]))
@@ -293,22 +312,31 @@ def _get_megatron_local_param_infos(
     """
     pp_size = get_parallel_state().pp.size
 
-    from ..lora.utils import _is_adapter_param_name
+    from ..lora.utils import adapter_named_parameters
 
+    adapter_ids = {id(param) for params in adapter_named_parameters(model) for param in params.values()}
     param_infos: dict[str, ParamInfo] = {}
     rank = dist.get_rank()
     for name, param in named_params_and_buffers(args, model):
-        if _is_adapter_param_name(name):
+        if id(param) in adapter_ids:
             continue
         param_infos[name] = ParamInfo(
             name=name,
             dtype=param.dtype,
             shape=param.shape,
             attrs={
-                "tensor_model_parallel": getattr(param, "tensor_model_parallel", False),
-                "partition_dim": getattr(param, "partition_dim", -1),
-                "partition_stride": getattr(param, "partition_stride", 1),
-                "parallel_mode": getattr(param, "parallel_mode", None),
+                "tensor_model_parallel": getattr(
+                    param, "tensor_model_parallel", False
+                ),  # config-access-exempt: tensor_model_parallel is optional backend-attached tensor metadata
+                "partition_dim": getattr(
+                    param, "partition_dim", -1
+                ),  # config-access-exempt: partition_dim is optional backend-attached tensor metadata
+                "partition_stride": getattr(
+                    param, "partition_stride", 1
+                ),  # config-access-exempt: partition_stride is optional backend-attached tensor metadata
+                "parallel_mode": getattr(
+                    param, "parallel_mode", None
+                ),  # config-access-exempt: parallel_mode is optional backend-attached tensor metadata
             },
             size=param.numel() * param.element_size(),
             src_rank=rank,
@@ -325,7 +353,7 @@ def _get_megatron_local_param_infos(
             for name, info in infos.items():
                 if name in param_infos:
                     # Duplicates across PP only exist for MTP virtual-PP layers.
-                    assert args.mtp_num_layers is not None
+                    assert args.backend.mtp_num_layers is not None
                     if param_infos[name].src_rank > src_rank:
                         param_infos[name] = info
                 else:
@@ -398,7 +426,7 @@ def _check_and_fix_partition(args: Namespace, name: str, partition_stride: int, 
     (GLU/SwiGLU interleaved [gate, up]), so assert partition_stride==2 is removed.
     But TEGroupedLinear still does not set partition_stride/partition_dim correctly for grouped moe gemm
     """
-    if "linear_fc1.weight" in name and args.swiglu:
+    if "linear_fc1.weight" in name and (args.backend.swiglu or args.backend.quick_geglu):
         partition_stride = 2
         if partition_dim < 0:
             partition_dim = 0
@@ -429,7 +457,9 @@ def all_gather_params_async(
         if "expert_bias" in info.name:
             gather_tasks.append((info, param, None, None, None, None))
             handles.append(None)
-        elif getattr(param, "parallel_mode", None) == "duplicated" or (
+        elif getattr(
+            param, "parallel_mode", None
+        ) == "duplicated" or (  # config-access-exempt: parallel_mode is optional backend-attached tensor metadata
             not param.tensor_model_parallel and not _is_unmarked_grouped_expert_weight(info.name, param)
         ):
             gather_tasks.append((info, param.data, None, None, None, None))
@@ -449,6 +479,7 @@ def all_gather_params_async(
                 continue
 
             param_partitions = [torch.empty_like(param.data) for _ in range(tp_size)]
+            reach_fault_hook(FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER)
             handle = dist.all_gather(param_partitions, param.data, group=tp_group, async_op=True)
             gather_tasks.append((info, None, handle, param_partitions, param.partition_dim, param.partition_stride))
             handles.append(handle)

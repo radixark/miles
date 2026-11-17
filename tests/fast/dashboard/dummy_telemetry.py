@@ -29,6 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from miles.dashboard.sandbox_health import SNAPSHOT_FILENAME, SandboxHealth, SandboxReport
 from miles.dashboard.store import (
     EngineInfo,
     EngineSample,
@@ -116,6 +117,28 @@ def _trajectory_events(store: MetricStore, truth: DummyTelemetryTruth, samples_p
                 emit(TrajectoryEventKind.GEN_START, start + 9.0, turn=2, version=bumped)
                 emit(TrajectoryEventKind.GEN_END, start + 14.0, turn=2, version=bumped)
             emit(TrajectoryEventKind.ATTEMPT_END, start + (15.0 if agentic else 7.0), detail="completed")
+
+
+def _sandbox_snapshot(store: MetricStore, truth: DummyTelemetryTruth, samples_per_step: int) -> None:
+    """The last step's sandboxes: most healthy, every eighth erroring, every fifth
+    finished, and the first silent for 15 minutes before the snapshot."""
+    t0, t1 = truth.rollout_interval(truth.steps - 1)
+    health = SandboxHealth(store.dir / SNAPSHOT_FILENAME)
+    for i in range(samples_per_step):
+        key = f"trial-{i}"
+        started = t1 - 900.0 if i == 0 else t0 + (t1 - t0) * i / samples_per_step
+        health.update(
+            SandboxReport(started, key, "healthy", task=f"task-{i % 4}", provider="docker", sandbox_id=f"sbx-{i}")
+        )
+        if i == 0:
+            continue
+        status, error = (
+            ("error", "TimeoutError: command timed out")
+            if i % 8 == 7
+            else ("finished" if i % 5 == 4 else "healthy", None)
+        )
+        health.update(SandboxReport(t1 - (t1 - started) / 4, key, status, error=error))
+    health.write_snapshot(now=t1)
 
 
 def dump_dummy_telemetry(
@@ -261,5 +284,6 @@ def dump_dummy_telemetry(
                 )
 
     _trajectory_events(store, truth, samples_per_step)
+    _sandbox_snapshot(store, truth, samples_per_step)
     store.flush()
     return truth

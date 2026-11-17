@@ -23,8 +23,22 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     nightly=True,
     num_gpus=4,
+    disabled=(
+        "Colocated fault tolerance is unsupported: miles_validate_args rejects rollout fault tolerance without a "
+        "partial-target P2P weight update, which --colocate cannot provide. Unblock condition: a decision to port "
+        "this recovery scenario to a disaggregated P2P layout or to delete it; tracked in #3724."
+    ),
 )
-register_rocm_ci(est_time=600, suite="nightly-stage-c-4-gpu-mi350", labels=["short"])
+register_rocm_ci(
+    est_time=600,
+    suite="nightly-stage-c-4-gpu-mi350",
+    labels=["short"],
+    disabled=(
+        "Colocated fault tolerance is unsupported: miles_validate_args rejects rollout fault tolerance without a "
+        "partial-target P2P weight update, which --colocate cannot provide. Unblock condition: a decision to port "
+        "this recovery scenario to a disaggregated P2P layout or to delete it; tracked in #3724."
+    ),
+)
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"

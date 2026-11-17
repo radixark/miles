@@ -9,8 +9,6 @@ from typing import Any
 
 import numpy as np
 import pybase64
-import sglang_router
-from packaging.version import parse
 from tqdm import tqdm
 
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
@@ -23,7 +21,7 @@ from miles.rollout.generate_utils.rollout_topk_logprobs import (
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.inference_rollout.inference_rollout_common import stamp_sample_lineage
 from miles.utils import dumper_utils
-from miles.utils.async_utils import run
+from miles.utils.async_utils import DynamicLimitSemaphore, run
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
@@ -31,6 +29,7 @@ from miles.utils.function_registry import load_function
 from miles.utils.http_utils import get, post, router_worker_base_urls
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
+from miles.utils.media_refs import has_media, rollout_media_payload
 from miles.utils.misc import SingletonMeta, call_agent_abort_hook
 from miles.utils.processing_utils import (
     call_processor,
@@ -42,9 +41,13 @@ from miles.utils.processing_utils import (
 from miles.utils.types import Sample
 
 from .generate_utils.generate_endpoint_utils import (
+    adopt_expanded_prompt_ids,
+    apply_sample_max_response_len,
     compute_routing_headers,
     get_indexer_topk_from_response,
-    policy_uses_routing_key,
+    router_routes_by_key,
+    token_space_request_fields,
+    truncate_to_max_seq_len,
 )
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .generate_utils.sample_utils import reward_log_summary, sample_text_preview
@@ -88,8 +91,8 @@ class GenerateState(metaclass=SingletonMeta):
         )
         self.processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
 
-        self.semaphore = asyncio.Semaphore(
-            args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
+        self.semaphore = DynamicLimitSemaphore(
+            lambda: args.sglang_server_concurrency * max(args.inference_runtime_mut_state.engine_count, 1)
         )
         self.sampling_params: dict[str, Any] = dict(
             temperature=args.rollout_temperature,
@@ -103,15 +106,19 @@ class GenerateState(metaclass=SingletonMeta):
             spaces_between_special_tokens=False,
         )
 
-        if getattr(args, "sglang_enable_deterministic_inference", False):
+        if args.sglang.common_value("enable_deterministic_inference"):
             sampling_seed_base = args.rollout_seed
             self.group_sampling_seeds = [sampling_seed_base + i for i in range(args.n_samples_per_prompt)]
 
         # dp rank balancing
-        self.dp_counts = [0] * (args.sglang_dp_size or 1)
+        self.dp_counts = [0] * (args.sglang.common_value("dp_size") or 1)
         self.dp_rank = 0
 
         self.reset()
+
+    @classmethod
+    def _validate_reuse(cls, instance: "GenerateState", args: Namespace) -> None:
+        assert instance.args == args
 
     @contextmanager
     def dp_rank_context(self):
@@ -164,19 +171,31 @@ async def generate(
         sample.status == Sample.Status.PENDING or sample.status == Sample.Status.ABORTED
     ), f"Sample status is {sample.status}"
 
-    if state.processor and (
+    token_space = args.multimodal_token_space_processing and has_media(sample.multimodal_inputs)
+    if token_space:
+        # Without --apply-chat-template the dataset keeps the raw messages, so render them here. SGLang
+        # expands the media placeholders and the trainer builds the processor tensors.
+        prompt = sample.prompt
+        if not isinstance(prompt, str):
+            prompt = state.tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
+        prompt_ids = state.tokenizer.encode(prompt, add_special_tokens=False)
+    elif state.processor and (
         isinstance(sample.prompt, (list, tuple))
         or (sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()))
     ):
         processor_output = call_processor(state.processor, sample.prompt, sample.multimodal_inputs)
         prompt_ids = processor_output["input_ids"][0]
-        prompt_ids = prompt_ids.tolist() if hasattr(prompt_ids, "tolist") else list(prompt_ids)
+        prompt_ids = (
+            prompt_ids.tolist() if hasattr(prompt_ids, "tolist") else list(prompt_ids)
+        )  # config-access-exempt: tokenizers may return tensors, arrays, or Python lists
         sample.multimodal_train_inputs = extract_multimodal_train_inputs(processor_output)
     else:
         prompt_ids = state.tokenizer.encode(sample.prompt, add_special_tokens=False)
 
     if len(sample.response) > 0:
-        sampling_params["max_new_tokens"] -= len(sample.tokens) - len(prompt_ids)
+        sampling_params["max_new_tokens"] -= (
+            sample.response_length if token_space else len(sample.tokens) - len(prompt_ids)
+        )
 
     assert (
         sampling_params["max_new_tokens"] >= 0
@@ -194,9 +213,9 @@ async def generate(
     }
     if return_sampling_mask:
         payload["return_sampling_mask"] = True
-    opd_top_k = getattr(args, "opd_log_prob_top_k", 0) or 0
-    opd_top_k_strategy = getattr(args, "opd_top_k_strategy", "only-student")
-    if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
+    opd_top_k = args.opd_log_prob_top_k or 0
+    opd_top_k_strategy = args.opd_top_k_strategy
+    if args.use_opd and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         payload["top_logprobs_num"] = opd_top_k
     if not evaluation:
         configure_rollout_topk_logprobs_request(args, payload)
@@ -208,19 +227,23 @@ async def generate(
 
     if args.use_rollout_routing_replay:
         payload["return_routed_experts"] = True
-    if getattr(args, "use_rollout_indexer_replay", False):
+    if args.use_rollout_indexer_replay:
         payload["return_indexer_topk"] = True
 
-    if sample.multimodal_inputs and sample.multimodal_inputs["images"]:
-        image_data = sample.multimodal_inputs["images"]
-        payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
+    if token_space:
+        # Media references: SGLang loads the files itself and expands the placeholders.
+        payload.update(rollout_media_payload(sample.multimodal_inputs))
+    else:
+        if sample.multimodal_inputs and sample.multimodal_inputs["images"]:
+            image_data = sample.multimodal_inputs["images"]
+            payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
 
-    if sample.multimodal_inputs and sample.multimodal_inputs.get("audios"):
-        import base64 as _b64
+        if sample.multimodal_inputs and sample.multimodal_inputs.get("audios"):
+            import base64 as _b64
 
-        payload["audio_data"] = [
-            f"data:audio;base64,{_b64.b64encode(a).decode('ascii')}" for a in sample.multimodal_inputs["audios"]
-        ]
+            payload["audio_data"] = [
+                f"data:audio;base64,{_b64.b64encode(a).decode('ascii')}" for a in sample.multimodal_inputs["audios"]
+            ]
 
     # Use existing tokens for multi-turn or tokenize the new prompt
     if len(sample.response) > 0:
@@ -229,11 +252,15 @@ async def generate(
         payload["input_ids"] = prompt_ids
         if not sample.tokens:  # Initialize sample.tokens for the first turn
             sample.tokens = prompt_ids
+    if token_space:
+        # A partial-rollout resume resends the tokens SGLang already expanded, so nothing is expanded again.
+        payload.update(token_space_request_fields(len(sample.tokens) if len(sample.response) > 0 else 0))
 
     headers = compute_routing_headers(args, sample)
 
     output = await post(url, payload, headers=headers)
-    if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
+    adopt_expanded_prompt_ids(sample, payload, output)
+    if args.use_opd and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         output_top_logprobs = output.get("meta_info", {}).get("output_top_logprobs")
         if output_top_logprobs is not None:
             sample.metadata.setdefault("opd_student_top_logprobs", [])
@@ -299,6 +326,9 @@ async def generate(
         sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample)
 
     sample.update_from_meta_info(args, output["meta_info"])
+    if token_space:
+        # max_new_tokens was budgeted from the unexpanded prompt; the expansion can carry the sample past the limit.
+        truncate_to_max_seq_len(args, sample, state.tokenizer)
 
     return sample
 
@@ -323,6 +353,7 @@ async def generate_and_rm(
         return sample
 
     state = GenerateState(args)
+    sampling_params = apply_sample_max_response_len(sampling_params, sample)
 
     # dashboard lifecycle probe (design §18.3): the semaphore wait IS the
     # queue; attempt_end fires once generation is over, before reward
@@ -342,7 +373,7 @@ async def generate_and_rm(
 
         with state.dp_rank_context() as _:
             # Check sample.generate_function_path for per-sample custom_generate_function_path (e.g., from eval dataset config)
-            custom_func_path = getattr(sample, "generate_function_path", None) or args.custom_generate_function_path
+            custom_func_path = sample.generate_function_path or args.custom_generate_function_path
 
             generate_fn = load_generate_function(custom_func_path) if custom_func_path else None
             if generate_fn is not None:
@@ -393,7 +424,7 @@ async def generate_and_rm_group(
         return group
 
     # Generate a unique routing_key for each sample in the group (routing-key policies only)
-    if policy_uses_routing_key(args):
+    if router_routes_by_key(args):
         for sample in group:
             if sample.routing_key is None:
                 sample.routing_key = str(uuid.uuid4())
@@ -401,7 +432,7 @@ async def generate_and_rm_group(
     tasks = []
     for idx, sample in enumerate(group):
         current_sampling_params = sampling_params.copy()
-        if getattr(args, "sglang_enable_deterministic_inference", False):
+        if args.sglang.common_value("enable_deterministic_inference"):
             seed = state.group_sampling_seeds[idx]
             current_sampling_params["sampling_seed"] = seed
         tasks.append(
@@ -426,13 +457,8 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     assert not state.aborted
     state.aborted = True
 
-    if parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers")
-        urls = response["urls"]
-    else:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
-        urls = [worker["url"] for worker in response["workers"]]
-    urls = router_worker_base_urls(urls)
+    response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
+    urls = router_worker_base_urls([worker["url"] for worker in response["workers"]])
 
     logger.info(f"Abort request for {urls}")
     abort_tasks = [post(f"{url}/abort_request", {"abort_all": True}) for url in urls]
@@ -529,8 +555,7 @@ async def generate_rollout_async(
 
             assert len(group) == args.n_samples_per_prompt
             all_data.append(group)
-            metric_gatherer.on_group_before_dynamic_filter(args, group)
-            filter_output = apply_preput_filters(args, dynamic_filter, group)
+            filter_output = apply_preput_filters(args, dynamic_filter, group, metric_gatherer=metric_gatherer)
             if not filter_output.keep:
                 metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
                 SampleOwnershipRecorder.log_dropped_groups(args=args, before=group, after=[], reason="dynamic_filter")
@@ -595,7 +620,7 @@ async def eval_rollout(args: Namespace, rollout_id: int) -> tuple[dict[str, dict
     assert not args.group_rm, "Group RM is not supported for eval rollout"
 
     coros = []
-    for dataset_cfg in getattr(args, "eval_datasets", []) or []:
+    for dataset_cfg in args.eval_datasets or []:
         coros.append(eval_rollout_single_dataset(args, rollout_id, dataset_cfg))
     results_list = await asyncio.gather(*coros)
     results = {}
@@ -623,7 +648,11 @@ async def eval_rollout_single_dataset(
         tokenizer = load_tokenizer(
             args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True
         )
-        processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
+        processor = (
+            None
+            if args.multimodal_token_space_processing
+            else load_processor(args.hf_checkpoint, trust_remote_code=True)
+        )
         EVAL_PROMPT_DATASET[cache_key] = Dataset(
             path=dataset_cfg.path,
             tokenizer=tokenizer,
@@ -636,6 +665,8 @@ async def eval_rollout_single_dataset(
             tool_key=dataset_cfg.tool_key,
             apply_chat_template=args.apply_chat_template,
             apply_chat_template_kwargs=args.apply_chat_template_kwargs,
+            media_dir=args.shared_media_dir,
+            token_space_processing=args.multimodal_token_space_processing,
         )
     dataset = EVAL_PROMPT_DATASET[cache_key]
 
@@ -660,12 +691,12 @@ async def eval_rollout_single_dataset(
             sample = copy.deepcopy(prompt_sample)
             sample.index = sample_index
             sample_index += 1
-            sample.metadata = dataset_cfg.inject_metadata(getattr(sample, "metadata", None))
-            sample.generate_function_path = getattr(dataset_cfg, "custom_generate_function_path", None)
-            if policy_uses_routing_key(args):
+            sample.metadata = dataset_cfg.inject_metadata(sample.metadata)
+            sample.generate_function_path = x.path if (x := dataset_cfg.custom_generate_function_path) else None
+            if router_routes_by_key(args):
                 sample.routing_key = str(uuid.uuid4())
             sampling_params = base_sampling_params
-            if getattr(args, "sglang_enable_deterministic_inference", False):
+            if args.sglang.common_value("enable_deterministic_inference"):
                 sampling_params = base_sampling_params.copy()
                 sampling_params["sampling_seed"] = args.rollout_seed + j
             tasks.append(

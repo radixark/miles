@@ -6,22 +6,23 @@ from argparse import Namespace
 from pathlib import Path
 
 import torch
-from scripts.run_deepseek_v4 import (
-    _DSV4_TE_PRECISION_CONFIG,
-    ScriptArgs,
-    _prepare_download,
-    _prepare_single,
-    _prepare_spmd,
-    _train,
-)
-from tests.ci.ci_register import register_cuda_ci
+from scripts.run_deepseek_v4 import _DSV4_TE_PRECISION_CONFIG
 
+if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm":
+    from scripts.amd.run_deepseek_v4 import ScriptArgs, _prepare_download, _prepare_single, _prepare_spmd, _train
+else:
+    from scripts.run_deepseek_v4 import ScriptArgs, _prepare_download, _prepare_single, _prepare_spmd, _train
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
+
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
+from miles.utils.audit_utils.config_snapshot.generated_value_registry import generated_value_registry
 from miles.utils.test_utils.comparisons.metrics import compare_metrics
 from miles.utils.types import Sample
 
 register_cuda_ci(
     est_time=1100, suite="stage-c-4-gpu-h200", labels=["precision", "long"], hardware=["hopper"], num_gpus=4
 )
+register_rocm_ci(est_time=800, suite="nightly-stage-c-4-gpu-mi350", labels=["precision", "long"])
 
 _MODEL_NAME = "DeepSeek-V4-Flash-FP8-4layer"
 _NUM_GPUS = 4
@@ -62,7 +63,6 @@ def _prepare_args() -> ScriptArgs:
         enable_eval=False,
         num_nodes=1,
         num_gpus_per_node=_NUM_GPUS,
-        hardware="H200",
         skip_saving=True,
         use_fault_tolerance=False,
     )
@@ -104,7 +104,6 @@ def _run_args(
         enable_eval=False,
         num_nodes=1,
         num_gpus_per_node=_NUM_GPUS,
-        hardware="H200",
         hf_checkpoint=hf_checkpoint,
         skip_saving=True,
         use_fault_tolerance=False,
@@ -276,6 +275,8 @@ def main() -> None:
         os.environ.pop(env_var, None)
 
     debug_root = Path(tempfile.mkdtemp(prefix="miles-dsv4-bshd-thd-", dir="/tmp"))
+    if SNAPSHOT_TESTING_ENABLED:
+        generated_value_registry.register(kind="temporary_directory", name="dsv4_parity", value=str(debug_root))
     te_precision_config_path = debug_root / "te_precision.yaml"
     te_precision_config_path.write_text(f"{_DSV4_TE_PRECISION_CONFIG}\n", encoding="utf-8")
     _run_rollout(

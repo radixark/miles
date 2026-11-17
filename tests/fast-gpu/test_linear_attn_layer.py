@@ -14,7 +14,7 @@ import torch.distributed as dist
 from megatron.core import dist_checkpointing, parallel_state
 from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
 from megatron.core.transformer.transformer_config import TransformerConfig
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import LinearAttnHeads
 
@@ -24,6 +24,8 @@ from linear_attn_reference import ReplicatedKDA, build_layer, gather, packed, re
 register_cuda_ci(
     est_time=120, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=2
 )
+
+register_rocm_ci(est_time=270, suite="nightly-stage-c-2-gpu-mi350", labels=["precision"])
 
 HIDDEN = 256
 HEADS = LinearAttnHeads(num_k_heads=8, num_v_heads=8, head_k_dim=64, head_v_dim=64)

@@ -19,8 +19,8 @@ def kv_norm_rope(
 
 @torch.no_grad()
 def kv_cache_roundtrip(kv: torch.Tensor, weight: torch.Tensor, eps: float, freqs_cis: torch.Tensor) -> torch.Tensor:
-    from sglang.kernels.ops.attention.dsv4.dequant_k_cache import dequantize_k_cache_paged
-    from sglang.kernels.ops.attention.dsv4.elementwise import fused_k_norm_rope_flashmla
+    from sglang.kernels.ops.attention.dsv4.dequant_k_cache import dequantize_k_cache_paged_dsv4
+    from sglang.kernels.ops.attention.dsv4.norm_rope import fused_k_norm_rope_flashmla
 
     bsz, seqlen, dim = kv.shape
     flat = kv.reshape(bsz * seqlen, dim).contiguous()
@@ -39,7 +39,7 @@ def kv_cache_roundtrip(kv: torch.Tensor, weight: torch.Tensor, eps: float, freqs
         kvcache=cache,
         page_size=_PAGE_SIZE,
     )
-    return dequantize_k_cache_paged(cache, loc, _PAGE_SIZE).reshape(bsz, seqlen, dim).to(kv.dtype)
+    return dequantize_k_cache_paged_dsv4(cache, loc, _PAGE_SIZE).reshape(bsz, seqlen, dim).to(kv.dtype)
 
 
 def kv_norm_rope_fp8(
@@ -54,7 +54,7 @@ def kv_norm_rope_fp8(
 @torch.no_grad()
 def compressed_kv_cache_roundtrip(latent: torch.Tensor) -> torch.Tensor:
     from sglang.kernels.ops.attention.dsv4.attn import fused_store_cache
-    from sglang.kernels.ops.attention.dsv4.dequant_k_cache import dequantize_k_cache_paged
+    from sglang.kernels.ops.attention.dsv4.dequant_k_cache import dequantize_k_cache_paged_dsv4
 
     bsz, seqlen, dim = latent.shape
     flat = latent.reshape(bsz * seqlen, dim).contiguous()
@@ -63,7 +63,7 @@ def compressed_kv_cache_roundtrip(latent: torch.Tensor) -> torch.Tensor:
     page_bytes = -(-(_BYTES_PER_TOKEN * _PAGE_SIZE) // _ROW_BYTES) * _ROW_BYTES
     cache = torch.zeros(pages, page_bytes, dtype=torch.uint8, device=latent.device)
     fused_store_cache(input=flat, cache=cache, indices=loc, page_size=_PAGE_SIZE, type="flashmla")
-    return dequantize_k_cache_paged(cache, loc, _PAGE_SIZE).reshape(bsz, seqlen, dim).to(latent.dtype)
+    return dequantize_k_cache_paged_dsv4(cache, loc, _PAGE_SIZE).reshape(bsz, seqlen, dim).to(latent.dtype)
 
 
 def compressed_kv_stored(latent: torch.Tensor, rope_dim: int) -> torch.Tensor:

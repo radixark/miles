@@ -168,6 +168,8 @@ def _scalars_only(metrics: dict) -> dict:
     for key, value in metrics.items():
         if isinstance(value, (int, float, str, bool)):
             out[key] = value
-        elif hasattr(type(value), "__float__"):  # numpy/torch zero-dim scalars
+        elif hasattr(
+            type(value), "__float__"
+        ):  # numpy/torch zero-dim scalars  # config-access-exempt: detect numeric scalar conversion without importing array libraries
             out[key] = float(value)
     return out

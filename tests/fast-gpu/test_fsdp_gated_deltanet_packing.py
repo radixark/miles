@@ -116,6 +116,7 @@ def _packed_batch(docs, padded_length):
         cu_seqlens=torch.tensor(cu_seqlens_host, dtype=torch.int32, device="cuda"),
         cu_seqlens_host=cu_seqlens_host,
         max_seqlen=max(end - start for start, end in itertools.pairwise(cu_seqlens_host)),
+        unconcat_tokens=docs,
     )
 
 
@@ -244,18 +245,14 @@ def _image_inputs(seed):
 @_LINEAR_HEAD_DIMS
 @torch.no_grad()
 def test_packed_image_document_matches_the_image_document_run_alone(linear_head_dim):
-    """The vision tower raising on the LM's packing kwargs, or an image document reading its predecessor's state."""
+    """An image document reading its predecessor's state. Which LM kwargs HF hands the vision tower is pinned by
+    test_qwen3_5_vision_tower_never_sees_language_model_packing_kwargs in tests/fast."""
     model = _tiny_vision_language_model(linear_head_dim)
     adapter = resolve_arch_adapter(model.config)
     docs = [_random_tokens(37, seed=0), _image_document(text_length=58, seed=1)]
     batch = _packed_batch(docs, padded_length=128)
     batch["multimodal_train_inputs"] = _image_inputs(seed=2)
     packing_inputs = _actor_for(model)._get_model_inputs_args(batch)
-
-    # Pins the upstream HF bug the guard works around: this turns red once HF stops forwarding the
-    # language model's kwargs into the vision tower's flash attention.
-    with pytest.raises(TypeError, match="multiple values for keyword argument 'cu_seq_lens_q'"):
-        model(**packing_inputs)
 
     adapter.patch_model(model, None)
     # the actor hands HF 1-D text positions, so without them HF would build multimodal RoPE positions instead
@@ -299,6 +296,24 @@ def test_building_packing_kwargs_never_syncs_the_device():
     expected_seq_idx = [doc for doc, length in enumerate((37, 64, 129, 26)) for _ in range(length)]
     assert inputs["seq_idx"].tolist() == [expected_seq_idx]
     assert inputs["cu_seq_lens_q"] is batch["cu_seqlens"] and inputs["max_length_q"] == 129
+
+
+def test_building_attention_boundaries_never_syncs_the_device():
+    """Stock HF attention gets the pad tail as 1-token segments, built on the device from host lengths."""
+    actor = object.__new__(FSDPTrainRayActor)
+    actor.arch_adapter = resolve_arch_adapter(SimpleNamespace(model_type="qwen3"))
+    docs = [_random_tokens(length, seed) for seed, length in enumerate((37, 64, 129))]
+    batch = _packed_batch(docs, padded_length=256)
+
+    previous_mode = torch.cuda.get_sync_debug_mode()
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        inputs = actor._get_model_inputs_args(batch)
+    finally:
+        torch.cuda.set_sync_debug_mode(previous_mode)
+
+    assert inputs["cu_seq_lens_q"].tolist() == [0, 37, 101, 230, *range(231, 257)]
+    assert inputs["max_length_q"] == 129
 
 
 if __name__ == "__main__":

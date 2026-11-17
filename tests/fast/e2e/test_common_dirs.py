@@ -3,8 +3,8 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
-from tests.e2e.common_dirs import get_test_data_dir, get_test_model_dir
 from tests.fast.utils.command_recorder import record_commands
+from tests.utils.dirs import get_test_data_dir, get_test_model_dir
 
 from miles.utils.external_utils.command_utils.common import repo_base_dir
 

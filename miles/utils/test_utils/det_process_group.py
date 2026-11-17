@@ -13,6 +13,7 @@ Debug/test use only: the fold trades bandwidth and synchrony for determinism.
 """
 
 import logging
+from datetime import timedelta
 
 import torch
 import torch.distributed as dist
@@ -65,6 +66,7 @@ class DetProcessGroup(BaseProcessGroup):
     def __init__(self, inner: dist.ProcessGroup) -> None:
         super().__init__(inner.rank(), inner.size())
         self._inner = inner
+        self._coalesced_p2p_works: list[Work] | None = None
         # Register the cuda backend as torchft's ProcessGroupNCCL._create_pg does, so
         # _device_types reports cuda and object collectives pick cuda over cpu. Only
         # feeds device/backend lookups; collectives still dispatch to our methods.
@@ -195,17 +197,27 @@ class DetProcessGroup(BaseProcessGroup):
         return self.alltoall_base(output_tensor, input_tensor, output_split_sizes, input_split_sizes, opts)
 
     def send(self, tensors: list[torch.Tensor], dst_rank: int, tag: int) -> Work:
-        return self._inner.send(tensors, dst_rank, tag)
+        work = self._inner.send(tensors, dst_rank, tag)
+        if self._coalesced_p2p_works is not None:
+            self._coalesced_p2p_works.append(work)
+        return work
 
     def recv(self, tensors: list[torch.Tensor], src_rank: int, tag: int) -> Work:
-        return self._inner.recv(tensors, src_rank, tag)
+        work = self._inner.recv(tensors, src_rank, tag)
+        if self._coalesced_p2p_works is not None:
+            self._coalesced_p2p_works.append(work)
+        return work
 
     def _start_coalescing(self, device: torch.device) -> None:
         # Ops queue at the Python level and flush via the *_coalesced methods.
-        return None
+        assert self._coalesced_p2p_works is None, "Nested coalescing is not supported"
+        self._coalesced_p2p_works = []
 
     def _end_coalescing(self, device: torch.device) -> Work:
-        return _CompletedWork()
+        works = self._coalesced_p2p_works
+        assert works is not None, "Coalescing has not started"
+        self._coalesced_p2p_works = None
+        return _CoalescedP2PWork(works) if works else _CompletedWork()
 
     def getBackendName(self) -> str:
         return DET_NCCL_BACKEND_NAME
@@ -312,7 +324,21 @@ def _gather_into(group: dist.ProcessGroup, output: torch.Tensor, input: torch.Te
 
 def _reduce_op_of(opts: object) -> object:
     """Extract the ReduceOp from an options object (or pass a bare ReduceOp through)."""
-    return opts.reduceOp if hasattr(opts, "reduceOp") else opts
+    return (
+        opts.reduceOp if hasattr(opts, "reduceOp") else opts
+    )  # config-access-exempt: accept either ReduceOp or collective options wrappers
+
+
+class _CoalescedP2PWork(Work):
+    def __init__(self, works: list[Work]) -> None:
+        super().__init__()
+        self._works = works
+
+    def wait(self, timeout: timedelta | None = None) -> bool:
+        for work in self._works:
+            if not (work.wait() if timeout is None else work.wait(timeout)):
+                return False
+        return True
 
 
 class _CompletedWork(Work):

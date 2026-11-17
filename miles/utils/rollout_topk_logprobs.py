@@ -20,7 +20,7 @@ def validate_rollout_topk_logprobs_args(args: Any) -> None:
         raise ValueError(f"--rollout-top-logprobs-num must be non-negative, got {k}")
     if not k:
         return
-    if args.rollout_sampling_logprobs_mode == "support" and k < args.rollout_top_k:
+    if requests_support_logprobs(args) and k < args.rollout_top_k:
         raise ValueError(
             "Filtered rollout sampling requires --rollout-top-logprobs-num >= --rollout-top-k "
             "so the recorded candidates can hold the whole sampling support"
@@ -28,6 +28,11 @@ def validate_rollout_topk_logprobs_args(args: Any) -> None:
     opd_student_top_k = args.use_opd and args.opd_log_prob_top_k > 0 and args.opd_top_k_strategy != "only-teacher"
     if opd_student_top_k:
         raise ValueError("--rollout-top-logprobs-num cannot be combined with OPD student top-k log-probs")
+
+
+def requests_support_logprobs(args: Any) -> bool:
+    """Whether training requests ask SGLang for support log-probs: support mode with top-k collected."""
+    return bool(args.rollout_top_logprobs_num) and args.rollout_sampling_logprobs_mode == "support"
 
 
 def validate_rollout_topk_logprobs_sampling(

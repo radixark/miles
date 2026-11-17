@@ -38,7 +38,7 @@ class TestWhereTheTrainerLoadsItsState:
 
     def test_init_reaches_its_state_load_through_that_function(self):
         """The invariant is worth nothing if init stopped going through the function everything else goes through."""
-        assert "init" in _functions_calling(_CORE_METHOD, as_method=True)
+        assert _INIT_METHOD in _functions_calling(_CORE_METHOD, as_method=True)
 
 
 def _function(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
@@ -92,3 +92,28 @@ class TestWhenTheTrainerBuildsItsWeightUpdater:
     def test_the_reusable_load_never_offloads_by_itself(self):
         """A reload runs it with the trainer awake, and an offload there would strand the caller asleep."""
         assert _method_call_lines(_CORE_METHOD, _SLEEP_METHOD) == []
+
+
+class TestCheckpointSourceProvenance:
+    def test_all_actor_loads_pass_the_request_resume_decision(self) -> None:
+        """Initial, critic, reload, and peer recovery loads cannot silently use reference iterations as progress."""
+        expected = {"init": "ckpt_load_config.resume_from_ckpt", "load_state": "resume_from_ckpt"}
+        for caller, expression in expected.items():
+            calls = [
+                node
+                for node in ast.walk(_function(caller))
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == _CORE_METHOD
+            ]
+            assert calls
+            for call in calls:
+                [value] = [item.value for item in call.keywords if item.arg == "resume_from_ckpt"]
+                assert ast.unparse(value) == expression
+        [call] = [
+            node
+            for node in ast.walk(_function(_CORE_METHOD))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == _LOAD_FUNCTION
+        ]
+        [value] = [item.value for item in call.keywords if item.arg == "resume_from_ckpt"]
+        assert ast.unparse(value) == "resume_from_ckpt"

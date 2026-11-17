@@ -13,7 +13,7 @@ from miles.backends.fsdp_utils.plugins.hf_kernels.loader import HubKernelSpec
 SLOT_GATED_DELTA_RULE = "gated_delta_rule"
 
 # GatedDeltaNet's short causal convolution, same architectures. Without the causal_conv1d wheel
-# the forward drops to F.silu(self.conv1d(...)), which takes no seq_idx.
+# transformers falls back to a torch `causal_conv1d_fn` that takes no seq_idx.
 SLOT_CAUSAL_CONV1D = "causal_conv1d"
 
 # The NemotronH attention mixer's varlen path; without it the packed-document attention patch
@@ -48,7 +48,7 @@ REQUIRED_SLOT_FUNCTIONS = {
 
 def default_module_kernels(args) -> dict[str, HubKernelSpec]:
     """The mapping miles ships. Empty under the bit-exact run modes, which own their numerics."""
-    if args.true_on_policy_mode or args.deterministic_mode:
+    if args.true_on_policy_mode or args.backend.deterministic_mode:
         return {}
     return {
         SLOT_GATED_DELTA_RULE: FLA,

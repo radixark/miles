@@ -39,7 +39,7 @@ def prepare():
         raise FileNotFoundError(f"Dataset not found. Expected local dataset at {TRAIN_DATA_PATH}; ")
 
 
-def execute():
+def execute(extra_args: str = ""):
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} "
 
     wandb_args = (
@@ -61,7 +61,8 @@ def execute():
         "--rm-type math "
         "--apply-chat-template "
         "--custom-generate-function-path examples.geo3k_vlm.multi_turn.rollout.generate "
-        "--custom-config-path examples/geo3k_vlm/multi_turn/geo3k_vlm_multi_turn_config.yaml "
+        "--max-turns 3 "
+        "--rollout-interaction-env-path examples.geo3k_vlm.multi_turn.env_geo3k "
         "--rollout-shuffle "
         "--num-rollout 3000 "
         "--rollout-batch-size 64 "
@@ -156,6 +157,7 @@ def execute():
         f"{misc_args} "
         f"{wandb_args} "
         # f"{get_default_wandb_args(__file__)} "
+        f"{extra_args} "
     )
 
     command_utils.default_config().create_backend().execute_train(

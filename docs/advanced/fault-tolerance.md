@@ -22,6 +22,9 @@ The flag is `action="store_true"`, default `False`
 (`miles/utils/arguments.py`). The rollout paths below additionally require
 `rollout` in `--ft-components`, which is what that flag selects when omitted.
 
+Rollout fault tolerance requires a partial-target weight update:
+`--update-weight-transfer-mode p2p` without `--colocate`.
+
 ## Health monitor
 
 `RolloutHealthMonitor` (`miles/utils/health_monitor.py`) runs in a daemon

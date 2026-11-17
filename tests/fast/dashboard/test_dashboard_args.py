@@ -3,13 +3,14 @@ import logging
 
 import pytest
 
-from miles.dashboard.args import add_dashboard_arguments, collector_config_from_args, validate_dashboard_args
+from miles.dashboard.args import collector_config_from_args, validate_dashboard_args
 from miles.dashboard.sglang_scraper import DEFAULT_METRIC_WHITELIST
+from miles.utils.args.configs.dashboard import DashboardConfig
 
 
 def parse(argv):
     parser = argparse.ArgumentParser()
-    add_dashboard_arguments(parser)
+    DashboardConfig.add_arguments(parser=parser)
     return parser.parse_args(argv)
 
 

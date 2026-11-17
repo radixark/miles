@@ -3,7 +3,7 @@ import shlex
 from pathlib import Path
 
 import pytest
-from tests.fast.cluster_backends import both_backends, require_backend
+from tests.utils.cluster_backends import both_backends, require_backend
 
 import miles.utils.external_utils.command_utils as command_utils
 from miles.utils.external_utils.command_utils.helm_backend.backend import KubernetesCommandBackend
@@ -91,7 +91,7 @@ def _called_name(func: ast.expr) -> str:
 def _capture_backend(monkeypatch) -> list[ClusterBackend]:
     chosen: list[ClusterBackend] = []
 
-    def _execute_train_inner(self, *, request, config) -> None:
+    def _execute_train_inner(self, *, request, config, guard) -> None:
         chosen.append(config.cluster_backend)
 
     for backend_cls in (RayCommandBackend, KubernetesCommandBackend):

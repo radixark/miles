@@ -2,7 +2,7 @@ from collections.abc import Callable
 
 import pytest
 import torch
-from megatron.core.fusions import fused_cross_entropy
+from miles.backends.training_utils.loss.hub import math_utils
 
 
 @pytest.fixture
@@ -21,5 +21,5 @@ def fused_cross_entropy_calls(
         return logits.sum(dim=-1) * 0
 
     fake: Callable[[torch.Tensor, torch.Tensor, object], torch.Tensor] = fake_fused_cross_entropy
-    monkeypatch.setattr(fused_cross_entropy, "fused_vocab_parallel_cross_entropy", fake)
+    monkeypatch.setattr(math_utils, "vocab_parallel_cross_entropy", fake)
     return calls

@@ -18,6 +18,7 @@ from unittest.mock import patch
 import httpx
 import numpy as np
 from tests.fast.fixtures.session_fixtures import make_session_server_config
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.generate_hub import agentic_tool_call
@@ -200,6 +201,8 @@ def assert_agentic_retry_trajectory_parity(v1: SessionParityRun, v2: SessionPari
         assert v1.samples[0].metadata[key] == value
         assert v2.samples[0].metadata[key] == value
     assert v1.samples[0].metadata["max_trim_tokens"] == v2.session_metadata["max_trim_tokens"]
+    assert isinstance(v1.samples[0].metadata["session_id"], str)
+    assert isinstance(v2.samples[0].metadata["session_id"], str)
 
     v2_linear_metadata = {key: value for key, value in v2.session_metadata.items() if key not in ("agent", "tree")}
     _assert_bits_equal(v1.session_metadata, v2_linear_metadata, path="session_metadata")
@@ -242,11 +245,12 @@ def _serve_session(*, backend_url: str, hf_checkpoint: str, version: str) -> Ite
         chat_template_path=None,
         apply_chat_template_kwargs={"enable_thinking": False},
         tito_model="qwen3",
-        sglang_speculative_algorithm=None,
+        sglang=make_sglang_config(speculative_algorithm=None),
         use_session_server=version,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
         use_sampling_support_replay=False,
+        rollout_temperature=1.0,
         pause_generation_mode="retract",
         session_server_ip="127.0.0.1",
         session_server_instances=[SessionServerInstance(addr=session_addr, instance_id=instance_id)],
@@ -287,6 +291,9 @@ def _training_metadata_projection(metadata: dict[str, Any]) -> dict[str, Any]:
     projected = deepcopy(metadata)
     projected.pop("leaf", None)
     projected.pop("max_trim_tokens", None)
+    # each path opens its own session, so the ids differ by construction
+    if "session_id" in projected:
+        projected["session_id"] = "<session>"
     lifecycle = projected.get("lifecycle")
     if lifecycle is not None:
         segments = lifecycle if isinstance(lifecycle, list) else [lifecycle]

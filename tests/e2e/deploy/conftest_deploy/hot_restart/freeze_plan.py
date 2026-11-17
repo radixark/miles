@@ -5,11 +5,8 @@ from pathlib import Path
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import compute_freeze_plan
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE
 
-from miles.utils.test_utils.ft_test_actions import (
-    CI_FT_TEST_ACTIONS_PATH_FLAG,
-    compute_frozen_sentinel_path,
-    write_ft_test_actions,
-)
+from miles.utils.test_utils.fault_injector.actions.frozen import compute_frozen_sentinel_path
+from miles.utils.test_utils.fault_injector.static_source import CI_FAULT_HOOKS_PATH_FLAG, write_fault_hooks
 
 # TODO ad hoc hack: this whole module goes away with the args refactor. Reverting it means
 logger = logging.getLogger(__name__)
@@ -30,12 +27,12 @@ def compute_freeze_plan_path(side_dump_dir: str) -> Path:
 
 # TODO ad hoc hack: revert after the args refactor
 def with_freeze_plan_of(train_args: str, *, plan_path: Path) -> str:
-    return f"{train_args}{CI_FT_TEST_ACTIONS_PATH_FLAG} {shlex.quote(str(plan_path))} "
+    return f"{train_args}{CI_FAULT_HOOKS_PATH_FLAG} {shlex.quote(str(plan_path))} "
 
 
 # TODO ad hoc hack: revert after the args refactor
 def write_freeze_plan(plan_path: Path, *, frozen_rollout_id: int | None) -> None:
-    write_ft_test_actions(plan_path, compute_freeze_plan(frozen_rollout_id))
+    write_fault_hooks(plan_path, compute_freeze_plan(frozen_rollout_id))
     logger.info(f"{plan_path} now freezes the run after step {frozen_rollout_id}")
 
 

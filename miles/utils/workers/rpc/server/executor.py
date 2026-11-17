@@ -11,7 +11,7 @@ from typing import Any
 
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.rpc.common.metadata import DEFAULT_CONCURRENCY_GROUP, DedicatedRpcLoopWorker, RpcMethodSpec
-from miles.utils.workers.rpc.common.protocol import CallStatusResponse
+from miles.utils.workers.rpc.common.protocol import CallStatusResponse, exception_type_name
 from miles.utils.workers.rpc.server.worker_loop import _DedicatedWorkerLoop
 
 logger = logging.getLogger(__name__)
@@ -74,16 +74,20 @@ class RpcCallExecutor:
             )
         except asyncio.CancelledError as e:
             log_structured(logger.warning, phase="end", ok=False, cancelled=True, **log_fields)
-            finish(outcome=CallStatusResponse(status="failed", error=repr(e)))
+            finish(outcome=CallStatusResponse(status="failed", error=repr(e), error_type=exception_type_name(type(e))))
             raise
         except Exception as e:
             log_structured(logger.error, phase="end", ok=False, **log_fields, exc_info=True)
-            outcome = CallStatusResponse(status="failed", error="".join(traceback.format_exception(e)))
+            outcome = CallStatusResponse(
+                status="failed",
+                error="".join(traceback.format_exception(e)),
+                error_type=exception_type_name(type(e)),
+            )
 
         finish(outcome=outcome)
 
     async def _call_worker(self, *, spec: RpcMethodSpec, kwargs: dict[str, Any]) -> Any:
-        method = getattr(self._worker, spec.name)
+        method = getattr(self._worker, spec.name)  # config-access-exempt: attribute selected at runtime from spec.name
         if self._worker_loop is not None:
             return await self._worker_loop.call(method=method, kwargs=kwargs, is_async=spec.is_async)
         if spec.is_async:

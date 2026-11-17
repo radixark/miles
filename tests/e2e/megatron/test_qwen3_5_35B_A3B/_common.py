@@ -55,6 +55,8 @@ class CaseConfig:
     use_fp8_rollout: bool = False
     # EAGLE speculative decoding (MTP draft) with spec v2 in the rollout.
     use_spec: bool = True
+    # Send the replay arrays through the output store (--use-output-store) instead of inline.
+    use_output_store: bool = False
     # None omits --sglang-ep-size, so SGLang shards the experts by TP alone (EP 1).
     sglang_ep_size: int = None
     sglang_dp_size: int = None
@@ -249,6 +251,8 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         misc_args += f"--rollout-num-gpus {case.rollout_num_gpus} "
     if case.fully_async:
         misc_args += "--fully-async "
+    if case.use_output_store:
+        misc_args += command_utils.get_output_store_args()
     if case.update_weight_transfer_mode is not None:
         misc_args += f"--update-weight-transfer-mode {case.update_weight_transfer_mode} "
     misc_args += f"--moe-token-dispatcher-type {case.megatron_dispatcher} "

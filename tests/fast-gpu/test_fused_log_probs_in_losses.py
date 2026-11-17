@@ -2,11 +2,12 @@
 
 import sys
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 register_cuda_ci(
     est_time=120, suite="stage-b-2-gpu-h200", labels=["megatron"], hardware=["hopper", "blackwell"], num_gpus=2
 )
+register_rocm_ci(est_time=90, suite="nightly-stage-c-2-gpu-mi350", labels=["megatron"])
 
 import dataclasses
 import os
@@ -16,6 +17,7 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from tests.fast.backends.training_utils.loss.loss_test_utils import (
+    args_to_dict,
     make_args,
     make_batch,
     make_inputs,
@@ -72,6 +74,34 @@ def test_losses_match_the_torch_backend(nccl_world, loss_type, dtype):
     for key, value in torch_log.items():
         assert fused_log[key] == pytest.approx(value, rel=1e-4, abs=1e-5), key
     torch.testing.assert_close(fused_grad.float(), torch_grad.float(), **_TORCH_BACKEND_GRAD_TOL)
+
+
+@pytest.mark.parametrize("train_backend", ["megatron", "fsdp"])
+def test_fused_normalization_uses_the_backend_vocabulary(nccl_world, train_backend: str) -> None:
+    """Megatron padding is excluded while native backends retain their full vocabulary."""
+    make_parallel_state()
+    args = make_args(true_on_policy_mode=False, log_probs_backend="fused", vocab_size=7)
+    args.train_backend = train_backend
+    if train_backend != "megatron":
+        del args.backend.vocab_size
+    logits = torch.zeros(1, 3, 8, device="cuda", requires_grad=True)
+    with torch.no_grad():
+        logits[..., -1] = 10
+    result = get_log_probs_and_entropy(
+        logits * 1,
+        args=args,
+        unconcat_tokens=[torch.tensor([0, 1, 2], device="cuda")],
+        total_lengths=[3],
+        response_lengths=[2],
+        with_entropy=False,
+    )
+
+    vocabulary = 7 if train_backend == "megatron" else 8
+    expected = torch.log_softmax(logits[0, :2, :vocabulary], dim=-1)[[0, 1], [1, 2]]
+    torch.testing.assert_close(result["log_probs"][0], expected)
+    result["log_probs"][0].sum().backward()
+    if train_backend == "megatron":
+        assert torch.count_nonzero(logits.grad[..., -1]) == 0
 
 
 # Zigzag CP=2 (thd): each sample is padded to 4 chunks and rank r holds chunks r and 3 - r. Rank 1
@@ -196,7 +226,7 @@ def _allgather_cp2_worker(rank: int, world_size: int, port: int, prompt_lens, re
 
         outputs = {}
         for backend in ("torch", "fused"):
-            args = make_args(**{**vars(base), "log_probs_backend": backend})
+            args = make_args(**{**args_to_dict(base), "log_probs_backend": backend})
             res = get_log_probs_and_entropy(
                 local.clone().requires_grad_(True) * 1,
                 args=args,

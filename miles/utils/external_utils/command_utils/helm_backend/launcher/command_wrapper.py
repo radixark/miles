@@ -25,8 +25,8 @@ _CREATE_REQUEST_TIMEOUT_SECONDS = 60.0
 
 class Helm:
     @staticmethod
-    def run_raw(*arguments: str) -> subprocess.CompletedProcess[str]:
-        return run_process(["helm", *arguments], capture_output=True, check=False)
+    def run_raw(*arguments: str, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+        return run_process(["helm", *arguments], capture_output=True, check=False, timeout=timeout)
 
     @staticmethod
     def upgrade(
@@ -36,8 +36,13 @@ class Helm:
         chart: str | Path,
         values_files: list[str | Path],
         ci_run: bool,
+        timeout: float | None = None,
     ) -> None:
-        _run(Helm.upgrade_command(release, namespace, chart, values_files, ci_run=ci_run), capture_output=False)
+        _run(
+            Helm.upgrade_command(release, namespace, chart, values_files, ci_run=ci_run),
+            capture_output=False,
+            timeout=timeout,
+        )
 
     @staticmethod
     def render_upgrade(*, release: str, namespace: str, chart: str | Path, values_files: list[str | Path]) -> Manifest:
@@ -78,9 +83,12 @@ class Helm:
         return _run(command, capture_output=True).stdout
 
     @staticmethod
-    def get_manifest(release: str, namespace: str) -> Manifest | None:
+    def get_manifest(release: str, namespace: str, *, timeout: float | None = None) -> Manifest | None:
         listed = run_process(
-            ["helm", "get", "manifest", release, "--namespace", namespace], capture_output=True, check=False
+            ["helm", "get", "manifest", release, "--namespace", namespace],
+            capture_output=True,
+            check=False,
+            timeout=timeout,
         )
         if listed.returncode == 0:
             return Manifest.parse(listed.stdout, namespace=namespace)
@@ -111,8 +119,8 @@ class Helm:
         _run(["helm", "uninstall", release, "--namespace", namespace], capture_output=False)
 
     @staticmethod
-    def uninstall_if_present(*, release: str, namespace: str) -> None:
-        result = Helm.run_raw("uninstall", release, "--namespace", namespace)
+    def uninstall_if_present(*, release: str, namespace: str, timeout: float | None = None) -> None:
+        result = Helm.run_raw("uninstall", release, "--namespace", namespace, timeout=timeout)
         if result.returncode == 0:
             return
 
@@ -188,6 +196,7 @@ class Kubectl:
         namespace: str,
         selector: str | None = None,
         field_selector: str | None = None,
+        timeout: float | None = None,
     ) -> _ModelT | None:
         command = ["get", kind]
         if name is not None:
@@ -197,7 +206,10 @@ class Kubectl:
             command += ["--selector", selector]
         if field_selector is not None:
             command += ["--field-selector", field_selector]
-        result = Kubectl._run(command, timeout=_GET_REQUEST_TIMEOUT_SECONDS)
+        result = Kubectl._run(
+            command,
+            timeout=_GET_REQUEST_TIMEOUT_SECONDS if timeout is None else min(_GET_REQUEST_TIMEOUT_SECONDS, timeout),
+        )
         if result.returncode != 0:
             raise RuntimeError(f"kubectl get {kind} failed with code {result.returncode}: {result.stderr.strip()}")
         if not result.stdout.strip():
@@ -279,8 +291,8 @@ def _compute_helm_args(values: dict[str, Any]) -> list[str]:
     return arguments
 
 
-def _run(command: list[str], capture_output: bool) -> subprocess.CompletedProcess[str]:
-    return run_process(command, capture_output=capture_output, check=True)
+def _run(command: list[str], capture_output: bool, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+    return run_process(command, capture_output=capture_output, check=True, timeout=timeout)
 
 
 def _locked_dependency_names(chart: str | Path) -> list[str]:

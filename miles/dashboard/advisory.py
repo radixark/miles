@@ -11,11 +11,12 @@ utilization" that was a symptom, not headroom.
 
 from __future__ import annotations
 
+import json
+from bisect import bisect_left
 from dataclasses import dataclass
 from itertools import pairwise
 from statistics import median
 
-from miles.dashboard.dump_reader import DumpReader
 from miles.dashboard.store import MetricStore, Stream
 
 # an open phase this much beyond its own median closed duration is a stall,
@@ -30,6 +31,10 @@ ABORT_WINDOW_S = 1800.0
 ABORT_MIN_REQUESTS = 100.0
 ZERO_STD_FRAC_WARN = 0.5
 TRUNCATED_FRAC_WARN = 0.25
+# logged by the rollout manager for every train step (miles/ray/rollout/metrics.py)
+ZERO_STD_FRAC_KEY = "rollout/zero_std/percentage"
+ALL_ZERO_FRAC_KEY = "rollout/zero_std/all_zero_percentage"
+TRUNCATED_FRAC_KEY = "rollout/truncated_ratio"
 KV_BOUND_TOKEN_USAGE = 0.90
 KV_BOUND_RUNNING_RATIO = 0.5
 
@@ -46,7 +51,7 @@ DP_IMBALANCE_RATIO = 0.25
 DEFAULT_LOW_MFU = 0.15
 MFU_KEY = "perf/actor_train_mfu"
 MFU_PEAK_KEY = "perf/mfu_peak_tflops"
-MFU_STEP_KEY = "rollout/step"
+ROLLOUT_STEP_KEY = "rollout/step"
 MFU_MIN_STEPS = 3
 
 
@@ -58,7 +63,6 @@ class Advisory:
 
 def compute_advisories(
     store: MetricStore,
-    reader: DumpReader | None = None,
     *,
     t0: float | None = None,
     t1: float | None = None,
@@ -66,10 +70,12 @@ def compute_advisories(
     low_mfu: float = DEFAULT_LOW_MFU,
 ) -> list[Advisory]:
     args = store.meta.args if store.meta else {}
+    if t0 is None and t1 is None and (edge := store.newest_engine_scrape_ts()) is not None:
+        # claims about the engines' current state, like the alarms below
+        t0, t1 = edge - MetricStore.MAX_WINDOW_S, edge
     alarms = _stall_advisories(store)
     alarms += _engine_alarm_advisories(store, args, t0, t1)
-    if reader is not None:
-        alarms += _rollout_advisories(reader, args)
+    alarms += _rollout_advisories(store, args)
     if alarms:
         return alarms
     return _tuning_advisories(store, args, t0, t1, mfu=mfu, low_mfu=low_mfu)
@@ -86,9 +92,13 @@ def _fmt_duration(seconds: float) -> str:
 def _stall_advisories(store: MetricStore) -> list[Advisory]:
     """Open phases far beyond their own median closed duration.
 
-    Judged at the newest data timestamp over the whole run (not the query
-    window): a stall is a statement about the current state, and the open
-    marker may be arbitrarily older than any window the viewer looks at."""
+    Judged at the newest data timestamp, not over the query window: a stall
+    is a statement about the current state. Every open phase counts however
+    old its marker. The median comes from the phase's most recent closes in
+    this attempt however long ago: when every rank is stuck in one phase it
+    stops closing, and a baseline from a trailing window would empty out and
+    drop the alarm. Closes longer than ``MAX_WINDOW_S`` are earlier stalls,
+    left out so they cannot raise the baseline past the next one."""
     time_range = store.time_range()
     if time_range is None:
         return []
@@ -100,16 +110,11 @@ def _stall_advisories(store: MetricStore) -> list[Advisory]:
     # phases_by_lane anchors the synthesized initialize band to). It also keeps
     # the previous attempt's closed durations out of the median baseline.
     attempt_start = store.meta.start_ts if store.meta else float("-inf")
-    events = [event for event in store.phase_events() if event.t0 >= attempt_start]
-    closed_keys = {(e.node, e.rank, e.name, e.t0) for e in events if not e.open}
-    durations: dict[str, list[float]] = {}
+    durations = store.recent_closed_phase_durations(since_t0=attempt_start)
     open_ages: dict[str, list[float]] = {}
-    for event in events:
-        if event.open:
-            if (event.node, event.rank, event.name, event.t0) not in closed_keys:
-                open_ages.setdefault(event.name, []).append(edge - event.t0)
-        else:
-            durations.setdefault(event.name, []).append(event.t1 - event.t0)
+    for event in store.open_phase_events():
+        if event.t0 >= attempt_start:
+            open_ages.setdefault(event.name, []).append(edge - event.t0)
 
     out = []
     for name, ages in sorted(open_ages.items()):
@@ -147,6 +152,22 @@ def _counter_delta(series: list[dict], *, since: float = float("-inf")) -> float
     return total
 
 
+def _run_long_series(store: MetricStore, metric: str, recent: list[dict], *, t0: float, t1: float) -> list[dict]:
+    """Each series' run-long history before ``t0``, then its raw samples in
+    [t0, t1] (``recent``). The run-long view keeps one scrape per bucket, so
+    alone it can miss a counter's newest increments; stitched, every interval
+    of ``recent`` is in the result, so its total never falls below theirs."""
+    recent_by_key = {(one["addr"], json.dumps(one["labels"], sort_keys=True)): one for one in recent}
+    out = []
+    for history in store.engine_series(metric):
+        cut = bisect_left(history["ts"], t0)
+        raw = recent_by_key.pop(
+            (history["addr"], json.dumps(history["labels"], sort_keys=True)), dict(ts=[], value=[])
+        )
+        out.append(dict(ts=history["ts"][:cut] + raw["ts"], value=history["value"][:cut] + raw["value"]))
+    return out + list(recent_by_key.values())
+
+
 def _engine_alarm_advisories(store: MetricStore, args: dict, t0: float | None, t1: float | None) -> list[Advisory]:
     if not store.has_stream(Stream.ENGINE_SERIES):
         return []
@@ -160,14 +181,18 @@ def _engine_alarm_advisories(store: MetricStore, args: dict, t0: float | None, t
     # not store.time_range(): when the engines die the other streams keep
     # advancing, and a window that slid past the engine data would drop the
     # alarm exactly when it matters most.
-    requests = store.engine_series("sglang_num_requests_total")
-    aborts = store.engine_series("sglang_num_aborted_requests_total")
-    edge = max((one["ts"][-1] for one in requests + aborts if one["ts"]), default=0.0)
+    edge = store.newest_engine_scrape_ts()
+    # one extra window back: the interval crossing ``since`` needs its earlier sample
+    recent_window = dict(t0=edge - 2 * ABORT_WINDOW_S, t1=edge)
+    requests = store.engine_series("sglang_num_requests_total", **recent_window)
+    aborts = store.engine_series("sglang_num_aborted_requests_total", **recent_window)
     total = _counter_delta(requests, since=edge - ABORT_WINDOW_S)
     aborted = _counter_delta(aborts, since=edge - ABORT_WINDOW_S)
     if total >= ABORT_MIN_REQUESTS and aborted / total > ABORT_RATIO_WARN:
-        run_total = _counter_delta(requests)
-        run_aborted = _counter_delta(aborts)
+        run_total = _counter_delta(_run_long_series(store, "sglang_num_requests_total", requests, **recent_window))
+        run_aborted = _counter_delta(
+            _run_long_series(store, "sglang_num_aborted_requests_total", aborts, **recent_window)
+        )
         message = (
             f"{aborted / total:.0%} of engine requests were aborted client-side in the last "
             f"{_fmt_duration(ABORT_WINDOW_S)} ({aborted:.0f}/{total:.0f}; "
@@ -212,55 +237,37 @@ def _engine_alarm_advisories(store: MetricStore, args: dict, t0: float | None, t
     return out
 
 
-def _rollout_advisories(reader: DumpReader, args: dict) -> list[Advisory]:
-    """Degenerate-signal checks on the newest completed train rollout."""
-    train_ids = reader.rollout_ids().train
-    if not train_ids:
-        return []
-    rollout_id = train_ids[-1]
+def _rollout_advisories(store: MetricStore, args: dict) -> list[Advisory]:
+    """Degenerate-signal checks on the newest train rollout step, from the
+    rollout metrics logged for it: no dump is read."""
+    series = store.metric_series([ZERO_STD_FRAC_KEY, ALL_ZERO_FRAC_KEY, TRUNCATED_FRAC_KEY], x_key=ROLLOUT_STEP_KEY)
+    latest = {key: (points["x"][-1], points["y"][-1]) for key, points in series.items() if points["y"]}
     out = []
 
-    groups = reader.groups(rollout_id)
-    with_rewards = groups.filter(groups["reward_mean"].is_not_null())
-    if len(with_rewards):
-        zero_std = int(with_rewards["zero_std"].sum())
-        if zero_std / len(with_rewards) >= ZERO_STD_FRAC_WARN:
+    if ZERO_STD_FRAC_KEY in latest:
+        step, zero_std_frac = latest[ZERO_STD_FRAC_KEY]
+        if zero_std_frac >= ZERO_STD_FRAC_WARN:
             message = (
-                f"{zero_std}/{len(with_rewards)} groups in rollout {rollout_id} have zero reward std — "
+                f"{zero_std_frac:.0%} of groups in rollout {step} have zero reward std — "
                 "those groups contribute zero policy gradient"
             )
-            if with_rewards["reward_mean"].abs().max() < 1e-12:
+            if latest.get(ALL_ZERO_FRAC_KEY) == (step, 1.0):
                 message += (
                     "; every reward is 0, pointing at systematic failure (timeouts/truncation), not task difficulty"
                 )
             out.append(Advisory(level="warning", message=message))
 
-    summary = reader.summary(rollout_id)
-    if summary.height == 0:
-        return out
-    truncated_frac = summary["truncated"].cast(float).mean()
-    if truncated_frac is not None and truncated_frac >= TRUNCATED_FRAC_WARN:
-        message = f"{truncated_frac:.0%} of samples in rollout {rollout_id} are truncated"
-        cap = args.get("rollout_max_response_len")
-        if cap:
-            message += (
-                f" — check --rollout-max-response-len ({cap:g}): in multi-turn agentic runs "
-                "the per-turn cap is usually the binding limit, not the context length"
-            )
-        out.append(Advisory(level="warning", message=message))
-
-    if "alignment_failed" in summary.columns and bool(summary["alignment_failed"].any()):
-        unreadable = int(summary["alignment_failed"].sum())
-        out.append(
-            Advisory(
-                level="info",
-                message=(
-                    f"per-token columns are blank for {unreadable} samples in rollout {rollout_id}: their "
-                    "context-parallel slices could not be placed, because this dump predates the cp_rank/cp_size "
-                    "fields. Blank here means unreadable, not undumped"
-                ),
-            )
-        )
+    if TRUNCATED_FRAC_KEY in latest:
+        step, truncated_frac = latest[TRUNCATED_FRAC_KEY]
+        if truncated_frac >= TRUNCATED_FRAC_WARN:
+            message = f"{truncated_frac:.0%} of samples in rollout {step} are truncated"
+            cap = args.get("rollout_max_response_len")
+            if cap:
+                message += (
+                    f" — check --rollout-max-response-len ({cap:g}): in multi-turn agentic runs "
+                    "the per-turn cap is usually the binding limit, not the context length"
+                )
+            out.append(Advisory(level="warning", message=message))
     return out
 
 
@@ -289,7 +296,8 @@ def _dp_spread_hint(args: dict) -> str:
     """Which knob actually decides how requests spread across dp ranks. Only a
     dp-aware sglang router routes per rank; otherwise the engine looks like one
     worker and sglang's own dp controller dispatches."""
-    if args.get("use_miles_router"):
+    # runs recorded before --router carry use_miles_router
+    if args.get("router") == "miles" or args.get("use_miles_router"):
         return "the miles router routes per engine; --sglang-load-balance-method decides the rank"
     if not args.get("router_dp_aware"):
         return "the router sees one worker per engine; --router-dp-aware makes it route per rank"
@@ -303,7 +311,7 @@ def _dp_spread_hint(args: dict) -> str:
 
 
 def mfu_summary(store: MetricStore) -> dict | None:
-    series = store.metric_series([MFU_KEY, MFU_PEAK_KEY], x_key=MFU_STEP_KEY)
+    series = store.metric_series([MFU_KEY, MFU_PEAK_KEY], x_key=ROLLOUT_STEP_KEY)
     steady = series[MFU_KEY]["y"][1:]
     if not steady:
         return None

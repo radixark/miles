@@ -8,14 +8,19 @@ End-to-end training workflows — the place to start.
 
 - **[geo3k_vlm](./geo3k_vlm)**: Training VLMs with FSDP using GRPO on the GEO3K dataset.
   - **[multi_turn](./geo3k_vlm/multi_turn)**: The same dataset over multiple turns, with the model cropping images through an interactive environment.
+- **[timelens_video](./timelens_video)**: Video temporal-grounding RL for Qwen3.5 with token-space media and a frozen vision tower.
+- **[avqa_audio](./avqa_audio)**: AVQA audio RL for Inkling-Small with token-space audio and a LoRA on one node.
 - **[lora](./lora)**: LoRA fine-tuning with the Megatron backend.
 - **[multi_lora](./multi_lora)**: Serve concurrent LoRA fine-tuning clients on one shared base model through the Tinker protocol.
+  - **[harbor_tinker](./multi_lora/harbor_tinker)**: Terminal-Bench 2 training with Harbor sandboxes and the official Tinker cookbook RL loop.
+  - **[tinker_agent](./multi_lora/tinker_agent)**: Agentic training with your own sandbox or harness through the official Tinker cookbook capture recipe.
 - **[multi_policy](./multi_policy)**: Two policies in one run — a solver answering gsm8k, and a verifier scored on ruling correctly about the solver's answers.
 - **[on_policy_distillation](./on_policy_distillation)**: Teacher–student distillation on the student's own rollouts, run inside the on-policy training loop.
   - **[qwen3_5_35b_selfdistill](./on_policy_distillation/qwen3_5_35b_selfdistill)**: Two-phase self-distillation of Qwen3.5-35B-A3B on one 8xH200 node, with an in-process Megatron teacher.
 - **[ppo](./ppo)**: Actor-critic PPO with GAE advantages, where the critic shares the actor's train GPUs.
 - **[retool_v2](./retool_v2)**: Tool-enabled language model generation with sandboxed Python code execution interleaved with thinking.
 - **[swe-agent-harbor-docker](./swe-agent-harbor-docker)**: Trains coding and terminal agents with Harbor-managed local Docker sandboxes and verifier rewards.
+- **[text_to_sql](./text_to_sql)**: Multi-turn text-to-SQL RL on BIRD-Platinum with a read-only SQLite tool, following River's recipe on Qwen3.6-35B-A3B.
 
 ## [Infra Features](./infra_features)
 

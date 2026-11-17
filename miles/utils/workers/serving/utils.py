@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import socket
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from miles.utils.function_registry import load_function
-from miles.utils.workers.worker_spec import ServeWorkerSpec
+from miles.utils.args.schema import validate_complete_config
+from miles.utils.workers.argv_utils import ORCHESTRATOR_CONFIG_FLAG, orchestrator_config_values
+from miles.utils.workers.serving.worker_config import OrchestratorWorkerConfig, ServeWorkerConfig
 
 IPV4_WILDCARD_HOST = "0.0.0.0"
 IPV6_WILDCARD_HOST = "::"
@@ -58,19 +60,15 @@ def split_worker_argv(argv: list[str]) -> tuple[list[str], list[str]]:
 
 def parse_own_args(own_argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Serve one pool of a miles run")
-    parser.add_argument("--specs", required=True, help="Spec table of the run as 'package.module.callable'")
-    parser.add_argument("--pool-id", required=True, help="Which pool of that run this process serves")
+    parser.add_argument("--config", required=True, help="Runtime config of this pool as serialized ServeWorkerConfig")
     return parser.parse_args(own_argv)
 
 
-def compute_serve_worker_spec(*, specs_fn: str, pool_id: str, worker_argv: list[str]) -> ServeWorkerSpec:
-    specs = load_function(specs_fn)(worker_argv)
-    matched = [spec for spec in specs if spec.name == pool_id]
-    assert len(matched) == 1, (
-        f"the run described by this pod's argv has {[spec.name for spec in specs]}, not one spec named "
-        f"'{pool_id}'; the pod and the launcher disagree about what this run is"
-    )
+def parse_serve_worker_config(value: str) -> ServeWorkerConfig:
+    return validate_complete_config(config_class=ServeWorkerConfig, payload=json.loads(value))
 
-    spec = matched[0]
-    assert isinstance(spec, ServeWorkerSpec), f"spec '{pool_id}' is a {type(spec).__name__}, which is not served"
-    return spec
+
+def parse_orchestrator_argv(argv: list[str]) -> OrchestratorWorkerConfig:
+    values = orchestrator_config_values(argv)
+    assert len(values) == 1, f"{ORCHESTRATOR_CONFIG_FLAG} must be given exactly once (got {len(values)})"
+    return validate_complete_config(config_class=OrchestratorWorkerConfig, payload=json.loads(values[0]))

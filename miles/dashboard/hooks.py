@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass
 
 from miles.dashboard.logging_utils import RateLimitedWarner
+from miles.dashboard.sandbox_health import STATUSES, SandboxReport, SandboxStatus
 from miles.dashboard.store import (
     DataBufferSample,
     EngineInfo,
@@ -26,6 +27,7 @@ from miles.dashboard.store import (
     TrajectoryEvent,
     TrajectoryEventKind,
 )
+from miles.rollout.agentic.agent_function import report_to_caller
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.timer import Timer
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
@@ -200,7 +202,9 @@ class TrajectorySink:
                     self._emit(TrajectoryEventKind.GEN_START, sample, ts=segment["t0"], turn=segment["turn"])
                 self._emit(TrajectoryEventKind.GEN_END, sample, ts=segment["t1"], turn=segment["turn"])
         last = samples[-1]
-        status = last.status.value if getattr(last, "status", None) is not None else ""
+        status = (
+            last.status.value if getattr(last, "status", None) is not None else ""
+        )  # config-access-exempt: accept legacy samples with optional status and weight-span metadata
         self._emit(TrajectoryEventKind.ATTEMPT_END, last, detail=status)
 
     def gen_span(self, sample, t0: float, t1: float, turn: int, detail: str = "") -> None:
@@ -215,7 +219,9 @@ class TrajectorySink:
 
     def _emit(self, kind: str, sample, *, ts: float | None = None, turn: int = -1, detail: str = "") -> None:
         try:
-            versions = [span.version for span in getattr(sample, "all_weight_version_spans", None) or []]
+            versions = [
+                span.version for span in getattr(sample, "all_weight_version_spans", None) or []
+            ]  # config-access-exempt: accept legacy samples with optional status and weight-span metadata
             event = TrajectoryEvent(
                 ts=time.time() if ts is None else ts,
                 kind=kind,
@@ -253,6 +259,7 @@ class TrajectorySink:
 _phase_sink: PhaseSink | None = None
 _engines_fingerprint: tuple | None = None
 _warner = RateLimitedWarner(logger)
+_no_collector_warner = RateLimitedWarner(logger)
 
 
 def attach_phase_sink(handle, role: str) -> None:
@@ -362,13 +369,66 @@ def report_data_buffer(length: int | None) -> None:
         _warner.warn("dashboard data-buffer report failed")
 
 
+def report_sandbox(
+    sandbox_key: str,
+    *,
+    task: str | None = None,
+    provider: str | None = None,
+    sandbox_id: str | None = None,
+    status: SandboxStatus = "healthy",
+    error: str | None = None,
+) -> None:
+    """Report one sandbox's health to the dashboard's Sandboxes view.
+
+    Call it when the sandbox starts, after each command it runs (the call time
+    becomes its "last executed" time), on an error and on teardown
+    (``status="finished"``). Works with any sandbox backend: ``provider`` and
+    ``sandbox_id`` are free-form labels. Works in the rollout manager process
+    and in ``subproc`` agent calls; a no-op when the dashboard is disabled."""
+    try:
+        if status not in STATUSES:
+            raise ValueError(f"{status=} must be one of {STATUSES}")
+        report = SandboxReport(
+            ts=time.time(),
+            sandbox_key=str(sandbox_key),
+            status=status,
+            task=_optional_str(task),
+            provider=_optional_str(provider),
+            sandbox_id=_optional_str(sandbox_id),
+            error=_optional_str(error),
+        )
+        if report_to_caller(report):
+            return
+        push_sandbox_reports([report])
+    except Exception:
+        _warner.warn("dashboard sandbox report failed")
+
+
+def push_sandbox_reports(reports: list[SandboxReport]) -> None:
+    """Send sandbox reports to the collector, e.g. those a ``subproc`` agent call made."""
+    from miles.dashboard import backend
+
+    handle = backend.current_collector()
+    if handle is None:
+        _no_collector_warner.warn("no dashboard collector in this process; sandbox reports are dropped")
+        return
+    try:
+        handle.push_sandbox_reports.remote(reports)
+    except Exception:
+        _warner.warn("dashboard sandbox report failed")
+
+
+def _optional_str(value: object) -> str | None:
+    return None if value is None else str(value)
+
+
 def _alive_engine_cells(servers) -> list:
     """A multi-node engine's cell holds ``num_nodes`` actors; only the first
     (master) owns the router-visible URL. Cells that are not alive are skipped
     until recovery completes."""
     cells = []
     for server in servers.values():
-        for cell in server.server_cells.values():
+        for cell in server.all_server_cells.values():
             if cell.is_pending_weights_or_serving:
                 cells.append(cell)
     return cells

@@ -318,6 +318,16 @@ def _environment_config():
                 f"auto_stop_interval_mins={kwargs['auto_stop_interval_mins']} would stop a Daytona sandbox "
                 f"mid-trial: AGENT_TRIAL_TIMEOUT allows {trial_min} minutes"
             )
+    elif env_type == EnvironmentType.E2B:
+        # renewals keep a sandbox alive as long as Harbor runs; servers that read this end it soon after
+        # the trial cap (the 30 minutes of slack is an estimate)
+        trial_s = _trial_timeout_s()
+        kwargs.setdefault("max_lifetime_secs", trial_s + 30 * 60)
+        if int(kwargs["max_lifetime_secs"]) <= trial_s:
+            raise ValueError(
+                f"max_lifetime_secs={kwargs['max_lifetime_secs']} would end an E2B sandbox mid-trial: "
+                f"AGENT_TRIAL_TIMEOUT allows {trial_s} seconds"
+            )
     overrides = {}
     for field, var in (
         ("override_cpus", "HARBOR_OVERRIDE_CPUS"),
@@ -387,47 +397,77 @@ def build_trial_config(metadata: dict[str, Any], session_url: str, request_kwarg
 
 
 def _timing_duration_sec(timing) -> float | None:
-    started = getattr(timing, "started_at", None)
-    finished = getattr(timing, "finished_at", None)
+    started = getattr(
+        timing, "started_at", None
+    )  # config-access-exempt: unfinished Harbor trial phases may have no start timestamp
+    finished = getattr(
+        timing, "finished_at", None
+    )  # config-access-exempt: unfinished Harbor trial phases may have no finish timestamp
     return (finished - started).total_seconds() if started and finished else None
 
 
 def trial_result_to_metadata(result) -> dict[str, Any]:
     """Harbor ``TrialResult`` -> the dict merged into sample metadata."""
-    exc = getattr(result, "exception_info", None)
+    exc = getattr(
+        result, "exception_info", None
+    )  # config-access-exempt: Harbor results without an exception omit exception details
     if exc is not None:
-        exc_type = getattr(exc, "exception_type", "")
+        exc_type = getattr(
+            exc, "exception_type", ""
+        )  # config-access-exempt: partial Harbor exception records may lack the exception type
         if exc_type in _TIMEOUT_EXCEPTIONS:
             exit_status = "TimeLimitExceeded"
         elif exc_type in _OUTPUT_LIMIT_EXCEPTIONS:
             exit_status = "SequenceLengthLimitExceeded"
         else:
             exit_status = "AgentError"
-    elif getattr(result, "verifier_result", None) is not None:
+    elif (
+        getattr(result, "verifier_result", None) is not None
+    ):  # config-access-exempt: failed Harbor trials may not produce verifier results
         exit_status = "Submitted"
     else:
         exit_status = "AgentError"
 
-    verifier = getattr(result, "verifier_result", None)
-    rewards = dict(getattr(verifier, "rewards", None) or {}) if verifier is not None else {}
+    verifier = getattr(
+        result, "verifier_result", None
+    )  # config-access-exempt: failed Harbor trials may not produce verifier results
+    rewards = (
+        dict(getattr(verifier, "rewards", None) or {}) if verifier is not None else {}
+    )  # config-access-exempt: Harbor verifier results may omit rewards before grading completes
     reward = float(rewards.get("reward", next(iter(rewards.values()), 0.0))) if rewards else 0.0
 
     metrics: dict[str, Any] = {}
-    agent_result = getattr(result, "agent_result", None)
+    agent_result = getattr(
+        result, "agent_result", None
+    )  # config-access-exempt: Harbor trials failing before agent execution have no agent result
     if agent_result is not None:
         for field in ("n_input_tokens", "n_output_tokens", "cost_usd"):
-            if (value := getattr(agent_result, field, None)) is not None:
+            if (
+                value := getattr(agent_result, field, None)
+            ) is not None:  # config-access-exempt: Harbor agent implementations expose different optional token and cost metrics
                 metrics[field] = value
-        if (n_steps := getattr(agent_result, "n_steps", None)) is not None:
+        if (
+            n_steps := getattr(agent_result, "n_steps", None)
+        ) is not None:  # config-access-exempt: Harbor agent results do not all report a step count
             metrics["turns"] = n_steps
-        if isinstance(agent_meta := getattr(agent_result, "metadata", None), dict):
+        if isinstance(
+            agent_meta := getattr(agent_result, "metadata", None), dict
+        ):  # config-access-exempt: Harbor agent-specific metadata is optional
             metrics.update(agent_meta)
     for key, timing in {
         "total_time": result,
-        "env_setup_time": getattr(result, "environment_setup", None),
-        "agent_setup_time": getattr(result, "agent_setup", None),
-        "agent_run_time": getattr(result, "agent_execution", None),
-        "eval_time": getattr(result, "verifier", None),
+        "env_setup_time": getattr(
+            result, "environment_setup", None
+        ),  # config-access-exempt: Harbor results may omit timings for phases that did not run
+        "agent_setup_time": getattr(
+            result, "agent_setup", None
+        ),  # config-access-exempt: Harbor results may omit timings for phases that did not run
+        "agent_run_time": getattr(
+            result, "agent_execution", None
+        ),  # config-access-exempt: Harbor results may omit timings for phases that did not run
+        "eval_time": getattr(
+            result, "verifier", None
+        ),  # config-access-exempt: Harbor results may omit timings for phases that did not run
     }.items():
         if timing is not None and (duration := _timing_duration_sec(timing)) is not None:
             metrics[key] = duration

@@ -5,7 +5,7 @@ import math
 
 import numpy as np
 import pytest
-from tests.fast.fixtures.score_centering_fixtures import _args, _meta
+from tests.fast.fixtures.score_centering_fixtures import _args, _meta, _Tokenizer
 
 from miles.rollout.generate_utils.generate_endpoint_utils import compute_request_payload, update_sample_from_response
 from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
@@ -15,9 +15,10 @@ from miles.utils.types import Sample
 def test_native_generate_producer_appends_each_call() -> None:
     args = _args(
         rollout_max_response_len=20,
-        rollout_max_context_len=None,
+        max_seq_len=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        use_output_store=False,
         sglang_speculative_algorithm=None,
     )
     payload, status = compute_request_payload(args, [0, 1], {})
@@ -26,7 +27,12 @@ def test_native_generate_producer_appends_each_call() -> None:
     for output, probabilities in (([2, 3], [0.5, 0.25]), ([4, 5], [0.55, 0.2])):
         asyncio.run(
             update_sample_from_response(
-                args, sample, payload, {"text": str(output), "meta_info": _meta(output, probabilities)}, True
+                args,
+                sample,
+                payload,
+                {"text": str(output), "meta_info": _meta(output, probabilities)},
+                True,
+                tokenizer=_Tokenizer(),
             )
         )
     assert sample.tokens == [0, 1, 2, 3, 4, 5]
@@ -43,9 +49,10 @@ def test_filtered_native_generation_records_post_filter_distribution(candidate_c
         rollout_sampling_logprobs_mode="support",
         use_sampling_support_replay=True,
         rollout_max_response_len=20,
-        rollout_max_context_len=None,
+        max_seq_len=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        use_output_store=False,
         sglang_speculative_algorithm=None,
     )
     payload, status = compute_request_payload(args, [0, 1], {"temperature": 0.7, "top_p": 0.6, "top_k": 3})
@@ -62,7 +69,11 @@ def test_filtered_native_generation_records_post_filter_distribution(candidate_c
         "finish_reason": {"type": "stop"},
     }
     sample = Sample()
-    asyncio.run(update_sample_from_response(args, sample, payload, {"text": "2", "meta_info": meta}, True))
+    asyncio.run(
+        update_sample_from_response(
+            args, sample, payload, {"text": "2", "meta_info": meta}, True, tokenizer=_Tokenizer()
+        )
+    )
     if candidate_count:
         validate_rollout_topk_logprobs_sample(sample, 3)
         np.testing.assert_array_equal(sample.rollout_topk_token_ids, [[3, 2, -1]])
@@ -75,9 +86,10 @@ def test_filtered_native_generation_records_post_filter_distribution(candidate_c
 def test_greedy_evaluation_does_not_collect_training_candidates() -> None:
     args = _args(
         rollout_max_response_len=20,
-        rollout_max_context_len=None,
+        max_seq_len=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        use_output_store=False,
         sglang_speculative_algorithm=None,
     )
     payload, _ = compute_request_payload(args, [0, 1], {"temperature": 0.0}, evaluation=True)
@@ -85,5 +97,7 @@ def test_greedy_evaluation_does_not_collect_training_candidates() -> None:
     meta = _meta([2, 3], [0.5, 0.25])
     del meta["output_top_logprobs"]
     sample = Sample()
-    asyncio.run(update_sample_from_response(args, sample, payload, {"text": "eval", "meta_info": meta}))
+    asyncio.run(
+        update_sample_from_response(args, sample, payload, {"text": "eval", "meta_info": meta}, tokenizer=_Tokenizer())
+    )
     assert sample.rollout_topk_token_ids is None

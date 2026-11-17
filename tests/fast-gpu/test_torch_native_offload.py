@@ -39,12 +39,12 @@ def test_offload_round_trips_fsdp_state_through_pinned_host_memory(monkeypatch):
         optimizer.step()
         before = [tensor.detach().cpu().clone() for tensor in _train_state(model, optimizer)]
 
-        move_train_state([model], [optimizer], "cpu")
+        move_train_state([model], [optimizer], to_host=True)
         offloaded = _train_state(model, optimizer)
         assert all(tensor.device.type == "cpu" and tensor.is_pinned() for tensor in offloaded)
         assert all(isinstance(param, DTensor) for param in model.parameters())
 
-        move_train_state([model], [optimizer], "cuda")
+        move_train_state([model], [optimizer], to_host=False)
         restored = _train_state(model, optimizer)
         assert all(tensor.device.type == "cuda" for tensor in restored)
         assert all(torch.equal(a, b.cpu()) for a, b in zip(before, restored, strict=True))
