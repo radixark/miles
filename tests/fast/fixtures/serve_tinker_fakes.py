@@ -22,6 +22,8 @@ async def tinker_startup(monkeypatch: pytest.MonkeyPatch, tmp_path) -> AsyncIter
     orchestration_calls: list[object] = []
     args = ConfigNamespace(
         train_backend="megatron",
+        debug_rollout_only=False,
+        starts_inference_engines=True,
         megatron_to_hf_mode="bridge",
         ref_load=None,
         no_load_optim=None,

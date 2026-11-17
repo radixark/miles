@@ -38,6 +38,18 @@ python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve     # Tinker API 
 
 Checkpoints default to `<output_dir>/checkpoints/<run_id>`; use `--save-dir` to choose another root.
 
+For separate hardware diagnostics, the gateway honors Miles' existing component flags:
+
+```bash
+python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve --rollout-num-gpus 0 --extra-args "--debug-train-only"
+python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve --extra-args "--debug-rollout-only"
+```
+
+Training-only mode starts the trainer without inference controllers, routers, or sampling clients.
+Inference-only mode starts the inference servers without initializing a trainer or optimizer.
+Both keep the Tinker HTTP API: operations requiring the disabled component fail explicitly.
+Inference-only clients can sample the base model; creating a trainable adapter requires training mode.
+
 Adapters run on Megatron-Bridge by default. `--megatron-to-hf-mode raw` runs them as miles-native LoRA
 instead, which serves dense models only: download one, pass it as `--hf-checkpoint` with its `--model-type` (a `scripts/models` entry) and `--ep 1`
 (`prepare` fetches only Qwen3-30B-A3B).
