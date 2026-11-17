@@ -86,8 +86,9 @@ class BaseReplayManager:
         # This step's source: `fill(i)` records micro batch i's entry in every replay.
         self._fill: Callable[[int], None] | None = None
         self._filled = 0
-        # With output store columns: the ReadSlots their rows are read into, kept across steps.
-        self.read_slots = None
+        # With output store columns: the plugin's ReadSlot their rows are read into, kept across steps because
+        # registering memory takes about half of a read: https://github.com/radixark/miles/pull/4573#issuecomment-6593240538
+        self.read_slot = None
 
     def create_replay(self, stream_idx: int | None = None) -> Replay:
         replay = Replay(stream_idx=stream_idx)

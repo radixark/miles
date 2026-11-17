@@ -11,7 +11,7 @@ from miles.utils.output_store.plan import ForwardSegments, StorePlanError, is_se
 from miles.utils.replay_base import BaseReplayManager
 
 if TYPE_CHECKING:
-    from radix_transfer_plugins import OutputStore, ReadBuffer
+    from radix_transfer_plugins import ReadSlot
 
 
 def register_replay_list_sequential(replay_list, replay_data, **_kwargs):
@@ -29,32 +29,6 @@ def register_replay_list_sequential(replay_list, replay_data, **_kwargs):
                 f"replay stream_idx {stream_idx} out of range " f"(replay_data has {replay_data.shape[1]} streams)"
             )
         replay.record(replay_data[:, stream_idx])
-
-
-class ReadSlots:
-    """The ReadBuffers a replay manager reads output store rows into.
-
-    Kept across steps, so each is registered once; a slot too small for a micro batch is replaced
-    by one that fits. Registering per read would take about half of each read, and over 80% below
-    4 GiB; measurements: https://github.com/radixark/miles/pull/4573#issuecomment-6593240538
-    """
-
-    def __init__(self, store: "OutputStore", *, count: int):
-        self.store = store
-        self._buffers: list[ReadBuffer | None] = [None] * count
-
-    def get(self, index: int, nbytes: int) -> "ReadBuffer":
-        buffer = self._buffers[index]
-        if buffer is None or buffer.nbytes < nbytes:
-            if buffer is not None:
-                buffer.close()
-            buffer = self._buffers[index] = self.store.read_buffer(nbytes)
-        return buffer
-
-    def close(self) -> None:
-        for buffer in self._buffers:
-            if buffer is not None:
-                buffer.close()
 
 
 def attach_replay_data(
@@ -93,10 +67,10 @@ def attach_replay_data(
     if from_store:
         if output_store is None:
             raise StorePlanError(f"{data_key} is in the output store, but this trainer has no output store client")
-        if manager.read_slots is None or manager.read_slots.store is not output_store:
-            if manager.read_slots is not None:
-                manager.read_slots.close()
-            manager.read_slots = ReadSlots(output_store, count=1)
+        if manager.read_slot is None or manager.read_slot.store is not output_store:
+            if manager.read_slot is not None:
+                manager.read_slot.close()
+            manager.read_slot = output_store.read_slot()
     # A train-data dump, written after training, keeps the column so it holds what replay consumed:
     # of a store column, each sample's rows as read, or None for a sample no micro batch holds.
     keep_column = manager.kept_in_train_dump and args.save_debug_train_data is not None
@@ -121,7 +95,7 @@ def attach_replay_data(
         replay_data = [column[j] for j in order[index]]
         tokens = [rollout_data["tokens"][j] for j in order[index]]
         if from_store:
-            replay_data = _read_rows(manager.read_slots, replay_data)
+            replay_data = _read_rows(manager.read_slot, replay_data)
             if keep_column:
                 # Store rows are views of a slot the next micro batch overwrites.
                 kept_rows.update((j, r.clone()) for j, r in zip(order[index], replay_data, strict=True))
@@ -184,7 +158,7 @@ def attach_replay_data(
     manager.fill_through(len(order) - 1)
 
 
-def _read_rows(slots: ReadSlots, samples: Sequence[ForwardSegments]) -> list[torch.Tensor]:
+def _read_rows(slot: "ReadSlot", samples: Sequence[ForwardSegments]) -> list[torch.Tensor]:
     """Each sample's rows, read in one call into a reused slot."""
     # radix_transfer_plugins ships with SGLang and is not a Miles dependency.
     from radix_transfer_plugins import RangeRead
@@ -198,9 +172,9 @@ def _read_rows(slots: ReadSlots, samples: Sequence[ForwardSegments]) -> list[tor
     for segments in samples:
         reads += segments.row_reads(dst_offset=sum(counts) * row_bytes)
         counts.append(segments.num_rows())
-    buffer = slots.get(0, sum(counts) * row_bytes)
+    buffer = slot.reserve(sum(counts) * row_bytes)
     (name,) = samples[0].stored
-    slots.store.read_ranges(
+    slot.store.read_ranges(
         [
             RangeRead(ref=r.ref, field=name, src_offset=r.src_offset, nbytes=r.nbytes, dst_offset=r.dst_offset)
             for r in reads

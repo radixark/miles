@@ -378,25 +378,38 @@ class TestNativeReplayOwnership:
 
 
 class _FakeOutputStore:
-    """``read_buffer`` / ``read_ranges`` over plain arrays, recording buffers and the bytes read."""
+    """``read_slot`` / ``read_ranges`` over plain arrays, recording slots, buffers and the bytes read."""
 
     def __init__(self, objects):
-        self.objects, self.buffers, self.read_bytes = objects, [], 0
+        self.objects, self.slots, self.buffers, self.read_bytes = objects, [], [], 0
 
-    def read_buffer(self, nbytes):
-        buffer = SimpleNamespace(nbytes=nbytes, view=memoryview(bytearray(nbytes)), closed=False)
-        buffer.close = lambda: setattr(buffer, "closed", True)
-        self.buffers.append(buffer)
-        return buffer
+    def read_slot(self):
+        self.slots.append(_FakeReadSlot(self))
+        return self.slots[-1]
 
     def read_ranges(self, reads, *, into):
-        assert not into.closed
+        assert into is self.buffers[-1]
         for read in reads:
             stored = self.objects[read.ref.key][read.field].reshape(-1).view(np.uint8)
             into.view[read.dst_offset : read.dst_offset + read.nbytes] = stored[
                 read.src_offset : read.src_offset + read.nbytes
             ].tobytes()
             self.read_bytes += read.nbytes
+
+
+class _FakeReadSlot:
+    """A new buffer for every ``reserve``: when the plugin's slot keeps one is its own decision, tested there."""
+
+    def __init__(self, store):
+        self.store, self.closed = store, False
+
+    def reserve(self, nbytes):
+        assert not self.closed
+        self.store.buffers.append(SimpleNamespace(nbytes=nbytes, view=memoryview(bytearray(nbytes))))
+        return self.store.buffers[-1]
+
+    def close(self):
+        self.closed = True
 
 
 @pytest.fixture
@@ -524,7 +537,7 @@ def test_a_store_dump_keeps_none_for_a_sample_no_micro_batch_holds(monkeypatch, 
     assert [rows is None for rows in rollout_data["routes"]] == [False, False, True]
 
 
-def test_the_read_slot_is_kept_across_steps_and_replaced_when_too_small(monkeypatch, fake_plugin):
+def test_the_read_slot_is_kept_across_steps_until_the_store_changes(monkeypatch, fake_plugin):
     args = SimpleNamespace(
         qkv_format="thd",
         allgather_cp=False,
@@ -541,13 +554,11 @@ def test_the_read_slot_is_kept_across_steps_and_replaced_when_too_small(monkeypa
     )
 
     attach((5, 3), store)
-    attach((5, 3), store)
-    assert len(store.buffers) == 1 and not store.buffers[0].closed
     attach((9, 3), store)
-    assert len(store.buffers) == 2 and store.buffers[0].closed and not store.buffers[1].closed
+    assert len(store.slots) == 1 and not store.slots[0].closed
     other = _FakeOutputStore({})
     attach((5, 3), other)
-    assert store.buffers[1].closed and len(other.buffers) == 1
+    assert store.slots[0].closed and len(store.slots) == 1 and len(other.slots) == 1
 
 
 def test_store_rows_need_an_output_store_client(monkeypatch, fake_plugin):
