@@ -10,7 +10,7 @@ from miles.tinker.core.utils import tenant_digest as gateway_digest
 from miles.tinker.runtime import (
     MilesBackend,
     _build_train_data,
-    _pad_to_dp_multiple,
+    _pad_to_dp_minimum,
     _prompt_logprobs,
     _slot_failure,
     _to_sequence,
@@ -183,10 +183,15 @@ def test_a_pinned_seed_still_gets_one_model_queue_per_sample():
     assert "sampling_seed" not in _with_sample_seed({"sampling_params": {}}, 2)["sampling_params"]
 
 
-class TestPadToDpMultiple:
+class TestPadToDpMinimum:
+    @pytest.mark.parametrize("count", [4, 5, 7, 8, 9])
+    def test_uneven_schedulable_batches_do_not_get_dummy_samples(self, count):
+        slot_datums = [(0, _datum([1, 2, 3]))] * count
+        assert _pad_to_dp_minimum(slot_datums, 4) is slot_datums
+
     def test_padding_replicates_the_last_datum_with_a_padding_marker(self):
         slot_datums = [(0, _datum([1, 2, 3], weights=[1.0, 1.0], advantages=[2.0, 2.0]))]
-        padded = _pad_to_dp_multiple(slot_datums, 4)
+        padded = _pad_to_dp_minimum(slot_datums, 4)
         assert len(padded) == 4
         for slot, filler in padded[1:]:
             assert slot == 0 and filler["tokens"] == [1, 2, 3] and filler["padding"]

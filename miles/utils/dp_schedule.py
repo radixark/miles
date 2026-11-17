@@ -1,4 +1,4 @@
-"""Per-rollout DP/microbatch scheduling (pack first, distribute second), computed on the rollout side."""
+"""Shared microbatch packing and rollout-side DP scheduling (pack first, distribute second)."""
 
 from __future__ import annotations
 
@@ -28,6 +28,12 @@ class TrainParallelConfig(FrozenStrictBaseModel):
     supports_precomputed_schedule: bool
 
 
+class MicrobatchSchedule(NamedTuple):
+    partitions: list[list[int]]
+    micro_batch_indices: list[list[list[int]]]
+    num_microbatches: list[int]
+
+
 class DPSchedule(NamedTuple):
     partitions: list[list[int]]  # (num_ranks, num_local_samples): global sample indices
     # (num_ranks, num_local_microbatches, num_samples_in_microbatch): indices into partitions[rank]
@@ -53,16 +59,54 @@ def _calculate_workloads(step_lengths: list[int], args: TrainerConfig | RolloutC
     return [model_flops.fwd_flops([sl]) for sl in step_lengths]
 
 
-def build_dp_schedule(
+def pack_dynamic_microbatches(
+    step_lengths: list[int],
+    *,
+    workloads: list[float] | None,
+    max_per_bin: int,
+    align_to: int,
+    step_i: int = 0,
+) -> list[list[int]]:
+    """Pack one step and return its sample indices, using optional precomputed FLOPs weights.
+
+    Shared by rollout scheduling and multi-LoRA work units at every DP size.
+    Adapter-slot ordering belongs to the consumer, after packing.
+    """
+    # Pack under the token budget: first-fit, or FLOPs-balanced partitions under
+    # --balance-by-flops (which does not enforce the token cap per micro-batch).
+    if workloads is not None:
+        total_tokens = sum(step_lengths)
+        micro_batch_count = max(1, (total_tokens + max_per_bin - 1) // max_per_bin)
+        if micro_batch_count >= len(step_lengths):
+            step_micro_batches = [[i] for i in range(len(step_lengths))]
+        else:
+            step_micro_batches = get_seqlen_balanced_partitions(workloads, micro_batch_count, equal_size=False)
+    else:
+        step_micro_batches = first_fit_decreasing_pack(step_lengths, max_per_bin)
+    # Grow the micro-batch count to a multiple of align_to by splitting multi-sample micro-batches.
+    target = max((len(step_micro_batches) + align_to - 1) // align_to * align_to, align_to)
+    if target != len(step_micro_batches):
+        expand_bins_by_splitting(step_micro_batches, target, step_lengths)
+        assert len(step_micro_batches) == target, (
+            f"dynamic path: could only produce {len(step_micro_batches)} micro-batches after maximal "
+            f"splitting; need {target}. step {step_i} has {len(step_lengths)} samples, below the "
+            f"alignment threshold ({align_to})."
+        )
+    return step_micro_batches
+
+
+def build_microbatch_schedule(
     args: TrainerConfig | RolloutConfig,
     train_parallel_config: TrainParallelConfig,
     total_lengths: list[int],
     *,
-    global_batch_size: int,
-    rollout_indices: list[int],
-) -> DPSchedule:
-    """Compute ``DPSchedule``;
-    ``global_batch_size`` counts rollouts, not training samples."""
+    step_sample_indices: list[list[int]],
+) -> MicrobatchSchedule:
+    """Pack and distribute explicit steps; their caller owns the step boundaries.
+
+    Rollout training supplies one index list per optimizer step. A Tinker work
+    unit supplies one list covering all its datums and steps its optimizers separately.
+    """
     dp_size = train_parallel_config.dp_size
     cp_size = train_parallel_config.cp_size
     vpp_size = train_parallel_config.vpp_size or 1
@@ -76,42 +120,14 @@ def build_dp_schedule(
         assert args.max_tokens_per_gpu is not None
         max_per_bin = args.max_tokens_per_gpu * cp_size
 
-    # Rollout can include multiple samples (compaction, subagent, fork, etc.)
-    # Samples in the same rollout should be trained in the same step, or dropped together.
-    rollout_id_to_sample_index: dict[int, list[int]] = {}
-    for sample_pos, rid in enumerate(rollout_indices):
-        rollout_id_to_sample_index.setdefault(rid, []).append(sample_pos)
-    rollout_ids = list(rollout_id_to_sample_index.keys())
-
-    # Plan the rollout count of each training step: full steps of global_batch_size,
-    # plus (under --allow-partial-train-step) one smaller final step for the trailing
-    # rollouts that would otherwise be dropped.
-    num_full_steps = len(rollout_ids) // global_batch_size
-    assert num_full_steps >= 1, (
-        f"total rollouts ({len(rollout_ids)}) < global_batch_size ({global_batch_size}); "
-        f"need at least one rollout per step."
-    )
-    num_rollouts = [global_batch_size] * num_full_steps
-    leftover = len(rollout_ids) - num_full_steps * global_batch_size
-    if leftover and args.allow_partial_train_step and args.use_dynamic_batch_size:
-        leftover_samples = sum(len(rollout_id_to_sample_index[rid]) for rid in rollout_ids[-leftover:])
-        if leftover_samples >= dp_size:
-            num_rollouts.append(leftover)
-        else:
-            logger.info(f"partial step skipped: {leftover_samples} samples < dp_size {dp_size}")
-
     partitions: list[list[int]] = [[] for _ in range(dp_size)]
     micro_batch_indices: list[list[list[int]]] = [[] for _ in range(dp_size)]
     num_microbatches: list[int] = []
 
-    step_start = 0
-    for step_i, step_num_rollouts in enumerate(num_rollouts):
-        picked_rollouts = rollout_ids[step_start : step_start + step_num_rollouts]
-        step_start += step_num_rollouts
-        sample_indices = [pos for rid in picked_rollouts for pos in rollout_id_to_sample_index[rid]]
+    for step_i, sample_indices in enumerate(step_sample_indices):
         step_lengths = [total_lengths[i] for i in sample_indices]
         assert len(sample_indices) >= dp_size, (
-            f"step of {step_num_rollouts} rollouts has {len(sample_indices)} samples < dp_size {dp_size}; "
+            f"step {step_i} has {len(sample_indices)} samples < dp_size {dp_size}; "
             f"each step needs at least one sample per rank."
         )
 
@@ -119,26 +135,9 @@ def build_dp_schedule(
         # Shared by FLOPs-balanced packing and FLOPs-balanced distribution below.
         workloads = _calculate_workloads(step_lengths, args) if balance_by_flops else None
         if args.use_dynamic_batch_size:
-            # Pack under the token budget: first-fit, or FLOPs-balanced partitions under
-            # --balance-by-flops (which does not enforce the token cap per micro-batch).
-            if balance_by_flops:
-                total_tokens = sum(step_lengths)
-                micro_batch_count = max(1, (total_tokens + max_per_bin - 1) // max_per_bin)
-                if micro_batch_count >= len(step_lengths):
-                    step_micro_batches = [[i] for i in range(len(step_lengths))]
-                else:
-                    step_micro_batches = get_seqlen_balanced_partitions(workloads, micro_batch_count, equal_size=False)
-            else:
-                step_micro_batches = first_fit_decreasing_pack(step_lengths, max_per_bin)
-            # Grow the micro-batch count to a multiple of align_to by splitting multi-sample micro-batches.
-            target = max((len(step_micro_batches) + align_to - 1) // align_to * align_to, align_to)
-            if target != len(step_micro_batches):
-                expand_bins_by_splitting(step_micro_batches, target, step_lengths)
-                assert len(step_micro_batches) == target, (
-                    f"dynamic path: could only produce {len(step_micro_batches)} micro-batches after maximal "
-                    f"splitting; need {target}. step {step_i} has {len(sample_indices)} samples, below the "
-                    f"alignment threshold ({align_to})."
-                )
+            step_micro_batches = pack_dynamic_microbatches(
+                step_lengths, workloads=workloads, max_per_bin=max_per_bin, align_to=align_to, step_i=step_i
+            )
         else:
             # Fixed-size chunks of micro_batch_size samples.
             assert args.micro_batch_size is not None
@@ -177,9 +176,51 @@ def build_dp_schedule(
                 partitions[rank].extend(sample_indices[i] for i in micro_batch)
                 micro_batch_indices[rank].append(list(range(local_start, local_start + len(micro_batch))))
 
-    return DPSchedule(
-        partitions=partitions,
-        micro_batch_indices=micro_batch_indices,
-        num_microbatches=num_microbatches,
-        num_rollouts=num_rollouts,
+    return MicrobatchSchedule(partitions, micro_batch_indices, num_microbatches)
+
+
+def build_dp_schedule(
+    args: TrainerConfig | RolloutConfig,
+    train_parallel_config: TrainParallelConfig,
+    total_lengths: list[int],
+    *,
+    global_batch_size: int,
+    rollout_indices: list[int],
+) -> DPSchedule:
+    """Compute ``DPSchedule``;
+    ``global_batch_size`` counts rollouts, not training samples."""
+    dp_size = train_parallel_config.dp_size
+    # Rollout can include multiple samples (compaction, subagent, fork, etc.)
+    # Samples in the same rollout should be trained in the same step, or dropped together.
+    rollout_id_to_sample_index: dict[int, list[int]] = {}
+    for sample_pos, rid in enumerate(rollout_indices):
+        rollout_id_to_sample_index.setdefault(rid, []).append(sample_pos)
+    rollout_ids = list(rollout_id_to_sample_index.keys())
+
+    # Plan the rollout count of each training step: full steps of global_batch_size,
+    # plus (under --allow-partial-train-step) one smaller final step for the trailing
+    # rollouts that would otherwise be dropped.
+    num_full_steps = len(rollout_ids) // global_batch_size
+    assert num_full_steps >= 1, (
+        f"total rollouts ({len(rollout_ids)}) < global_batch_size ({global_batch_size}); "
+        f"need at least one rollout per step."
     )
+    num_rollouts = [global_batch_size] * num_full_steps
+    leftover = len(rollout_ids) - num_full_steps * global_batch_size
+    if leftover and args.allow_partial_train_step and args.use_dynamic_batch_size:
+        leftover_samples = sum(len(rollout_id_to_sample_index[rid]) for rid in rollout_ids[-leftover:])
+        if leftover_samples >= dp_size:
+            num_rollouts.append(leftover)
+        else:
+            logger.info(f"partial step skipped: {leftover_samples} samples < dp_size {dp_size}")
+
+    step_sample_indices = []
+    step_start = 0
+    for step_num_rollouts in num_rollouts:
+        picked_rollouts = rollout_ids[step_start : step_start + step_num_rollouts]
+        step_start += step_num_rollouts
+        step_sample_indices.append([pos for rid in picked_rollouts for pos in rollout_id_to_sample_index[rid]])
+    schedule = build_microbatch_schedule(
+        args, train_parallel_config, total_lengths, step_sample_indices=step_sample_indices
+    )
+    return DPSchedule(*schedule, num_rollouts)

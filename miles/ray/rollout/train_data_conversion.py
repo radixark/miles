@@ -12,8 +12,7 @@ from miles.rollout.reward_shaping import (
 )
 from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
-from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
-from miles.utils.lora.utils import is_multi_lora_enabled
+from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule, build_microbatch_schedule
 from miles.utils.media_refs import has_media
 from miles.utils.object_store import ValueSpec
 from miles.utils.output_store.dropped import has_inline_replay
@@ -422,12 +421,11 @@ def can_precompute_dp_schedule(
     """Whether the rollout side can precompute the full DP/mbs schedule."""
     if train_parallel_config is None or not train_parallel_config.supports_precomputed_schedule:
         return False
-    if is_multi_lora_enabled(args):
-        return False
     if "multimodal_train_inputs" in data or "multimodal_inputs" in data:
         return False
     if "rollout_ids" not in data:
-        return False
+        # Tinker supplies one complete work unit with a client-selected loss.
+        return "loss_fn" in data and len(data["tokens"]) >= train_parallel_config.dp_size
     global_batch_size = data.get("dynamic_global_batch_size", args.global_batch_size)
     return len(set(data["rollout_ids"])) >= global_batch_size
 
@@ -439,16 +437,23 @@ def split_train_data_by_dp_scheduled_raw(
     total_lengths = [len(t) for t in data["tokens"]]
     data["total_lengths"] = total_lengths
 
-    global_batch_size = data.get("dynamic_global_batch_size", args.global_batch_size)
-    partitions, micro_batch_indices, num_microbatches, num_rollouts = build_dp_schedule(
-        args,
-        train_parallel_config,
-        total_lengths,
-        global_batch_size=global_batch_size,
-        rollout_indices=data["rollout_ids"],
-    )
-
-    _log_dp_schedule_trim(args=args, data=data, partitions=partitions)
+    if "rollout_ids" in data:
+        global_batch_size = data.get("dynamic_global_batch_size", args.global_batch_size)
+        partitions, micro_batch_indices, num_microbatches, num_rollouts = build_dp_schedule(
+            args,
+            train_parallel_config,
+            total_lengths,
+            global_batch_size=global_batch_size,
+            rollout_indices=data["rollout_ids"],
+        )
+        _log_dp_schedule_trim(args=args, data=data, partitions=partitions)
+    else:
+        assert "loss_fn" in data, "a work unit must declare its loss"
+        assert data["dynamic_global_batch_size"] == len(total_lengths), "a work unit is one complete step"
+        partitions, micro_batch_indices, num_microbatches = build_microbatch_schedule(
+            args, train_parallel_config, total_lengths, step_sample_indices=[list(range(len(total_lengths)))]
+        )
+        num_rollouts = None
 
     logger.info(
         f"Rollout-side DP schedule: num_samples={len(total_lengths)}, "
@@ -459,7 +464,8 @@ def split_train_data_by_dp_scheduled_raw(
     for rank, shard in enumerate(shards):
         shard["num_microbatches"] = num_microbatches
         shard["micro_batch_indices"] = micro_batch_indices[rank]
-        shard["num_rollouts"] = num_rollouts
+        if num_rollouts is not None:
+            shard["num_rollouts"] = num_rollouts
     return shards
 
 
