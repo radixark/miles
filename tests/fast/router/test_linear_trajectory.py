@@ -553,6 +553,20 @@ class TestContinuationRoles:
         assert error.value.status_code == 400
         assert (session.messages, session.trajectory_token_ids, session.num_assistant) == before
 
+    def test_first_request_with_a_refused_continuation_is_a_400(self):
+        """A session's first request renders from scratch; its history gets the same check."""
+        registry = _make_registry_for(_NARROW_CONTINUATIONS)
+        session = registry.get_session(registry.create_session())
+
+        with pytest.raises(MessageValidationError, match="role='user' after an assistant with tool_calls") as error:
+            _prepare_token_ids(
+                session,
+                [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, _FOLLOWUP_USER_MSG],
+                tito_tokenizer=registry.tito_tokenizer,
+            )
+        assert error.value.status_code == 400
+        assert session.messages == []
+
     def test_refused_retry_does_not_roll_back(self):
         """A retry whose new suffix is refused keeps the checkpoint it would have discarded."""
         registry = _make_registry_for(_NARROW_CONTINUATIONS)
