@@ -2,9 +2,10 @@
 # doc-dev: docs/developer/ci/02-docker-build.md
 """Content hash of everything that feeds a Miles Docker image build.
 
-Single source of truth for "what changes the image". CI compares this hash against
-the one recorded on an already-published tag (label ``miles.image-inputs``) to decide
-whether a rebuild is needed; ``build.py`` stamps the label at build time.
+Single source of truth for common and hardware-specific repository build inputs.
+CI compares this hash against the one recorded on an already-published tag
+(label ``miles.image-inputs``) to decide whether a rebuild is needed;
+``build.py`` stamps the label at build time.
 
 Stdlib only: CI computes the hash on a plain hosted runner before any dependency
 is installed.
@@ -24,37 +25,48 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# A build reads exactly these. Anything outside them cannot change the image, so a
-# PR touching only such files reuses the released image. Dockerfile.rocm is absent
-# from this default set: it feeds the separate ROCm recipes below, not cu13.
-INPUT_GLOBS = (
-    "docker/Dockerfile",
-    "docker/Dockerfile.rubin",
+# Repository inputs only: upstream revisions and published wheels are polled by CI.
+COMMON_INPUT_GLOBS = (
+    ".dockerignore",
     "docker/build.py",
+    "docker/image_inputs.py",
     "docker/install-kube-tools.sh",
-    "docker/verify_transformer_engine.py",
-    "docker/patch/*",
     "requirements.txt",
 )
 
-# ROCm PR builds use the same recipe as the rolling rocm/sgl-dev image.
-# Keep CUDA's existing input set and default hash unchanged.
-ROCM_INPUT_GLOBS = (
-    "docker/Dockerfile.rocm",
-    "docker/Dockerfile.rocm.dockerignore",
-    ".dockerignore",
-    "docker/build.py",
-    "docker/install-kube-tools.sh",
-    "docker/amd_patch/*",
-    "docker/amd/*",
-    "requirements.txt",
-)
+INPUT_GLOBS_BY_HARDWARE = {
+    "cuda": (
+        "docker/Dockerfile",
+        "docker/Dockerfile.dockerignore",
+        "docker/Dockerfile.rubin",
+        "docker/Dockerfile.rubin.dockerignore",
+        "docker/verify_transformer_engine.py",
+        "docker/patch/*",
+    ),
+    "rocm": (
+        "docker/Dockerfile.rocm",
+        "docker/Dockerfile.rocm.dockerignore",
+        "docker/amd_patch/*",
+        "docker/amd/*",
+    ),
+    "tpu": (
+        "docker/Dockerfile.tpu",
+        "docker/Dockerfile.tpu.dockerignore",
+        "docker/tpu_patch/*",
+    ),
+}
+
+HARDWARE_BY_VARIANT = {
+    **dict.fromkeys(("cu13", "cu13-x86", "cu13-aarch64", "rubin"), "cuda"),
+    **dict.fromkeys(("rocm724-mi35x", "rocm10-mi35x", "rocm10-mi30x", "rocm10-mi35x-pr"), "rocm"),
+    "tpu": "tpu",
+}
 
 LABEL_KEY = "miles.image-inputs"
 
 
 def _matches(path: str, variant: str = "cu13") -> bool:
-    globs = ROCM_INPUT_GLOBS if variant.startswith("rocm") else INPUT_GLOBS
+    globs = COMMON_INPUT_GLOBS + INPUT_GLOBS_BY_HARDWARE[HARDWARE_BY_VARIANT[variant]]
     return any(fnmatch.fnmatch(path, glob) for glob in globs)
 
 
@@ -118,7 +130,9 @@ def read_label(manifest: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rev", default=None, help="Git revision to hash (default: working tree).")
-    parser.add_argument("--variant", default="cu13", help="Build variant whose inputs to hash.")
+    parser.add_argument(
+        "--variant", choices=HARDWARE_BY_VARIANT, default="cu13", help="Build variant whose inputs to hash."
+    )
     parser.add_argument(
         "--read-label",
         action="store_true",

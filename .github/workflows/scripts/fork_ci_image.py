@@ -17,7 +17,6 @@ import re
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 import zipfile
 from pathlib import Path
@@ -28,11 +27,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "docker"))
 
 import image_inputs  # noqa: E402
-from tests.ci.ci_policy import resolve_policy, resolve_workflow_inputs  # noqa: E402
-from tests.ci.file_run import collect_snapshot_tests  # noqa: E402
-from tests.ci.rocm import ROCM_STAGES  # noqa: E402
-from tests.ci.rocm_file_plan import is_opted_in, plan_jobs  # noqa: E402
-from tests.ci.stage_selection import read_changed_files, select_skipped_gpu_stages  # noqa: E402
+from tests.ci.ci_policy import resolve_workflow_inputs  # noqa: E402
 
 CPU_JOBS = {f"stage-a-cpu ({partition}) / run-cpu" for partition in range(4)}
 REQUEST_KEYS = {"pr", "merge_sha", "inputs_hash", "run_id", "run_attempt", "force_rebuild", "labels"}
@@ -408,30 +403,6 @@ def validate_source(request, pr, source):
                 _rocm_recipe(driver)[1] == _rocm_recipe(base_driver)[1],
                 "Fork ROCm images only honor literal build_args edits in docker/build.py",
             )
-        policy = resolve_workflow_inputs("pull_request", "", json.dumps(request["labels"]))
-        run_policy = resolve_policy(policy.cadence, set(policy.raw_labels))
-        registrations = collect_snapshot_tests(source)
-        skipped = select_skipped_gpu_stages(
-            event_name="pull_request",
-            changed_files=None,
-            registrations=registrations,
-            run_policy=run_policy,
-            raw_labels=policy.raw_labels,
-        )
-        selected = ROCM_STAGES.keys() - set(skipped)
-        jobs = []
-        labels = set(policy.raw_labels)
-        if not selected and is_opted_in(labels):
-            # Parse the frozen diff with the same reader as the caller. Only
-            # trusted code reads registrations; no fork Python is imported.
-            diff = subprocess.check_output(["git", "diff", "--name-status", "-z", "-M", "HEAD^1", "HEAD"], cwd=source)
-            with tempfile.NamedTemporaryFile() as changed:
-                changed.write(diff)
-                changed.flush()
-                changes = read_changed_files(changed.name)
-            if changes:
-                jobs, _ = plan_jobs(changes, registrations, run_policy, labels, set(skipped))
-        require(selected or jobs, "No ROCm tests selected")
 
 
 def verify_published(request):

@@ -16,8 +16,8 @@ name: PR Test (ROCm)
 #
 # PR jobs use the same low-trust `pull_request` model as pr-test.yml: checkout
 # tests the merge commit, and GitHub withholds repository secrets from forks.
-# Selected PR tests build or reuse the ROCm PR image on docker-build runners;
-# fork images are published by the trusted default-branch image workflow.
+# Changed ROCm image inputs build or reuse a PR image independently of test
+# selection, through the trusted publisher and Spur compute nodes.
 #
 # Dependency refs use the CUDA resolver. Each nonempty shard checks the
 # requested refs or release lock, then tracks sglang-miles / miles-main.
@@ -131,12 +131,7 @@ jobs:
 
   docker-build:
     needs: [resolve-ci-policy]
-    # Needed unless every ROCm stage is skipped.
-    if: >-
-      ${{ github.event.action != 'closed' && (!(contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-2-gpu-mi350') &&
-      contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350') &&
-      contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-mi350')) ||
-      (needs.resolve-ci-policy.outputs.rocm_file_jobs || '[]') != '[]') }}
+    if: github.event.action != 'closed'
     permissions:
       contents: read
       actions: read
@@ -147,8 +142,13 @@ jobs:
     secrets: inherit
 
   resolve-ci-image:
-    needs: [docker-build]
-    if: always() && !cancelled() && needs.docker-build.result == 'success'
+    needs: [resolve-ci-policy, docker-build]
+    if: >-
+      ${{ always() && !cancelled() && needs.docker-build.result == 'success' &&
+      (!(contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-2-gpu-mi350') &&
+      contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350') &&
+      contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-mi350')) ||
+      (needs.resolve-ci-policy.outputs.rocm_file_jobs || '[]') != '[]') }}
     runs-on: ubuntu-latest
     outputs:
       container_image: ${{ steps.resolve.outputs.container_image }}

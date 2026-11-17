@@ -319,8 +319,16 @@ def test_image_build_ignores_gpu_selection_and_resolvers_require_it():
     resolver = rocm.split("\n  resolve-ci-image:\n", 1)[1].split("    runs-on:", 1)[0]
     assert "needs: [resolve-ci-policy]" in build
     assert "variant: rocm10-mi35x-pr" in build
-    assert "needs: [docker-build]" in resolver
+    assert "skipped_stages" not in build
+    assert "rocm_file_jobs" not in build
+    assert "needs: [resolve-ci-policy, docker-build]" in resolver
     assert "needs.docker-build.result == 'success'" in resolver
-    assert "contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-2-gpu-mi350')" in build
-    assert "contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350')" in build
-    assert "contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-mi350')" in build
+    assert (
+        "contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-2-gpu-mi350')" in resolver
+    )
+    assert (
+        "contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350')" in resolver
+    )
+    assert (
+        "contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-mi350')" in resolver
+    )

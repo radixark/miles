@@ -662,7 +662,7 @@ class TestRocmWorkflowScopeSeam:
         assert "github.event.action != 'closed'" in build
         assert "needs: [resolve-ci-policy]" in build
         assert "variant: rocm10-mi35x-pr" in build
-        assert "needs: [docker-build]" in image
+        assert "needs: [resolve-ci-policy, docker-build]" in image
         assert "needs.docker-build.result == 'success'" in image
         stage = workflow.split("  stage-c-4-gpu-mi350:\n", 1)[1]
         assert "needs.resolve-ci-policy.result == 'success'" in stage

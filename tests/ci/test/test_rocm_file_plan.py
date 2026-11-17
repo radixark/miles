@@ -182,7 +182,7 @@ def test_workflow_uses_separate_planner_and_shared_file_queue():
     assert "container_image: ${{ needs.resolve-ci-image.outputs.container_image }}" in job
     assert (
         "(needs.resolve-ci-policy.outputs.rocm_file_jobs || '[]') != '[]'"
-        in workflow.split("  resolve-ci-image:", 1)[0]
+        in workflow.split("  resolve-ci-image:", 1)[1].split("    runs-on:", 1)[0]
     )
     assert "ref: ${{ github.sha }}" in job
     assert "execute_command: ${{ matrix.execute_command }}" in job

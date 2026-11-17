@@ -588,25 +588,21 @@ def test_rocm_request_is_bound_to_the_rocm_workflow(identity):
         HANDLER.parse_request(archive_request(request))
 
 
-def test_rocm_source_requires_rocm_demand_and_rocm_inputs(source):
+@pytest.mark.parametrize("labels", [[], ["run-ci"], ["run-ci-amd"]])
+def test_rocm_source_requires_changed_inputs_without_test_selection(source, labels):
     root, request, pr = source
     request["variant"] = "rocm10-mi35x-pr"
+    request["labels"] = labels
     with pytest.raises(ValueError, match="Requested inputs hash"):
+        HANDLER.validate_source(request, pr, root)
+    request["inputs_hash"] = HANDLER.image_inputs.compute("HEAD", root=root, variant=request["variant"])
+    with pytest.raises(ValueError, match="Build inputs match the base"):
         HANDLER.validate_source(request, pr, root)
     (root / "docker/Dockerfile.rocm").write_text("FROM scratch\n")
     subprocess.run(["git", "add", "docker/Dockerfile.rocm"], cwd=root, check=True)
     subprocess.run(["git", "commit", "--amend", "--no-edit", "-q"], cwd=root, check=True)
     request["merge_sha"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
     request["inputs_hash"] = HANDLER.image_inputs.compute("HEAD", root=root, variant=request["variant"])
-    with pytest.raises(ValueError, match="No ROCm tests"):
-        HANDLER.validate_source(request, pr, root)
-    (root / "tests/e2e/test_new.py").write_text(
-        "raise RuntimeError('PR code must not execute')\n"
-        "register_rocm_ci(est_time=1, suite='stage-c-4-gpu-mi350', labels=['megatron'])\n"
-    )
-    subprocess.run(["git", "add", "tests"], cwd=root, check=True)
-    subprocess.run(["git", "commit", "--amend", "--no-edit", "-q"], cwd=root, check=True)
-    request["merge_sha"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
     HANDLER.validate_source(request, pr, root)
     (root / "docker/Dockerfile.rocm").unlink()
     (root / "docker/Dockerfile.rocm").symlink_to("/etc/hostname")
@@ -668,25 +664,6 @@ def test_rocm_pr_build_uses_the_existing_recipe_and_rocm_hash(source, monkeypatc
     assert build.VARIANTS["rocm10-mi35x-pr"]["build_args"] == build.VARIANTS["rocm10-mi35x"]["build_args"]
     expected = HANDLER.image_inputs.compute(root=root, variant="rocm10-mi35x-pr")
     assert command[command.index("--label") + 1] == f"miles.image-inputs={expected}"
-
-
-def test_rocm_file_only_demand_is_recomputed_from_the_frozen_diff(source):
-    root, request, pr = source
-    request["variant"] = "rocm10-mi35x-pr"
-    (root / "docker/Dockerfile.rocm").write_text("FROM scratch\n")
-    (root / "tests/e2e/test_new.py").write_text(
-        "raise RuntimeError('PR code must not execute')\n"
-        "register_rocm_ci(est_time=1, suite='stage-c-4-gpu-mi350', labels=['megatron'], nightly=True)\n"
-    )
-    subprocess.run(["git", "add", "docker", "tests"], cwd=root, check=True)
-    subprocess.run(["git", "commit", "--amend", "--no-edit", "-q"], cwd=root, check=True)
-    request["merge_sha"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
-    request["inputs_hash"] = HANDLER.image_inputs.compute("HEAD", root=root, variant=request["variant"])
-    request["labels"] = ["run-ci-image"]
-    with pytest.raises(ValueError, match="No ROCm tests"):
-        HANDLER.validate_source(request, pr, root)
-    request["labels"] = ["run-ci-amd"]
-    HANDLER.validate_source(request, pr, root)
 
 
 @pytest.fixture

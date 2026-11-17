@@ -13,7 +13,7 @@ import yaml
 from tests.ci import rocm
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=2, suite="stage-a-cpu", labels=[])
+register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 
 ROOT = Path(__file__).resolve().parents[3]
 SPEC = importlib.util.spec_from_file_location("rocm_image_inputs", ROOT / "docker/image_inputs.py")
@@ -98,9 +98,16 @@ def repository(tmp_path):
     git("config", "user.name", "Test")
     git("config", "user.email", "test@example.invalid")
     files = [
+        ".dockerignore",
+        "docker/build.py",
+        "docker/image_inputs.py",
+        "docker/install-kube-tools.sh",
         "docker/Dockerfile",
+        "docker/Dockerfile.rubin",
         "docker/Dockerfile.rocm",
         "docker/Dockerfile.tpu",
+        "docker/verify_transformer_engine.py",
+        "docker/tpu_patch/fix.patch",
         "docker/amd_patch/latest/fix.patch",
         "docker/amd/install.py",
         "docker/patch/cuda.patch",
@@ -117,46 +124,105 @@ def repository(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "path,eligible",
+    "path,variants",
     [
-        ("docker/Dockerfile.rocm", True),
-        ("docker/amd_patch/latest/fix.patch", True),
-        ("docker/amd/install.py", True),
-        ("requirements.txt", True),
-        ("docker/Dockerfile", False),
-        ("docker/patch/cuda.patch", False),
-        ("docker/Dockerfile.tpu", False),
-        ("source.py", False),
+        (".dockerignore", None),
+        ("docker/build.py", None),
+        ("docker/image_inputs.py", None),
+        ("docker/install-kube-tools.sh", None),
+        ("requirements.txt", None),
+        ("docker/Dockerfile.rocm", [VARIANT]),
+        ("docker/amd_patch/latest/fix.patch", [VARIANT]),
+        ("docker/amd/install.py", [VARIANT]),
+        ("docker/Dockerfile", ["cu13", "rubin"]),
+        ("docker/Dockerfile.rubin", ["cu13", "rubin"]),
+        ("docker/verify_transformer_engine.py", ["cu13", "rubin"]),
+        ("docker/patch/cuda.patch", ["cu13", "rubin"]),
+        ("docker/Dockerfile.tpu", ["tpu"]),
+        ("docker/tpu_patch/fix.patch", ["tpu"]),
+        ("source.py", []),
     ],
 )
-def test_rocm_eligibility_uses_the_merge_base(repository, path, eligible):
+def test_input_mapping_separates_common_and_hardware_paths(path, variants):
+    for variant in ("cu13", "rubin", VARIANT, "tpu"):
+        assert IMAGE_INPUTS._matches(path, variant) is (variants is None or variant in variants)
+
+
+@pytest.mark.parametrize(
+    "variant,path,eligible",
+    [
+        ("cu13", "requirements.txt", True),
+        (VARIANT, "requirements.txt", True),
+        ("tpu", "requirements.txt", True),
+        (VARIANT, "docker/Dockerfile.rocm", True),
+        ("cu13", "docker/Dockerfile.rocm", False),
+        (VARIANT, "docker/Dockerfile", False),
+        ("cu13", "docker/Dockerfile", True),
+        ("tpu", "docker/Dockerfile", False),
+        ("tpu", "docker/tpu_patch/fix.patch", True),
+        ("cu13", "docker/tpu_patch/fix.patch", False),
+        (VARIANT, "source.py", False),
+    ],
+)
+def test_pr_eligibility_uses_common_and_hardware_inputs(repository, variant, path, eligible):
     root, git = repository
     (root / path).write_text("changed\n")
     git("commit", "-qam", "PR merge")
-    workflow = yaml.safe_load((ROOT / ".github/workflows/_build-pr-ci-image.yml").read_text())
-    step = next(step for step in workflow["jobs"]["docker-decide"]["steps"] if step.get("id") == "compare")
-    # Use the actual workflow's comparison and a trusted local hash reader.
-    reader = root / "hash.py"
-    # Keep the real module, overriding only its source root at its documented API.
-    base = IMAGE_INPUTS.compute("HEAD^1", root=root, variant=VARIANT)
-    current = IMAGE_INPUTS.compute("HEAD", root=root, variant=VARIANT)
+    base = IMAGE_INPUTS.compute("HEAD^1", root=root, variant=variant)
+    current = IMAGE_INPUTS.compute("HEAD", root=root, variant=variant)
     assert (current != base) is eligible
-    # Run the shell decision with a tiny adapter forwarding --rev/--variant.
-    reader.write_text(
-        "import argparse, runpy\nfrom pathlib import Path\n"
-        f"d=runpy.run_path({str(ROOT / 'docker/image_inputs.py')!r})\n"
-        "p=argparse.ArgumentParser(); p.add_argument('--rev'); p.add_argument('--variant'); a=p.parse_args()\n"
-        f"print(d['compute'](a.rev,root=Path({str(root)!r}),variant=a.variant))\n"
-    )
-    code = step["run"].replace("python3 docker/image_inputs.py", f"{sys.executable} {reader}")
+    if variant == "tpu":
+        workflow_file, job, step_id, output_key = "pr-test-tpu.yml", "plan", "image", "build"
+    else:
+        workflow_file, job, step_id, output_key = "_build-pr-ci-image.yml", "docker-decide", "compare", "eligible"
+    workflow = yaml.safe_load((ROOT / ".github/workflows" / workflow_file).read_text())
+    step = next(step for step in workflow["jobs"][job]["steps"] if step.get("id") == step_id)
+    # Execute the real reader and workflow against the committed fixture inputs.
+    (root / "docker/image_inputs.py").write_text((ROOT / "docker/image_inputs.py").read_text())
     output = root / "output"
     subprocess.run(
-        ["bash", "-c", code],
+        ["bash", "-c", step["run"]],
         cwd=root,
         check=True,
-        env={**os.environ, "IMAGE_VARIANT": VARIANT, "BASE_SHA": "older-event-base", "GITHUB_OUTPUT": str(output)},
+        env={
+            **os.environ,
+            "IMAGE_VARIANT": variant,
+            "BASE_SHA": "older-event-base",
+            "PR_NUMBER": "42",
+            "GITHUB_OUTPUT": str(output),
+        },
     )
-    assert f"eligible={str(eligible).lower()}" in output.read_text()
+    assert f"{output_key}={str(eligible).lower()}" in output.read_text()
+
+
+@pytest.mark.parametrize(
+    "path,variants",
+    [
+        ("requirements.txt", ["cu13", "tpu"]),
+        ("docker/patch/cuda.patch", ["cu13"]),
+        ("docker/tpu_patch/fix.patch", ["tpu"]),
+        ("docker/Dockerfile.rocm", []),
+        ("source.py", []),
+    ],
+)
+def test_rolling_push_builds_only_supported_variants_with_changed_inputs(repository, path, variants):
+    root, git = repository
+    before = git("rev-parse", "HEAD")
+    (root / path).write_text("changed\n")
+    git("commit", "-qam", "push")
+    git("remote", "add", "origin", str(root))
+    (root / "docker/image_inputs.py").write_text((ROOT / "docker/image_inputs.py").read_text())
+    workflow = yaml.safe_load((ROOT / ".github/workflows/docker-build.yml").read_text())
+    step = next(step for step in workflow["jobs"]["push-variants"]["steps"] if step.get("id") == "pick")
+    output = root / "output"
+    subprocess.run(
+        ["bash", "-c", step["run"]],
+        cwd=root,
+        check=True,
+        env={**os.environ, "BEFORE": before, "GITHUB_OUTPUT": str(output)},
+    )
+    assert json.loads(output.read_text().removeprefix("variants=")) == variants
+    assert "needs.push-variants.outputs.variants != '[]'" in workflow["jobs"]["build-and-push"]["if"]
 
 
 def test_added_deleted_and_renamed_rocm_inputs_change_the_hash(repository):

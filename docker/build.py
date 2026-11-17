@@ -186,8 +186,7 @@ def build_and_push(
         cmd += ["--build-arg", spec]
 
     # CI reads this back off the published tag to skip rebuilds whose inputs are unchanged.
-    hash_variant = variant if variant.startswith("rocm") else "cu13"
-    cmd += ["--label", f"{image_inputs.LABEL_KEY}={image_inputs.compute(root=context, variant=hash_variant)}"]
+    cmd += ["--label", f"{image_inputs.LABEL_KEY}={image_inputs.compute(root=context, variant=variant)}"]
 
     for tag in tags:
         cmd += ["-t", tag]
