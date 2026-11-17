@@ -10,8 +10,9 @@ from tests.fast.utils.workers.fake_specs import FakeCommandSpec, FakeServeSpec
 from tests.fast.utils.workers.test_ray_worker_manager_serve import DemoServeWorker
 
 from miles.utils.args.runtime_base import BaseLeafConfig
-from miles.utils.workers.ray_worker_manager import RayWorkerManager, _build_serve_worker
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.types import WorkerCommBackend
+from miles.utils.workers.worker_manager.core import _build_serve_worker
 from miles.utils.workers.worker_spec import SchedulingSpec
 
 

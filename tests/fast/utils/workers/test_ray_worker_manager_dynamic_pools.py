@@ -2,7 +2,8 @@ from types import SimpleNamespace
 
 from tests.fast.utils.workers.test_ray_worker_manager import _make_spec
 
-from miles.utils.workers.ray_worker_manager import RayWorkerManager, _PoolManager
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.worker_manager.core import _PoolManager
 
 
 def test_implicit_pool_queries_follow_live_gpu_pools_without_hiding_explicit_static_pools() -> None:
