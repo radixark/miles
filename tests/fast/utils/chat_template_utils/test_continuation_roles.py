@@ -45,6 +45,7 @@ _FAMILY_CHECKPOINTS = {
     TITOTokenizerType.DEEPSEEKV4: "deepseek-ai/DeepSeek-V4-Flash",
     TITOTokenizerType.DEEPSEEKV41: "deepseek-ai/DeepSeek-V4.1-Flash",
     TITOTokenizerType.INKLING: "thinkingmachines/Inkling-Small",
+    TITOTokenizerType.MUSE_SPARK: "RadixArk/Muse-Spark-Open-last4-partial",
 }
 _TOKENIZER_FILES = [
     "config.json",
