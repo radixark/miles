@@ -229,6 +229,8 @@ jobs:
       - name: Build and push PR tag
         id: build
         if: env.BUILD == 'true'
+        env:
+          BUILD_GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 docker/build.py --variant cu13 --image-tag custom \
             --custom-tag pr-${{ github.event.pull_request.number }} --push
