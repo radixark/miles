@@ -273,9 +273,9 @@ Eval runs on rollout engines, but only on K of them, and only while it runs:
 --eval-prompt-data aime /path/to/aime.jsonl
 ```
 
-At an eval-due step, right after `update_weights`, the trainer moves the last K serving
-engines from the training router to an eval router, which starts empty. Those engines
-keep the weights of that step and receive no weight update while the eval runs, so every
+At an eval-due step, right after `update_weights`, the trainer moves the K serving engines
+with the fewest unfinished requests from the training router to an eval router, which
+starts empty. Those engines keep the weights of that step and receive no weight update while the eval runs, so every
 eval token comes from one version. Training does not wait while the eval runs (an eval still
 running at the next eval point is covered below): the producer keeps submitting,
 the other engines keep generating, and every later `update_weights` reaches exactly the
@@ -297,7 +297,10 @@ The whole eval is submitted to the K engines at once, up to `--sglang-server-con
 samples per engine. Samples an engine cannot run wait in its queue, where a wall-clock
 limit such as an agent timeout keeps counting, so the score would depend on K. The mode
 therefore requires `--sglang-max-running-requests` and a `--sglang-server-concurrency` no
-larger than it; the cap applies to training engines too.
+larger than it; the cap applies to training engines too. Training requests already running
+on a carved engine are neither aborted nor moved: they finish there at the version they
+started with, and until they do, eval samples beyond the free slots wait behind them, at
+most one training turn. Lending the least-loaded engines keeps that number small.
 
 ### Mode 3: Dedicated fleet
 

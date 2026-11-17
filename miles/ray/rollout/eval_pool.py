@@ -1,6 +1,6 @@
 """Engines carved out of the training model for one eval (``--eval-pool-num-engines``).
 
-For one eval, ``carve_out`` moves the last serving engines from the training router to an
+For one eval, ``carve_out`` moves the least-loaded serving engines from the training router to an
 eval router that starts empty: they keep the weights they hold (the version the eval
 measures), and as cells pinned for eval they are no weight receivers, so training keeps
 updating every other engine. ``give_back`` takes them off the eval router as cells pending
@@ -57,7 +57,7 @@ class InferenceControllerEvalPool:
         return EvalFleetInfo(router=self._router, engine_gpu_counts=[self._num_gpus_per_engine] * self._num_engines)
 
     async def carve_out(self) -> EvalPoolCarveOut:
-        """Pin the last ``num_engines`` serving cells for one eval, all at one weight version; a failure skips the eval."""
+        """Pin the ``num_engines`` least-loaded serving cells for one eval, all at one weight version; a failure skips the eval."""
         try:
             # cells a failed give-back left pinned get another try here, so they do not stay out of training
             await self._srv.give_back_eval_pinned_cells()
@@ -67,15 +67,12 @@ class InferenceControllerEvalPool:
             return EvalPoolCarveOut(weight_version=None, skip_reason="unhealthy")
 
     async def _pin_serving_cells(self) -> EvalPoolCarveOut:
-        serving = sorted(
-            (cell for cell in self._srv.all_server_cells.values() if cell.is_serving),
-            key=lambda cell: cell.meta.gpu_offset,
-        )
+        serving = [cell for cell in self._srv.all_server_cells.values() if cell.is_serving]
         # training keeps at least one engine
         if len(serving) <= self._num_engines:
             logger.warning(f"Only {len(serving)} serving engines, cannot carve out {self._num_engines} for eval")
             return EvalPoolCarveOut(weight_version=None, skip_reason="insufficient_engines")
-        cells = serving[-self._num_engines :]
+        cells = await _least_loaded(serving, num_cells=self._num_engines)
 
         versions = await _weight_versions(cells)
         if len(set(versions)) != 1:
@@ -107,6 +104,22 @@ class InferenceControllerEvalPool:
             logger.warning(f"Carved-out eval engines are not ready: {e}")
             return EvalFleetPin(skip_reason="unhealthy")
         return EvalFleetPin(skip_reason=None)
+
+
+async def _least_loaded(cells: list[ServerCell], *, num_cells: int) -> list[ServerCell]:
+    """The cells with the fewest unfinished requests.
+
+    Training requests a carved engine still runs keep their slots, and eval requests beyond
+    the free slots wait in the engine queue, so lending the least-loaded engines shortens that wait.
+    """
+    responses = await asyncio.gather(*[cell.api_client.get_loads() for cell in cells])
+    num_requests = [
+        sum(load["num_running_reqs"] + load["num_waiting_reqs"] for load in response["loads"])
+        for response in responses
+    ]
+    logger.info(f"Unfinished requests per serving engine before carving out for eval: {num_requests}")
+    ranked = sorted(zip(num_requests, cells, strict=True), key=lambda item: (item[0], -item[1].meta.gpu_offset))
+    return [cell for _, cell in ranked[:num_cells]]
 
 
 async def _weight_versions(cells: list[ServerCell]) -> list[str]:

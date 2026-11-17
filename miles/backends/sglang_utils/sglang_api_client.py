@@ -229,6 +229,16 @@ class SGLangApiClient:
         response.raise_for_status()
         return response.json()
 
+    async def get_loads(self):
+        response = await GeneralHttpClientProvider.client().get(
+            f"{self.server_url}/v1/loads",
+            params={"include": "core"},
+            headers=self._headers,
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def load_lora_adapter_from_tensors(
         self,
         lora_name: str,

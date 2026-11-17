@@ -174,10 +174,15 @@ class TestServerCellEvalPin:
         await cell.dispose()
 
 
-def _fake_cell(*, cell_id: str, gpu_offset: int, version: str = "7", serving: bool = True) -> SimpleNamespace:
+def _fake_cell(
+    *, cell_id: str, gpu_offset: int, version: str = "7", serving: bool = True, num_requests: int = 0
+) -> SimpleNamespace:
+    loads = {"loads": [{"dp_rank": 0, "num_running_reqs": num_requests, "num_waiting_reqs": 0}]}
     cell = SimpleNamespace(
         meta=SimpleNamespace(cell_id=cell_id, gpu_offset=gpu_offset, num_gpus_per_engine=1),
-        api_client=SimpleNamespace(get_weight_version=AsyncMock(return_value=version)),
+        api_client=SimpleNamespace(
+            get_weight_version=AsyncMock(return_value=version), get_loads=AsyncMock(return_value=loads)
+        ),
         is_serving=serving,
         is_errored=False,
         is_eval_pinned=False,
@@ -232,7 +237,7 @@ def _pool(
 @pytest.mark.usefixtures("router_always_ready")
 class TestCarveOut:
     @pytest.mark.asyncio
-    async def test_the_last_serving_engines_are_pinned_at_their_shared_version(self):
+    async def test_serving_engines_are_pinned_at_their_shared_version(self):
         cells = [_fake_cell(cell_id=f"engine-{i}", gpu_offset=i) for i in range(4)]
         pool, srv = _pool(cells)
 
@@ -240,6 +245,30 @@ class TestCarveOut:
 
         assert carve_out == EvalPoolCarveOut(weight_version="7", skip_reason=None)
         assert sorted(srv.eval_pinned_cells) == ["engine-2", "engine-3"]
+
+    @pytest.mark.asyncio
+    async def test_the_least_loaded_engines_are_pinned(self):
+        """Training requests left on a carved engine hold slots the eval's first requests would wait for."""
+        cells = [
+            _fake_cell(cell_id=f"engine-{i}", gpu_offset=i, num_requests=num_requests)
+            for i, num_requests in enumerate([3, 0, 5, 1])
+        ]
+        pool, srv = _pool(cells)
+
+        await pool.carve_out()
+
+        assert sorted(srv.eval_pinned_cells) == ["engine-1", "engine-3"]
+
+    @pytest.mark.asyncio
+    async def test_an_engine_that_cannot_report_its_load_skips_the_eval(self):
+        cells = [_fake_cell(cell_id=f"engine-{i}", gpu_offset=i) for i in range(4)]
+        cells[0].api_client.get_loads = AsyncMock(side_effect=httpx.ConnectError("engine down"))
+        pool, srv = _pool(cells)
+
+        carve_out = await pool.carve_out()
+
+        assert carve_out.skip_reason == "unhealthy"
+        assert all(cell.pin_calls == 0 for cell in cells)
 
     @pytest.mark.asyncio
     async def test_training_always_keeps_an_engine(self):
