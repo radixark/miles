@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.request
 import zipfile
 from pathlib import Path
 from urllib.parse import urlencode
@@ -22,6 +23,7 @@ sys.path.insert(0, str(ROOT / "docker"))
 import image_inputs  # noqa: E402
 from tests.ci.ci_policy import resolve_workflow_inputs  # noqa: E402
 
+API_URL = os.environ.get("GITHUB_API_URL", "https://api.github.com")
 CPU_JOBS = {f"stage-a-cpu ({partition}) / run-cpu" for partition in range(4)}
 REQUEST_KEYS = {"pr", "merge_sha", "inputs_hash", "run_id", "run_attempt", "force_rebuild", "labels"}
 
@@ -31,15 +33,27 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def open_api(url, method="GET"):
+    # Self-hosted builders have no gh CLI. Artifact downloads redirect to blob storage, which must not get the token.
+    request = urllib.request.Request(url, method=method, headers={"Accept": "application/vnd.github+json"})
+    request.add_unredirected_header("Authorization", f"Bearer {os.environ['GH_TOKEN']}")
+    return urllib.request.urlopen(request, timeout=60)
+
+
 def api(path, *, method="GET", collection=None):
-    command = ["gh", "api", "-X", method, path]
-    if collection:
-        command += ["--paginate", "--slurp"]
-    data = subprocess.check_output(command)
-    result = json.loads(data) if data.strip() else None
-    if collection:
-        return [item for page in result for item in page[collection]]
-    return result
+    url = f"{API_URL}/{path}"
+    items = []
+    while True:
+        with open_api(url, method) as response:
+            data = response.read()
+            next_page = re.search(r'<([^>]+)>;\s*rel="next"', response.headers.get("Link", ""))
+        result = json.loads(data) if data.strip() else None
+        if not collection:
+            return result
+        items += result[collection]
+        if not next_page:
+            return items
+        url = next_page.group(1)
 
 
 def parse_request(data):
@@ -132,8 +146,8 @@ def resolve_request(event, repository):
     if not matches:
         return None
     require(len(matches) == 1 and matches[0]["size_in_bytes"] <= 65536, "Invalid request artifact")
-    data = subprocess.check_output(["gh", "api", f"repos/{repository}/actions/artifacts/{matches[0]['id']}/zip"])
-    request = parse_request(data)
+    with open_api(f"{API_URL}/repos/{repository}/actions/artifacts/{matches[0]['id']}/zip") as response:
+        request = parse_request(response.read())
     require(
         request["run_id"] == run["id"] and request["run_attempt"] == run["run_attempt"],
         "Request belongs to another attempt",
@@ -341,7 +355,7 @@ def main():
         if request["force_rebuild"]:
             try:
                 api(f"repos/{repository}/issues/{request['pr']}/labels/rebuild-ci-image", method="DELETE")
-            except subprocess.CalledProcessError:
+            except OSError:
                 print(
                     "::warning::Could not remove the rebuild-ci-image label; remove it by hand or every run will rebuild."
                 )
