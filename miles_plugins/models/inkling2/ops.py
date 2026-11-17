@@ -115,12 +115,11 @@ def log_scaling_tau(positions: torch.Tensor, n_floor: float, alpha: float) -> to
     return 1 + alpha * torch.log(torch.clamp((positions.float() + 1) / n_floor, min=1.0))
 
 
-def capped_swiglu(fc1_out: torch.Tensor, probs: torch.Tensor, gate_cap: float, up_cap: float) -> torch.Tensor:
-    """``softcap(g) * sigmoid(g) * softcap(u) * prob`` in fp32 with one rounding.
+# Rows per chunk: bounds capped_swiglu's fp32 temporaries (a hot expert rank can hold ~1M rows).
+CAPPED_SWIGLU_CHUNK_ROWS = 32768
 
-    The sigmoid reads the uncapped gate, as the serving kernel does; fc1 rows are
-    contiguous ``[gate; up]``.
-    """
+
+def _capped_swiglu_rows(fc1_out: torch.Tensor, probs: torch.Tensor, gate_cap: float, up_cap: float) -> torch.Tensor:
     gate, up = torch.chunk(fc1_out.float(), 2, dim=-1)
     sigmoid = torch.sigmoid(gate)
     if gate_cap > 0:
@@ -128,6 +127,65 @@ def capped_swiglu(fc1_out: torch.Tensor, probs: torch.Tensor, gate_cap: float, u
     if up_cap > 0:
         up = up_cap * torch.tanh(up / up_cap)
     return (gate * sigmoid * up * probs.float()).to(fc1_out.dtype)
+
+
+class _CappedSwiGLU(torch.autograd.Function):
+    """Row-chunked capped SwiGLU that saves only its inputs: the unfused fp32 graph kept about
+    five [rows, ffn] fp32 tensors alive, which ran a hot EP rank out of memory."""
+
+    @staticmethod
+    def forward(ctx, fc1_out, probs, gate_cap, up_cap):
+        ctx.save_for_backward(fc1_out, probs)
+        ctx.caps = (gate_cap, up_cap)
+        out = fc1_out.new_empty((*fc1_out.shape[:-1], fc1_out.shape[-1] // 2))
+        for start in range(0, fc1_out.shape[0], CAPPED_SWIGLU_CHUNK_ROWS):
+            rows = slice(start, start + CAPPED_SWIGLU_CHUNK_ROWS)
+            out[rows] = _capped_swiglu_rows(fc1_out[rows], probs[rows], gate_cap, up_cap)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        fc1_out, probs = ctx.saved_tensors
+        gate_cap, up_cap = ctx.caps
+        grad_fc1 = torch.empty_like(fc1_out) if ctx.needs_input_grad[0] else None
+        grad_probs = torch.empty_like(probs) if ctx.needs_input_grad[1] else None
+        for start in range(0, fc1_out.shape[0], CAPPED_SWIGLU_CHUNK_ROWS):
+            rows = slice(start, start + CAPPED_SWIGLU_CHUNK_ROWS)
+            gate, up = torch.chunk(fc1_out[rows].float(), 2, dim=-1)
+            p, g = probs[rows].float(), grad_out[rows].float()
+            sigmoid = torch.sigmoid(gate)
+            if gate_cap > 0:
+                t = torch.tanh(gate / gate_cap)
+                capped_gate, d_capped_gate = gate_cap * t, 1 - t * t
+            else:
+                capped_gate, d_capped_gate = gate, 1.0
+            if up_cap > 0:
+                t = torch.tanh(up / up_cap)
+                capped_up, d_capped_up = up_cap * t, 1 - t * t
+            else:
+                capped_up, d_capped_up = up, 1.0
+            gated = capped_gate * sigmoid
+            if grad_fc1 is not None:
+                d_gate = g * capped_up * p * (d_capped_gate * sigmoid + capped_gate * sigmoid * (1 - sigmoid))
+                d_up = g * gated * p * d_capped_up
+                grad_fc1[rows] = torch.cat([d_gate, d_up], dim=-1).to(fc1_out.dtype)
+            if grad_probs is not None:
+                d_probs = g * gated * capped_up
+                if p.shape[-1] == 1:
+                    d_probs = d_probs.sum(dim=-1, keepdim=True)
+                grad_probs[rows] = d_probs.to(probs.dtype)
+        return grad_fc1, grad_probs, None, None
+
+
+def capped_swiglu(fc1_out: torch.Tensor, probs: torch.Tensor, gate_cap: float, up_cap: float) -> torch.Tensor:
+    """``softcap(g) * sigmoid(g) * softcap(u) * prob`` in fp32 with one rounding.
+
+    The sigmoid reads the uncapped gate, as the serving kernel does; fc1 rows are
+    contiguous ``[gate; up]``.
+    """
+    if fc1_out.dim() != 2 or probs.shape[0] != fc1_out.shape[0]:
+        return _capped_swiglu_rows(fc1_out, probs, gate_cap, up_cap)
+    return _CappedSwiGLU.apply(fc1_out, probs, gate_cap, up_cap)
 
 
 def fake_quantize_expert_weight(weight: torch.Tensor, fmt: str) -> torch.Tensor:
