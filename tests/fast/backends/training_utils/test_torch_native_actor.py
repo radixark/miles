@@ -1,4 +1,4 @@
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -134,7 +134,6 @@ def test_the_rollout_step_runs_ref_then_actor_then_optimizer_under_the_right_sta
         "rewind",
         "enter:replay_backward",
         "exit:replay_backward",
-        "reset",
     ]
     assert step["log_probs"] == [(actor.ref_runner, "ref_"), (actor.runner, "")]
     assert step["steps"] == [actor.runner]
@@ -153,6 +152,25 @@ def test_only_a_rank_that_owns_its_rollout_slice_dumps_train_data(step, monkeypa
     actor._train_core(rollout_id=3, rollout_data={})
 
     assert dump.called == dumps_train_data
+
+
+def test_the_step_resets_the_replay_queues_even_when_training_fails(step, monkeypatch):
+    actor = _Provider()
+    actor.output_store = None
+    actor._before_train = lambda: None
+    monkeypatch.setattr(TorchNativeTrainRayActor, "train_parallel_config", None)
+    monkeypatch.setattr(base_module, "get_rollout_data", lambda **kwargs: ({}, nullcontext()))
+    monkeypatch.setattr(base_module, "inverse_timer", _noop_timer)
+
+    def fail(self, rollout_id, rollout_data):
+        raise RuntimeError("the forward failed")
+
+    monkeypatch.setattr(TorchNativeTrainRayActor, "_train_core", fail)
+
+    with pytest.raises(RuntimeError, match="the forward failed"):
+        actor.train(3, rollout_data_ref=object())
+
+    assert step["stages"] == ["reset"]
 
 
 _VOCAB_SIZE = 11
