@@ -596,12 +596,16 @@ class TestInferenceEngineEnvVars:
     def test_a_process_level_override_wins_over_the_built_in_default(self, monkeypatch):
         """The launcher's environment is how operators retune sglang per cluster, so defaults must not overwrite it."""
         monkeypatch.setenv("SGLANG_JIT_DEEPGEMM_PRECOMPILE", "true")
-        monkeypatch.setenv("SGLANG_MEMORY_SAVER_CUDA_GRAPH", "false")
+        monkeypatch.setenv("SGLANG_MEMORY_SAVER_CUDA_GRAPH", "true")
 
         envs = compute_inference_engine_env_vars(make_args())
 
         assert envs["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] == "true"
-        assert envs["SGLANG_MEMORY_SAVER_CUDA_GRAPH"] == "false"
+        assert envs["SGLANG_MEMORY_SAVER_CUDA_GRAPH"] == "true"
+
+        monkeypatch.setenv("SGLANG_MEMORY_SAVER_CUDA_GRAPH", "false")
+        offload_envs = compute_inference_engine_env_vars(make_args(offload_rollout=True))
+        assert offload_envs["SGLANG_MEMORY_SAVER_CUDA_GRAPH"] == "false"
 
     def test_the_built_in_defaults_apply_without_a_process_override(self, monkeypatch):
         """Without an override the engine must still get miles' own safety values rather than sglang's."""
@@ -612,21 +616,47 @@ class TestInferenceEngineEnvVars:
         envs = compute_inference_engine_env_vars(make_args())
 
         assert envs["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] == "false"
-        assert envs["SGLANG_MEMORY_SAVER_CUDA_GRAPH"] == "true"
+        assert envs["SGLANG_MEMORY_SAVER_CUDA_GRAPH"] == "false"
         assert int(envs["SGLANG_TIMEOUT_KEEP_ALIVE"]) > GeneralHttpClientProvider._LIMITS.keepalive_expiry
 
-    def test_custom_all_reduce_v2_is_disabled_only_for_colocated_multi_gpu_engines(self, monkeypatch):
-        """Only a colocated engine spanning several gpus hits the v2 all-reduce conflict; disabling it elsewhere
-        silently gives up throughput."""
+        offload_envs = compute_inference_engine_env_vars(make_args(offload_rollout=True))
+        assert offload_envs["SGLANG_MEMORY_SAVER_CUDA_GRAPH"] == "true"
+
+    def test_custom_all_reduce_v2_is_left_to_sglang_defaults_on_every_engine_layout(self, monkeypatch):
+        """With SGLANG_MEMORY_SAVER_CUDA_GRAPH wired correctly, SGLang's custom all-reduce v2 works under colocate
+        too, so Miles must not override SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2."""
         monkeypatch.delenv("SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2", raising=False)
 
-        def _value_for(*, colocate: bool, num_gpus_per_engine: int) -> str:
+        for colocate, num_gpus_per_engine in ((True, 4), (True, 1), (False, 4)):
             args = make_args(colocate=colocate, rollout_num_gpus_per_engine=num_gpus_per_engine)
-            return compute_inference_engine_env_vars(args)["SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2"]
+            assert "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2" not in compute_inference_engine_env_vars(args)
 
-        assert _value_for(colocate=True, num_gpus_per_engine=2) == "0"
-        assert _value_for(colocate=True, num_gpus_per_engine=1) == "1"
-        assert _value_for(colocate=False, num_gpus_per_engine=2) == "1"
+    def test_memory_saver_cuda_graph_tracks_whether_the_engine_enables_memory_saver(self, monkeypatch):
+        """Only engines running with torch_memory_saver enabled need pausable CUDA graphs and unregistered AR capture."""
+        monkeypatch.delenv("SGLANG_MEMORY_SAVER_CUDA_GRAPH", raising=False)
+
+        assert (
+            compute_inference_engine_env_vars(make_args(offload_rollout=False))["SGLANG_MEMORY_SAVER_CUDA_GRAPH"]
+            == "false"
+        )
+        assert (
+            compute_inference_engine_env_vars(make_args(offload_rollout=True))["SGLANG_MEMORY_SAVER_CUDA_GRAPH"]
+            == "true"
+        )
+        assert (
+            compute_inference_engine_env_vars(
+                make_args(offload_rollout=True),
+                sglang_overrides={"enable_memory_saver": False},
+            )["SGLANG_MEMORY_SAVER_CUDA_GRAPH"]
+            == "false"
+        )
+        assert (
+            compute_inference_engine_env_vars(
+                make_args(offload_rollout=False),
+                sglang_overrides={"enable_memory_saver": True},
+            )["SGLANG_MEMORY_SAVER_CUDA_GRAPH"]
+            == "true"
+        )
 
 
 class TestSpecsInferenceEngine:
@@ -695,6 +725,34 @@ class TestSpecsInferenceEngine:
         )
 
         assert specs_inference_engine(args) == []
+
+    def test_mixed_offload_pools_gate_memory_saver_cuda_graph_per_pool(self, tmp_path, monkeypatch):
+        """In mixed-offload colocate mode, only pools overlapping trainer GPUs enable memory saver CUDA graphs."""
+        monkeypatch.delenv("SGLANG_MEMORY_SAVER_CUDA_GRAPH", raising=False)
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[
+                    {"worker_type": "regular", "num_gpus": 4, "num_gpus_per_engine": 2},
+                    {"worker_type": "decode", "num_gpus": 4, "num_gpus_per_engine": 2},
+                ]
+            )
+        )
+        args = make_args(
+            sglang_config=str(config_path),
+            colocate=True,
+            offload_rollout=True,
+            actor_num_gpus_per_node=4,
+            num_gpus_per_node=8,
+            rollout_num_gpus=8,
+        )
+
+        specs = specs_inference_engine(args)
+
+        assert [spec.env_var(_make_engine_ctx(spec))["SGLANG_MEMORY_SAVER_CUDA_GRAPH"] for spec in specs] == [
+            "true",
+            "false",
+        ]
 
 
 class TestSpecsRouter:

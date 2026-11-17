@@ -78,6 +78,13 @@ def compute_engine_launch_cmd(
     return shlex.join([*interpreter_prefix, "-m", "sglang.launch_server", *server_args_to_argv(launch_args)])
 
 
+def engine_enables_memory_saver(args, *, sglang_overrides: dict | None = None) -> bool:
+    """Return whether an inference engine enables torch_memory_saver."""
+    if sglang_overrides and "enable_memory_saver" in sglang_overrides:
+        return bool(sglang_overrides["enable_memory_saver"])
+    return bool(args.offload_rollout)
+
+
 def _compute_server_args(
     args,
     *,
@@ -103,7 +110,7 @@ def _compute_server_args(
         "trust_remote_code": True,
         "random_seed": random_seed,
         # memory
-        "enable_memory_saver": args.offload_rollout,
+        "enable_memory_saver": engine_enables_memory_saver(args, sglang_overrides=sglang_overrides),
         # distributed
         "host": host,
         "port": port,

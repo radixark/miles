@@ -6,7 +6,7 @@ from typing_extensions import Self
 
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig
-from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
+from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd, engine_enables_memory_saver
 from miles.backends.sglang_utils.sglang_scaling_config import ServerGroupScalingConfig
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
@@ -328,7 +328,7 @@ class InferenceEngineSpec(BaseCommandSpec):
         )
 
     def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
-        return compute_inference_engine_env_vars(ctx.args)
+        return compute_inference_engine_env_vars(ctx.args, sglang_overrides=self.server_group_config.overrides)
 
     def launch_command(self, ctx: LaunchCommandContext) -> str:
         args = ctx.args
@@ -442,7 +442,8 @@ def _compute_spec_inference_engine(
     )
 
 
-def compute_inference_engine_env_vars(args) -> dict[str, str]:
+def compute_inference_engine_env_vars(args, *, sglang_overrides: dict | None = None) -> dict[str, str]:
+    enable_memory_saver = engine_enables_memory_saver(args, sglang_overrides=sglang_overrides)
     env_vars = {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
         key: os.environ.get(key, default_val)
         for key, default_val in {
@@ -451,10 +452,11 @@ def compute_inference_engine_env_vars(args) -> dict[str, str]:
             "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
             "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
             "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
-            "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
-            "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2": (
-                "0" if args.colocate and args.rollout_num_gpus_per_engine > 1 else "1"
-            ),
+            # Put CUDA-graph allocations under torch_memory_saver only when --enable-memory-saver is on;
+            # SGLang custom collectives also key on this flag to skip IPC graph-input registration over
+            # remappable VMM pages, so keeping it "false" elsewhere preserves zero-copy graph capture.
+            # An explicit launcher environment setting wins via os.environ.get.
+            "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true" if enable_memory_saver else "false",
             "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
             "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
             "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
