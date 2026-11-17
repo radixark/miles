@@ -235,6 +235,7 @@ class FakeCell:
             worker_name=f"inference-engine-0-0-{cell_index}-0",
             needs_offload=False,
             update_weights=False,
+            health_check_timeout_seconds=20,
             workers_hash=f"hash-{cell_index}",
         )
         self.server_url = url

@@ -188,7 +188,7 @@ class TestResolvedServerGroupValidation:
     def test_a_resolved_group_with_non_positive_gpus_per_engine_is_rejected(self):
         """A non-positive engine width would make the engine count division meaningless."""
         with pytest.raises(ValueError, match="greater than 0"):
-            ServerGroupConfig(worker_type="regular", num_gpus_per_engine=-1, needs_offload=False)
+            ServerGroupConfig(worker_type="regular", num_gpus_per_engine=-1, pp_size=1, needs_offload=False)
 
 
 class TestNumServerCells:
@@ -762,7 +762,7 @@ class TestCommonValue:
     def test_groups_that_agree_share_their_override(self):
         """Every engine group overriding a field to the same value yields that value."""
         group = ServerGroupConfig(
-            worker_type=WorkerType.REGULAR, num_gpus_per_engine=1, needs_offload=False, overrides={"x": 2}
+            worker_type=WorkerType.REGULAR, num_gpus_per_engine=1, pp_size=1, needs_offload=False, overrides={"x": 2}
         )
         model = ModelConfig(name="actor", model_path=None, server_groups=[group, group], update_weights=True)
 
@@ -783,7 +783,9 @@ class TestCommonValueBoundaries:
     def test_disagreeing_groups_cannot_supply_a_shared_value(self, second_overrides: dict[str, int]) -> None:
         """A shared consumer cannot silently select one engine group's conflicting setting."""
         groups = [
-            ServerGroupConfig(worker_type="regular", num_gpus_per_engine=1, needs_offload=False, overrides=value)
+            ServerGroupConfig(
+                worker_type="regular", num_gpus_per_engine=1, pp_size=1, needs_offload=False, overrides=value
+            )
             for value in [{"x": 2}, second_overrides]
         ]
         model = ModelConfig(name="actor", model_path=None, server_groups=groups, update_weights=True)
@@ -796,11 +798,13 @@ class TestCommonValueBoundaries:
         """GPU reservations without engines cannot override settings used by live engine consumers."""
         groups = [
             ServerGroupConfig(
-                worker_type="placeholder", num_gpus_per_engine=1, needs_offload=False, overrides={"x": 99}
+                worker_type="placeholder", num_gpus_per_engine=1, pp_size=1, needs_offload=False, overrides={"x": 99}
             )
         ]
         if include_engine:
-            groups.append(ServerGroupConfig(worker_type="regular", num_gpus_per_engine=1, needs_offload=False))
+            groups.append(
+                ServerGroupConfig(worker_type="regular", num_gpus_per_engine=1, pp_size=1, needs_offload=False)
+            )
         model = ModelConfig(name="actor", model_path=None, server_groups=groups, update_weights=True)
 
         assert SglangConfig(models=[model], base_args={"x": 1}).common_value("x") == 1
@@ -808,7 +812,9 @@ class TestCommonValueBoundaries:
     def test_a_field_missing_from_one_live_group_is_rejected(self) -> None:
         """An override in only one group cannot manufacture a globally available setting."""
         groups = [
-            ServerGroupConfig(worker_type="regular", num_gpus_per_engine=1, needs_offload=False, overrides=value)
+            ServerGroupConfig(
+                worker_type="regular", num_gpus_per_engine=1, pp_size=1, needs_offload=False, overrides=value
+            )
             for value in [{"x": 2}, {}]
         ]
         model = ModelConfig(name="actor", model_path=None, server_groups=groups, update_weights=True)
@@ -821,7 +827,7 @@ class TestActorValue:
     @staticmethod
     def _group(**overrides):
         return ServerGroupConfig(
-            worker_type="regular", num_gpus_per_engine=1, needs_offload=False, overrides=overrides
+            worker_type="regular", num_gpus_per_engine=1, pp_size=1, needs_offload=False, overrides=overrides
         )
 
     def test_frozen_models_do_not_take_part(self):

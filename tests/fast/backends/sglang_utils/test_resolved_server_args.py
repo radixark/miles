@@ -35,6 +35,8 @@ class TestResolvedServerArgs:
             engine_info_bootstrap_port=9003,
             sglang_overrides={},
             num_gpus_per_engine=24,
+            tp_size=8,
+            pp_size=3,
             gated_launch_port=9004,
             random_seed=17,
         )

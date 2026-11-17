@@ -62,6 +62,7 @@ def _engines(*, num_gpus_per_engine, **base_args):
     group = ServerGroupConfig(
         worker_type=WorkerType.REGULAR,
         num_gpus_per_engine=num_gpus_per_engine,
+        pp_size=1,
         needs_offload=False,
         overrides={"model_path": "/ckpt"},
     )

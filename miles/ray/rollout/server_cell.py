@@ -10,7 +10,7 @@ import httpx
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, WorkerType, probe_server_healthy
-from miles.backends.sglang_utils.sglang_engine import SGLANG_DEFAULT_HEALTH_CHECK_TIMEOUT_SECONDS, build_server_url
+from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.cell_state import (
     CellAddrInfo,
@@ -58,7 +58,7 @@ class ServerCellMetadata(FrozenStrictBaseModel):
     worker_name: str
     needs_offload: bool
     update_weights: bool
-    health_check_timeout_seconds: float = SGLANG_DEFAULT_HEALTH_CHECK_TIMEOUT_SECONDS
+    health_check_timeout_seconds: float
     workers_hash: str
 
 

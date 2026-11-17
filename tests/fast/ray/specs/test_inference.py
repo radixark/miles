@@ -81,7 +81,7 @@ def _controller_layout() -> LaunchPlan:
 
 def _make_model_cfg(*worker_types: str) -> ModelConfig:
     groups = [
-        ServerGroupConfig(worker_type=worker_type, num_gpus_per_engine=4, needs_offload=False)
+        ServerGroupConfig(worker_type=worker_type, num_gpus_per_engine=4, pp_size=1, needs_offload=False)
         for worker_type in worker_types
     ]
     return ModelConfig(name="default", model_path=None, server_groups=groups, update_weights=True)
@@ -580,7 +580,7 @@ class TestInferenceEngineEnvVars:
             fake_dumper_utils,
         )
 
-        envs = compute_inference_engine_env_vars(args, pp_size=1)
+        envs = compute_inference_engine_env_vars(args, tp_size=1, pp_size=1, health_check_timeout_seconds=20)
 
         assert get_sglang_env_calls == [args]
         assert envs["DUMPER_SERVER_PORT"] == "reuse"
@@ -590,7 +590,9 @@ class TestInferenceEngineEnvVars:
     @pytest.mark.parametrize("loss_type", ["policy_loss", "score_centering"])
     def test_training_enforces_sampler_logprobs_on_workers(self, monkeypatch, loss_type):
         monkeypatch.setenv("SGLANG_RETURN_ORIGINAL_LOGPROB", "1")
-        envs = compute_inference_engine_env_vars(make_args(loss_type=loss_type), pp_size=1)
+        envs = compute_inference_engine_env_vars(
+            make_args(loss_type=loss_type), tp_size=1, pp_size=1, health_check_timeout_seconds=20
+        )
         assert envs["SGLANG_RETURN_ORIGINAL_LOGPROB"] == "0"
 
     def test_a_process_level_override_wins_over_the_built_in_default(self, monkeypatch):
@@ -598,7 +600,7 @@ class TestInferenceEngineEnvVars:
         monkeypatch.setenv("SGLANG_JIT_DEEPGEMM_PRECOMPILE", "true")
         monkeypatch.setenv("SGLANG_MEMORY_SAVER_CUDA_GRAPH", "false")
 
-        envs = compute_inference_engine_env_vars(make_args(), pp_size=1)
+        envs = compute_inference_engine_env_vars(make_args(), tp_size=1, pp_size=1, health_check_timeout_seconds=20)
 
         assert envs["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] == "true"
         assert envs["SGLANG_MEMORY_SAVER_CUDA_GRAPH"] == "false"
@@ -606,18 +608,19 @@ class TestInferenceEngineEnvVars:
     @pytest.mark.parametrize("pp_size, expected", [(4, "10,8,12,8"), (1, None)])
     def test_the_pipeline_layer_partition_reaches_only_pipelined_engines(self, pp_size, expected):
         """SGLang reads the per-stage layer split only from its environment."""
-        envs = compute_inference_engine_env_vars(make_args(sglang_pp_layer_partition="10,8,12,8"), pp_size=pp_size)
+        args = make_args()
+        args.sglang_pp_layer_partition = "10,8,12,8"
+
+        envs = compute_inference_engine_env_vars(args, tp_size=1, pp_size=pp_size, health_check_timeout_seconds=20)
 
         assert envs.get("SGLANG_PP_LAYER_PARTITION") == expected
 
-    @pytest.mark.parametrize("pp_size, expected", [(1, "20"), (8, "160")])
-    def test_the_health_check_budget_grows_with_the_pipeline_depth(self, monkeypatch, pp_size, expected):
-        """The startup probe waits on this budget, so the launcher's environment must not change it."""
+    def test_the_engine_gets_the_health_check_budget_its_cell_probes_with(self, monkeypatch):
         monkeypatch.setenv("SGLANG_HEALTH_CHECK_TIMEOUT", "600")
 
-        envs = compute_inference_engine_env_vars(make_args(), pp_size=pp_size)
+        envs = compute_inference_engine_env_vars(make_args(), tp_size=1, pp_size=8, health_check_timeout_seconds=160)
 
-        assert envs["SGLANG_HEALTH_CHECK_TIMEOUT"] == expected
+        assert envs["SGLANG_HEALTH_CHECK_TIMEOUT"] == "160"
 
     def test_the_built_in_defaults_apply_without_a_process_override(self, monkeypatch):
         """Without an override the engine must still get miles' own safety values rather than sglang's."""
@@ -625,7 +628,7 @@ class TestInferenceEngineEnvVars:
         monkeypatch.delenv("SGLANG_MEMORY_SAVER_CUDA_GRAPH", raising=False)
         monkeypatch.delenv("SGLANG_TIMEOUT_KEEP_ALIVE", raising=False)
 
-        envs = compute_inference_engine_env_vars(make_args(), pp_size=1)
+        envs = compute_inference_engine_env_vars(make_args(), tp_size=1, pp_size=1, health_check_timeout_seconds=20)
 
         assert envs["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] == "false"
         assert envs["SGLANG_MEMORY_SAVER_CUDA_GRAPH"] == "true"
@@ -636,13 +639,16 @@ class TestInferenceEngineEnvVars:
         silently gives up throughput."""
         monkeypatch.delenv("SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2", raising=False)
 
-        def _value_for(*, colocate: bool, num_gpus_per_engine: int) -> str:
-            args = make_args(colocate=colocate, rollout_num_gpus_per_engine=num_gpus_per_engine)
-            return compute_inference_engine_env_vars(args, pp_size=1)["SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2"]
+        def _value_for(*, colocate: bool, tp_size: int, pp_size: int = 1) -> str:
+            envs = compute_inference_engine_env_vars(
+                make_args(colocate=colocate), tp_size=tp_size, pp_size=pp_size, health_check_timeout_seconds=20
+            )
+            return envs["SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2"]
 
-        assert _value_for(colocate=True, num_gpus_per_engine=2) == "0"
-        assert _value_for(colocate=True, num_gpus_per_engine=1) == "1"
-        assert _value_for(colocate=False, num_gpus_per_engine=2) == "1"
+        assert _value_for(colocate=True, tp_size=2) == "0"
+        assert _value_for(colocate=True, tp_size=1) == "1"
+        assert _value_for(colocate=True, tp_size=1, pp_size=2) == "1"
+        assert _value_for(colocate=False, tp_size=2) == "1"
 
 
 class TestSpecsInferenceEngine:
@@ -1171,11 +1177,19 @@ class TestEngineMetaApiKey:
         )
         assert meta["sglang_api_key"] == ""
 
-    def test_a_group_pipeline_override_sets_its_cells_health_check_budget(self, tmp_path):
+    def test_a_group_pipeline_override_sets_its_cells_health_check_budget(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("SGLANG_HEALTH_CHECK_TIMEOUT", raising=False)
         meta = self._meta_for(
             tmp_path, num_gpus_per_engine=8, overrides_yaml="        overrides:\n          pp_size: 8\n"
         )
         assert meta["health_check_timeout_seconds"] == 160
+
+    def test_a_launcher_health_check_budget_is_scaled_per_pipeline_stage(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("SGLANG_HEALTH_CHECK_TIMEOUT", "120")
+        meta = self._meta_for(
+            tmp_path, num_gpus_per_engine=8, overrides_yaml="        overrides:\n          pp_size: 2\n"
+        )
+        assert meta["health_check_timeout_seconds"] == 240
 
 
 class TestTrailingPartialEngineRejection:
@@ -1570,7 +1584,12 @@ def _fake_engine_provider_factory(args, *, capability):
 class TestTheEngineEnvironment:
     def test_every_engine_is_told_to_report_its_own_env_vars(self) -> None:
         """Without the gate the engine answers /server_info with no env_vars, and the audit is empty."""
-        assert compute_inference_engine_env_vars(make_args(), pp_size=1)["SGLANG_EXPOSE_OWN_ENV_VARS"] == "1"
+        assert (
+            compute_inference_engine_env_vars(make_args(), tp_size=1, pp_size=1, health_check_timeout_seconds=20)[
+                "SGLANG_EXPOSE_OWN_ENV_VARS"
+            ]
+            == "1"
+        )
 
 
 class TestRegistrationWiring:

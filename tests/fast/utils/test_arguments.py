@@ -2626,6 +2626,7 @@ class TestAllowStopTokenReplaceResolution:
         group = ServerGroupConfig(
             worker_type=WorkerType.REGULAR,
             num_gpus_per_engine=1,
+            pp_size=1,
             overrides={"enable_streaming_session": True},
             needs_offload=False,
         )
@@ -4495,12 +4496,14 @@ class TestMultimodalTokenSpaceProcessingArgs:
         actor_group = ServerGroupConfig(
             worker_type=WorkerType.REGULAR,
             num_gpus_per_engine=1,
+            pp_size=1,
             needs_offload=False,
             overrides={"model_path": "/ckpt"},
         )
         reward_group = ServerGroupConfig(
             worker_type=WorkerType.REGULAR,
             num_gpus_per_engine=1,
+            pp_size=1,
             needs_offload=False,
             overrides={
                 "model_path": "/reward",
@@ -4537,6 +4540,7 @@ class TestMultimodalTokenSpaceProcessingArgs:
             ServerGroupConfig(
                 worker_type=WorkerType.REGULAR,
                 num_gpus_per_engine=1,
+                pp_size=1,
                 needs_offload=False,
                 overrides={"model_path": "/ckpt", "image_processor_backend": backend},
             )

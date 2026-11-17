@@ -184,11 +184,15 @@ stage per node, which keeps tensor parallelism inside each node:
 `--sglang-pp-layer-partition` gives the layers of each stage, one entry per stage, summing
 to the model's layer count. Every pipelined engine receives it as
 `SGLANG_PP_LAYER_PARTITION`, so miles refuses at startup any server group whose `pp_size`
-or model it does not fit. Unset, SGLang splits the layers evenly.
+or model it does not fit, and refuses the flag when no server group is pipelined. Unset,
+SGLang splits the layers evenly.
 
 A cold health request crosses every pipeline stage, so miles sets each engine's
-`SGLANG_HEALTH_CHECK_TIMEOUT` (the `/health_generate` budget) to SGLang's default times the
-engine's `pp_size`, and waits on that budget while the engine starts.
+`SGLANG_HEALTH_CHECK_TIMEOUT` (the `/health_generate` budget) to a per-stage budget times
+the engine's `pp_size`, and waits on that budget while the engine starts. The per-stage
+budget is the launcher's own `SGLANG_HEALTH_CHECK_TIMEOUT` when set, otherwise SGLang's
+default of 20 s. For an engine miles does not launch
+(`--rollout-external-engine-addrs`) it waits 20 s times the `pp_size` the engine reports.
 
 <a id="misc-args"></a>
 ## `misc_args` - GPU layout and everything else

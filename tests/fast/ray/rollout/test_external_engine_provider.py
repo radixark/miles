@@ -34,8 +34,8 @@ def _make_args(urls: list[str], *, num_gpus_per_engine: int = 1, **overrides: An
     return make_args(**{**defaults, **overrides})
 
 
-def _regular_payload(*, num_gpus: int = 1) -> dict[str, Any]:
-    return dict(internal_states=[dict(world_size=num_gpus)], disaggregation_mode="null")
+def _regular_payload(*, num_gpus: int = 1, pp_size: int = 1) -> dict[str, Any]:
+    return dict(internal_states=[dict(world_size=num_gpus)], disaggregation_mode="null", pp_size=pp_size)
 
 
 def _prefill_payload(*, num_gpus: int = 1, bootstrap_port: int = 12090) -> dict[str, Any]:
@@ -267,6 +267,15 @@ class TestStaticInferenceEngineWorkerProvider:
             health_check_timeout_seconds=20,
         )
 
+    async def test_a_pipelined_engine_gets_a_health_check_budget_per_stage(self, monkeypatch):
+        args = _make_args(["host1:8000"], num_gpus_per_engine=8)
+        payload = _regular_payload(num_gpus=8, pp_size=4)
+
+        provider = await self._make_provider(monkeypatch, args, {"http://host1:8000": payload})
+
+        (info,) = provider.cell_infos
+        assert info.meta["health_check_timeout_seconds"] == 80
+
     async def test_discovery_log_omits_the_engine_api_key(self, monkeypatch, caplog):
         """Discovery logs operational engine metadata without exposing its credential."""
         args = _make_args(["host1:8000"], sglang_api_key="secret")
@@ -444,6 +453,7 @@ def _engine(*, url: str, num_gpus: int) -> _ExternalEngineInfo:
         port=8000,
         worker_type=WorkerType.REGULAR,
         num_gpus=num_gpus,
+        pp_size=1,
         disaggregation_bootstrap_port=None,
     )
 
@@ -496,6 +506,7 @@ class TestAPdFleetRoles:
                 port=8000,
                 worker_type=worker_type,
                 num_gpus=1,
+                pp_size=1,
                 disaggregation_bootstrap_port=12090 if worker_type == WorkerType.PREFILL else None,
             )
             for index, worker_type in enumerate(worker_types)
