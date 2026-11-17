@@ -618,7 +618,7 @@ def test_workflow_preserves_gate_and_build_publish_boundary():
     for arch in HANDLER.image_inputs.PR_IMAGE_ARCHES:
         call = parent["jobs"][f"docker-build-{arch}"]
         assert call["with"] == dict(arch=arch) and call["permissions"]["actions"] == "read"
-    assert parent["jobs"]["resolve-ci-image"]["needs"] == ["resolve-ci-policy", "docker-build-amd64"]
+    assert parent["jobs"]["resolve-ci-image-amd64"]["needs"] == ["resolve-ci-policy", "docker-build-amd64"]
     request_steps = [step for step in image_job["steps"] if "REQUEST_BUILD == 'true' &&" in step.get("if", "")]
     assert len(request_steps) == 2 and all("inputs.arch == 'amd64'" in step["if"] for step in request_steps)
     wait = next(step for step in image_job["steps"] if step.get("id") == "wait")

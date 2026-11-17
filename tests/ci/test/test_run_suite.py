@@ -439,7 +439,7 @@ class TestWorkflowScopeSeam:
 
     def test_docker_build_waits_for_cpu_gate_and_preserves_bypass(self):
         workflow = self._workflow()
-        caller = workflow.split("  docker-build-amd64:", 1)[1].split("  resolve-ci-image:", 1)[0]
+        caller = workflow.split("  docker-build-amd64:", 1)[1].split("  resolve-ci-image-amd64:", 1)[0]
 
         assert "needs: [resolve-ci-policy, stage-a-cpu]" in caller
         assert "always() && !cancelled()" in caller
@@ -603,7 +603,7 @@ class TestWorkflowScopeSeam:
         bypass_gate = "needs.resolve-ci-policy.outputs.bypass_fastfail == 'true'"
         assert gpu_stages.count(bypass_gate) == 6
         assert gpu_stages.count("needs.resolve-ci-policy.result == 'success'") == 6
-        assert gpu_stages.count("needs.resolve-ci-image.result == 'success'") == 6
+        assert gpu_stages.count("needs.resolve-ci-image-amd64.result == 'success'") == 6
         assert "needs.stage-a-cpu.result == 'failure'" not in gpu_stages
 
     def test_each_cuda_stage_consumes_the_fail_open_skip_list(self):
@@ -637,7 +637,7 @@ class TestWorkflowScopeSeam:
         )
 
         policy_header = workflow.split("  resolve-ci-policy:", 1)[1].split("    runs-on:", 1)[0]
-        docker_caller = workflow.split("  docker-build-amd64:", 1)[1].split("  resolve-ci-image:", 1)[0]
+        docker_caller = workflow.split("  docker-build-amd64:", 1)[1].split("  resolve-ci-image-amd64:", 1)[0]
         reusable = self._reusable_workflow("_build-pr-ci-image.yml")
 
         assert "github.event.action != 'closed'" in policy_header
