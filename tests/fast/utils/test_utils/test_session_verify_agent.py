@@ -390,6 +390,37 @@ def test_generate_journals_a_spec_sample_missing_probes(monkeypatch, tmp_path):
     assert "recorded probes" in error_record["verification_error"]["message"]
 
 
+@pytest.mark.parametrize("kind", [SessionVerifyKind.NORMAL, SessionVerifyKind.SPEC])
+def test_generate_journals_a_sample_whose_agent_did_not_finish(monkeypatch, tmp_path, kind):
+    """The base generate collects the samples of an agent that raised; they carry no agent metadata."""
+    metrics_path = tmp_path / "metrics.jsonl"
+    monkeypatch.setenv("MILES_SESSION_VERIFY_METRICS_PATH", str(metrics_path))
+    sample = Sample(metadata={"tito_session_mismatch": []})
+
+    async def fake_base_generate(input):
+        return GenerateFnOutput(samples=[sample])
+
+    monkeypatch.setattr(session_verify_agent, "_base_generate", fake_base_generate)
+
+    asyncio.run(session_verify_agent.generate(_generate_input(kind)))
+
+    _, error_record = [json.loads(line) for line in metrics_path.read_text().splitlines()]
+    assert error_record["verification_error"]["stage"] == "session_verify_agent.generate"
+    assert "carries no agent metadata" in error_record["verification_error"]["message"]
+
+
+def test_generate_raises_for_an_unfinished_agent_without_metrics_sidecar(monkeypatch):
+    monkeypatch.delenv("MILES_SESSION_VERIFY_METRICS_PATH", raising=False)
+
+    async def fake_base_generate(input):
+        return GenerateFnOutput(samples=[Sample(metadata={"tito_session_mismatch": []})])
+
+    monkeypatch.setattr(session_verify_agent, "_base_generate", fake_base_generate)
+
+    with pytest.raises(AssertionError, match="carries no agent metadata"):
+        asyncio.run(session_verify_agent.generate(_generate_input(SessionVerifyKind.NORMAL)))
+
+
 def test_generate_raises_for_a_spec_sample_missing_probes_without_metrics_sidecar(monkeypatch):
     monkeypatch.delenv("MILES_SESSION_VERIFY_METRICS_PATH", raising=False)
 

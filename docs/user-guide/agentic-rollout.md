@@ -284,10 +284,7 @@ The GPU check runs two rollout steps:
   with the next `user` question, the two continuations agents send most. Its
   mismatch rates are the ones CI tracks across runs.
 
-Both checks hold only while the sampled tokens stay in the prompt unchanged.
-Pass `--no-session-verify-spec-trajectory` to run the normal rollout alone. The
-GLM CI lane does: a `user` turn after a GLM tool call replaces the sampled stop
-token, so CPU tests cover that continuation instead.
+Pass `--no-session-verify-spec-trajectory` to run the normal rollout alone.
 
 ### Choose replay matching
 

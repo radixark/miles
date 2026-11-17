@@ -122,8 +122,7 @@ def session_verify_extras(parser: argparse.ArgumentParser) -> argparse.ArgumentP
         help=(
             "Run the spec rollout (every continuation the family's continuation roles "
             "accept or refuse) as a first rollout step before the normal rollout.  Turn "
-            "off for families whose spec continuations fall outside token append-only "
-            "(GLM replaces its sampled stop token)."
+            "off to run the normal rollout alone."
         ),
     )
     parser.set_defaults(**SESSION_VERIFY_INVARIANT_ARGS)
@@ -354,7 +353,8 @@ def assert_session_verify_metrics(
 ) -> None:
     """Read per-sample JSONL metrics and apply the cross-sample gates per rollout kind.
 
-    A journaled verifier assertion, a rollout of *kinds* with no recorded
+    A journaled verifier assertion, samples recorded out of the step order of
+    *kinds*, a rollout of *kinds* with no recorded
     sample, a spec sample whose probe got another status than the spec
     decides, and a normal rollout that never answered a tool call (when
     ``require_append_tool``) fail.  Both rollouts also fail on hard mismatches
@@ -370,6 +370,7 @@ def assert_session_verify_metrics(
             f"Session multi-role e2e: samples of kinds {sorted(recorded_kinds - set(kinds))} "
             f"in a run of {[str(kind) for kind in kinds]}"
         )
+    _assert_kinds_in_step_order([entry["kind"] for entry in entries], kinds)
     summaries = {kind: _summarize([e for e in entries if e.get("kind") == kind]) for kind in kinds}
     for kind, summary in summaries.items():
         logger.info("Session verification %s rollout: %s", kind, summary)
@@ -406,6 +407,24 @@ def assert_session_verify_metrics(
             "template's canonical render — investigate via "
             "verify_session_tito_tokenizer.py + sample-level mismatch logs.  "
             f"First examples (expected vs actual): {normal['assistant_examples']!r}"
+        )
+
+
+def _assert_kinds_in_step_order(recorded: list[str], kinds: tuple[SessionVerifyKind, ...]) -> None:
+    """Fail when a rollout step ran prompts of another step's kind.
+
+    The kind comes from prompt records read in file order, one step per kind.
+    When a sample group fails, the rollout loop refills the step from the next
+    records, which belong to the next kind, and the last step wraps around to
+    the first kind. Samples are recorded as they finish, so a step that kept
+    its kind shows as one run of each kind, in the order of *kinds*.
+    """
+    steps = [kinds.index(kind) for kind in recorded]
+    if steps != sorted(steps):
+        raise AssertionError(
+            f"Session multi-role e2e: samples were recorded out of the step order {[str(kind) for kind in kinds]}.  "
+            "A sample group failed and its step was refilled with another rollout's prompts, so the last "
+            "step is no longer the normal rollout alone.  Check rollout logs for 'Task raised exception'."
         )
 
 

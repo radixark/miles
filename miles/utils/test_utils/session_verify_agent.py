@@ -531,12 +531,26 @@ def _sample_record(index, sample, kind, mismatches, forbidden, expectations) -> 
     }
 
 
+def _fail_sample(message: str) -> None:
+    """Fail the run for one sample: journal with a metrics sidecar, raise without one.
+
+    Raising drops the sample's group, and the rollout loop refills the step with
+    prompts of the next rollout's kind; the journaled error fails the run at the
+    runner's gate instead.
+    """
+    error = AssertionError(message)
+    if not _journal_verification_error("session_verify_agent.generate", error):
+        raise error
+
+
 @_journal_verifier_assertions("session_verify_agent.generate")
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     """Custom-generate wrapper that records each sample and checks rollout coverage.
 
-    - Spec samples must carry one expectation per probe of the family, in order
-      (with a metrics sidecar a sample that does not is journaled, not raised).
+    - Every sample must carry the agent's metadata: the agent returns it only
+      after its whole trajectory, and the base generate still collects the
+      samples of an agent that raised.
+    - Spec samples must carry one expectation per probe of the family, in order.
     - Without a metrics sidecar, at least one normal sample must have answered
       a tool call (with one, the runner checks this across the run).
     """
@@ -556,20 +570,21 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         raise AssertionError("Session multi-role e2e: generate returned no samples")
     _verify_tito_samples(samples, kind=kind)
 
-    if kind is SessionVerifyKind.SPEC:
-        steps = spec_probe_steps(fixed_template(tito_model))
-        for i, sample in enumerate(samples):
+    steps = spec_probe_steps(fixed_template(tito_model)) if kind is SessionVerifyKind.SPEC else None
+    for i, sample in enumerate(samples):
+        if "driver_events" not in sample.metadata:
+            _fail_sample(
+                f"Session multi-role e2e: {kind} sample {i} carries no agent metadata: "
+                "the agent did not finish its trajectory"
+            )
+        elif steps is not None:
             recorded = [e["step"] for e in sample.metadata.get(EXPECTATIONS_KEY) or []]
             if recorded != steps:
-                error = AssertionError(
-                    f"Session multi-role e2e: spec sample {i} recorded probes {recorded}, expected {steps}"
-                )
-                # Raising drops the group, and the rollout loop refills the step with prompts of
-                # the next rollout's kind; the journaled error fails the run at the runner's gate.
-                if not _journal_verification_error("session_verify_agent.generate", error):
-                    raise error
-    elif not os.environ.get("MILES_SESSION_VERIFY_METRICS_PATH") and not any(
-        "append_tool" in sample.metadata.get("driver_events", []) for sample in samples
+                _fail_sample(f"Session multi-role e2e: spec sample {i} recorded probes {recorded}, expected {steps}")
+    if (
+        kind is SessionVerifyKind.NORMAL
+        and not os.environ.get("MILES_SESSION_VERIFY_METRICS_PATH")
+        and not any("append_tool" in sample.metadata.get("driver_events", []) for sample in samples)
     ):
         raise AssertionError(
             "Session multi-role e2e: no sample produced an append_tool action — "

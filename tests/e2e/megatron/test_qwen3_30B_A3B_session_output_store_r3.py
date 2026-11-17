@@ -58,7 +58,6 @@ def execute(mode: str) -> None:
         "--custom-generate-function-path miles.utils.test_utils.session_verify_agent.generate "
         "--custom-agent-function-path miles.utils.test_utils.session_verify_agent.run_agent "
         "--tito-model qwen3 --sglang-reasoning-parser qwen3 --sglang-tool-call-parser qwen25 "
-        "--session-verify-cycles 2 "
         "--use-rollout-routing-replay "
         f"{save_debug_train_data_arg(DUMP_DIR, mode)}"
         f"{command_utils.get_mooncake_object_store_args()} "
