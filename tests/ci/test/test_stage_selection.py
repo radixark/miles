@@ -40,7 +40,7 @@ def _registration(
     disabled: str | None = None,
     hardware: list[str] | None = None,
 ) -> CIRegistry:
-    backend = HWBackend.ROCM if suite == "stage-c-4-gpu-mi350" else HWBackend.CUDA
+    backend = HWBackend.ROCM if suite.endswith("-mi350") else HWBackend.CUDA
     if hardware is None and backend is HWBackend.CUDA:
         # Mirror the home-stage invariant the registry enforces.
         hardware = ["blackwell"] if suite.endswith("-b200") else ["hopper"]
@@ -157,12 +157,22 @@ def test_blackwell_only_scope_keeps_b200_for_non_blackwell_changes(changed_path)
         _registration("tests/e2e/test_hopper.py", "stage-c-8-gpu-h200", hardware=["hopper"]),
         _registration("tests/e2e/test_blackwell_8.py", "stage-c-8-gpu-b200", hardware=["blackwell"]),
         _registration("tests/e2e/test_blackwell_4.py", "stage-c-4-gpu-b200", hardware=["blackwell"]),
+        _registration("tests/e2e/test_rocm.py", "stage-c-4-gpu-mi350"),
     ]
     changed_files = (ChangedFile("M", (changed_path,)),)
 
     skipped = set(_select(changed_files, registrations, raw_labels=("run-ci-blackwell-only",)))
 
     assert skipped == PR_GPU_STAGES - {"stage-c-8-gpu-b200", "stage-c-4-gpu-b200"}
+
+
+def test_run_on_dispatch_keeps_a_selected_rocm_stage():
+    registrations = [_registration("tests/e2e/test_rocm.py", "stage-c-4-gpu-mi350")]
+    changed_files = (ChangedFile("M", ("miles/trainer.py",)),)
+
+    skipped = set(_select(changed_files, registrations, raw_labels=("run-ci-precision", "run-on-blackwell")))
+
+    assert "stage-c-4-gpu-mi350" not in skipped
 
 
 def test_bypass_fastfail_does_not_make_a_docs_change_affect_gpu_stages():
@@ -315,9 +325,7 @@ def test_image_build_ignores_gpu_selection_and_resolvers_require_it():
     assert "needs.resolve-ci-policy.outputs.needs_cuda_image == 'true'" in resolver
 
     rocm = WORKFLOW.with_name("pr-test-rocm.yml").read_text()
-    resolver = rocm.split("\n  resolve-ci-image:\n", 1)[1].split("\n  resolve-ci-deps:\n", 1)[0]
+    resolver = rocm.split("\n  resolve-ci-image:\n", 1)[1].split("\n  stage-c-2-gpu-mi350:\n", 1)[0]
     assert "needs: [resolve-ci-policy]" in resolver
-    assert (
-        "if: ${{ !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350') }}"
-        in resolver
-    )
+    for stage in ("stage-c-2-gpu-mi350", "stage-c-4-gpu-mi350", "stage-c-8-gpu-mi350"):
+        assert f"contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), '{stage}')" in resolver

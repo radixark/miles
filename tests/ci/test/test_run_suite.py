@@ -606,7 +606,7 @@ class TestWorkflowScopeSeam:
     def test_each_cuda_stage_consumes_the_fail_open_skip_list(self):
         workflow = self._workflow()
         b200_stages = {"stage-c-4-gpu-b200", "stage-c-8-gpu-b200"}
-        cuda_stages = PR_GPU_STAGES - {"stage-c-4-gpu-mi350"} - b200_stages
+        cuda_stages = {stage for stage in PR_GPU_STAGES if not stage.endswith("-mi350")} - b200_stages
         for stage_name in cuda_stages:
             block = workflow.split(f"  {stage_name}:", 1)[1]
             block = re.split(r"^  [A-Za-z_][A-Za-z0-9_-]*:\s*$", block, maxsplit=1, flags=re.MULTILINE)[0]
@@ -654,15 +654,13 @@ class TestRocmWorkflowScopeSeam:
             in workflow
         )
         assert "cancel-in-progress: true" in workflow
-        for job in ("resolve-ci-policy", "resolve-ci-deps"):
-            header = workflow.split(f"  {job}:\n", 1)[1].split("    runs-on:", 1)[0]
-            assert "if: github.event.action != 'closed'" in header
+        header = workflow.split("  resolve-ci-policy:\n", 1)[1].split("    runs-on:", 1)[0]
+        assert "if: github.event.action != 'closed'" in header
         image = workflow.split("  resolve-ci-image:\n", 1)[1].split("    runs-on:", 1)[0]
         assert "needs: [resolve-ci-policy]" in image
         assert "always()" not in image
         stage = workflow.split("  stage-c-4-gpu-mi350:\n", 1)[1]
         assert "needs.resolve-ci-policy.result == 'success'" in stage
-        assert "needs.resolve-ci-deps.result == 'success'" in stage
 
     def test_pr_schedules_and_dispatch_share_policy(self):
         workflow = self._workflow()
@@ -693,22 +691,24 @@ class TestRocmWorkflowScopeSeam:
         stage = workflow.split("  stage-c-4-gpu-mi350:", 1)[1]
         command = stage.split("execute_command:", 1)[1].split("secrets:", 1)[0]
 
-        assert "needs: [resolve-ci-policy, resolve-ci-image, resolve-ci-deps]" in stage
+        assert "needs: [resolve-ci-policy, resolve-ci-image]" in stage
         assert "allow_self_hosted" not in stage
-        assert "partition_id: [0, 1]" in stage
+        assert (
+            "partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1,2,3]' || '[0,1,2,3,4,5]') }}"
+            in stage
+        )
         assert "max-parallel:" not in stage
-        assert "--auto-partition-size 2" in command
+        assert "--auto-partition-size ${{ strategy.job-total }}" in command
         assert "checkout_ref:" not in stage
         assert "--cadence ${{ needs.resolve-ci-policy.outputs.cadence }}" in command
         assert "--labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}" in command
         assert "${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}" in command
-        assert "WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}" in stage
+        assert workflow.count("AMD_WANDB_API_KEY: ${{ secrets.AMD_WANDB_API_KEY }}") == 4
+        assert "secrets.WANDB_API_KEY" not in workflow
         assert "needs.resolve-ci-policy.result == 'success'" in stage
         assert "needs.resolve-ci-image.result == 'success'" in stage
-        assert "needs.resolve-ci-deps.result == 'success'" in stage
-        assert (
-            "skip_dependency_install: ${{ needs.resolve-ci-deps.outputs.skip_dependency_install == 'true' }}" in stage
-        )
+        assert "resolve-ci-deps" not in workflow
+        assert "skip_dependency_install:" not in stage
         assert (
             "!contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350')"
             in stage
@@ -726,7 +726,7 @@ class TestRocmWorkflowScopeSeam:
         steps = (
             Path(__file__).resolve().parents[3] / ".github" / "workflows" / "scripts" / "spur" / "container_steps.sh"
         ).read_text()
-        override = steps.split('if [ -n "${MEGATRON_PR:-}" ]; then', 1)[1].split('cd "$GITHUB_WORKSPACE"', 1)[0]
+        override = steps.split("cd /root/Megatron-LM\n", 1)[1].split('cd "$GITHUB_WORKSPACE"', 1)[0]
 
         checkout = override.index("git checkout -f FETCH_HEAD")
         install = override.index("pip install -e . --no-deps --break-system-packages")
@@ -793,6 +793,19 @@ class TestRunSuiteCLI:
         assert result.returncode != 0
         assert "Unknown suite stage-c-unknown" in result.stderr
         assert "No tests to run. Exiting with success." not in result.stdout
+
+    def test_legacy_rocm_nightly_suite_name_runs_the_renamed_stage(self):
+        result = self._run(
+            "--hw",
+            "rocm",
+            "--suite",
+            "nightly-stage-c-4-gpu-mi350",
+            "--cadence",
+            "nightly",
+            "--list-only",
+        )
+        assert result.returncode == 0, result.stderr
+        assert "Suite: stage-c-4-gpu-mi350" in result.stdout
 
 
 # --- run_a_suite: resolved policy reaches cadence and runner behavior --------
@@ -1273,7 +1286,7 @@ class TestSnapshotHardware:
             ("stage-c-8-gpu-h100", "h100"),
             ("stage-c-2-gpu-h200", "h200"),
             ("stage-c-4-gpu-b200", "b200"),
-            ("nightly-stage-c-2-gpu-mi350", "mi350"),
+            ("stage-c-2-gpu-mi350", "mi350"),
         ],
     )
     def test_execution_suite_selects_the_snapshot_hardware(self, suite: str, hardware: str) -> None:
