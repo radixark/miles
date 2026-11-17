@@ -455,6 +455,9 @@ def compute_inference_engine_env_vars(args) -> dict[str, str]:
             "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2": (
                 "0" if args.colocate and args.rollout_num_gpus_per_engine > 1 else "1"
             ),
+            # Waking an engine remaps its CUDA-graph pool, so NCCL registrations made at capture go stale (hangs or
+            # NaN logits). Only engines with in-graph collectives need it; an NCCL_GRAPH_REGISTER in the env wins.
+            **({"NCCL_GRAPH_REGISTER": "0"} if args.offload_rollout and args.rollout_num_gpus_per_engine > 1 else {}),
             "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
             "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
             "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
