@@ -50,14 +50,14 @@ Both PR workflows expose reusable `workflow_call` entry points. Release CI calls
 
 **Image resolution (`resolve-ci-image`).** In `pr-test.yml`, a small `ubuntu-latest` job selects, in order: the called workflow's `image_tag`, the `ci_image_tag` dispatch input, a current `pr-<num>` image, the PR description's `ci-image-tag:`, then `dev`. It validates the result is a bare tag and outputs `radixark/miles:<tag>`. `release-branch-cut.yml` passes the prune-exempt `release-vX.Y.Z-ci` tag recorded in `release-lock.json`.
 
-The ROCm resolver uses only its dispatch input, defaults to its undated `rocm/sgl-dev` tag, and uses that default for reusable calls too. For PRs, it runs only when `stage-c-4-gpu-mi350` is selected. CPU-only PRs skip both CUDA image preparation and ROCm image resolution.
+The ROCm resolver uses only its dispatch input, defaults to its undated `rocm/sgl-dev` tag, and uses that default for reusable calls too. For PRs, it runs only when `stage-c-4-gpu-mi350` is selected. CPU-only PRs skip both CUDA and ROCm image resolution; a CPU-only PR builds its CUDA image only when its image inputs changed (see [Docker build](/developer/ci/02-docker-build)).
 
 Distinct from image selection, the **`run-ci-image` label** selects the test scope — every enabled tag except `long`, `ft-short`, and `ft-long` — which validates an image bump without selecting those domains implicitly.
 
 **Policy resolution (`resolve-ci-policy`).**
 
 - `pull_request`, `schedule`, and `workflow_dispatch` only say how the workflow started; none itself implies a cadence or domain scope.
-- Each Miles PR workflow passes trigger facts and, for PRs, the diff to `tests/ci/ci_policy.py`, which publishes the resolved policy and `skipped_stages` for `run_suite.py` and GPU job gates. `needs_cuda_image` derives from that selection and gates CUDA image preparation.
+- Each Miles PR workflow passes trigger facts and, for PRs, the diff to `tests/ci/ci_policy.py`, which publishes the resolved policy and `skipped_stages` for `run_suite.py` and GPU job gates. `needs_cuda_image` derives from that selection and gates CUDA image resolution.
 - A PR `nightly` label maps to nightly cadence.
 - A scheduled run maps its exact UTC `github.event.schedule` cron: `0 15 * * 0-5` maps to nightly and `0 15 * * 6` maps to weekly; an unknown cron fails.
 - A manual dispatch keeps regular cadence and has no PR labels. Both GPU workflows add `--match-all-labels` so an explicit manual operation runs the full regular GPU suites; CPU selection remains unchanged.
@@ -71,7 +71,7 @@ A **nightly** policy selects every enabled tag except `long` and `ft-long`, admi
 
 **Empty GPU jobs.** B200 uses `b200_plan.py` to select individual files and their minimum GPU budgets. Other CUDA and ROCm suite jobs first run their exact `--list-only` command on `ubuntu-latest`, including cadence, labels, arch dispatch, disabled tests, and partition arguments. `--github-output` publishes `has_tests` after partitioning. Only a successful plan with `has_tests=true` can allocate a GPU runner, which checks out the planned commit. Empty suites and shards skip GPU execution; planning errors fail the workflow. `/rerun-test` instead uses its existing trusted resolver, which requires one enabled registration at the exact requested SHA.
 
-**Dependencies / gating.** In `pr-test.yml`, `stage-a-cpu` requires only `resolve-ci-policy`; all four `stage-b-cpu` shards additionally wait for every `stage-a-cpu` shard to succeed. PR-image preparation requires selected CUDA tests and the `stage-a-cpu` success/bypass gate; NVIDIA GPU stages follow image resolution. `stage-b-cpu` does not gate that chain and is skipped if `stage-a-cpu` fails, including with `bypass-fastfail` or broad cadences. Resolved nightly, weekly, or release cadence and the `bypass-fastfail` PR label admit the chain after an actual `stage-a-cpu` failure and make each suite continue after a test failure. This fast-fail exception does not itself select GPU tests or bypass policy or Docker/image failure; cadence and labels determine selection as described above. Scheduled, manual, and called release runs retain their existing image preparation.
+**Dependencies / gating.** In `pr-test.yml`, `stage-a-cpu` requires only `resolve-ci-policy`; all four `stage-b-cpu` shards additionally wait for every `stage-a-cpu` shard to succeed. PR-image preparation requires the `stage-a-cpu` success/bypass gate, and image resolution additionally requires selected CUDA tests; NVIDIA GPU stages follow image resolution. `stage-b-cpu` does not gate that chain and is skipped if `stage-a-cpu` fails, including with `bypass-fastfail` or broad cadences. Resolved nightly, weekly, or release cadence and the `bypass-fastfail` PR label admit the chain after an actual `stage-a-cpu` failure and make each suite continue after a test failure. This fast-fail exception does not itself select GPU tests or bypass policy or Docker/image failure; cadence and labels determine selection as described above. Scheduled, manual, and called release runs retain their existing image preparation.
 
 **Runner selection.** CUDA stages request runners by label via `runs_on`, a JSON list passed through to `runs-on` — a runner must carry **all** listed labels (GPU class + count). CPU stages call `_run-cpu-ci.yml`, whose only job runs on GitHub-hosted `ubuntu-latest`, so they don't occupy GPU-fleet slots.
 
@@ -124,6 +124,21 @@ Both runner containers can see all eight host GPUs through `/dev/dri`. Each runn
 `tpu-contract.yml` is outside the stage inventory: it runs `tests/fast/backends/tpu` on a hosted CPU runner
 against the sglang-torchtpu commit `docker/Dockerfile.tpu` pins, on PRs only. Those files skip in
 `stage-a-cpu`, which has the CUDA sglang instead.
+
+## TPU smoke runs
+
+`pr-test-tpu.yml` is also outside the stage inventory: it runs whole `scripts/tpu` launchers rather than registered
+test files. Each run is the launcher's `smoke` recipe (3 rollouts; the sglang-torchtpu engine and the torchtitan
+trainer share one TPU v7x 2x2x1 host and sync weights over ICI) in a JobSet on sglang-torchtpu's GKE CI cluster,
+queued through its Kueue PR-gate queue alongside sglang-torchtpu's PR jobs. A PR runs the Qwen3-4B smoke only while
+it carries `run-ci-tpu`, again on every push; the nightly runs every launcher on `main`, and `workflow_dispatch` takes
+a launcher list and any branch.
+Fork PRs cannot run it: the cluster's credentials come from GitHub's OIDC token through Workload Identity Federation.
+
+The image is the rolling `radixark/miles:dev-tpu`, or `radixark/miles:pr-<number>-tpu` for a PR that changes the TPU
+image's inputs, chosen the way the CUDA suites choose theirs; the pod checks out the commit under test over the
+image's `/root/miles`.
+[`.github/tpu-ci/README.md`](../../../.github/tpu-ci/README.md) covers the cluster side.
 
 ## Assumptions
 

@@ -101,6 +101,8 @@ jobs:
 
       - name: Build and push cu13 (v${{ steps.resolve.outputs.version }})
         shell: bash
+        env:
+          BUILD_GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 docker/build.py --variant cu13 --image-tag custom \
             --custom-tag "v${{ steps.resolve.outputs.version }}" \

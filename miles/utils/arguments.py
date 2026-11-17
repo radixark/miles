@@ -50,6 +50,7 @@ from miles.utils.function_registry import load_function
 from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora.arguments import validate_lora_args, validate_lora_args_after_megatron
+from miles.utils.lora.hf_lora_targets import unembed_lora_targets
 from miles.utils.lora.utils import is_lora_enabled, lora_sync_sends_base
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.object_store_config import (
@@ -915,25 +916,70 @@ def validate_miles_ext_kernels_args(args) -> None:
 
 
 def validate_log_probs_backend_args(args) -> None:
-    """Reject settings the fused log-prob op does not cover, at startup rather than mid-run."""
-    if args.log_probs_backend != "fused":
+    """Reject settings the fused log-prob ops do not cover, at startup rather than mid-run."""
+    backend = args.log_probs_backend
+    if backend not in ("fused", "fused_lm_head"):
         return
     if args.true_on_policy_mode:
         raise ValueError(
-            "--log-probs-backend fused does not support --true-on-policy-mode, which needs bitwise "
+            f"--log-probs-backend {backend} does not support --true-on-policy-mode, which needs bitwise "
             "parity with the rollout engine's own log-softmax; use --log-probs-backend torch."
         )
     if args.use_sampling_support_replay:
         raise ValueError(
-            "--log-probs-backend fused does not support sampling-support replay "
+            f"--log-probs-backend {backend} does not support sampling-support replay "
             f"(--rollout-top-p {args.rollout_top_p}, --rollout-top-k {args.rollout_top_k}); "
             "use --log-probs-backend torch."
         )
     # unset, the actor falls back to the tokenizer's vocab_size, which can leave out added special tokens
     if args.train_backend == "megatron" and args.vocab_size is None:
         raise ValueError(
-            "--log-probs-backend fused needs --vocab-size (the HF config's vocab_size) on the megatron "
+            f"--log-probs-backend {backend} needs --vocab-size (the HF config's vocab_size) on the megatron "
             "backend, to exclude Megatron's vocabulary padding from the softmax."
+        )
+    if backend == "fused_lm_head":
+        _validate_fused_lm_head_args(args)
+
+
+def _validate_fused_lm_head_args(args) -> None:
+    """The model returns the output layer's input, so only losses that score target tokens can read it."""
+    if args.train_backend != "megatron":
+        raise ValueError(
+            "--log-probs-backend fused_lm_head needs --train-backend megatron (GPTModel's output_processor)"
+        )
+    if args.loss_type not in ("policy_loss", "sft_loss"):
+        raise ValueError(
+            f"--log-probs-backend fused_lm_head supports --loss-type policy_loss and sft_loss, got {args.loss_type}"
+        )
+    # the raw flag: args.multi_lora is derived from it later, in validate_lora_args
+    if args.multi_lora_n_adapters > 0:
+        raise ValueError("--log-probs-backend fused_lm_head does not support multi-LoRA (--multi-lora-n-adapters)")
+    # Megatron runs the combined 1F1B schedule only with this overlap, and that schedule takes no output_processor
+    if args.overlap_moe_expert_parallel_comm:
+        raise ValueError(
+            "--log-probs-backend fused_lm_head does not support --overlap-moe-expert-parallel-comm (combined 1F1B)"
+        )
+    # Megatron stashes the output layer's input on each call; the tiles' checkpoint replay stashes it twice per gradient
+    if args.defer_embedding_wgrad_compute:
+        raise ValueError("--log-probs-backend fused_lm_head does not support --defer-embedding-wgrad-compute")
+    # Megatron computes the MTP loss inside GPTModel's postprocess, before the output_processor runs
+    if args.enable_mtp_training:
+        logger.warning(
+            "--log-probs-backend fused_lm_head does not cover the MTP heads: with --enable-mtp-training each MTP "
+            "layer's loss still materializes its fp32 logits, [tokens x vocab/TP] per layer"
+        )
+
+
+def _validate_fused_lm_head_lora_targets(args) -> None:
+    """Bridge wraps a LoRA-adapted output layer in LoRALinear, which has none of the Megatron layer's attributes
+    fused_lm_head reads."""
+    if args.log_probs_backend != "fused_lm_head" or not is_lora_enabled(args):
+        return
+    adapted = unembed_lora_targets(args.hf_lora_targets, load_hf_config(args.hf_checkpoint).to_dict())
+    if adapted:
+        raise ValueError(
+            f"--log-probs-backend fused_lm_head does not support LoRA on the output layer ({adapted}); "
+            "leave it out of --target-modules, e.g. --target-modules attn,mlp"
         )
 
 
@@ -1358,10 +1404,37 @@ def miles_validate_args(args):
     if args.save_trigger_sentinel is not None:
         assert args.save is not None, "'--save' is required when save_trigger_sentinel is set."
 
+    assert (args.keep_recent_checkpoints is None) == (
+        args.keep_checkpoint_every is None
+    ), "--keep-recent-checkpoints and --keep-checkpoint-every must be set together."
+    if args.keep_recent_checkpoints is not None:
+        assert args.save is not None, "'--save' is required when keep_recent_checkpoints is set."
+        assert args.keep_recent_checkpoints >= 1 and args.keep_checkpoint_every >= 1
+        # An async save is finalized only at the next save, so the newest complete step must survive this one.
+        assert (
+            not args.async_save or args.keep_recent_checkpoints >= 2
+        ), "--async-save needs --keep-recent-checkpoints >= 2: the newest step is not final until the next save."
+        assert args.save_interval is not None and args.keep_checkpoint_every % args.save_interval == 0, (
+            f"--keep-checkpoint-every {args.keep_checkpoint_every} must be a multiple of --save-interval "
+            f"{args.save_interval}, or decay keeps fewer steps than asked."
+        )
+        assert args.train_backend == "megatron", "--keep-recent-checkpoints relies on megatron's iter_N layout."
+        assert args.save_retain_interval is None, (
+            "--keep-recent-checkpoints cannot be combined with --save-retain-interval, which deletes checkpoints "
+            "on its own schedule, including steps decay keeps or pins. Drop it: --keep-checkpoint-every replaces it."
+        )
+        assert args.megatron_config is None, (
+            "--keep-recent-checkpoints does not support --megatron-config: its trainers save under "
+            "<save>/trainers/<trainer_id>, which decay does not scan."
+        )
+        # use_critic is derived from advantage_estimator further down, so check the source here.
+        assert args.advantage_estimator != "ppo", "--keep-recent-checkpoints does not prune the critic's checkpoints."
+
     if args.custom_megatron_post_save_hook_path is not None:
         assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
 
     validate_lora_args(args)
+    _validate_fused_lm_head_lora_targets(args)
     _resolve_data_source_path(args)
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
