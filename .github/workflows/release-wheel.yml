@@ -7,6 +7,7 @@ name: Release Wheel
 # that release is public, the pip index on radixark/miles-wheels lists them within the hour.
 
 on:
+  pull_request:  # TEMP: pre-merge run with v0.2.0's lock and publish off; removed before merge
   workflow_dispatch:
 
 permissions:
@@ -29,6 +30,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.2.0  # TEMP
           [ "$GITHUB_REF_TYPE" = tag ] && [[ "$GITHUB_REF_NAME" == v* ]] \
             || { echo "::error::dispatch this on a release tag (--ref v<version>), not on $GITHUB_REF_NAME"; exit 1; }
           SGLANG_COMMIT=$(python3 -c 'import json; print(json.load(open("release-lock.json"))["sglang_commit"])')
@@ -45,6 +47,7 @@ jobs:
       sglang_wheel: ${{ needs.pins.outputs.sglang_wheel }}
 
   publish:
+    if: github.event_name != 'pull_request'  # TEMP
     needs: [pins, smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 10
