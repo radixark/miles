@@ -36,8 +36,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/workflows/scripts/fork_ci_image.py resolve
 
-  # One request covers both architectures. Each publishes its own tag, so the PR-side
-  # amd64 waiter is released without waiting for arm64.
+  # One request covers both architectures. Each publishes its own tag from its own job,
+  # which the PR-side job of that architecture waits for.
   build:
     needs: request
     name: build (${{ matrix.arch }})

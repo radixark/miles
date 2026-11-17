@@ -41,7 +41,7 @@ INPUT_GLOBS = (
 LABEL_KEY = "miles.image-inputs"
 
 # A PR image is one tag per architecture, each stamped with LABEL_KEY so it is reused
-# independently. PR CI runs only on amd64; arm64 proves the image still builds there.
+# independently.
 PR_IMAGE_ARCHES = {"amd64": ("cu13-x86", ""), "arm64": ("cu13-aarch64", "-arm64")}
 
 

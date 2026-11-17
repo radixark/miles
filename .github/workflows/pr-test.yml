@@ -152,8 +152,7 @@ jobs:
       arch: amd64
     secrets: inherit
 
-  # The same image built for arm64. No suite consumes it, so it runs beside the GPU
-  # stages instead of gating them; a failed build still fails the run.
+  # The same image built for arm64; a stage that runs on arm64 would require it.
   docker-build-arm64:
     needs: [resolve-ci-policy, stage-a-cpu]
     if: |
