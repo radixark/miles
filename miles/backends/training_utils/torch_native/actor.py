@@ -24,7 +24,7 @@ from miles.backends.training_utils.loss.objective import (
     count_loss_tokens,
     loss_function,
 )
-from miles.backends.training_utils.metrics import perf, train_dump
+from miles.backends.training_utils.metrics import perf, train_dump, train_token_reporter
 from miles.backends.training_utils.metrics.checks import check_grad_norm
 from miles.backends.training_utils.metrics.log_utils import (
     aggregate_forward_results,
@@ -83,7 +83,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
     ref_runner: StepRunner | None = None
     align_token_side_channel: Callable[[torch.Tensor, int], torch.Tensor] | None = None
     # every rank holds its own slice of the rollout; a backend whose CP peers share one sets this on one of them
-    dumps_train_data: bool = True
+    owns_rollout_slice: bool = True
 
     def _step_runner(self) -> StepRunner:
         raise NotImplementedError
@@ -227,8 +227,9 @@ class TorchNativeTrainRayActor(TrainRayActor):
             self._optimizer_steps(runner, data_iterator, num_microbatches, rollout_id)
 
         self.prof.step(rollout_id=rollout_id)
-        if self.dumps_train_data:
+        if self.owns_rollout_slice:
             train_dump.save_debug_train_data(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
+            train_token_reporter.report_train_tokens(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
         self._after_rollout(rollout_id, rollout_data)
 
     def _score_rollout(self, runner: StepRunner, rollout_data: dict) -> tuple[DataIterator, list[int]]:
