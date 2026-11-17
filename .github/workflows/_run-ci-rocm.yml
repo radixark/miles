@@ -37,7 +37,7 @@ on:
         required: false
         default: false
       withhold_runner_secrets:
-        description: 'Withhold runner credentials from fork-head file runs.'
+        description: 'Unset the runner HF_TOKEN, WANDB_API_KEY and AMD_NEON_DATABASE_URL before launch. A credential boundary only for /rerun-test, whose launcher comes from main; a pull_request launcher is PR code on the login runner.'
         type: boolean
         required: false
         default: false
@@ -133,9 +133,10 @@ jobs:
     timeout-minutes: ${{ inputs.timeout_minutes }}
 
     steps:
-      # Launch scripts run on the login runner from the workflow revision.
-      # /rerun-test uses main, and pull_request runs use the merge commit.
-      - name: Checkout trusted cluster launcher
+      # Launch scripts run on the login runner from the workflow revision:
+      # main for /rerun-test, but the PR merge commit for pull_request runs,
+      # so a pull_request launcher is PR-controlled.
+      - name: Checkout cluster launcher
         uses: actions/checkout@v4
         with:
           ref: ${{ github.workflow_sha }}
