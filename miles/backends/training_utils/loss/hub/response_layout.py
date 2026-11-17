@@ -249,6 +249,7 @@ class PackedSlices:
             entropy_requires_grad=entropy_requires_grad,
             max_seq_lens=self.batch.get("max_seq_lens"),
             rollout_sampling_mask=self._sampling_masks(),
+            lm_head=self.batch.get("lm_head"),
         )
         entropy = torch.cat(result["entropy"], dim=0) if with_entropy else None
         return torch.cat(result["log_probs"], dim=0), entropy
