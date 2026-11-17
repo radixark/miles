@@ -210,7 +210,7 @@ Precedence, when several sources disagree: a `workflow_dispatch` input wins, the
 PR-description line, then the default. For both CUDA and ROCm suites, a current PR
 image (`pr-<number>` or `pr-<number>-rocm10-mi35x`) outranks its corresponding body
 directive, including when a matching image is reused. A called workflow's
-`image_tag` also outranks these choices. See [image resolution](ci/00-stage.md#what-each-stage-does).
+`image_tag` also outranks these choices. See [image selection](/developer/ci/00-stage#shared-by-cuda-and-rocm).
 
 ## PR conventions
 

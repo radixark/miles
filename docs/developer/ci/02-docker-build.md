@@ -106,40 +106,14 @@ To rebuild an eligible PR image when its inputs did not change — a moved base 
 
 ### ROCm PR images
 
-`pr-test-rocm.yml` calls the same image workflow with `rocm10-mi35x-pr` independently of test selection. Image resolution remains limited to selected ROCm stages or changed-file jobs. It compares the ROCm inputs against the merge's first
-parent, reuses an image with the current inputs label, and builds changed inputs
-on Miles' Spur compute nodes through the trusted publisher. Dockerfile RUN steps use no AMD
-devices; downstream shards pull the published image after verification. The tag is
-`radixark/miles:pr-<number>-rocm10-mi35x`; its recipe derives from
-`rocm10-mi35x`, so the existing rolling ROCm repository stays unchanged.
+`pr-test-rocm.yml` calls `_build-pr-ci-image.yml` with the `rocm10-mi35x-pr` recipe whether or not ROCm tests are selected. Hashing, reuse, and `rebuild-ci-image` follow the CUDA rules above, except:
 
-`tests/ci/rocm.py` owns image resolution: the reusable call's `image_tag`, the
-dispatch `ci_image_tag`, a current PR image, the PR body's
-`ci-rocm-image-tag:`, then the released default. Only the PR tag family uses
-`radixark/miles`; existing ROCm tags use `rocm/sgl-dev`. `ci-image-tag:` continues
-to select CUDA images. A failed build or fork publication blocks image resolution
-and the AMD suites. The `rebuild-ci-image` label applies to eligible ROCm builds
-as it does to CUDA.
-The label is shared: a faster build may consume it before the other hardware's
-image decision, so one label does not guarantee that both variants are forced.
-
-Both same-repository and fork ROCm rebuilds use the trusted publisher below, with the source workflow bound
-to `pr-test-rocm.yml` and the requested recipe restricted to the ROCm PR variant.
-ROCm retains its existing lack of a CPU A gate; CUDA's CPU gate is unchanged.
-The publisher verifies the ROCm image's linux/amd64 config and inputs hash.
-CUDA and ROCm builds for one PR have separate publication concurrency groups.
-Automatic changed-file ROCm jobs also wait for this image and use the resolver's
-output, including when no regular stage is selected. The trusted publisher validates image inputs without inspecting test registrations.
-Comment ROCm file reruns check the public tag anonymously through Docker Hub's
-HEAD tag API. Only HTTP 404 selects the released default; authentication, rate
-limit, network and service errors fail the lookup. Hosted Docker login remains
-on the CUDA path.
-
-Closing a same-repository PR removes its CUDA, TPU and ROCm tags. For a fork,
-`docker-pr-tag-cleanup.yml` uses a closed-only `pull_request_target` event to
-delete just its fixed ROCm tag, using the default-branch workflow with no checkout
-or execution of PR code. This trusted cleanup and the trusted publisher changes
-must reach the default branch before fork ROCm publication can work.
+- **Tag.** `radixark/miles:pr-<number>-rocm10-mi35x`. The recipe derives from `rocm10-mi35x`; the rolling `rocm/sgl-dev` images are unchanged.
+- **Builder.** Every ROCm rebuild, same-repository or fork, goes through the [trusted publisher](#fork-pr-publication), bound to `pr-test-rocm.yml` and this recipe, and builds on a [Spur compute node](#spur-rocm-build-and-publication-boundary). There is no CPU A gate, and CUDA and ROCm builds of one PR publish in separate concurrency groups.
+- **Selection.** The resolved image follows the [shared priority](/developer/ci/00-stage#shared-by-cuda-and-rocm) and is resolved only for selected ROCm stages or changed-file jobs, which both use it. A failed build or publication blocks them.
+- **Shared label.** CUDA and ROCm consume the same `rebuild-ci-image` label, so the first build to remove it can leave the other variant unforced.
+- **File reruns.** `/rerun-test --hw rocm` looks up the public tag anonymously through Docker Hub's HEAD tag API. Only HTTP 404 falls back to the default image; any other error fails the lookup.
+- **Cleanup.** Closing a same-repository PR deletes its CUDA, TPU, and ROCm tags. For a fork, `docker-pr-tag-cleanup.yml` deletes only the ROCm tag, from a closed-only `pull_request_target` run that checks out no PR code.
 
 ### Fork PR publication
 
@@ -157,7 +131,7 @@ Host orchestration comes from the default branch. Only the PR Dockerfile and bui
 
 CUDA publication uses a digest-pinned skopeo container; ROCm uses skopeo installed on the Spur login runner. Fork edits to Python orchestration, the hash reader, or workflow take effect after merge.
 
-For ROCm version upgrades, the trusted helper parses the fork's literal `VARIANTS["rocm10-mi35x"]["build_args"]` without executing its Python, checks string keys and values, and passes them as final `--build-arg` overrides. Fork ROCm images allow literal build_args edits in any variant in docker/build.py, so a single PR can upgrade all ROCm variants; only rocm10-mi35x arguments feed the ROCm PR image. Any other code change relative to the frozen merge's first parent is refused. Formatting and comments do not change the compared AST. Computed arguments, malformed values, or removal of a trusted driver's default argument also fail explicitly.
+For ROCm version bumps, the trusted helper parses the PR's `docker/build.py` without executing it. Literal `build_args` edits are allowed in any variant, so one PR can bump every ROCm variant; any other change from the frozen merge's first parent is refused, ignoring formatting and comments. `VARIANTS["rocm10-mi35x"]["build_args"]`, which must map strings to strings, becomes the PR image's final `--build-arg` overrides. Computed or malformed values, or removing an argument the trusted driver sets by default, fail.
 
 A new request cancels an older build for the same PR. During building, the trusted helper checks every 30 seconds that the source attempt remains active and stops its build process group if it ends. A newer publisher cancels the older one; live-PR checks also reject a superseded request. For ROCm, stopping the launcher cancels its exact Slurm job and confirms it has left the queue. The publisher rechecks the live PR and source before publication. Builder and local-output cleanup also run on failure or cancellation. A forced build consumes its original one-shot label, with the same removal-failure warning as same-repository builds.
 
@@ -165,80 +139,18 @@ This path requires `build-fork-ci-image.yml` and its trusted helpers on the defa
 
 ### Spur ROCm build and publication boundary
 
-For ROCm, the trusted publisher runs on `linux-miles-mi35x-spur`, a login-node
-runner. `spur/build_image.py` submits one exclusive compute-node job through
-`sbatch`. Builds and ROCm tests read `spur/other-project-nodes.json` to exclude
-the other projects' CI nodes.
-The allocation occupies a whole Miles node, including its GPUs, but Dockerfile
-RUN steps receive no GPU devices. This trades one node's availability for isolation from
-concurrent tests; it does not make the login runner build the image.
+The ROCm publisher runs on the `linux-miles-mi35x-spur` login-node runner; the image is built on a compute node, never on the login node.
 
-The build launcher uses the runner's `SLURM_PARTITION`, `SLURM_ACCOUNT`,
-`SLURM_QOS`, `CI_NODE_SCRATCH`, and optional `CI_SHARED_DIR` settings. Login and
-compute nodes must share the checked-out workspace and output directory. The
-compute node clones the frozen source into private scratch and copies only the
-trusted driver/hash reader there. A job-local Python venv installs `typer`.
-Docker and its Buildx plugin must already be installed on the compute node;
-Python with venv support and Git are also required. The login runner needs
-Python, GitHub CLI, Slurm commands, Docker/Buildx for manifest inspection, and
-`skopeo`. The workflow checks these publishing tools before allocating a node.
+- **Allocation.** `spur/build_image.py` submits one exclusive `sbatch` job holding a whole Miles node; builds and ROCm tests skip the other projects' CI nodes listed in `spur/other-project-nodes.json`. Dockerfile `RUN` steps get no GPU devices. The exclusive node trades one node's availability for isolation from concurrent tests.
+- **Runner prerequisites.** The launcher reads `SLURM_PARTITION`, `SLURM_ACCOUNT`, `SLURM_QOS`, `CI_NODE_SCRATCH`, and optional `CI_SHARED_DIR`; login and compute nodes must share the workspace and output directory. The compute node needs Docker with Buildx, Python with venv, and Git; a job-local venv installs `typer`. The login runner needs Python, GitHub CLI, Slurm commands, Docker with Buildx, and `skopeo`, which the workflow checks before allocating a node.
+- **Build isolation.** The job clones the frozen source into private scratch and copies in only the trusted driver and hash reader. Slurm gets `--export=ALL` with a freshly built environment (fixed `PATH`, optional `SLURM_CONF`), so no runner secret, proxy credential, `BASH_ENV`, or `BUILD_GITHUB_TOKEN` reaches the job; `--export=NONE` is avoided because it can load the user's login environment ([sbatch](https://slurm.schedmd.com/sbatch.html)). The manifest holds paths, hashes, and literal arguments only. The build uses an isolated `HOME`, an empty Docker config, and its own `docker-container` BuildKit with bridge networking and no insecure entitlements. Cleanup removes only that builder, its volume, and the scratch, and must succeed before the job writes its success marker; nothing is pruned globally.
+- **Publication.** The compute node writes an OCI layout to the private shared run directory. Once the job has left Slurm with its success marker, the login runner rechecks the live PR, logs in with the repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (config in a mode-0700 node-local `/tmp/miles-image-auth.*`, removed even if cancellation fails), copies the layout to the fixed PR tag with `skopeo` without running it, and verifies the inputs hash before shards start. Missing completion or failed cleanup blocks publication.
+- **Cancellation.** An interrupted build is cancelled by its recorded job ID, or by its unique job name if `sbatch`'s reply was not recorded: `scancel` first, then two consecutive empty queue replies before shared files are removed. A query error keeps the files and fails cleanup.
+- **Limits and capacity.** The job has a two-hour Slurm limit and a 150-minute queue-and-build wait inside the publisher's 180-minute limit; held jobs or missing completion fail. A GPU-free cold build used about 68.4 GiB of BuildKit storage for a 48.8 GiB image (18.1 GiB compressed); size compute-node Docker storage and the shared output space from that reference, not as a bound.
 
-Slurm receives `--export=ALL` with a newly constructed environment containing
-only a fixed tool PATH and optional `SLURM_CONF`. It does not inherit runner
-secrets, proxy credentials, `BASH_ENV`, or `BUILD_GITHUB_TOKEN`. This avoids
-`--export=NONE`, which can load the user's login environment ([Slurm sbatch
-reference](https://slurm.schedmd.com/sbatch.html)). The private manifest contains
-source paths, hashes and literal arguments, with no authentication data.
-Build subprocesses get an isolated HOME and empty Docker config. BuildKit uses
-its own `docker-container` instance with bridge networking and no insecure
-entitlements. Cleanup removes only that instance, its volume and private
-scratch, and must succeed before the job writes a successful exit marker.
-There is no global prune or test-container cleanup.
+**Credential boundary.** Only the login-runner publisher and the hosted `docker-pr-tag-cleanup.yml` (as for TPU) use the Docker Hub write secret; anonymous ROCm file lookups never see it. A token that can write `radixark/miles` can overwrite any tag there, and only trusted code pins the PR tag, so store a dedicated repository-scoped token as an Actions secret. Keep the runner's `.env` Docker Hub credentials pull-only: the ROCm test launcher exports them to test jobs. The login runner, its administrator, and any process with the same Unix identity are trusted; they can read step environment and temporary auth files, mode-0700 directories do not separate them, and rootful BuildKit is not a multi-tenant boundary. Fork workflows never receive repository secrets, but a compromised Spur host or runner account is outside this boundary.
 
-The compute node exports its OCI layout to the private shared run directory.
-The login runner waits for the job to leave Slurm and for its successful exit
-marker, then rechecks the live PR before publication. `DOCKERHUB_USERNAME` and
-`DOCKERHUB_TOKEN` arrive on the login runner from Miles' repository Actions
-secrets, only in the Docker login action after the build. Its config lives in a
-mode-0700 node-local `/tmp/miles-image-auth.*` directory, outside the shared
-workspace/output. `skopeo` copies the layout to the fixed PR tag without running
-it; the publisher verifies the inputs hash before unblocking shards. Cleanup
-removes the auth directory even if cluster cancellation fails. An interrupted
-build is cancelled by its recorded numeric job ID. Cancellation sends
-`scancel` before checking the queue and requires two consecutive empty replies
-before shared files can be removed; one transient empty reply does not confirm
-stoppage. The same two-read rule applies when recovering an ID by unique job
-name. Query errors retain the shared files and fail cleanup. Missing completion
-or failed cleanup blocks publication.
-
-Publication uses the Docker Hub secret on the Spur login runner. Closed-PR tag
-deletion is the explicit exception: the existing trusted hosted
-`docker-pr-tag-cleanup.yml` uses the same secret, as it does for TPU. Anonymous
-ROCm file lookups do not receive this secret.
-
-A Docker Hub token that can write `radixark/miles` can generally overwrite other
-tags in that repository; the fixed PR tag is enforced by trusted code, not a
-per-tag registry permission. Use a dedicated repository-scoped write token.
-The existing ROCm test launcher exports the runner's `.env` Docker Hub
-credentials to test jobs. Keep those credentials pull-only; provision this
-publishing write token as a repository Actions secret. An existing write token
-in the runner's `.env` would remain exposed through that test path.
-The login runner and its administrator remain trusted: root or another process
-with the same Unix identity can read step environment and temporary auth files.
-Mode-0700 shared directories do not isolate jobs running as that same identity,
-and a rootful BuildKit daemon is not a hostile multi-tenant security boundary.
-Repository secrets are withheld from fork source workflows, but a compromised
-Spur host or shared runner account is outside this credential boundary.
-
-Provision enough free Docker storage on the compute node and shared space for
-the OCI output before enabling this path. A prior GPU-free cold build used
-68.385 GiB of sampled BuildKit storage and produced a 48.790 GiB unpacked image;
-the same-recipe published image was about 18.055 GiB compressed. These are
-capacity references, not a bound on future PRs. The job has a two-hour Slurm
-limit and a 150-minute queue/build wait within the publisher's 180-minute limit;
-held jobs or missing completion fail instead of being treated as a usable image.
-Spur submission and publication require a deployment smoke run after these
-trusted helpers reach the default branch.
+**Rollout.** The ROCm publisher, the fork handoff above, and fork tag cleanup work only after they reach the default branch; run one smoke build then.
 
 ## Rolling Docker build (`docker-build.yml`)
 
@@ -262,7 +174,7 @@ For release-image preflight, see [Release a Version](/developer/ci/04-release).
 | Trigger                                     | `check-upstream`                   | builds                | `latest` move     | prune      |
 | ------------------------------------------- | ---------------------------------- | --------------------- | ----------------- | ---------- |
 | schedule (10-minute poll)                   | runs; build if upstream moved or last build ≥ 12h ago | `cu13`, `tpu` | yes        | yes |
-| push to `main` touching `docker/Dockerfile`, `docker/Dockerfile.tpu`, `docker/tpu_patch/**`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, or `requirements.txt` | skipped                            | the touched variants (`push-variants`) | no                | no         |
+| push to `main`                              | skipped                            | variants whose [input hash](#repository-input-mapping) changed (`push-variants`) | no                | no         |
 | `workflow_dispatch`                         | skipped                            | the one input variant | no                | no         |
 | `workflow_dispatch` + `simulate_schedule`   | runs                               | the one input variant | no                | no         |
 
