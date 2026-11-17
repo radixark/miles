@@ -203,6 +203,12 @@ Buffer capacity bounds how far generation can run ahead of training:
 |---|---|
 | `--async-data-buffer-capacity-factor` | Buffer holds `floor(factor * rollout_batch_size)` groups, `2.0` by default. When it is full the producer blocks until training consumes |
 
+Selection decides which of the buffered groups a training step takes:
+
+| Flag | Effect |
+|---|---|
+| `--async-data-buffer-selection` | `fifo` (default) takes the earliest finished groups; `random` takes a uniformly random subset of the buffered groups, seeded by `--rollout-seed`. Either way the groups taken, and those left, keep their completion order |
+
 Staleness control decides which of those groups training is allowed to see:
 
 | Flag | Effect |
@@ -214,8 +220,8 @@ Staleness control decides which of those groups training is allowed to see:
 The filter rejects a group only after all of it was generated. With
 `--async-submit-within-staleness`, the default buffer admits a new group only while the buffered
 and in-flight groups number fewer than `N * rollout_batch_size`, plus one `rollout_batch_size`
-while a training step waits for its batch (the bound AReaL uses). Because it hands out groups
-in completion order:
+while a training step waits for its batch (the bound AReaL uses). With `fifo` selection, which
+hands out groups in completion order:
 
 - A group is trained at most `N` weight versions after it entered the buffer, so the
   filter only rejects groups whose generation spanned a weight update.
