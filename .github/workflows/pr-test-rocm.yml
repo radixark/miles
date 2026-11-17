@@ -195,7 +195,7 @@ jobs:
         ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
         --enable-retry --max-attempts 2
     secrets:
-      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      AMD_WANDB_API_KEY: ${{ secrets.AMD_WANDB_API_KEY }}
       AMD_NEON_DATABASE_URL: ${{ secrets.AMD_NEON_DATABASE_URL }}
 
   stage-c-4-gpu-mi350:
@@ -227,7 +227,7 @@ jobs:
         ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
         --enable-retry --max-attempts 2
     secrets:
-      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      AMD_WANDB_API_KEY: ${{ secrets.AMD_WANDB_API_KEY }}
       AMD_NEON_DATABASE_URL: ${{ secrets.AMD_NEON_DATABASE_URL }}
 
   stage-c-8-gpu-mi350:
@@ -258,7 +258,7 @@ jobs:
         ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
         --enable-retry --max-attempts 2
     secrets:
-      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      AMD_WANDB_API_KEY: ${{ secrets.AMD_WANDB_API_KEY }}
       AMD_NEON_DATABASE_URL: ${{ secrets.AMD_NEON_DATABASE_URL }}
 
   changed-rocm-file:
@@ -286,5 +286,5 @@ jobs:
       withhold_runner_secrets: ${{ github.event.pull_request.head.repo.id != github.event.pull_request.base.repo.id }}
       execute_command: ${{ matrix.execute_command }}
     secrets:
-      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      AMD_WANDB_API_KEY: ${{ secrets.AMD_WANDB_API_KEY }}
       AMD_NEON_DATABASE_URL: ${{ secrets.AMD_NEON_DATABASE_URL }}

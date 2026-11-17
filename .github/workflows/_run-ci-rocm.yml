@@ -47,7 +47,7 @@ on:
         required: false
         default: ''
     secrets:
-      WANDB_API_KEY:
+      AMD_WANDB_API_KEY:
         required: false
       AMD_NEON_DATABASE_URL:
         required: false
@@ -201,7 +201,7 @@ jobs:
           BRIDGE_REF: ${{ steps.resolve-bridge.outputs.ci_bridge_pr }}
           MILES_HARDWARE_PLATFORM: rocm
           GITHUB_COMMIT_NAME: ${{ inputs.ref || github.event.pull_request.head.sha || github.sha }}_${{ github.event.pull_request.number || github.event.inputs.pull_number || 'non-pr' }}
-          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          WANDB_API_KEY: ${{ secrets.AMD_WANDB_API_KEY }}
           AMD_NEON_DATABASE_URL: ${{ secrets.AMD_NEON_DATABASE_URL }}
           # libpq connect timeout: if the store is unreachable from the cluster, each gated
           # test loses 10 s instead of psycopg's 130-second default.

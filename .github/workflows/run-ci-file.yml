@@ -234,7 +234,7 @@ jobs:
       withhold_runner_secrets: ${{ needs.resolve-file-run.outputs.head_is_fork == 'true' }}
       execute_command: ${{ needs.resolve-file-run.outputs.execute_command }}
     secrets:
-      WANDB_API_KEY: ${{ needs.resolve-file-run.outputs.head_is_fork != 'true' && secrets.WANDB_API_KEY || '' }}
+      AMD_WANDB_API_KEY: ${{ needs.resolve-file-run.outputs.head_is_fork != 'true' && secrets.AMD_WANDB_API_KEY || '' }}
       AMD_NEON_DATABASE_URL: ${{ needs.resolve-file-run.outputs.head_is_fork != 'true' && secrets.AMD_NEON_DATABASE_URL || '' }}
 
   run-cpu-file:

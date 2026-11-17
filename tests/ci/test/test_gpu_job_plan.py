@@ -184,9 +184,14 @@ def test_gpu_workflow_requires_a_successful_hosted_plan(workflow):
 @pytest.mark.parametrize("num_gpus", [2, 4, 8])
 @pytest.mark.parametrize("fork", [False, True])
 def test_rocm_file_step_passes_source_and_allocation_to_spur_without_fork_credentials(tmp_path, num_gpus, fork):
-    workflow = ROOT / ".github/workflows/_run-ci-rocm.yml"
-    steps = yaml.safe_load(workflow.read_text())["jobs"]["run"]["steps"]
+    workflow = yaml.safe_load((ROOT / ".github/workflows/_run-ci-rocm.yml").read_text())
+    triggers = workflow.get("on", workflow.get(True))
+    secrets = triggers["workflow_call"]["secrets"]
+    assert secrets["AMD_WANDB_API_KEY"]["required"] is False
+    assert "WANDB_API_KEY" not in secrets
+    steps = workflow["jobs"]["run"]["steps"]
     step = next(step for step in steps if step["name"] == "Run tests on a cluster node")
+    assert step["env"]["WANDB_API_KEY"] == "${{ secrets.AMD_WANDB_API_KEY }}"
     launcher = tmp_path / ".github/workflows/scripts/spur/launch.sh"
     launcher.parent.mkdir(parents=True)
     launcher.write_text(

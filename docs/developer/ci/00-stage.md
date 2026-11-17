@@ -98,7 +98,7 @@ CUDA, CPU, and ROCm dependency refs resolve in this order: explicit dispatch inp
 
 Both workflows receive `execute_command` and an optional `ref`; CUDA callers additionally pass `runs_on` and `container_image`. The reusable workflows own checkout, runner setup, dependency and source resolution, and the two command invocations (first `--list-only`, then the real run). GPU planning needs only Python's standard library and runs before GPU container startup or dependency installation; each stage owns only which runner class, image, ref, and command to select.
 
-**Secrets**. CPU/CUDA stages call their reusable workflow with `secrets: inherit`. ROCm passes `WANDB_API_KEY` and its separate `AMD_NEON_DATABASE_URL` explicitly, and the Spur job forwards both into its container. GitHub withholds them from fork `pull_request` runs; fork-head ROCm file runs also withhold the AMD Neon credential.
+**Secrets**. CPU/CUDA stages call their reusable workflow with `secrets: inherit`. ROCm passes separate `AMD_WANDB_API_KEY` and `AMD_NEON_DATABASE_URL` secrets explicitly. The workflow maps `AMD_WANDB_API_KEY` to `WANDB_API_KEY` for W&B, and the Spur job forwards it and `AMD_NEON_DATABASE_URL` into the container. GitHub withholds both secrets from fork `pull_request` runs; fork-head ROCm file runs also withhold them.
 
 **Sharding.** A stage with a `partition_id` matrix splits its tests across N shards; `run_suite.py` balances the shards by each test's `est_time`. Each shard is an independent job instance running the same `execute_command` with a different `--auto-partition-id`.
 

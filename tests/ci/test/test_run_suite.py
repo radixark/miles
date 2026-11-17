@@ -708,7 +708,8 @@ class TestRocmWorkflowScopeSeam:
         assert "--cadence ${{ needs.resolve-ci-policy.outputs.cadence }}" in command
         assert "--labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}" in command
         assert "${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}" in command
-        assert "WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}" in stage
+        assert workflow.count("AMD_WANDB_API_KEY: ${{ secrets.AMD_WANDB_API_KEY }}") == 4
+        assert "secrets.WANDB_API_KEY" not in workflow
         assert "needs.resolve-ci-policy.result == 'success'" in stage
         assert "needs.resolve-ci-image.result == 'success'" in stage
         assert "resolve-ci-deps" not in workflow

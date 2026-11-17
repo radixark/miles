@@ -398,6 +398,11 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
     assert (
         "WANDB_API_KEY: ${{ needs.resolve-file-run.outputs.head_is_fork != 'true' && secrets.WANDB_API_KEY || '' }}"
     ) in workflow
+    rocm = workflow.split("  run-rocm-file:\n", 1)[1].split("  run-cpu-file:\n", 1)[0]
+    assert (
+        "AMD_WANDB_API_KEY: ${{ needs.resolve-file-run.outputs.head_is_fork != 'true' && secrets.AMD_WANDB_API_KEY || '' }}"
+    ) in rocm
+    assert "secrets.WANDB_API_KEY" not in rocm
     assert (
         "HF_TOKEN: ${{ needs.resolve-file-run.outputs.head_is_fork != 'true' && secrets.HF_TOKEN || '' }}"
     ) in workflow
