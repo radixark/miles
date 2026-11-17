@@ -59,14 +59,13 @@ def assert_pretokenized_prefix(
 def assert_continuation_roles(
     messages: list[dict[str, Any]], *, appended_from: int, fixed_template: FixedTemplate
 ) -> None:
-    """Refuse a message that may not directly follow its assistant.
+    """Refuse an appended message that may not directly follow its assistant.
 
     Each message in ``messages[appended_from:]`` that directly follows an
     assistant must take a role in ``fixed_template.roles_after`` that assistant,
     decided by whether it carries ``tool_calls``. Checked before rendering, so
     a refusal is a 400 and leaves session state unchanged. Shared verbatim by
-    the v1 render and the v2 render; a from-scratch render passes
-    ``appended_from=0`` to check its whole history.
+    the v1 render and the v2 render.
     """
     for index in range(max(appended_from, 1), len(messages)):
         previous = messages[index - 1]
@@ -77,7 +76,7 @@ def assert_continuation_roles(
         if role not in allowed:
             calls = "with" if previous.get("tool_calls") else "without"
             raise MessageValidationError(
-                f"message at index {index} has role={role!r} after an assistant {calls} tool_calls; "
+                f"appended message at index {index} has role={role!r} after an assistant {calls} tool_calls; "
                 f"the selected TITO family accepts only {sorted(allowed)} there"
             )
 
@@ -214,7 +213,6 @@ class LinearTrajectory:
 
         token_ids = self.trajectory_token_ids[checkpoint_index] if checkpoint_index >= 0 else []
         if not token_ids:
-            assert_continuation_roles(request_messages, appended_from=0, fixed_template=tito_tokenizer.FIXED_TEMPLATE)
             return tito_tokenizer.apply_chat_template(
                 request_messages,
                 add_generation_prompt=True,

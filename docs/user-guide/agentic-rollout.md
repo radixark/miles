@@ -240,11 +240,16 @@ More model families and verification history live in
 Each family's `FIXED_TEMPLATE` states which role may directly follow an
 assistant message: `roles_after_tool_call` after one with `tool_calls`,
 `roles_after_no_tool_call` after one without. Both default to the family's
-append surface, `allowed_append_roles`. The session server refuses any other
-continuation with HTTP 400 before rendering and leaves the session unchanged,
-so the agent can send a different turn. DeepSeek-V4, for example, accepts only
-`tool` messages after a tool call and no `tool` message after a reply without
-one.
+append surface, `allowed_append_roles`. When a request appends messages to a
+stored history, the session server refuses any other continuation with HTTP
+400 before rendering and leaves the session unchanged, so the agent can send a
+different turn. DeepSeek-V4, for example, accepts only `tool` messages after a
+tool call and no `tool` message after a reply without one.
+
+A request rendered from scratch (a session's first request, or a v2 request
+that extends no stored node) is not checked this way: only the renderer decides
+its history, because a family can render a turn from scratch that it cannot
+append.
 
 These sets state what the runtime accepts, which can be wider than what the
 model was trained on: GLM accepts a `user` turn after a tool call because TITO

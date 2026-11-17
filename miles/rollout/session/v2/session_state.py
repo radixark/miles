@@ -143,7 +143,6 @@ def _render_token_ids(
       the new suffix on top — the shared prefix is never re-rendered.
     """
     if parent is None:
-        assert_continuation_roles(request_messages, appended_from=0, fixed_template=tito_tokenizer.FIXED_TEMPLATE)
         return tito_tokenizer.apply_chat_template(
             request_messages,
             add_generation_prompt=True,

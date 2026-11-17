@@ -395,16 +395,13 @@ class TestContinuationRoles:
         assert len(session.tree.nodes) == 1
         assert _messages(session) == [SYS_MSG, USER_MSG, stored_assistant]
 
-    def test_new_root_with_a_refused_continuation_is_a_400(self):
-        """A request that extends no stored node renders from scratch; its history gets the same check."""
+    def test_new_root_is_left_to_the_renderer(self):
+        """A from-scratch render is not checked: a family can render a turn it cannot append."""
         tito = _make_mock_tito_for(_MockTITOTokenizer, _NARROW_CONTINUATIONS)
         registry = SessionRegistryV2(tokenizer=None, tito_tokenizer=tito)
         session = registry.get_session(registry.create_session())
 
-        with pytest.raises(MessageValidationError, match="role='user' after an assistant with tool_calls") as error:
-            _prepare(session, [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, _FOLLOWUP_USER_MSG], tito_tokenizer=tito)
-        assert error.value.status_code == 400
-        assert len(session.tree.nodes) == 0
+        _prepare(session, [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, _FOLLOWUP_USER_MSG], tito_tokenizer=tito)
 
 
 # ---------------------------------------------------------------------------
