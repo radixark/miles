@@ -144,9 +144,52 @@ def fake_quantize_expert_weight(weight: torch.Tensor, fmt: str) -> torch.Tensor:
     return weight + (served.to(weight.dtype) - weight).detach()
 
 
-def softcap_logits(logits: torch.Tensor, cap: float) -> torch.Tensor:
-    logits = logits.float()
-    return cap * torch.tanh(logits / cap)
+# Rows per backward chunk: bounds the softcap gradient's one fp32 temporary (~0.8 GiB at a 201k vocab).
+SOFTCAP_LOGITS_CHUNK_ROWS = 1024
+
+
+class _SoftcapMaskedLogits(torch.autograd.Function):
+    """fp32 ``cap * tanh(logits / cap)`` with ``padded`` vocab columns at the fp32 minimum, in place.
+
+    The unfused graph peaked at three [tokens, vocab] fp32 tensors (~74 GiB at 32k tokens and a
+    201k vocab) and kept two for backward. This overwrites fp32 logits (the LM head's own output),
+    keeps only the result for backward, and writes the gradient into the incoming one.
+    """
+
+    @staticmethod
+    def forward(ctx, logits, cap, padded):
+        if logits.dtype == torch.float32:
+            out = logits
+            ctx.mark_dirty(out)
+        else:
+            out = logits.to(torch.float32)
+        out.div_(cap).tanh_().mul_(cap)
+        out.masked_fill_(padded, torch.finfo(out.dtype).min)
+        ctx.save_for_backward(out, padded)
+        ctx.cap, ctx.input_dtype = cap, logits.dtype
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        out, padded = ctx.saved_tensors
+        vocab = out.shape[-1]
+        rows = out.view(-1, vocab)
+        if grad_out.dtype == torch.float32 and grad_out.is_contiguous():
+            grad = grad_out  # the loss's gradient buffer, consumed only here
+        else:
+            grad = grad_out.float().contiguous()
+        grad_rows = grad.view(-1, vocab)
+        for start in range(0, rows.shape[0], SOFTCAP_LOGITS_CHUNK_ROWS):
+            chunk = slice(start, start + SOFTCAP_LOGITS_CHUNK_ROWS)
+            # d/dx cap * tanh(x / cap) = 1 - tanh^2, with tanh = out / cap
+            t = rows[chunk] / ctx.cap
+            grad_rows[chunk].mul_(t.mul_(t).neg_().add_(1)).masked_fill_(padded, 0)
+        return grad.view(out.shape).to(ctx.input_dtype), None, None
+
+
+def softcap_masked_logits(logits: torch.Tensor, cap: float, padded: torch.Tensor) -> torch.Tensor:
+    """fp32 ``cap * tanh(logits / cap)`` with ``padded`` (a [vocab] mask) at the fp32 minimum."""
+    return _SoftcapMaskedLogits.apply(logits, cap, padded)
 
 
 def relative_attention(
