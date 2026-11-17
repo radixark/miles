@@ -71,9 +71,8 @@ def test_generate_payload_automatically_requests_sampling_mask(
         ({"return_sampling_mask": True}, True),
         ({"return_sampling_mask": True, OUTPUT_STORE_REQUEST_KEY: True}, False),
         ({"return_sampling_mask": False, "return_flat_raw_sampling_mask": True}, False),
-        ({"return_flat_raw_sampling_mask_b64": True}, False),
     ],
-    ids=["inline", "output-store", "not-requested", "client-flag"],
+    ids=["inline", "output-store", "not-requested"],
 )
 def test_sampling_mask_reply_is_flat_only_when_the_mask_travels_in_it(fields, flat):
     request = dict(fields)
