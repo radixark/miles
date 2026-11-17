@@ -9,6 +9,7 @@ from miles.ray.rollout.rollout_data_conversion import (
     postprocess_rollout_data,
     validate_compact_rollout_ids,
 )
+from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data, split_train_data_by_dp
 
 
 class TestComputeDynamicGlobalBatchSize:
@@ -115,6 +116,52 @@ class TestPostprocessRolloutData:
         assert all(not isinstance(sample, list) for sample in out)
         # one compact rollout makes the batch rollout-scheduled, so 5 rows are not trimmed to 4
         assert sorted(sample.index for sample in out) == [0, 1, 2, 3, 4]
+
+
+class TestCompactDynamicGlobalBatchSize:
+    def _train_data(self, train_parallel_config):
+        args = make_args(
+            use_dynamic_global_batch_size=True,
+            use_dynamic_batch_size=True,
+            max_tokens_per_gpu=1024,
+            rewards_normalization=False,
+        )
+        groups = [
+            [
+                [make_sample(index=0, rollout_id=0), make_sample(index=1, rollout_id=0)],
+                [make_sample(index=2, rollout_id=2)],
+            ],
+            [make_sample(index=3), make_sample(index=4)],
+        ]
+        samples, metadata = postprocess_rollout_data(
+            args=args, data=groups, train_parallel_config=train_parallel_config
+        )
+        data = convert_samples_to_train_data(
+            args,
+            samples,
+            metadata=metadata,
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+        return args, data
+
+    def test_a_compact_batch_trains_every_rollout_in_one_step(self):
+        config = make_train_parallel_config(dp_size=2, supports_precomputed_schedule=True)
+        args, data = self._train_data(config)
+
+        shards = split_train_data_by_dp(args, data, train_parallel_config=config)
+
+        assert data["dynamic_global_batch_size"] == 4
+        assert [shard["num_rollouts"] for shard in shards] == [[4], [4]]
+        assert sorted(index for shard in shards for index in shard["sample_indices"]) == [0, 1, 2, 3, 4]
+
+    def test_the_training_side_schedule_refuses_a_compact_batch(self):
+        """It counts samples, so it would split the batch's rollouts across steps."""
+        config = make_train_parallel_config(dp_size=2)
+        args, data = self._train_data(config)
+
+        with pytest.raises(ValueError, match="only the rollout-side DP schedule trains"):
+            split_train_data_by_dp(args, data, train_parallel_config=config)
 
 
 class TestValidateRolloutIdAnnotated:
