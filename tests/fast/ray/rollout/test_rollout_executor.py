@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from argparse import Namespace
 from collections import defaultdict
 from pathlib import Path
@@ -535,6 +536,30 @@ class TestOutputSnapshotReplay:
         await executor.save(2)
         data, _metadata = _load_executor_state(tmp_path, rollout_id=2)[None, 3]
         assert [sample.index for sample in data] == [7]
+
+
+class TestTrainDataPut:
+    async def test_the_batch_is_put_off_the_loop(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The fully-async producer shares this loop, so a slow put must not hold it."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        loop_thread = threading.current_thread()
+
+        class Store:
+            def put(self, *, value, value_spec):
+                assert threading.current_thread() is not loop_thread
+                return _MooncakeStoreObjectRef(payload=value)
+
+        async def generate_rollout_data(*, rollout_id: int, trainer_model_id: str | None):
+            return [Sample(index=7)], {}
+
+        monkeypatch.setattr(executor, "_generate_rollout_data", generate_rollout_data)
+        monkeypatch.setattr(
+            rollout_executor_module, "convert_samples_to_train_data", lambda *_args, **_kw: {"sample_indices": [7]}
+        )
+        monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *_args: [{}])
+        monkeypatch.setattr(rollout_executor_module.object_store, "get_instance", Store)
+
+        assert (await executor.get(rollout_id=3)).sample_indices == [7]
 
 
 class TestSampleOwnershipRolloutId:

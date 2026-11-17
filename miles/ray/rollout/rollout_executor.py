@@ -247,14 +247,17 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                 custom_reward_post_process_func=self.custom_reward_post_process_func,
             )
             sample_indices = train_data.get("sample_indices")
+            store = object_store.get_instance()
+            # Off the loop: the fully-async producer keeps generating on it.
             if self.args.delay_split_train_data_by_dp:
-                data_ref = object_store.get_instance().put(value=train_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
+                data_ref = await asyncio.to_thread(store.put, value=train_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
             else:
                 shards = split_train_data_by_dp(
                     self.args, train_data, self._train_parallel_configs_of_model_id[trainer_model_id]
                 )
-                store = object_store.get_instance()
-                data_ref = [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
+                data_ref = await asyncio.to_thread(
+                    lambda: [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
+                )
             return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
 
     async def release(self, rollout_id: int) -> None:
