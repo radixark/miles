@@ -18,7 +18,7 @@ from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.transformer.module import MegatronModule, mark_keep_in_fp32
 from megatron.core.transformer.moe.experts import TEGroupedMLP
 from megatron.core.transformer.moe.router import TopKRouter
-from megatron.core.transformer.transformer_layer import TransformerLayer
+from megatron.core.transformer.transformer_layer import TransformerLayer, get_transformer_layer_offset
 
 from miles.utils.replay_base import routing_replay_manager
 from miles_plugins.models.inkling2.ops import (
@@ -34,6 +34,7 @@ from miles_plugins.models.inkling2.ops import (
     short_conv,
 )
 from miles_plugins.models.inkling.ops import seqlens_from_packed
+from miles_plugins.models.kimi_k3.pipeline import bank_num_rows, pack_stage_boundary, unpack_stage_boundary
 
 
 class Inkling2RMSNorm(nn.Module):
@@ -233,6 +234,17 @@ class Inkling2GroupedMLP(TEGroupedMLP):
         return output.float(), None
 
 
+def pipeline_stage_edges(config, layer_idx: int) -> tuple[bool, bool]:
+    """Whether global layer ``layer_idx`` enters a pipeline stage after the first, and whether it
+    exits a stage before the last. VPP is rejected, so stage offsets ignore vp_stage."""
+    stage_starts = {
+        get_transformer_layer_offset(config, None, rank) for rank in range(config.pipeline_model_parallel_size)
+    }
+    is_entry = layer_idx > 0 and layer_idx in stage_starts
+    is_exit = layer_idx + 1 < config.num_layers and layer_idx + 1 in stage_starts
+    return is_entry, is_exit
+
+
 class Inkling2TransformerLayer(TransformerLayer):
     """Replaces the residual stream with Block Attention Residuals.
 
@@ -240,14 +252,17 @@ class Inkling2TransformerLayer(TransformerLayer):
     [T, 1, n_blocks, hidden]; the embedding is block 0, and a block completes at every
     layer index divisible by ``n_layers_per_attn_res_block``. The last layer returns the
     output aggregation, which the block's final norm consumes.
+
+    Megatron sends one hidden tensor between pipeline stages, so a stage's last layer packs
+    ``[partial, *blocks]`` along hidden and the next stage's first layer unpacks it.
     """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        assert self.config.pipeline_model_parallel_size == 1, "Inkling2 attention residuals need PP=1"
         inkling2 = self.config.inkling2
         self.inkling2 = inkling2
         self.layer_idx = self.layer_number - 1
+        self.is_stage_entry, self.is_stage_exit = pipeline_stage_edges(self.config, self.layer_idx)
         self.is_local = self.layer_idx in inkling2.local_layer_ids
         hidden, eps = self.config.hidden_size, inkling2.rms_norm_eps
         norm_names = ("attn_norm",) if self.is_local else ("q_input_norm", "k_input_norm", "v_input_norm")
@@ -294,6 +309,12 @@ class Inkling2TransformerLayer(TransformerLayer):
 
     def forward(self, hidden_states, attention_mask=None, context=None, packed_seq_params=None, **kwargs):
         del attention_mask, kwargs
+        if context is None and self.is_stage_entry:
+            hidden_states, context = unpack_stage_boundary(
+                hidden_states,
+                self.config.hidden_size,
+                bank_num_rows(self.layer_idx, self.inkling2.n_layers_per_attn_res_block),
+            )
         partial = hidden_states
         blocks = list(context.unbind(-2)) if context is not None else []
         is_boundary = self.layer_idx % self.inkling2.n_layers_per_attn_res_block == 0
@@ -321,4 +342,7 @@ class Inkling2TransformerLayer(TransformerLayer):
                 normalize_values=self.inkling2.attn_res_normalize_values,
             )
             return output, torch.stack(blocks, dim=-2)
-        return partial, torch.stack(blocks, dim=-2)
+        context = torch.stack(blocks, dim=-2)
+        if self.is_stage_exit:
+            return pack_stage_boundary(partial.to(context.dtype), context), context
+        return partial, context
