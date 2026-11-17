@@ -342,11 +342,13 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
 
         fname = None
         self.wire_bytes = 0
+        # A post-write hook reads the files back on this host, so they need not hit disk first.
+        sync = self._post_write_hook is None
         if self._delta:
             fname = f"model-{offset:05d}-of-{total:05d}.safetensors"
             blob = safetensors.numpy.save(self._delta, metadata=self._checksums)
             self.wire_bytes = len(blob)
-            _atomic_write(os.path.join(self._version_dir, fname), blob)
+            _atomic_write(os.path.join(self._version_dir, fname), blob, sync=sync)
 
         maps: list = [None] * world
         dist.all_gather_object(maps, {name: fname for name in self._delta}, group=group)
@@ -361,7 +363,9 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
                 },
                 "weight_map": {name: f for m in maps for name, f in m.items()},
             }
-            _atomic_write(os.path.join(self._version_dir, "model.safetensors.index.json"), json.dumps(index).encode())
+            _atomic_write(
+                os.path.join(self._version_dir, "model.safetensors.index.json"), json.dumps(index).encode(), sync=sync
+            )
         dist.barrier(group=group)
 
     def _reload_engines(self, *, weight_version: int) -> None:
@@ -432,10 +436,11 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             )
 
 
-def _atomic_write(path: str, data: bytes) -> None:
+def _atomic_write(path: str, data: bytes, *, sync: bool) -> None:
     tmp = path + ".tmp"
     with open(tmp, "wb") as f:
         f.write(data)
         f.flush()
-        os.fsync(f.fileno())
+        if sync:
+            os.fsync(f.fileno())
     os.replace(tmp, path)
