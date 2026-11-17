@@ -368,6 +368,10 @@ async def _run_spec(driver: _Driver, fixed: FixedTemplate) -> None:
         if reply is None:
             continue  # refused: the session still ends at `call`
         messages.extend([call, probe])
+        if role == "user":
+            # An accepted user probe is a user turn: the next question must name another city,
+            # or the model is asked again what it has just been asked.
+            driver.counters["user_count"] += 1
         if not reply.get("tool_calls"):
             driver.append_user(messages, reply, driver.next_city_question())
             reply = await driver.chat(messages, label=f"Tool call after {role}", need_tool_call=True)

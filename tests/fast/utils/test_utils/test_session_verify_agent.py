@@ -17,6 +17,7 @@ from miles.utils.test_utils.session_verify_agent import (
     NO_TOOL_CALL_USER_TEXT,
     SESSION_VERIFY_KIND_KEY,
     SYSTEM_REMINDER_TEXT,
+    USER_FOLLOWUP_TEXTS,
     SessionVerifyKind,
     fixed_template,
     fixed_template_append_roles,
@@ -148,6 +149,9 @@ def test_spec_rollout_on_a_lenient_family_gets_every_probe_accepted(monkeypatch)
     assert [message["content"] for message in final[-3:-1]] == list(ASSISTANT_INPUT_TEXTS)
     assert final[-1] == {"role": "user", "content": ASSISTANT_INPUT_FOLLOWUP_TEXT}
     assert {"role": "system", "content": SYSTEM_REMINDER_TEXT} in final
+    # The questions that rebuild a call after the system and assistant probes name new cities.
+    questions = [message["content"] for message in final if message["role"] == "user"]
+    assert questions[1:4] == list(USER_FOLLOWUP_TEXTS)
 
 
 def test_spec_rollout_expects_400_where_the_spec_refuses(monkeypatch):

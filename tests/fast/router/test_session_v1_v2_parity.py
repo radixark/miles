@@ -58,7 +58,8 @@ _AGENT_RESPONSES = {
     SYSTEM_REMINDER_TEXT: _answer("I will answer in one sentence.", "w2"),
     ASSISTANT_INPUT_TEXTS[0]: _answer("Noted.", "w3"),
     USER_FOLLOWUP_TEXTS[1]: _call("Hangzhou", "w4"),
-    MOCK_TOOL_RESULTS[0]: _answer("Hangzhou is 22 degrees Celsius and sunny.", "w5"),
+    USER_FOLLOWUP_TEXTS[2]: _call("London", "w9"),
+    MOCK_TOOL_RESULTS[0]: _answer("London is 22 degrees Celsius and sunny.", "w5"),
     NO_TOOL_CALL_USER_TEXT: _answer("Beijing is the capital of China.", "w6"),
     SENTINEL_TOOL_RESULT: _answer("The weather service is unavailable.", "w7"),
     ASSISTANT_INPUT_FOLLOWUP_TEXT: _answer(
@@ -70,7 +71,7 @@ _AGENT_RESPONSES = {
 # the tool result; the no-call turn and the tool probe after it; two rollbacks; the
 # system message; the injected assistants.
 _REQUESTS_PER_TRAJECTORY = 13
-_SELECTED_WEIGHT_VERSIONS = ["w0", "w1", "w2", "w1", "w3", "w4", "w5", "w6", "w7", "w2", "w8"]
+_SELECTED_WEIGHT_VERSIONS = ["w0", "w1", "w2", "w4", "w3", "w9", "w5", "w6", "w7", "w2", "w8"]
 _SHARED_PREFIX_VERSION = "p0"
 _EXPECTED_AGENT_METADATA = {
     "driver_events": [
@@ -99,7 +100,7 @@ _EXPECTED_AGENT_METADATA = {
         )
     ],
     "rollback_count": 2,
-    "user_count": 4,
+    "user_count": 5,
     "system_count": 1,
     "assistant_input_count": 2,
     "tool_result_count": 1,
