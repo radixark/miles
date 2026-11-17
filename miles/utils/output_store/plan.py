@@ -373,7 +373,8 @@ class RoutedExpertsSegments(ForwardSegments):
 
     @classmethod
     def check_split(cls, parts: list[tuple[int, int]], splits: Sequence[int]) -> None:
-        # A stream per layer: the parts must meet exactly at the requested layers.
+        # A stream per layer: the parts must meet exactly at the requested layers. Reads handle any split, so a
+        # router that drops the field would only make every pipeline rank read whole rows: fail instead of run slow.
         if (split_at := [end for _, end in parts[:-1]]) != list(splits):
             raise StorePlanError(
                 f"stored routed_experts is split at layers {split_at}, but the request's {REPLAY_LAYER_SPLITS_KEY} "
