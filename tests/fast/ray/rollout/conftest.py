@@ -38,6 +38,7 @@ def make_args(**overrides: Any) -> Namespace:
         rollout_batch_size=8,
         n_samples_per_prompt=4,
         n_samples_per_eval_prompt=4,
+        eval_datasets=[],
         rollout_max_response_len=512,
         rollout_temperature=1.0,
         rollout_top_p=1.0,

@@ -22,6 +22,9 @@ Agent function contract:
   Returning None means no extra metadata to attach.
   Returning a dict merges it into every sample's metadata, so downstream
   reward models (--custom-rm-path) can read whatever the agent left there.
+  Raising miles.rollout.agentic.agent_function.InfraAbort discards the sample
+  (ABORTED, with metadata["exit_status"] naming the cause); any other exception
+  keeps whatever the session recorded, scored by the reward model.
 
   Under ``subproc`` (the default) each call runs in a child process of its own:
   its arguments and return value must be picklable, and module-level state lasts
@@ -40,7 +43,7 @@ import httpx
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 
 from miles.dashboard.hooks import push_sandbox_reports
-from miles.rollout.agentic.agent_function import AGENT_FUNCTION_MODES, call_agent_function
+from miles.rollout.agentic.agent_function import AGENT_FUNCTION_MODES, InfraAbort, call_agent_function
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
@@ -87,6 +90,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     metadata = {**metadata, "session_server_id": tracer.session_server_id}
 
     agent_metadata = None
+    infra_abort: InfraAbort | None = None
     collect_failed = False
     cancelled = False
     t_start = time.monotonic()
@@ -102,6 +106,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             metadata=metadata,
         )
         logger.debug(f"{log_prefix} Agent function returned in {time.monotonic()-t_start:.1f}s")
+    except InfraAbort as e:
+        infra_abort = e
+        logger.warning(f"{log_prefix} Agent function discarded the sample ({e.exit_status}): {e}")
     except Exception as e:
         logger.warning(f"{log_prefix} Agent function failed: {e}", exc_info=True)
     except BaseException:
@@ -119,32 +126,30 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         except (TimeoutError, httpx.TransportError) as e:
             collect_failed = True
             logger.warning(f"{log_prefix} Failed collecting samples: {e!r}", exc_info=True)
+        except Exception as e:
+            if infra_abort is None:
+                raise
+            collect_failed = True
+            logger.warning(f"{log_prefix} Failed collecting samples after the agent's InfraAbort: {e!r}")
         else:
             logger.debug(
                 f"{log_prefix} collect_samples done: {len(result.samples)} samples, "
                 f"total_time={time.monotonic()-t_start:.1f}s"
             )
-            if cancelled:
+            if cancelled or infra_abort is not None:
                 # The session handed these samples' output store objects to us; nobody will train them.
                 record_dropped_samples(result.samples)
 
+    if infra_abort is not None:
+        return _aborted_output(input.sample, infra_abort.exit_status, use_v2, collect_spec_metrics)
     if collect_failed:
-        sample = deepcopy(input.sample)
-        sample.status = Sample.Status.ABORTED
-        if collect_spec_metrics:
-            sample.metadata.pop(SESSION_ROLLOUT_METRICS_KEY, None)
-        return GenerateFnOutput(samples=[sample] if use_v2 else sample)
-
+        return _aborted_output(input.sample, "CollectFailed", use_v2, collect_spec_metrics)
     if not result.samples:
         if result.empty_reason == "all_truncated":
             logger.warning("All samples truncated (prompt already exceeds max_seq_len)")
-        else:
-            logger.warning("No model calls recorded for sample")
-        sample = deepcopy(input.sample)
-        sample.status = Sample.Status.ABORTED
-        if collect_spec_metrics:
-            sample.metadata.pop(SESSION_ROLLOUT_METRICS_KEY, None)
-        return GenerateFnOutput(samples=[sample] if use_v2 else sample)
+            return _aborted_output(input.sample, "AllTruncated", use_v2, collect_spec_metrics)
+        logger.warning("No model calls recorded for sample")
+        return _aborted_output(input.sample, "NoModelCalls", use_v2, collect_spec_metrics)
 
     session_rollout_metrics = None
     if collect_spec_metrics:
@@ -202,6 +207,17 @@ def _warn_max_seq_len_does_not_stop_the_agent() -> None:
         "max_seq_len reaches the agent as metadata['max_seq_len'] and truncates the collected samples; "
         "Miles does not stop the agent at it, so an agent that does not read it runs on past it"
     )
+
+
+def _aborted_output(
+    input_sample: Sample, exit_status: str, use_v2: bool, collect_spec_metrics: bool
+) -> GenerateFnOutput:
+    sample = deepcopy(input_sample)
+    sample.status = Sample.Status.ABORTED
+    sample.metadata = {**sample.metadata, "exit_status": exit_status}
+    if collect_spec_metrics:
+        sample.metadata.pop(SESSION_ROLLOUT_METRICS_KEY, None)
+    return GenerateFnOutput(samples=[sample] if use_v2 else sample)
 
 
 def _add_arguments(parser: argparse.ArgumentParser):
