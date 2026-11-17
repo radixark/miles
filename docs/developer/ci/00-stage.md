@@ -60,7 +60,7 @@ Specify a tag without a repository prefix. The backend-specific names are:
 | CUDA | `pr-<num>` | `ci-image-tag:` | `dev` | `radixark/miles` |
 | ROCm | `pr-<num>-rocm10-mi35x` | `ci-rocm-image-tag:` | `miles-rocm10-mi35x` | `radixark/miles` for PR tags; `rocm/sgl-dev` otherwise |
 
-**Image builds.** Both backends check for image changes even when no GPU tests are selected. If a PR changes an image's inputs relative to the base, CI reuses a matching PR image or builds a new one. Any required build must succeed before image selection and GPU execution. See [Docker Build](/developer/ci/02-docker-build) for the input mapping and build process.
+**Image builds.** Each backend checks for image changes only when the run selects its GPU tests or the PR carries `rebuild-ci-image`. If a PR changes an image's inputs relative to the base, CI reuses a matching PR image or builds a new one. Any required build must succeed before image selection and GPU execution. See [Docker Build](/developer/ci/02-docker-build) for the input mapping and build process.
 
 **Policy resolution (`resolve-ci-policy`).**
 

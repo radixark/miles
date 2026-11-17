@@ -106,12 +106,12 @@ To rebuild an eligible PR image when its inputs did not change — a moved base 
 
 ### ROCm PR images
 
-`pr-test-rocm.yml` calls `_build-pr-ci-image.yml` as `docker-build-rocm10-mi35x`, for the `rocm10-mi35x` entry of `PR_IMAGE_ARCHES` (variant `rocm10-mi35x-pr`), whether or not ROCm tests are selected. Hashing, reuse, and `rebuild-ci-image` follow the CUDA rules above, except:
+`pr-test-rocm.yml` calls `_build-pr-ci-image.yml` as `docker-build-rocm10-mi35x`, for the `rocm10-mi35x` entry of `PR_IMAGE_ARCHES` (variant `rocm10-mi35x-pr`), when the run selects ROCm tests (`needs_rocm_image`) or the PR carries `rebuild-ci-image`. Hashing, reuse, and `rebuild-ci-image` follow the CUDA rules above, except:
 
 - **Tag.** `radixark/miles:pr-<number>-rocm10-mi35x`. The recipe derives from `rocm10-mi35x`; the rolling `rocm/sgl-dev` images are unchanged.
 - **Builder.** As for CUDA, a same-repository rebuild runs on a `docker-build` node and a fork rebuild goes through [fork publication](#fork-pr-publication), with its own request from `pr-test-rocm.yml`. The image is `linux/amd64` only. There is no CPU A gate, and CUDA and ROCm builds of one PR publish in separate concurrency groups.
 - **Capacity.** A cold build used about 68.4 GiB of BuildKit storage for a 48.8 GiB image (18.1 GiB compressed); size `docker-build` storage from that reference, not as a bound.
-- **Selection.** The resolved image follows the [shared priority](/developer/ci/00-stage#shared-by-cuda-and-rocm) and is resolved only for selected ROCm stages or changed-file jobs, which both use it. A failed build or publication blocks them.
+- **Selection.** `needs_rocm_image` is true when the run selects a ROCm stage or changed-file job; both use the resolved image, which follows the [shared priority](/developer/ci/00-stage#shared-by-cuda-and-rocm). A failed build or publication blocks them.
 - **Shared label.** `rebuild-ci-image` also rebuilds the ROCm image on every run while the PR carries it.
 - **File reruns.** `/rerun-test --hw rocm` looks up the public tag anonymously through Docker Hub's HEAD tag API. Only HTTP 404 falls back to the default image; any other error fails the lookup.
 - **Cleanup.** Closing a same-repository PR deletes its CUDA, TPU, and ROCm tags. For a fork, `docker-pr-tag-cleanup.yml` deletes only the ROCm tag, from a closed-only `pull_request_target` run that checks out no PR code.
