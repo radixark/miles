@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.request
 import zipfile
 from pathlib import Path
 from urllib.parse import urlencode
@@ -20,11 +21,9 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "docker"))
 
 import image_inputs  # noqa: E402
-from tests.ci.ci_policy import resolve_policy, resolve_workflow_inputs  # noqa: E402
-from tests.ci.file_run import collect_snapshot_tests  # noqa: E402
-from tests.ci.hardware import CUDA_STAGES  # noqa: E402
-from tests.ci.stage_selection import select_skipped_gpu_stages  # noqa: E402
+from tests.ci.ci_policy import resolve_workflow_inputs  # noqa: E402
 
+API_URL = os.environ.get("GITHUB_API_URL", "https://api.github.com")
 CPU_JOBS = {f"stage-a-cpu ({partition}) / run-cpu" for partition in range(4)}
 REQUEST_KEYS = {"pr", "merge_sha", "inputs_hash", "run_id", "run_attempt", "force_rebuild", "labels"}
 
@@ -34,15 +33,27 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def api(path, *, method="GET", collection=None):
-    command = ["gh", "api", "-X", method, path]
-    if collection:
-        command += ["--paginate", "--slurp"]
-    data = subprocess.check_output(command)
-    result = json.loads(data) if data.strip() else None
-    if collection:
-        return [item for page in result for item in page[collection]]
-    return result
+def open_api(url):
+    # Self-hosted builders have no gh CLI. Artifact downloads redirect to blob storage, which must not get the token.
+    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+    request.add_unredirected_header("Authorization", f"Bearer {os.environ['GH_TOKEN']}")
+    return urllib.request.urlopen(request, timeout=60)
+
+
+def api(path, *, collection=None):
+    url = f"{API_URL}/{path}"
+    items = []
+    while True:
+        with open_api(url) as response:
+            data = response.read()
+            next_page = re.search(r'<([^>]+)>;\s*rel="next"', response.headers.get("Link", ""))
+        result = json.loads(data)
+        if not collection:
+            return result
+        items += result[collection]
+        if not next_page:
+            return items
+        url = next_page.group(1)
 
 
 def parse_request(data):
@@ -102,10 +113,13 @@ def current_request(request, repository):
     head = pr["head"]
     query = urlencode({"event": "pull_request", "head_sha": head["sha"], "per_page": 100})
     runs = api(f"repos/{repository}/actions/workflows/pr-test.yml/runs?{query}", collection="workflow_runs")
+    # Simultaneous label events start several runs; the concurrency group may cancel a higher-numbered one.
     matching = [
         item["id"]
         for item in runs
-        if item["head_repository"]["id"] == head["repo"]["id"] and item["head_branch"] == head["ref"]
+        if item["head_repository"]["id"] == head["repo"]["id"]
+        and item["head_branch"] == head["ref"]
+        and item["conclusion"] != "cancelled"
     ]
     require(matching and max(matching) == run["id"], "A newer PR Test run superseded this request")
     # Match the caller's event snapshot, including on reruns and after label removal.
@@ -124,7 +138,7 @@ def current_request(request, repository):
             cpu.keys() == CPU_JOBS and all(job["conclusion"] == "success" for job in cpu.values()),
             "CPU A gate did not pass",
         )
-    return pr, policy
+    return pr
 
 
 def resolve_request(event, repository):
@@ -135,8 +149,8 @@ def resolve_request(event, repository):
     if not matches:
         return None
     require(len(matches) == 1 and matches[0]["size_in_bytes"] <= 65536, "Invalid request artifact")
-    data = subprocess.check_output(["gh", "api", f"repos/{repository}/actions/artifacts/{matches[0]['id']}/zip"])
-    request = parse_request(data)
+    with open_api(f"{API_URL}/repos/{repository}/actions/artifacts/{matches[0]['id']}/zip") as response:
+        request = parse_request(response.read())
     require(
         request["run_id"] == run["id"] and request["run_attempt"] == run["run_attempt"],
         "Request belongs to another attempt",
@@ -145,8 +159,26 @@ def resolve_request(event, repository):
     return request
 
 
-def wait_request(event, repository):
+def find_publisher(source, repository):
+    # `workflow_run.in_progress` can fire several times per attempt; only the earliest triggered run publishes.
+    workflow = api(f"repos/{repository}/actions/workflows/build-fork-ci-image.yml")
+    query = urlencode({"event": "workflow_run", "created": f">={source['created_at']}", "per_page": 100})
+    title = f"fork-ci-image-{source['id']}-{source['run_attempt']}"
+    runs = api(f"repos/{repository}/actions/workflows/{workflow['id']}/runs?{query}", collection="workflow_runs")
+    matches = [
+        run
+        for run in runs
+        if run["display_title"] == title and run["event"] == "workflow_run" and run["workflow_id"] == workflow["id"]
+    ]
+    return min(matches, key=lambda run: run["id"], default=None)
+
+
+def wait_request(event, repository, run_id):
     source = event["workflow_run"]
+    publisher = find_publisher(source, repository)
+    if publisher and publisher["id"] < run_id:
+        print(f"{publisher['html_url']} publishes this attempt", flush=True)
+        return None
     while True:
         run = api(f"repos/{repository}/actions/runs/{source['id']}")
         if run["run_attempt"] != source["run_attempt"] or run["status"] == "completed":
@@ -158,7 +190,7 @@ def wait_request(event, repository):
             f"repos/{repository}/actions/runs/{source['id']}/jobs?filter=latest&per_page=100", collection="jobs"
         )
         if any(
-            job["name"] in ("docker-build", "docker-build / docker-build")
+            job["name"] in ("docker-build-amd64", "docker-build-amd64 / docker-build")
             and job["run_attempt"] == source["run_attempt"]
             and job["status"] == "completed"
             for job in jobs
@@ -176,57 +208,45 @@ def require_active_source(request, repository):
     return run
 
 
-def wait_build(request, repository):
-    source = require_active_source(request, repository)
-    workflow = api(f"repos/{repository}/actions/workflows/build-fork-ci-image.yml")
-    query = urlencode({"event": "workflow_run", "created": f">={source['created_at']}", "per_page": 100})
-    title = f"fork-ci-image-{request['run_id']}-{request['run_attempt']}"
+def wait_build(request, repository, arch):
+    # Each PR-side build job waits for its own architecture's publication.
+    job_name = f"build ({arch})"
     publisher = None
     while True:
-        require_active_source(request, repository)
+        source = require_active_source(request, repository)
         if publisher is None:
-            runs = api(
-                f"repos/{repository}/actions/workflows/{workflow['id']}/runs?{query}", collection="workflow_runs"
-            )
-            matches = [
-                run
-                for run in runs
-                if run["display_title"] == title
-                and run["event"] == "workflow_run"
-                and run["workflow_id"] == workflow["id"]
-            ]
-            if matches:
-                publisher = max(matches, key=lambda run: run["id"])
-                print(f"Waiting for {publisher['html_url']}", flush=True)
+            publisher = find_publisher(source, repository)
+            if publisher:
+                print(f"Waiting for {job_name} in {publisher['html_url']}", flush=True)
         else:
             publisher = api(f"repos/{repository}/actions/runs/{publisher['id']}")
-        if publisher and publisher["status"] == "completed":
-            require(
-                publisher["conclusion"] == "success",
-                f"Image publication {publisher['conclusion']}: {publisher['html_url']}",
-            )
+        if publisher:
             jobs = api(
                 f"repos/{repository}/actions/runs/{publisher['id']}/jobs?filter=latest&per_page=100", collection="jobs"
             )
+            job = next((job for job in jobs if job["name"] == job_name), None)
+            if job and job["status"] == "completed":
+                require(job["conclusion"] == "success", f"{job_name} {job['conclusion']}: {publisher['html_url']}")
+                return
             require(
-                any(job["name"] == "build" and job["conclusion"] == "success" for job in jobs),
-                "Publisher completed without a successful image build",
+                publisher["status"] != "completed",
+                f"Image publication {publisher['conclusion']} without {job_name}: {publisher['html_url']}",
             )
-            return
         time.sleep(30)
 
 
-def build_image(request, repository, source):
+def build_image(request, repository, source, arch):
     require_active_source(request, repository)
+    variant, tag = image_inputs.pr_image(arch, request["pr"])
     command = [
         sys.executable,
         str(ROOT / "docker/build.py"),
         "--variant",
-        "cu13",
+        variant,
         "--image-tag",
         "custom",
         "--custom-tag",
-        f"pr-{request['pr']}",
+        tag,
         "--context",
         str(source),
         "--output",
@@ -259,7 +279,7 @@ def build_image(request, repository, source):
                 process.wait()
 
 
-def validate_source(request, pr, policy, source):
+def validate_source(request, pr, source):
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=source, text=True).strip()
 
@@ -281,55 +301,35 @@ def validate_source(request, pr, policy, source):
     require(current == request["inputs_hash"], "Requested inputs hash does not match trusted computation")
     require(current != image_inputs.compute("HEAD^1", root=source), "Build inputs match the base")
     require(current == image_inputs.compute(root=source), "Build context differs from the frozen inputs")
-    run_policy = resolve_policy(policy.cadence, set(policy.raw_labels))
-    skipped = select_skipped_gpu_stages(
-        event_name="pull_request",
-        changed_files=None,
-        registrations=collect_snapshot_tests(source),
-        run_policy=run_policy,
-        raw_labels=policy.raw_labels,
-    )
-    require(CUDA_STAGES.keys() - set(skipped), "No CUDA tests selected")
 
 
-def verify_published(request):
-    manifest = json.loads(
-        subprocess.check_output(
-            [
-                "docker",
-                "buildx",
-                "imagetools",
-                "inspect",
-                f"radixark/miles:pr-{request['pr']}",
-                "--format",
-                "{{ json .Image }}",
-            ],
-            text=True,
-        )
+def verify_published(request, arch):
+    _, tag = image_inputs.pr_image(arch, request["pr"])
+    published = subprocess.check_output(
+        ["docker", "buildx", "imagetools", "inspect", f"radixark/miles:{tag}", "--format", "{{ json .Image }}"],
+        text=True,
     )
-    for platform in ("linux/amd64", "linux/arm64"):
-        configs = [config for key, config in manifest.items() if key == platform or key.startswith(platform + "/")]
-        require(
-            configs
-            and all(image_inputs.read_label(json.dumps(config)) == request["inputs_hash"] for config in configs),
-            f"Published {platform} inputs do not match",
-        )
+    require(image_inputs.read_label(published) == request["inputs_hash"], f"Published {tag} inputs do not match")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=["resolve", "wait-build", "check-source", "build", "check-current", "finish"])
     parser.add_argument("--source", type=Path)
+    parser.add_argument("--arch", choices=sorted(image_inputs.PR_IMAGE_ARCHES))
     args = parser.parse_args()
     repository = os.environ["GITHUB_REPOSITORY"]
     if args.mode == "wait-build":
         wait_build(
             dict(run_id=int(os.environ["GITHUB_RUN_ID"]), run_attempt=int(os.environ["GITHUB_RUN_ATTEMPT"])),
             repository,
+            args.arch,
         )
         return
     if args.mode == "resolve":
-        request = wait_request(json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text()), repository)
+        request = wait_request(
+            json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text()), repository, int(os.environ["GITHUB_RUN_ID"])
+        )
         if request:
             with open(os.environ["GITHUB_OUTPUT"], "a") as output:
                 output.write(
@@ -338,19 +338,12 @@ def main():
         return
 
     request = json.loads(os.environ["REQUEST_JSON"])
-    pr, policy = current_request(request, repository)
-    validate_source(request, pr, policy, args.source.resolve())
+    pr = current_request(request, repository)
+    validate_source(request, pr, args.source.resolve())
     if args.mode == "build":
-        build_image(request, repository, args.source.resolve())
+        build_image(request, repository, args.source.resolve(), args.arch)
     elif args.mode == "finish":
-        verify_published(request)
-        if request["force_rebuild"]:
-            try:
-                api(f"repos/{repository}/issues/{request['pr']}/labels/rebuild-ci-image", method="DELETE")
-            except subprocess.CalledProcessError:
-                print(
-                    "::warning::Could not remove the rebuild-ci-image label; remove it by hand or every run will rebuild."
-                )
+        verify_published(request, args.arch)
 
 
 if __name__ == "__main__":
