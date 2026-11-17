@@ -460,17 +460,16 @@ class TestWorkflowScopeSeam:
         assert "value: ${{ jobs.docker-build.outputs.tag_available }}" in reusable
         assert "needs: [docker-decide]" in reusable
         # Rebuilds follow the build inputs, not whether the PR diff touched them.
-        assert 'python3 docker/image_inputs.py --variant "$IMAGE_VARIANT" --rev HEAD^1' in reusable
+        assert "python3 docker/image_inputs.py --rev HEAD^1" in reusable
         assert "python3 docker/image_inputs.py --read-label" in reusable
         assert "github.event.pull_request.head.repo.full_name == github.repository" in reusable
-        assert 'python3 docker/build.py --variant "$IMAGE_VARIANT" --image-tag custom' in reusable
-        assert "default: cu13" in reusable
+        assert "python3 docker/build.py --variant cu13 --image-tag custom" in reusable
 
     def test_docker_decision_logs_in_only_for_tag_inspection(self):
         reusable = self._reusable_workflow("_build-pr-ci-image.yml")
         decide_job = reusable.split("  docker-decide:", 1)[1].split("  docker-build:", 1)[0]
 
-        compare = decide_job.index('python3 docker/image_inputs.py --variant "$IMAGE_VARIANT" --rev HEAD^1')
+        compare = decide_job.index("python3 docker/image_inputs.py --rev HEAD^1")
         login = decide_job.index("- name: Login to Docker Hub")
         inspect = decide_job.index("docker buildx imagetools inspect")
         assert compare < login < inspect
@@ -658,12 +657,8 @@ class TestRocmWorkflowScopeSeam:
         header = workflow.split("  resolve-ci-policy:\n", 1)[1].split("    runs-on:", 1)[0]
         assert "if: github.event.action != 'closed'" in header
         image = workflow.split("  resolve-ci-image:\n", 1)[1].split("    runs-on:", 1)[0]
-        build = workflow.split("  docker-build:\n", 1)[1].split("  resolve-ci-image:\n", 1)[0]
-        assert "github.event.action != 'closed'" in build
-        assert "needs: [resolve-ci-policy]" in build
-        assert "variant: rocm10-mi35x-pr" in build
-        assert "needs: [resolve-ci-policy, docker-build]" in image
-        assert "needs.docker-build.result == 'success'" in image
+        assert "needs: [resolve-ci-policy]" in image
+        assert "always()" not in image
         stage = workflow.split("  stage-c-4-gpu-mi350:\n", 1)[1]
         assert "needs.resolve-ci-policy.result == 'success'" in stage
 

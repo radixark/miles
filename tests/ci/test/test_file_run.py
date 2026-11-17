@@ -1,68 +1,18 @@
 """Unit tests for `tests/ci/file_run.py`, the /rerun-test resolve step."""
 
 import json
-import os
 import shlex
 import shutil
-import subprocess
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
-import yaml
 from tests.ci.ci_register import CIRegistry, HWBackend, register_cpu_ci
 from tests.ci.file_run import CPU_SUITES, CUDA_SUITE_RUNS_ON, FileRunError, main, plan_file_run, resolve_file_run
 from tests.ci.rocm import main as rocm_main
 from tests.ci.run_suite import CI_SUITES
 
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
-
-
-@pytest.mark.parametrize("hw", ["cuda", "rocm"])
-@pytest.mark.parametrize("published", [False, True])
-@pytest.mark.parametrize("pin", ["", "debug"])
-def test_comment_file_run_uses_a_pin_or_its_published_pr_image(tmp_path, hw, published, pin):
-    root = Path(__file__).resolve().parents[3]
-    workflow = yaml.safe_load((root / ".github/workflows/run-ci-file.yml").read_text())
-    steps = workflow["jobs"]["resolve-file-run"]["steps"]
-    step = next(step for step in steps if step.get("id") == "image")
-    calls, output = tmp_path / "calls", tmp_path / "output"
-    binary = tmp_path / "docker"
-    binary.write_text('#!/bin/sh\nprintf "%s\\n" "$*" > "$CALLS"\n' + f"exit {0 if published else 1}\n")
-    binary.chmod(0o755)
-    # Exercise the real workflow branch; the public HTTP helper has its own
-    # status/error tests, so stub only its CLI here.
-    python = tmp_path / "python3"
-    python.write_text(
-        '#!/bin/sh\nprintf "%s\\n" "$*" > "$CALLS"\n'
-        + ('printf "pr-42-rocm10-mi35x\\n"\n' if published else 'printf "\\n"\n')
-    )
-    python.chmod(0o755)
-    subprocess.run(
-        ["bash", "-c", step["run"]],
-        check=True,
-        env={
-            **os.environ,
-            "PATH": f"{tmp_path}:{os.environ['PATH']}",
-            "CI_HW": hw,
-            "CI_IMAGE_TAG": pin,
-            "PULL_NUMBER": "42",
-            "CALLS": str(calls),
-            "GITHUB_OUTPUT": str(output),
-        },
-    )
-    tag = "pr-42-rocm10-mi35x" if hw == "rocm" else "pr-42"
-    expected = pin or (tag if published else ("" if hw == "rocm" else "dev"))
-    assert output.read_text() == f"tag={expected}\n"
-    if pin:
-        assert not calls.exists()
-    else:
-        if hw == "rocm":
-            assert ".github/workflows/scripts/rocm_pr_image.py 42" in calls.read_text()
-        else:
-            assert f"radixark/miles:{tag}" in calls.read_text()
-    resolver = next(step for step in steps if step.get("id") == "resolve")
-    assert resolver["env"]["CI_IMAGE_TAG"] == "${{ steps.image.outputs.tag }}"
 
 
 def _make(

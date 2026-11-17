@@ -3,12 +3,6 @@ name: PR CI Image Build
 
 on:
   workflow_call:
-    inputs:
-      variant:
-        description: 'PR image recipe: cu13 or rocm10-mi35x-pr'
-        type: string
-        required: false
-        default: cu13
     outputs:
       built:
         description: Whether this call built and pushed a PR-scoped image
@@ -18,7 +12,7 @@ on:
         value: ${{ jobs.docker-build.outputs.tag_available }}
 
 jobs:
-  # A PR keeps one image tag per recipe for its whole life. Rebuilds are driven by
+  # A PR keeps one image tag (pr-<number>) for its whole life. Rebuilds are driven by
   # the content of the build inputs, not by whether the PR happens to touch them: the
   # published tag records its inputs hash in a label, so reruns and unrelated pushes
   # reuse the image instead of paying for an identical build.
@@ -32,8 +26,6 @@ jobs:
       current: ${{ steps.compare.outputs.current }}
     env:
       SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
-      IMAGE_VARIANT: ${{ inputs.variant }}
-      TAG_SUFFIX: ${{ inputs.variant == 'rocm10-mi35x-pr' && '-rocm10-mi35x' || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,10 +37,6 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
         run: |
           set -euo pipefail
-          case "$IMAGE_VARIANT" in
-            cu13|rocm10-mi35x-pr) ;;
-            *) echo "::error::Unsupported PR image variant"; exit 1 ;;
-          esac
           emit() {
             echo "eligible=$1" >> "$GITHUB_OUTPUT"
             echo "current=$2" >> "$GITHUB_OUTPUT"
@@ -62,8 +50,8 @@ jobs:
 
           # Compare the PR merge commit with its current base (HEAD^1) rather than the
           # recorded base.sha, which can lag main and pull in unrelated changes.
-          CURRENT=$(python3 docker/image_inputs.py --variant "$IMAGE_VARIANT" --rev HEAD)
-          BASE=$(python3 docker/image_inputs.py --variant "$IMAGE_VARIANT" --rev HEAD^1)
+          CURRENT=$(python3 docker/image_inputs.py --rev HEAD)
+          BASE=$(python3 docker/image_inputs.py --rev HEAD^1)
           if [ "$CURRENT" = "$BASE" ]; then
             echo "Build inputs match the base branch; suites use the released image."
             emit false ""
@@ -99,10 +87,9 @@ jobs:
             emit true false "$CURRENT"
           fi
 
-      # CUDA retains its authenticated inspection. ROCm reads its public tag
-      # anonymously; its publishing credentials stay on the trusted Spur runner.
+      # Registry auth is needed only when reading the inputs label from an existing tag.
       - name: Login to Docker Hub
-        if: steps.prepare.outputs.inspect_tag == 'true' && env.SAME_REPO == 'true' && env.IMAGE_VARIANT == 'cu13'
+        if: steps.prepare.outputs.inspect_tag == 'true' && env.SAME_REPO == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -129,39 +116,37 @@ jobs:
             exit 0
           fi
 
-          PUBLISHED=$(docker buildx imagetools inspect "radixark/miles:pr-${PR_NUMBER}${TAG_SUFFIX}" \
+          PUBLISHED=$(docker buildx imagetools inspect "radixark/miles:pr-${PR_NUMBER}" \
             --format '{{ json .Image }}' 2>/dev/null \
             | python3 docker/image_inputs.py --read-label || true)
 
           if [ -z "$PUBLISHED" ]; then
-            echo "No usable pr-${PR_NUMBER}${TAG_SUFFIX} image; building one."
+            echo "No usable pr-${PR_NUMBER} image; building one."
             emit true true
           elif [ "$PUBLISHED" = "$CURRENT" ]; then
-            echo "pr-${PR_NUMBER}${TAG_SUFFIX} already matches the current build inputs; reusing it."
+            echo "pr-${PR_NUMBER} already matches the current build inputs; reusing it."
             emit true false
           else
-            echo "Build inputs changed since pr-${PR_NUMBER}${TAG_SUFFIX} was published; rebuilding."
+            echo "Build inputs changed since pr-${PR_NUMBER} was published; rebuilding."
             emit true true
           fi
 
   # Docker PRs build the multi-arch image after the caller's CPU gate passes.
   # Without a rebuild to do this stays on a free hosted runner as a no-op;
-  # CUDA builds use docker-build nodes. All ROCm rebuilds request the trusted
-  # publisher, which launches a credential-free build on a Spur compute node.
+  # actual builds use docker-build nodes, never the GPU-suite pool.
   docker-build:
     needs: [docker-decide]
     if: always() && !cancelled() && github.event.action != 'closed'
-    runs-on: ${{ fromJSON(needs.docker-decide.outputs.rebuild == 'true' && inputs.variant == 'cu13' && github.event.pull_request.head.repo.full_name == github.repository && '["docker-build"]' || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON(needs.docker-decide.outputs.rebuild == 'true' && github.event.pull_request.head.repo.full_name == github.repository && '["docker-build"]' || '["ubuntu-latest"]') }}
     # The fork job waits for a separately queued builder, whose own limit is 180m.
-    timeout-minutes: ${{ needs.docker-decide.outputs.rebuild == 'true' && (inputs.variant == 'rocm10-mi35x-pr' || github.event.pull_request.head.repo.full_name != github.repository) && 360 || 180 }}
+    timeout-minutes: ${{ needs.docker-decide.outputs.rebuild == 'true' && github.event.pull_request.head.repo.full_name != github.repository && 360 || 180 }}
     outputs:
       built: ${{ steps.build.outputs.built || steps.wait.outputs.built || 'false' }}
       # Reusing an image the previous run published is as good as building one now.
       tag_available: ${{ needs.docker-decide.outputs.needs_image == 'true' && (steps.build.outputs.built == 'true' || steps.wait.outputs.built == 'true' || needs.docker-decide.outputs.rebuild != 'true') }}
     env:
-      BUILD: ${{ needs.docker-decide.outputs.rebuild == 'true' && inputs.variant == 'cu13' && github.event.pull_request.head.repo.full_name == github.repository }}
-      REQUEST_BUILD: ${{ needs.docker-decide.outputs.rebuild == 'true' && (inputs.variant == 'rocm10-mi35x-pr' || github.event.pull_request.head.repo.full_name != github.repository) }}
-      IMAGE_VARIANT: ${{ inputs.variant }}
+      BUILD: ${{ needs.docker-decide.outputs.rebuild == 'true' && github.event.pull_request.head.repo.full_name == github.repository }}
+      REQUEST_BUILD: ${{ needs.docker-decide.outputs.rebuild == 'true' && github.event.pull_request.head.repo.full_name != github.repository }}
     steps:
       - name: Checkout repository
         if: env.BUILD == 'true' || env.REQUEST_BUILD == 'true'
@@ -185,8 +170,6 @@ jobs:
                          run_attempt=int(os.environ['GITHUB_RUN_ATTEMPT']),
                          force_rebuild=os.environ['FORCE_REBUILD'] == 'true',
                          labels=json.loads(os.environ['PR_LABELS_JSON']))
-          if os.environ['IMAGE_VARIANT'] != 'cu13':
-              request['variant'] = os.environ['IMAGE_VARIANT']
           (Path(os.environ['RUNNER_TEMP']) / 'fork-ci-image-request/request.json').write_text(json.dumps(request))
           PY
       - uses: actions/upload-artifact@v4
@@ -249,7 +232,7 @@ jobs:
         env:
           BUILD_GITHUB_TOKEN: ${{ github.token }}
         run: |
-          python3 docker/build.py --variant "$IMAGE_VARIANT" --image-tag custom \
+          python3 docker/build.py --variant cu13 --image-tag custom \
             --custom-tag pr-${{ github.event.pull_request.number }} --push
           echo "built=true" >> "$GITHUB_OUTPUT"
       # The label is a one-shot request: leaving it on would rebuild on every later run.

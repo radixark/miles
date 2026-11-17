@@ -1,15 +1,8 @@
 #!/usr/bin/env python3
 # doc-dev: docs/developer/ci/02-docker-build.md
-"""Validate image requests and orchestrate builds with default-branch code.
-
-CUDA forks use docker-build; all ROCm PR builds use Spur compute nodes.
-
-Fork driver code is never executed. Literal variant build_args edits are accepted
-against the frozen merge base; ROCm builds use only rocm10-mi35x arguments.
-"""
+"""Validate a fork image request for default-branch build orchestration."""
 
 import argparse
-import ast
 import io
 import json
 import os
@@ -31,17 +24,6 @@ from tests.ci.ci_policy import resolve_workflow_inputs  # noqa: E402
 
 CPU_JOBS = {f"stage-a-cpu ({partition}) / run-cpu" for partition in range(4)}
 REQUEST_KEYS = {"pr", "merge_sha", "inputs_hash", "run_id", "run_attempt", "force_rebuild", "labels"}
-SOURCE_WORKFLOWS = {"cu13": "pr-test.yml", "rocm10-mi35x-pr": "pr-test-rocm.yml"}
-
-
-def variant(request):
-    # Older CUDA requests retain their original schema and meaning.
-    return request.get("variant", "cu13")
-
-
-def image_tag(request):
-    suffix = "-rocm10-mi35x" if variant(request) == "rocm10-mi35x-pr" else ""
-    return f"pr-{request['pr']}{suffix}"
 
 
 def require(condition, message):
@@ -67,11 +49,7 @@ def parse_request(data):
         info = archive.getinfo("request.json")
         require(info.file_size <= 4096, "Request JSON is too large")
         request = json.loads(archive.read(info))
-    require(
-        isinstance(request, dict) and request.keys() in (REQUEST_KEYS, REQUEST_KEYS | {"variant"}),
-        "Invalid request fields",
-    )
-    require(isinstance(variant(request), str) and variant(request) in SOURCE_WORKFLOWS, "Invalid variant")
+    require(isinstance(request, dict) and request.keys() == REQUEST_KEYS, "Invalid request fields")
     for key in ("pr", "run_id", "run_attempt"):
         require(type(request[key]) is int and request[key] > 0, f"Invalid {key}")
     require(type(request["force_rebuild"]) is bool, "Invalid force_rebuild")
@@ -91,16 +69,13 @@ def validate_identity(request, run, pr, repository, workflow_id):
     require(run["event"] == "pull_request" and run["status"] == "in_progress", "Expected an active PR run")
     require(run["repository"]["full_name"] == repository, "Wrong run repository")
     require(
-        run["workflow_id"] == workflow_id
-        and run["path"].split("@")[0] == f".github/workflows/{SOURCE_WORKFLOWS[variant(request)]}",
+        run["workflow_id"] == workflow_id and run["path"].split("@")[0] == ".github/workflows/pr-test.yml",
         "Wrong source workflow",
     )
     require(pr["number"] == request["pr"] and pr["state"] == "open", "PR is no longer open")
     require(pr["base"]["repo"]["full_name"] == repository, "Wrong PR base repository")
     head = pr["head"]
-    require(head["repo"], "PR head repository was deleted")
-    if variant(request) == "cu13":
-        require(head["repo"]["id"] != pr["base"]["repo"]["id"], "Expected a fork PR")
+    require(head["repo"] and head["repo"]["id"] != pr["base"]["repo"]["id"], "Expected a fork PR")
     require(head["repo"]["id"] == run["head_repository"]["id"], "Wrong fork repository")
     require(head["sha"] == run["head_sha"] and head["ref"] == run["head_branch"], "PR head moved")
     # Reruns keep the original merge SHA even when main has advanced.
@@ -119,12 +94,11 @@ def validate_identity(request, run, pr, repository, workflow_id):
 def current_request(request, repository):
     run = api(f"repos/{repository}/actions/runs/{request['run_id']}")
     pr = api(f"repos/{repository}/pulls/{request['pr']}")
-    filename = SOURCE_WORKFLOWS[variant(request)]
-    workflow = api(f"repos/{repository}/actions/workflows/{filename}")
+    workflow = api(f"repos/{repository}/actions/workflows/pr-test.yml")
     validate_identity(request, run, pr, repository, workflow["id"])
     head = pr["head"]
     query = urlencode({"event": "pull_request", "head_sha": head["sha"], "per_page": 100})
-    runs = api(f"repos/{repository}/actions/workflows/{filename}/runs?{query}", collection="workflow_runs")
+    runs = api(f"repos/{repository}/actions/workflows/pr-test.yml/runs?{query}", collection="workflow_runs")
     matching = [
         item["id"]
         for item in runs
@@ -133,9 +107,7 @@ def current_request(request, repository):
     require(matching and max(matching) == run["id"], "A newer PR Test run superseded this request")
     # Match the caller's event snapshot, including on reruns and after label removal.
     policy = resolve_workflow_inputs("pull_request", "", json.dumps(request["labels"]))
-    # ROCm's caller has no CPU A gate. Preserve CUDA's existing success/bypass
-    # check; both callers still validate the frozen build context.
-    if variant(request) == "cu13" and not policy.bypass_fastfail:
+    if not policy.bypass_fastfail:
         jobs = api(
             f"repos/{repository}/actions/runs/{run['id']}/jobs?filter=all&per_page=100",
             collection="jobs",
@@ -245,61 +217,13 @@ def wait_build(request, repository):
         time.sleep(30)
 
 
-def _rocm_recipe(text):
-    """Return the ROCm PR arguments and mask all literal variant argument fields."""
-
-    def field(node, name):
-        require(isinstance(node, ast.Dict), "Expected a literal recipe dictionary")
-        matches = [
-            (index, value)
-            for index, (key, value) in enumerate(zip(node.keys, node.values, strict=True))
-            if isinstance(key, ast.Constant) and key.value == name
-        ]
-        require(len(matches) == 1, f"Expected one {name} field")
-        return matches[0]
-
-    try:
-        tree = ast.parse(text)
-        values = [
-            node.value
-            for node in tree.body
-            if isinstance(node, ast.Assign)
-            and any(isinstance(target, ast.Name) and target.id == "VARIANTS" for target in node.targets)
-        ]
-        require(len(values) == 1, "Expected one literal VARIANTS assignment")
-        _, recipe = field(values[0], "rocm10-mi35x")
-        _, arguments_node = field(recipe, "build_args")
-        arguments = ast.literal_eval(arguments_node)
-    except (SyntaxError, ValueError, TypeError, KeyError) as error:
-        raise ValueError("Fork ROCm images require literal rocm10-mi35x build_args in docker/build.py") from error
-    require(
-        isinstance(arguments, dict)
-        and all(isinstance(key, str) and isinstance(value, str) for key, value in arguments.items()),
-        "Fork ROCm build_args must be a dictionary of strings",
-    )
-    for entry in values[0].values:
-        if isinstance(entry, ast.Dict):
-            for index, key in enumerate(entry.keys):
-                if isinstance(key, ast.Constant) and key.value == "build_args":
-                    entry.values[index] = ast.Dict(keys=[], values=[])
-    return arguments, ast.dump(tree)
-
-
-def rocm_build_args(source):
-    # Treat the fork's driver as data, never as host-side Python.
-    try:
-        text = (source / "docker/build.py").read_text()
-    except OSError as error:
-        raise ValueError("Fork ROCm images require docker/build.py") from error
-    return _rocm_recipe(text)[0]
-
-
-def build_command(request, source):
+def build_image(request, repository, source):
+    require_active_source(request, repository)
     command = [
         sys.executable,
         str(ROOT / "docker/build.py"),
         "--variant",
-        variant(request),
+        "cu13",
         "--image-tag",
         "custom",
         "--custom-tag",
@@ -309,38 +233,7 @@ def build_command(request, source):
         "--output",
         f"type=oci,dest={os.environ['OCI_OUTPUT']},tar=false",
     ]
-    if variant(request) == "rocm10-mi35x-pr":
-        arguments = rocm_build_args(source)
-        # CLI overrides cannot remove a trusted default. Refuse that unsupported
-        # edit instead of silently building a recipe different from the fork's.
-        require(rocm_build_args(ROOT).keys() <= arguments.keys(), "Fork ROCm build_args cannot remove driver defaults")
-        for key, value in arguments.items():
-            command += ["--build-arg", f"{key}={value}"]
-    return command
-
-
-def build_image(request, repository, source):
-    require_active_source(request, repository)
-    command = build_command(request, source)
-    if variant(request) == "rocm10-mi35x-pr":
-        command = [
-            sys.executable,
-            str(ROOT / ".github/workflows/scripts/spur/build_image.py"),
-            "launch",
-            "--source",
-            str(source),
-            "--merge-sha",
-            request["merge_sha"],
-            "--inputs-hash",
-            request["inputs_hash"],
-            "--command",
-            json.dumps(command),
-        ]
-    build_env = dict(os.environ)
-    # Newer main supports forwarding this as a BuildKit secret. PR Dockerfiles
-    # must remain anonymous even if the login runner happens to define it.
-    build_env.pop("BUILD_GITHUB_TOKEN", None)
-    process = subprocess.Popen(command, start_new_session=True, env=build_env)
+    process = subprocess.Popen(command, start_new_session=True)
     try:
         while True:
             try:
@@ -375,34 +268,20 @@ def validate_source(request, pr, source):
     parents = git("rev-list", "--parents", "-n", "1", "HEAD").split()
     require(len(parents) == 3 and parents[2] == pr["head"]["sha"], "Merge does not contain the fork head")
     # No host-side reader may follow a PR symlink into the trusted checkout or credentials.
-    recipe = "docker/Dockerfile.rocm" if variant(request) == "rocm10-mi35x-pr" else "docker/Dockerfile"
-    paths = image_inputs._paths_at("HEAD", source, variant(request)) + [
-        recipe,
+    paths = image_inputs._paths_at("HEAD", source) + [
+        "docker/Dockerfile",
         ".dockerignore",
-        f"{recipe}.dockerignore",
+        "docker/Dockerfile.dockerignore",
     ]
     for name in paths:
         path = source
         for component in Path(name).parts:
             path /= component
             require(not path.is_symlink(), f"Build input must not be a symlink: {name}")
-    current = image_inputs.compute("HEAD", root=source, variant=variant(request))
+    current = image_inputs.compute("HEAD", root=source)
     require(current == request["inputs_hash"], "Requested inputs hash does not match trusted computation")
-    require(
-        current != image_inputs.compute("HEAD^1", root=source, variant=variant(request)), "Build inputs match the base"
-    )
-    require(
-        current == image_inputs.compute(root=source, variant=variant(request)),
-        "Build context differs from the frozen inputs",
-    )
-    if variant(request) == "rocm10-mi35x-pr":
-        base_driver = subprocess.check_output(["git", "show", "HEAD^1:docker/build.py"], cwd=source, text=True)
-        driver = (source / "docker/build.py").read_text()
-        if driver != base_driver:
-            require(
-                _rocm_recipe(driver)[1] == _rocm_recipe(base_driver)[1],
-                "Fork ROCm images only honor literal build_args edits in docker/build.py",
-            )
+    require(current != image_inputs.compute("HEAD^1", root=source), "Build inputs match the base")
+    require(current == image_inputs.compute(root=source), "Build context differs from the frozen inputs")
 
 
 def verify_published(request):
@@ -413,26 +292,14 @@ def verify_published(request):
                 "buildx",
                 "imagetools",
                 "inspect",
-                f"radixark/miles:{image_tag(request)}",
+                f"radixark/miles:pr-{request['pr']}",
                 "--format",
                 "{{ json .Image }}",
             ],
             text=True,
         )
     )
-    if variant(request) == "rocm10-mi35x-pr":
-        # Imagetools returns a config directly for a single-platform manifest,
-        # and a platform map for an index (e.g. one with provenance attached).
-        if manifest.get("architecture") == "amd64" and manifest.get("os") == "linux":
-            require(
-                image_inputs.read_label(json.dumps(manifest)) == request["inputs_hash"],
-                "Published linux/amd64 inputs do not match",
-            )
-            return
-        platforms = ("linux/amd64",)
-    else:
-        platforms = ("linux/amd64", "linux/arm64")
-    for platform in platforms:
+    for platform in ("linux/amd64", "linux/arm64"):
         configs = [config for key, config in manifest.items() if key == platform or key.startswith(platform + "/")]
         require(
             configs
@@ -461,7 +328,6 @@ def main():
             with open(os.environ["GITHUB_OUTPUT"], "a") as output:
                 output.write(
                     f"request={json.dumps(request, separators=(',', ':'))}\npr={request['pr']}\nmerge_sha={request['merge_sha']}\n"
-                    f"image_tag={image_tag(request)}\nvariant={variant(request)}\n"
                 )
         return
 

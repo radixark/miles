@@ -177,13 +177,6 @@ def test_workflow_uses_separate_planner_and_shared_file_queue():
     assert "if: github.event_name == 'pull_request' && !inputs.cadence" in workflow
     assert "SKIPPED_STAGES: ${{ steps.resolve.outputs.skipped_stages }}" in workflow
     assert "rocm_file_jobs: ${{ steps.rocm-files.outputs.rocm_file_jobs }}" in workflow
-    assert "needs: [resolve-ci-policy, resolve-ci-image]" in job
-    assert "needs.resolve-ci-image.result == 'success'" in job
-    assert "container_image: ${{ needs.resolve-ci-image.outputs.container_image }}" in job
-    assert (
-        "(needs.resolve-ci-policy.outputs.rocm_file_jobs || '[]') != '[]'"
-        in workflow.split("  resolve-ci-image:", 1)[1].split("    runs-on:", 1)[0]
-    )
     assert "ref: ${{ github.sha }}" in job
     assert "execute_command: ${{ matrix.execute_command }}" in job
     assert "num_gpus: ${{ fromJSON(matrix.num_gpus) }}" in job

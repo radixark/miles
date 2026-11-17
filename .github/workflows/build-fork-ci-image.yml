@@ -4,7 +4,7 @@ run-name: fork-ci-image-${{ github.event.workflow_run.id }}-${{ github.event.wor
 
 on:
   workflow_run:
-    workflows: [PR Test, 'PR Test (ROCm)']
+    workflows: [PR Test]
     types: [in_progress]
 
 permissions:
@@ -14,8 +14,7 @@ jobs:
   request:
     if: >-
       github.event.workflow_run.event == 'pull_request' &&
-      (github.event.workflow_run.head_repository.id != github.event.repository.id ||
-       github.event.workflow_run.name == 'PR Test (ROCm)')
+      github.event.workflow_run.head_repository.id != github.event.repository.id
     runs-on: ubuntu-latest
     timeout-minutes: 360
     permissions:
@@ -26,8 +25,6 @@ jobs:
       request: ${{ steps.resolve.outputs.request }}
       pr: ${{ steps.resolve.outputs.pr }}
       merge_sha: ${{ steps.resolve.outputs.merge_sha }}
-      image_tag: ${{ steps.resolve.outputs.image_tag }}
-      variant: ${{ steps.resolve.outputs.variant }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,12 +39,10 @@ jobs:
   build:
     needs: request
     if: needs.request.outputs.request != ''
-    # ROCm builds run on Miles' Spur compute nodes; this runner only submits
-    # the job and publishes its OCI output. CUDA retains its existing builder.
-    runs-on: ${{ fromJSON(needs.request.outputs.variant == 'rocm10-mi35x-pr' && '["linux-miles-mi35x-spur"]' || '["docker-build"]') }}
+    runs-on: [docker-build]
     timeout-minutes: 180
     concurrency:
-      group: fork-ci-image-${{ needs.request.outputs.pr }}${{ needs.request.outputs.variant == 'rocm10-mi35x-pr' && '-rocm10-mi35x' || '' }}
+      group: fork-ci-image-${{ needs.request.outputs.pr }}
       cancel-in-progress: true
     permissions:
       contents: read
@@ -56,9 +51,7 @@ jobs:
     env:
       REQUEST_JSON: ${{ needs.request.outputs.request }}
       PR_NUMBER: ${{ needs.request.outputs.pr }}
-      IMAGE_TAG: ${{ needs.request.outputs.image_tag }}
       PYTHONPATH: ''
-      IMAGE_VARIANT: ${{ needs.request.outputs.variant }}
     steps:
       - name: Checkout trusted orchestration
         uses: actions/checkout@v4
@@ -76,30 +69,12 @@ jobs:
       - name: Prepare isolated image output
         id: paths
         run: |
-          set -euo pipefail
-          # Node-local auth directory, outside the shared source/output tree.
-          DOCKER_CONFIG=$(mktemp -d /tmp/miles-image-auth.XXXXXXXX)
-          if [ "$IMAGE_VARIANT" = rocm10-mi35x-pr ]; then
-            SHARED_ROOT="${CI_SHARED_DIR:-$HOME/.miles_ci_spur}"
-            mkdir -p "$SHARED_ROOT"
-            IMAGE_RUN_DIR=$(mktemp -d "$SHARED_ROOT/pr-image-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.XXXXXXXX")
-          else
-            IMAGE_RUN_DIR=$(mktemp -d "$RUNNER_TEMP/fork-image.XXXXXXXX")
-          fi
-          OCI_OUTPUT="$IMAGE_RUN_DIR/oci"
-          mkdir -m 700 "$OCI_OUTPUT"
+          DOCKER_CONFIG="$RUNNER_TEMP/fork-ci-docker-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          OCI_OUTPUT="$RUNNER_TEMP/fork-ci-oci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -m 700 "$DOCKER_CONFIG" "$OCI_OUTPUT"
           echo "DOCKER_CONFIG=$DOCKER_CONFIG" >> "$GITHUB_ENV"
-          echo "IMAGE_RUN_DIR=$IMAGE_RUN_DIR" >> "$GITHUB_ENV"
           echo "OCI_OUTPUT=$OCI_OUTPUT" >> "$GITHUB_ENV"
-      - name: Check Spur publishing tools
-        if: env.IMAGE_VARIANT == 'rocm10-mi35x-pr'
-        run: |
-          for TOOL in python3 gh sbatch squeue scancel skopeo docker; do
-            command -v "$TOOL" >/dev/null || { echo "::error::Spur login runner needs $TOOL"; exit 1; }
-          done
-          docker buildx version
       - name: Install build tools
-        if: env.IMAGE_VARIANT == 'cu13'
         run: |
           if ! command -v pip3 >/dev/null; then
             apt-get -o DPkg::Lock::Timeout=600 update
@@ -109,23 +84,19 @@ jobs:
           pip3 install --help | grep -q -- --break-system-packages && PIP_BSP="--break-system-packages"
           pip3 install $PIP_BSP --ignore-installed typer
       - name: Free idle build cache
-        if: env.IMAGE_VARIANT == 'cu13'
         run: docker builder prune -af --filter "until=48h"
       - name: Set up isolated BuildKit
         id: buildx
-        if: env.IMAGE_VARIANT == 'cu13'
         uses: docker/setup-buildx-action@v3
         with:
           # Replace the action's default network.host/security.insecure entitlements.
           buildkitd-flags: --oci-worker-net=bridge
           driver-opts: image=moby/buildkit:latest
-      - name: Validate source and CUDA CPU gate
+      - name: Validate source and CPU gate
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 trusted/.github/workflows/scripts/fork_ci_image.py check-source --source source
       - name: Build without registry credentials
-        # These are scheduler settings already provisioned on the Spur runner.
-        # The launcher submits only a sanitized environment, never GH_TOKEN.
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 trusted/.github/workflows/scripts/fork_ci_image.py build --source source
@@ -146,27 +117,16 @@ jobs:
       - name: Publish the PR image without executing it
         # docker-build runners have no skopeo and no root for apt; use the pinned upstream image.
         run: |
-          if [ "$IMAGE_VARIANT" = rocm10-mi35x-pr ]; then
-            skopeo copy --all --retry-times 3 --authfile "$DOCKER_CONFIG/config.json" \
-              "oci:${OCI_OUTPUT}" "docker://radixark/miles:${IMAGE_TAG}"
-          else
-            docker run --rm --network host \
-              -v "${OCI_OUTPUT}:/oci:ro" \
-              -v "${DOCKER_CONFIG}/config.json:/auth.json:ro" \
-              quay.io/skopeo/stable:v1.22.3-immutable@sha256:c0ee1f4edca5c01cb8d5611124f92f3cc47196ecab68aee5d0f90834e00574d5 \
-              copy --all --retry-times 3 --authfile /auth.json \
-              oci:/oci "docker://radixark/miles:${IMAGE_TAG}"
-          fi
-      - name: Verify published platforms and consume the rebuild label
+          docker run --rm --network host \
+            -v "${OCI_OUTPUT}:/oci:ro" \
+            -v "${DOCKER_CONFIG}/config.json:/auth.json:ro" \
+            quay.io/skopeo/stable:v1.22.3-immutable@sha256:c0ee1f4edca5c01cb8d5611124f92f3cc47196ecab68aee5d0f90834e00574d5 \
+            copy --all --retry-times 3 --authfile /auth.json \
+            oci:/oci "docker://radixark/miles:pr-${PR_NUMBER}"
+      - name: Verify both architectures and consume the rebuild label
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 trusted/.github/workflows/scripts/fork_ci_image.py finish --source source
       - name: Remove local image output and credentials
         if: always() && steps.paths.outcome == 'success'
-        run: |
-          # Always remove node-local credentials, even if cluster cancellation fails.
-          trap 'rm -rf -- "$DOCKER_CONFIG"' EXIT
-          if [ "$IMAGE_VARIANT" = rocm10-mi35x-pr ]; then
-            python3 trusted/.github/workflows/scripts/spur/build_image.py cancel --run-dir "$IMAGE_RUN_DIR"
-          fi
-          rm -rf -- "$IMAGE_RUN_DIR"
+        run: rm -rf -- "$OCI_OUTPUT" "$DOCKER_CONFIG"

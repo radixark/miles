@@ -173,17 +173,6 @@ jobs:
           echo "ci_bridge_pr=$BRIDGE_PR" >> "$GITHUB_OUTPUT"
           echo "Resolved: bridge=${BRIDGE_PR:-none}"
 
-      # Share the node ownership list with ROCm image builds.
-      - name: Resolve Miles node exclusions
-        run: |
-          python3 - <<'PYCODE'
-          import json, os
-          from pathlib import Path
-          nodes = json.loads(Path('.github/workflows/scripts/spur/other-project-nodes.json').read_text())
-          with open(os.environ['GITHUB_ENV'], 'a') as output:
-              output.write('SLURM_EXCLUDE=' + ','.join(nodes) + '\n')
-          PYCODE
-
       # HF_TOKEN and the Docker Hub login come from the runner's .env, not repo
       # secrets; do not set them here, since even an empty value overrides the
       # runner's.
@@ -206,6 +195,9 @@ jobs:
           # libpq connect timeout: if the store is unreachable from the cluster, each gated
           # test loses 10 s instead of psycopg's 130-second default.
           PGCONNECT_TIMEOUT: '10'
+          # The CI partition is shared with SGLang's CI and sgl-amd-mono; Miles
+          # owns crsuse2-m2m-v3-025 and v3-090, so keep its jobs off the rest.
+          SLURM_EXCLUDE: crsuse2-m2m-v3-010,crsuse2-m2m-v3-022,crsuse2-m2m-v3-060,crsuse2-m2m-v3-123
         run: |
           if [ "$WITHHOLD_RUNNER_SECRETS" = "true" ]; then
             unset HF_TOKEN WANDB_API_KEY AMD_NEON_DATABASE_URL
