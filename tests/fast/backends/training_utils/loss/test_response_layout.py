@@ -25,6 +25,7 @@ from miles.backends.training_utils.loss.hub.response_layout import (
     padded_rows_enabled,
     validate_response_layout_args,
 )
+from miles.backends.training_utils.loss.hub.row_log_prob import RowLogProb
 from miles.backends.training_utils.loss.hub.score_centering_loss import score_centering_loss_function
 
 from .loss_test_utils import make_args, make_batch, make_inputs, make_parallel_state
@@ -142,9 +143,10 @@ def test_every_bucket_is_scored_in_the_same_number_of_chunks(log_probs_chunk_siz
     assert num_chunks == {response_layout.ROW_CHUNKS}
 
 
+@pytest.mark.parametrize("entropy_coef", [0.01, 0.0], ids=["torch-scorer", "row-log-prob"])
 @pytest.mark.parametrize("temperature", [1.0, 0.7])
-def test_forward_log_probs_and_entropy_match(temperature):
-    args = _args(rollout_temperature=temperature)
+def test_forward_log_probs_and_entropy_match(temperature, entropy_coef):
+    args = _args(rollout_temperature=temperature, entropy_coef=entropy_coef)
     inputs = _inputs(args)
     batch = _batch(inputs, "policy_loss")
     common = dict(with_entropy=True, use_sampling_mask=False)
@@ -158,15 +160,17 @@ def test_forward_log_probs_and_entropy_match(temperature):
     for key in ("log_probs", "entropy"):
         assert len(actual[key]) == len(expected[key])
         for got, want in zip(actual[key], expected[key], strict=True):
-            torch.testing.assert_close(got.reshape(-1), want.reshape(-1).cpu(), rtol=0, atol=1e-6)
+            # RowLogProb multiplies by 1 / temperature where the torch scorer divides: fp32 rounding apart
+            torch.testing.assert_close(got.reshape(-1), want.reshape(-1).cpu(), rtol=1e-6, atol=1e-6)
 
 
+# PackedSlices always scores with the torch path; PaddedRows takes RowLogProb when --entropy-coef is 0
+@pytest.mark.parametrize("entropy_coef", [0.01, 0.0], ids=["torch-scorer", "row-log-prob"])
 @pytest.mark.parametrize(
     "overrides",
     [
         dict(),
-        dict(entropy_coef=0.0),
-        dict(entropy_coef=0.0, observe_training_entropy=True),
+        dict(observe_training_entropy=True),
         dict(use_kl_loss=True, kl_loss_coef=0.05, kl_loss_type="low_var_kl"),
         dict(use_kl_loss=True, kl_loss_coef=0.05, use_unbiased_kl=True),
         dict(use_kl_loss=True, kl_loss_coef=0.05, kl_loss_type="k3"),
@@ -177,7 +181,6 @@ def test_forward_log_probs_and_entropy_match(temperature):
     ],
     ids=[
         "default",
-        "no-entropy",
         "observe-entropy",
         "kl",
         "unbiased-kl",
@@ -188,9 +191,10 @@ def test_forward_log_probs_and_entropy_match(temperature):
         "rollout-mask-sums",
     ],
 )
-def test_policy_loss_matches(monkeypatch, overrides):
+def test_policy_loss_matches(monkeypatch, overrides, entropy_coef):
+    overrides = dict(overrides)  # shared by both entropy_coef cases
     use_rollout_mask_sums = overrides.pop("rollout_mask_sums", False)
-    args = _args(**overrides)
+    args = _args(entropy_coef=entropy_coef, **overrides)
 
     def batch_of(inputs):
         batch = _batch(inputs, "policy_loss")
@@ -200,6 +204,28 @@ def test_policy_loss_matches(monkeypatch, overrides):
         return batch
 
     _assert_both_layouts_match(monkeypatch, policy_loss_function, args, _inputs(args), batch_of)
+
+
+@pytest.mark.parametrize("temperature", [1.0, 0.7])
+def test_row_log_prob_matches_log_softmax(temperature):
+    """Log-probs, entropy and the bf16 logits' gradient match the fp32 log-softmax."""
+    torch.manual_seed(0)
+    logits = (torch.randn(PADDED_ROWS, VOCAB) * 3).to(torch.bfloat16).requires_grad_(True)
+    targets = torch.randint(0, VOCAB, (PADDED_ROWS,))
+    weights = torch.randn(PADDED_ROWS)
+
+    log_probs, entropy = RowLogProb.apply(logits, targets, temperature, True)
+    (log_probs * weights).sum().backward()
+    got_grad, logits.grad = logits.grad, None
+
+    log_softmax = torch.log_softmax(logits.float() / temperature, -1)
+    want = log_softmax.gather(-1, targets[:, None]).squeeze(-1)
+    (want * weights).sum().backward()
+
+    assert log_probs.dtype == torch.float32 and got_grad.dtype == torch.bfloat16
+    torch.testing.assert_close(log_probs, want, atol=1e-5, rtol=0)
+    torch.testing.assert_close(entropy, -(log_softmax.exp() * log_softmax).sum(-1).detach(), atol=1e-4, rtol=0)
+    torch.testing.assert_close(got_grad.float(), logits.grad.float(), atol=1e-6, rtol=0)
 
 
 def test_unbiased_kl_keeps_tokens_outside_the_loss_mask_out_of_the_gradient():
