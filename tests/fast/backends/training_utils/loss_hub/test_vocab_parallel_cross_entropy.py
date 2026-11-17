@@ -5,7 +5,11 @@ import torch
 import torch.distributed as dist
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
-from miles.backends.training_utils.loss.hub.math_utils import compute_log_probs, vocab_parallel_cross_entropy
+from miles.backends.training_utils.loss.hub.math_utils import (
+    _OneHotVocabParallelCrossEntropy,
+    compute_log_probs,
+    vocab_parallel_cross_entropy,
+)
 
 SEQ, BATCH, VOCAB = 5, 2, 12
 
@@ -33,19 +37,20 @@ def _grad_output() -> torch.Tensor:
 def _check_against_full_softmax(rank: int, world_size: int, group: dist.ProcessGroup) -> None:
     """Loss and gradient equal a plain log-softmax over the whole vocabulary, however it is split."""
     shard = VOCAB // world_size
-    for dtype, tol in ((torch.float32, 1e-6), (torch.bfloat16, 1e-2)):
-        full = _full_logits(dtype)
-        expected_loss, expected_grad = _reference(full, _target())
-        local = full[..., rank * shard : (rank + 1) * shard].clone().requires_grad_()
+    for cross_entropy in (vocab_parallel_cross_entropy, _OneHotVocabParallelCrossEntropy.apply):
+        for dtype, tol in ((torch.float32, 1e-6), (torch.bfloat16, 1e-2)):
+            full = _full_logits(dtype)
+            expected_loss, expected_grad = _reference(full, _target())
+            local = full[..., rank * shard : (rank + 1) * shard].clone().requires_grad_()
 
-        loss = vocab_parallel_cross_entropy(local, _target(), group)
-        loss.backward(_grad_output())
+            loss = cross_entropy(local, _target(), group)
+            loss.backward(_grad_output())
 
-        torch.testing.assert_close(loss, expected_loss, atol=tol, rtol=tol)
-        assert local.grad.dtype == dtype
-        torch.testing.assert_close(
-            local.grad, expected_grad[..., rank * shard : (rank + 1) * shard], atol=tol, rtol=tol
-        )
+            torch.testing.assert_close(loss, expected_loss, atol=tol, rtol=tol)
+            assert local.grad.dtype == dtype
+            torch.testing.assert_close(
+                local.grad, expected_grad[..., rank * shard : (rank + 1) * shard], atol=tol, rtol=tol
+            )
 
 
 def _check_against_megatron(rank: int, world_size: int, group: dist.ProcessGroup) -> None:

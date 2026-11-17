@@ -18,6 +18,8 @@ class NeuronPlatform(Platform):
     nvml_numa_affinity = False
     # FlexAttention lowers through inductor/Triton, which neuron lacks
     flex_attention = False
+    # gather's scatter_add backward races the collectives and reads out of bounds
+    gather_backward = False
 
     def __init__(self) -> None:
         # torch-neuronx's allocator is not a c10 DeviceAllocator, so torch.accelerator's memory
