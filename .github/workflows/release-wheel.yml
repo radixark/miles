@@ -7,6 +7,7 @@ name: Release Wheel
 # release-tag.yml dispatches this.
 
 on:
+  pull_request:  # TEMP: pre-merge run against v0.2.0 with publish off; removed before merge
   workflow_dispatch:
     inputs:
       version:
@@ -39,7 +40,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          REF: ${{ inputs.ref || format('v{0}', inputs.version) }}
+          REF: ${{ inputs.ref || format('v{0}', inputs.version || '0.2.0') }}
         run: |
           SGLANG_COMMIT=$(gh api "repos/${GITHUB_REPOSITORY}/contents/release-lock.json?ref=${REF}" --jq .content \
             | base64 -d | python3 -c 'import json, sys; print(json.load(sys.stdin)["sglang_commit"])')
@@ -51,11 +52,12 @@ jobs:
     needs: sglang-wheel
     uses: ./.github/workflows/wheel-smoke.yml
     with:
-      ref: ${{ inputs.ref || format('v{0}', inputs.version) }}
-      version: ${{ inputs.version }}
+      ref: ${{ inputs.ref || format('v{0}', inputs.version || '0.2.0') }}
+      version: ${{ inputs.version || '0.2.0' }}
       sglang_wheel: ${{ needs.sglang-wheel.outputs.version }}
 
   publish:
+    if: github.event_name != 'pull_request'  # TEMP
     needs: smoke
     runs-on: ubuntu-latest
     timeout-minutes: 10
