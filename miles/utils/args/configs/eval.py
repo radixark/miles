@@ -64,6 +64,19 @@ class EvalConfig(BaseConfig):
             ),
         ),
     ] = "backpressure"
+    eval_pool_num_engines: A[
+        int,
+        Arg(
+            help=(
+                "Number of rollout engines carved out of training for each eval (--fully-async only). At an eval "
+                "point they leave the training router for an eval router, keep the weights of that point and "
+                "skip the weight updates while the eval runs; training continues on the other engines meanwhile. "
+                "An eval still running at the next eval point makes training wait for it under "
+                "--eval-overflow-policy backpressure, or skips that point under skip. When the eval settles they "
+                "rejoin training after the next weight update. 0 keeps the blocking shared-engine eval."
+            )
+        ),
+    ] = 0
     eval_keep_snapshots: A[
         int,
         Arg(

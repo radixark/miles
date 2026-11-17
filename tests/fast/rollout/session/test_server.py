@@ -258,3 +258,53 @@ class TestMain:
         """The config payload is mandatory for a session server."""
         with pytest.raises(SystemExit):
             main([])
+
+
+def _named_backend(name: str):
+    app = FastAPI()
+
+    @app.post("/echo")
+    async def echo():
+        return JSONResponse({"backend": name})
+
+    return UvicornThreadServer(app, host="127.0.0.1", port=find_available_port(34100))
+
+
+@pytest.fixture
+def training_and_eval_backends():
+    servers = [_named_backend("training"), _named_backend("eval")]
+    for server in servers:
+        server.start()
+    try:
+        yield servers[0].url, servers[1].url
+    finally:
+        for server in servers:
+            server.stop()
+
+
+def _backend_reached(config, *, evaluation: bool) -> str:
+    async def _run() -> dict:
+        server = SessionServer(config)
+        async with server.app.router.lifespan_context(server.app):
+            return await server.do_proxy(
+                ProxyRequest(method="POST", evaluation=evaluation), "echo", body=b"{}", headers={}
+            )
+
+    return json.loads(asyncio.run(_run())["response_body"])["backend"]
+
+
+class TestEvalBackend:
+    def test_evaluation_requests_go_to_the_eval_backend(self, training_and_eval_backends):
+        """Engines carved out for eval are reachable only through the eval router."""
+        training, eval_ = training_and_eval_backends
+        config = make_session_server_config(backend_url=training, eval_backend_url=eval_)
+
+        assert _backend_reached(config, evaluation=True) == "eval"
+        assert _backend_reached(config, evaluation=False) == "training"
+
+    def test_without_an_eval_backend_evaluation_requests_use_the_training_backend(self, training_and_eval_backends):
+        """The default shared-engine eval must keep reaching the only router there is."""
+        training, _ = training_and_eval_backends
+        config = make_session_server_config(backend_url=training)
+
+        assert _backend_reached(config, evaluation=True) == "training"

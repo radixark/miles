@@ -101,6 +101,8 @@ async def init_or_reset_inference_controller(
 
     await asyncio.gather(*[trainer.wait_idle(timeout=TAKE_OVER_GATE_TIMEOUT_SECONDS) for trainer in trainers])
     await asyncio.wait_for(inference_controller.abort_update_weights(), timeout=TAKE_OVER_GATE_TIMEOUT_SECONDS)
+    # back as pending weights, so the fleet gate counts them, abort_all reaches them and the next update covers them
+    await asyncio.wait_for(inference_controller.give_back_eval_pinned_cells(), timeout=TAKE_OVER_GATE_TIMEOUT_SECONDS)
 
     await inference_controller.wait_expected_num_cells(timeout=TAKE_OVER_GATE_TIMEOUT_SECONDS)
 

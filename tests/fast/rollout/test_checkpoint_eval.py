@@ -415,6 +415,7 @@ def dispatcher_env():
 def make_dispatcher(eval_dispatch, manager, actor_model, **arg_overrides):
     dispatcher_defaults = dict(
         eval_uses_snapshots=True,
+        eval_pool_num_engines=0,
         eval_hf_dir="/dev/shm/eval_hf",
         eval_max_in_flight=2,
         eval_overflow_policy="backpressure",

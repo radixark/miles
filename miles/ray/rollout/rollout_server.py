@@ -111,12 +111,31 @@ class RolloutServer:
 
     @property
     @requires_lock
-    def normal_server_cells(self) -> dict[str, ServerCell]:
-        return {cell_id: cell for cell_id, cell in self.all_server_cells.items() if not cell.is_errored}
+    def weight_receiver_cells(self) -> dict[str, ServerCell]:
+        """The cells a training weight update targets: every live cell except those pinned for an eval."""
+        return {
+            cell_id: cell
+            for cell_id, cell in self.all_server_cells.items()
+            if not cell.is_errored and not cell.is_eval_pinned
+        }
+
+    @property
+    @requires_lock
+    def eval_pinned_cells(self) -> dict[str, ServerCell]:
+        return {cell_id: cell for cell_id, cell in self.all_server_cells.items() if cell.is_eval_pinned}
+
+    @requires_lock
+    async def give_back_eval_pinned_cells(self) -> None:
+        """Unpin every cell pinned for an eval; a cell that fails stays pinned without stopping the others."""
+        cells = list(self.eval_pinned_cells.values())
+        await async_utils.gather_and_raise_first(
+            [cell.unpin_from_eval() for cell in cells],
+            describe_failure=lambda index: f"Cell {cells[index].meta.cell_id} of {self.model_name} failed to leave the eval router",
+        )
 
     @requires_lock
     def _cells_by_gpu_offset(self) -> list[ServerCell]:
-        return sorted(self.normal_server_cells.values(), key=lambda cell: cell.meta.gpu_offset)
+        return sorted(self.weight_receiver_cells.values(), key=lambda cell: cell.meta.gpu_offset)
 
     @requires_lock
     async def add_cell(self, cell_meta: ServerCellMetadata):

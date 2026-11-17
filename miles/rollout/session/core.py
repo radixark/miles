@@ -59,6 +59,8 @@ class ProxyRequest:
 
     method: str
     query: str = ""
+    # set from the session, never from the request: an evaluation session's requests go to the eval router
+    evaluation: bool = False
 
 
 def _render_json(payload) -> bytes:
@@ -437,7 +439,10 @@ class SessionCore:
         # --- Phase 2: proxy to backend (NO lock held) ---
         headers = self._with_routing_key(headers, session_id)
         result = await self.backend.do_proxy(
-            ProxyRequest(method=method, query=query), "v1/chat/completions", body=proxy_body, headers=headers
+            ProxyRequest(method=method, query=query, evaluation=session.evaluation),
+            "v1/chat/completions",
+            body=proxy_body,
+            headers=headers,
         )
         await self._take_store_ref(session, request_body, result)
 
@@ -501,8 +506,12 @@ class SessionCore:
     async def proxy(
         self, session_id: str, path: str, *, method: str, query: str, headers: dict, body: bytes
     ) -> Response:
+        # This passthrough has always forwarded requests for an unknown session id, so a missing session is legitimate
+        # here and routes like a training session.
+        session = self.registry.sessions.get(session_id)
+        evaluation = session is not None and session.evaluation
         headers = self._with_routing_key(headers, session_id)
         result = await self.backend.do_proxy(
-            ProxyRequest(method=method, query=query), path, body=body, headers=headers
+            ProxyRequest(method=method, query=query, evaluation=evaluation), path, body=body, headers=headers
         )
         return proxy_result_to_response(result)

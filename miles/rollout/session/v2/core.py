@@ -229,7 +229,10 @@ class SessionCoreV2(SessionCore):
         # --- Phase 2: proxy to backend (NO lock held) ---
         headers = self._with_routing_key(headers, session_id)
         result = await self.backend.do_proxy(
-            ProxyRequest(method=method, query=query), "v1/chat/completions", body=proxy_body, headers=headers
+            ProxyRequest(method=method, query=query, evaluation=session.evaluation),
+            "v1/chat/completions",
+            body=proxy_body,
+            headers=headers,
         )
         await self._take_store_ref(session, request_body, result)
 

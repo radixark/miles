@@ -35,8 +35,12 @@ class _Backend:
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
         self.requests = []
+        self.evaluation_by_path = []
 
     async def do_proxy(self, request, path, *, body, headers):
+        self.evaluation_by_path.append((path, request.evaluation))
+        if path != "v1/chat/completions":
+            return {"request_body": body, "response_body": b"{}", "status_code": 200, "headers": {}}
         payload = json.loads(body)
         self.requests.append(payload)
         await asyncio.sleep(0)
@@ -198,6 +202,22 @@ async def test_concurrent_train_and_eval_do_not_share_policy(env):
     await asyncio.gather(_chat(env, train, [USER]), _chat(env, evaluation, [USER]))
     assert sorted(request["return_routed_experts"] for request in env.backend.requests) == [False, True]
     assert sorted(request["return_indexer_topk"] for request in env.backend.requests) == [False, True]
+
+
+async def test_backend_requests_carry_the_session_evaluation_flag(env):
+    """The session server sends an evaluation session's requests to the eval router (--eval-pool-num-engines)."""
+    train, evaluation = await asyncio.gather(_create(env), _create(env, b'{"evaluation": true}'))
+    for sid in (train, evaluation):
+        await _chat(env, sid, [USER])
+        assert (await env.client.get(f"/sessions/{sid}/v1/models")).status_code == 200
+    assert (await env.client.get("/sessions/unknown/v1/models")).status_code == 200
+    assert env.backend.evaluation_by_path == [
+        ("v1/chat/completions", False),
+        ("v1/models", False),
+        ("v1/chat/completions", True),
+        ("v1/models", True),
+        ("v1/models", False),
+    ]
 
 
 SAMPLING = {"temperature": 0.6, "top_p": 0.9, "top_k": 20}

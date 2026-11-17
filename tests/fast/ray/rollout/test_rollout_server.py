@@ -263,7 +263,7 @@ class TestEngineListOrdering:
                 cell_id=f"inference-engine-0-0-{index}", num_gpus_per_engine=index + 1, gpu_offset=index
             )
             cells[f"inference-engine-0-0-{index}"] = SimpleNamespace(
-                meta=meta, api_client=f"client-{index}", is_errored=False
+                meta=meta, api_client=f"client-{index}", is_errored=False, is_eval_pinned=False
             )
         return RolloutServer(
             all_server_cells=cells,
@@ -688,6 +688,7 @@ def _fake_cell(*, cell_id: str, gpu_offset: int, errored: bool = False, serving:
         meta=SimpleNamespace(cell_id=cell_id, gpu_offset=gpu_offset, num_gpus_per_engine=gpu_offset + 1),
         api_client=f"client-{cell_id}",
         is_errored=errored,
+        is_eval_pinned=False,
         is_pending_weights_or_serving=serving and not errored,
     )
 
@@ -717,7 +718,7 @@ class TestErroredCellsLeaveTheEngineLists:
         srv = self._server()
 
         async with srv.context_lock:
-            assert sorted(srv.normal_server_cells) == ["engine-0", "engine-2"]
+            assert sorted(srv.weight_receiver_cells) == ["engine-0", "engine-2"]
         assert sorted(srv.all_server_cells) == ["engine-0", "engine-1", "engine-2"]
 
     @pytest.mark.asyncio
@@ -745,7 +746,7 @@ class TestErroredCellsLeaveTheEngineLists:
         srv = _server_of({"engine-0": _fake_cell(cell_id="engine-0", gpu_offset=0, errored=True)})
 
         async with srv.context_lock:
-            assert srv.normal_server_cells == {}
+            assert srv.weight_receiver_cells == {}
             assert srv.engine_cell_ids == []
 
 
@@ -756,7 +757,7 @@ class TestServerCellViewLocking:
         srv = _server_of({"engine-0": _fake_cell(cell_id="engine-0", gpu_offset=0)})
 
         with pytest.raises(AssertionError, match="context lock"):
-            _ = srv.normal_server_cells
+            _ = srv.weight_receiver_cells
 
     @pytest.mark.asyncio
     async def test_the_full_dict_is_readable_without_the_context_lock(self):

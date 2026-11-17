@@ -11,6 +11,7 @@ def make_session_server_config(**overrides: Any) -> SessionServerConfig:
         port=0,
         instance_id=None,
         backend_url="http://127.0.0.1:0",
+        eval_backend_url=None,
         routing_key_header="X-SMG-Routing-Key",
         timeout=30,
         hf_checkpoint=None,

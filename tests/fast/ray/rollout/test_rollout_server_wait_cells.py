@@ -22,6 +22,7 @@ class _FakeCell:
     def __init__(self, *, ready: bool = False, needs_offload: bool = True, errored: bool = False):
         self.ready = ready
         self.is_errored = errored
+        self.is_eval_pinned = False
         self.meta = SimpleNamespace(needs_offload=needs_offload)
 
     @property

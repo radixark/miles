@@ -246,3 +246,61 @@ class TestUpdateWeightFromDistributedLoraBaseResync:
             protocol = UpdateWeightFromDistributed(Namespace(check_weight_update_equal=checker))
 
         assert protocol.needs_base_resync_for_lora is checker
+
+
+class _DeadEngine:
+    server_url = "http://10.0.0.9:30000"
+
+    async def destroy_weights_update_group(self, group_name: str) -> dict:
+        raise ConnectionError("engine is gone")
+
+
+class TestReconnectWithAShrunkenEngineSet:
+    def _protocol(self) -> UpdateWeightFromDistributed:
+        initial_parallel_state = SimpleNamespace(
+            pp=SimpleNamespace(size=1, rank=0),
+            tp=SimpleNamespace(rank=0),
+            intra_dp_cp=SimpleNamespace(rank=0),
+        )
+        with patch(f"{_BROADCAST_MODULE}.get_parallel_state", return_value=initial_parallel_state):
+            return UpdateWeightFromDistributed(Namespace(check_weight_update_equal=False))
+
+    def _connect(self, protocol: UpdateWeightFromDistributed, engines: list, *, disconnect=None) -> None:
+        with (
+            patch(f"{_BROADCAST_MODULE}.get_data_replica_rank_and_size", return_value=(0, 1)),
+            patch(f"{_BROADCAST_MODULE}.disconnect_rollout_engines_from_distributed", disconnect or MagicMock()),
+            patch(f"{_BROADCAST_MODULE}.connect_rollout_engines_from_distributed", return_value=MagicMock()),
+        ):
+            protocol.connect(
+                engines,
+                engine_gpu_counts=[1] * len(engines),
+                engine_gpu_offsets=list(range(len(engines))),
+                engine_cell_ids=[f"cell-{i}" for i in range(len(engines))],
+                parallel_state=SimpleNamespace(pp=SimpleNamespace(rank=0)),
+                placement=SimpleNamespace(gather_pp=False),
+                selector="all",
+            )
+
+    def test_an_engine_that_left_the_set_is_asked_to_leave_the_old_group(self) -> None:
+        """A live engine left out of the teardown keeps the old group, and destroying it on the trainer hangs."""
+        protocol = self._protocol()
+        kept, departed = MagicMock(name="kept"), MagicMock(name="departed")
+        self._connect(protocol, [kept, departed])
+        disconnect = MagicMock()
+
+        self._connect(protocol, [kept], disconnect=disconnect)
+
+        disconnect.assert_called_once()
+        assert disconnect.call_args.args[2] == [kept]
+        assert disconnect.call_args.kwargs["departed_engines"] == [departed]
+
+    def test_a_departed_engine_that_cannot_answer_does_not_fail_the_teardown(self) -> None:
+        """An engine departs when it dies, and a dead engine cannot confirm it left the group."""
+        kept = _SlowTeardownEngine()
+
+        with patch(f"{_BROADCAST_MODULE}.dist"):
+            disconnect_rollout_engines_from_distributed(
+                "miles-pp_0", MagicMock(name="nccl_group"), [kept], departed_engines=[_DeadEngine()]
+            )
+
+        assert kept.calls == [("destroy_weights_update_group", "miles-pp_0")]

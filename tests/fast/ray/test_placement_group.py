@@ -66,6 +66,7 @@ def fake_components():
 
     controller_handle = MagicMock(name="inference_controller")
     controller_handle.abort_update_weights = AsyncMock()
+    controller_handle.give_back_eval_pinned_cells = AsyncMock()
     controller_handle.check_weights = AsyncMock()
     controller_handle.offload = AsyncMock()
     controller_handle.is_initialized = AsyncMock(return_value=False)
@@ -259,6 +260,7 @@ class TestTakeOverInference:
             "is_initialized",
             "wait_idle",
             "abort_update_weights",
+            "give_back_eval_pinned_cells",
             "wait_expected_num_cells",
             "abort_all",
             "get_eval_fleet_info",
@@ -280,6 +282,7 @@ class TestTakeOverInference:
         handle.wait_idle = AsyncMock()
         handle.wait_expected_num_cells = AsyncMock()
         handle.abort_update_weights = controller.abort_update_weights
+        handle.give_back_eval_pinned_cells = controller.give_back_eval_pinned_cells
         handle.abort_all = controller.abort_all
 
         await asyncio.wait_for(self._take_over(fake_components), timeout=1)

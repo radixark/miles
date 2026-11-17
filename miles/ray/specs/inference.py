@@ -73,6 +73,7 @@ class InferenceControllerSpec(BaseServeSpec):
             args=ctx.args,
             engine_provider=_compute_controller_engine_provider(ctx.args, capability=ctx.capability),
             router_providers=compute_router_providers(ctx.args, capability=ctx.capability),
+            eval_pool_router_provider=compute_eval_pool_router_provider(ctx.args, capability=ctx.capability),
         )
 
 
@@ -146,6 +147,12 @@ def compute_router_providers(args, *, capability: BackendCapability) -> list[Bas
     ]
 
 
+def compute_eval_pool_router_provider(args, *, capability: BackendCapability) -> BaseWorkerProvider | None:
+    if args.eval_pool_num_engines == 0:
+        return None
+    return capability.static_worker_provider(pool_id=EVAL_POOL_ROUTER_POOL_ID)
+
+
 def create_inference_controller_handle(*, capability: BackendCapability) -> BaseWorkerHandle:
     worker_name = inference_controller_worker_name()
     provider = capability.static_worker_provider(pool_id=INFERENCE_CONTROLLER_POOL_ID)
@@ -176,10 +183,13 @@ class RouterSpec(BaseCommandSpec):
 
     @classmethod
     def create(cls, config: Any) -> list[Self]:
-        return [
+        specs = [
             _compute_spec_router(config, model_idx=model_idx, model_cfg=model_cfg)
             for model_idx, model_cfg in enumerate(config.sglang.models)
         ]
+        if config.eval_pool_num_engines > 0:
+            specs.append(_compute_spec_eval_pool_router(config))
+        return specs
 
     def scheduling(self, scaling: ScalingConfig) -> SchedulingSpec:
         return SchedulingSpec.single(
@@ -202,6 +212,14 @@ def compute_router_pool_id(model_idx: int) -> str:
     return f"inference-router-{model_idx}"
 
 
+# Fronts the engines carved out of the single training model for one eval; starts empty.
+EVAL_POOL_ROUTER_POOL_ID = "inference-router-eval-pool"
+
+
+def compute_eval_pool_router_worker_name() -> str:
+    return compute_worker_name(pool_id=EVAL_POOL_ROUTER_POOL_ID)
+
+
 def compute_router_worker_name(model_idx: int) -> str:
     return compute_worker_name(pool_id=compute_router_pool_id(model_idx))
 
@@ -214,6 +232,21 @@ def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> Router
         name=compute_router_pool_id(model_idx),
         port_infos=[
             _compute_router_primary_port_info(args, model_idx=model_idx),
+            PortInfo(name="prometheus", static_port=9000, allow_dynamic=True),
+        ],
+    )
+
+
+def _compute_spec_eval_pool_router(args) -> RouterSpec:
+    (model_cfg,) = args.sglang.models
+    return RouterSpec(
+        args=args,
+        model_cfg=model_cfg,
+        interpreter_prefix=python_argv_prefix(),
+        name=EVAL_POOL_ROUTER_POOL_ID,
+        port_infos=[
+            # the slot after the last model's router
+            _compute_router_primary_port_info(args, model_idx=len(args.sglang.models)),
             PortInfo(name="prometheus", static_port=9000, allow_dynamic=True),
         ],
     )
@@ -247,6 +280,10 @@ class SessionServerSpec(BaseCommandSpec):
         args = ctx.args
         interpreter_prefix = self.interpreter_prefix
         (router_addrs,) = ctx.pool_addrs[compute_router_pool_id(0)]
+        eval_backend_url = None
+        if args.eval_pool_num_engines > 0:
+            (eval_pool_router_addrs,) = ctx.pool_addrs[EVAL_POOL_ROUTER_POOL_ID]
+            eval_backend_url = eval_pool_router_addrs["primary"].addr
         session_config = compute_session_server_config(
             args,
             host=args.session_server_ip or ctx.self_addrs["primary"].host,
@@ -254,6 +291,7 @@ class SessionServerSpec(BaseCommandSpec):
             # TODO: make the indexing it k8s native compatible
             instance_id=compute_session_server_instance_id(args, ctx.cell_index),
             backend_url=router_addrs["primary"].addr,
+            eval_backend_url=eval_backend_url,
         )
         launch_argv = [*interpreter_prefix, "-m", "miles.rollout.session.server", *config_to_argv(session_config)]
         return shlex.join(launch_argv)

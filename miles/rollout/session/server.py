@@ -51,6 +51,7 @@ class SessionServer:
 
     def __init__(self, config: SessionServerConfig):
         self.backend_url = config.backend_url
+        self.eval_backend_url = config.eval_backend_url
         self.app = FastAPI(lifespan=self._lifespan)
 
         # Every turn's backend reply is megabytes (per-token logprobs, R3). aiohttp parses it in C;
@@ -85,7 +86,8 @@ class SessionServer:
                     await self._core.close()
 
     async def do_proxy(self, request: ProxyRequest, path: str, *, body: bytes, headers: dict) -> dict:
-        url = f"{self.backend_url}/{path}"
+        backend_url = self.eval_backend_url if request.evaluation and self.eval_backend_url else self.backend_url
+        url = f"{backend_url}/{path}"
         if request.query:
             url = f"{url}?{request.query}"
 

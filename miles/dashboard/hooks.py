@@ -425,11 +425,11 @@ def _optional_str(value: object) -> str | None:
 def _alive_engine_cells(servers) -> list:
     """A multi-node engine's cell holds ``num_nodes`` actors; only the first
     (master) owns the router-visible URL. Cells that are not alive are skipped
-    until recovery completes."""
+    until recovery completes; cells pinned for eval are alive."""
     cells = []
     for server in servers.values():
         for cell in server.all_server_cells.values():
-            if cell.is_pending_weights_or_serving:
+            if cell.is_pending_weights_or_serving or cell.is_eval_pinned:
                 cells.append(cell)
     return cells
 

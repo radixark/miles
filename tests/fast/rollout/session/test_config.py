@@ -39,7 +39,7 @@ _ARGS_TO_CONFIG_FIELD = {
     "rollout_temperature": "rollout_temperature",
 }
 
-_CALL_SITE_FIELDS = ("host", "port", "instance_id", "backend_url")
+_CALL_SITE_FIELDS = ("host", "port", "instance_id", "backend_url", "eval_backend_url")
 # Derived from several args, tested on their own below.
 _DERIVED_FIELDS = ("output_store_backend_config",)
 _ROUTER_DERIVED_FIELDS = ("routing_key_header",)
@@ -98,14 +98,20 @@ class TestComputeSessionServerConfig:
         assert covered == set(SessionServerConfig.model_fields)
 
     def test_call_site_fields_are_copied(self):
-        """Host, port, instance id, and backend url come from the caller, not from args."""
+        """Host, port, instance id, and the backend urls come from the caller, not from args."""
         config = compute_session_server_config(
-            _make_args(), host="10.0.0.1", port=5001, instance_id="abc", backend_url="http://10.0.0.2:3000"
+            _make_args(),
+            host="10.0.0.1",
+            port=5001,
+            instance_id="abc",
+            backend_url="http://10.0.0.2:3000",
+            eval_backend_url="http://10.0.0.3:3000",
         )
         assert config.host == "10.0.0.1"
         assert config.port == 5001
         assert config.instance_id == "abc"
         assert config.backend_url == "http://10.0.0.2:3000"
+        assert config.eval_backend_url == "http://10.0.0.3:3000"
 
     @pytest.mark.parametrize("args_attr,config_field", sorted(_ARGS_TO_CONFIG_FIELD.items()))
     def test_each_args_field_is_copied(self, args_attr: str, config_field: str):
@@ -182,6 +188,7 @@ _COMPLETE_CONFIG_KWARGS = dict(
     port=5001,
     instance_id=None,
     backend_url="http://127.0.0.1:3000",
+    eval_backend_url=None,
     routing_key_header=None,
     timeout=None,
     hf_checkpoint=None,

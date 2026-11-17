@@ -33,6 +33,7 @@ def _make_args(**overrides: Any) -> SimpleNamespace:
         debug_exit_after_rollout=None,
         eval_interval=None,
         eval_uses_snapshots=False,
+        eval_pool_num_engines=0,
         ft_components=[],
         fully_async=False,
         hf_checkpoint="/base/checkpoint",
