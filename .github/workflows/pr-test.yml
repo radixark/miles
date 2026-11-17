@@ -176,7 +176,7 @@ jobs:
   # dependency closure, so a stage-a-cpu failure skipped this and every GPU stage even
   # on a nightly, whose policy sets bypass_fastfail precisely to keep them running.
   # Only selected CUDA tests consume the resolved image.
-  resolve-ci-image:
+  resolve-ci-image-amd64:
     needs: [resolve-ci-policy, docker-build-amd64]
     if: |
       always() && !cancelled() &&
@@ -251,11 +251,11 @@ jobs:
     secrets: inherit
 
   stage-b-2-gpu-h200:
-    needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
+    needs: [resolve-ci-policy, resolve-ci-image-amd64, stage-a-cpu]
     if: |
       always() && !cancelled() &&
       needs.resolve-ci-policy.result == 'success' &&
-      needs.resolve-ci-image.result == 'success' &&
+      needs.resolve-ci-image-amd64.result == 'success' &&
       !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-b-2-gpu-h200') &&
       (needs.stage-a-cpu.result == 'success' ||
         needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
@@ -266,7 +266,7 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h200", "2gpu"]'
-      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      container_image: ${{ needs.resolve-ci-image-amd64.outputs.container_image }}
       ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-b-2-gpu-h200
@@ -277,11 +277,11 @@ jobs:
     secrets: inherit
 
   stage-c-8-gpu-h100:
-    needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
+    needs: [resolve-ci-policy, resolve-ci-image-amd64, stage-a-cpu]
     if: |
       always() && !cancelled() &&
       needs.resolve-ci-policy.result == 'success' &&
-      needs.resolve-ci-image.result == 'success' &&
+      needs.resolve-ci-image-amd64.result == 'success' &&
       !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-h100') &&
       (needs.stage-a-cpu.result == 'success' ||
         needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
@@ -292,7 +292,7 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h100", "8gpu"]'
-      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      container_image: ${{ needs.resolve-ci-image-amd64.outputs.container_image }}
       ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-h100
@@ -303,11 +303,11 @@ jobs:
     secrets: inherit
 
   stage-c-8-gpu-h200:
-    needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
+    needs: [resolve-ci-policy, resolve-ci-image-amd64, stage-a-cpu]
     if: |
       always() && !cancelled() &&
       needs.resolve-ci-policy.result == 'success' &&
-      needs.resolve-ci-image.result == 'success' &&
+      needs.resolve-ci-image-amd64.result == 'success' &&
       !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-h200') &&
       (needs.stage-a-cpu.result == 'success' ||
         needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
@@ -318,7 +318,7 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h200", "8gpu"]'
-      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      container_image: ${{ needs.resolve-ci-image-amd64.outputs.container_image }}
       ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-h200
@@ -329,11 +329,11 @@ jobs:
     secrets: inherit
 
   stage-c-4-gpu-h200:
-    needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
+    needs: [resolve-ci-policy, resolve-ci-image-amd64, stage-a-cpu]
     if: |
       always() && !cancelled() &&
       needs.resolve-ci-policy.result == 'success' &&
-      needs.resolve-ci-image.result == 'success' &&
+      needs.resolve-ci-image-amd64.result == 'success' &&
       !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-h200') &&
       (needs.stage-a-cpu.result == 'success' ||
         needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
@@ -346,7 +346,7 @@ jobs:
       runs_on: '["h200", "4gpu"]'
       # Allow the long solver/verifier test, other shard tests, and setup.
       timeout_minutes: 600
-      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      container_image: ${{ needs.resolve-ci-image-amd64.outputs.container_image }}
       ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-4-gpu-h200
@@ -357,11 +357,11 @@ jobs:
     secrets: inherit
 
   stage-c-2-gpu-h200:
-    needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
+    needs: [resolve-ci-policy, resolve-ci-image-amd64, stage-a-cpu]
     if: |
       always() && !cancelled() &&
       needs.resolve-ci-policy.result == 'success' &&
-      needs.resolve-ci-image.result == 'success' &&
+      needs.resolve-ci-image-amd64.result == 'success' &&
       !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-2-gpu-h200') &&
       (needs.stage-a-cpu.result == 'success' ||
         needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
@@ -372,7 +372,7 @@ jobs:
     uses: ./.github/workflows/_run-ci.yml
     with:
       runs_on: '["h200", "2gpu"]'
-      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      container_image: ${{ needs.resolve-ci-image-amd64.outputs.container_image }}
       ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-2-gpu-h200
@@ -384,18 +384,18 @@ jobs:
 
   # Select both B200 suites into one pool of independently runnable tests.
   stage-c-b200:
-    needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
+    needs: [resolve-ci-policy, resolve-ci-image-amd64, stage-a-cpu]
     if: |
       always() && !cancelled() &&
       needs.resolve-ci-policy.result == 'success' &&
-      needs.resolve-ci-image.result == 'success' &&
+      needs.resolve-ci-image-amd64.result == 'success' &&
       (!contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-b200') ||
         !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-b200')) &&
       (needs.stage-a-cpu.result == 'success' ||
         needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
     uses: ./.github/workflows/_run-ci-b200.yml
     with:
-      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      container_image: ${{ needs.resolve-ci-image-amd64.outputs.container_image }}
       ref: ${{ inputs.ref || '' }}
       cadence: ${{ needs.resolve-ci-policy.outputs.cadence }}
       raw_labels: ${{ needs.resolve-ci-policy.outputs.raw_labels }}
