@@ -7,11 +7,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from miles.backends.megatron_utils.lora.native.distributed import branch_input
-from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter, new_lora_parameter
+from miles.backends.megatron_utils.lora.native.modules.linear import PhasedLoRAAdapter, new_lora_parameter
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 
 
-class LoRAOutputHead(NativeLoRAAdapter):
+class LoRAOutputHead(PhasedLoRAAdapter):
     """The lm_head projection, with optional muP input scaling and vocab-pad trim."""
 
     def __init__(
@@ -43,10 +43,15 @@ class LoRAOutputHead(NativeLoRAAdapter):
             "head_B", new_lora_parameter(reference, (vocab_local, context.lora.rank), init="zero", partition_dim=0)
         )
 
-    def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
+    def prepare_input(self, x: torch.Tensor, base_module: nn.Module) -> torch.Tensor:
         scaled = x / self.mup if self.mup else x
-        scaled = branch_input(scaled, base_module, self.context)
-        return F.linear(F.linear(scaled, self.head_A), self.head_B)
+        return branch_input(scaled, base_module, self.context)
+
+    def project_down(self, x: torch.Tensor) -> torch.Tensor:
+        return F.linear(x, self.head_A)
+
+    def project_up(self, down: torch.Tensor) -> torch.Tensor:
+        return F.linear(down, self.head_B)
 
     def weight_deltas(self):
         """The host divides its input by muP too, so the merged head carries the full delta."""
@@ -86,6 +91,21 @@ class LoRAOutputHead(NativeLoRAAdapter):
             (self.head_A, take(f"{self.hf_prefix}lora_A.weight")),
             (self.head_B, head_b[lo : lo + vocab_local]),
         ]
+
+    def padded_local_rows(self) -> slice:
+        """This rank's head_B rows past the served vocab: Megatron's vocab padding, which the export trims."""
+        vocab_local = self.head_B.shape[0]
+        served = self._served_rows(vocab_local * self.context.tp_size)
+        return slice(min(max(served - self.tp_rank * vocab_local, 0), vocab_local), vocab_local)
+
+    def padding_rows(self) -> tuple[int, int]:
+        """Megatron's padding rows over every TP rank, and where this rank's first one sits among them."""
+        vocab_local = self.head_B.shape[0]
+        served = self._served_rows(vocab_local * self.context.tp_size)
+        return (
+            vocab_local * self.context.tp_size - served,
+            self.tp_rank * vocab_local + self.padded_local_rows().start - served,
+        )
 
     def _served_rows(self, padded_rows: int) -> int:
         return min(self.unpadded_vocab_size or padded_rows, padded_rows)

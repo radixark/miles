@@ -87,7 +87,6 @@ class TestConstructorSamplingOwnership:
             eval_top_p=None,
             eval_top_k=None,
             eval_max_response_len=12,
-            eval_max_context_len=None,
             eval_max_prompt_len=None,
             eval_reward_key=None,
             reward_key=None,

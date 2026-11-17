@@ -1,0 +1,124 @@
+torchtitan on torch_tpu, applied by docker/Dockerfile.tpu at TORCHTITAN_COMMIT; rebase it whenever that commit moves.
+`patch` skips this text. Each hunk, and where it should end up:
+
+- fsdp.py `_cpu_offload_policy`: generic torch_tpu support (pinned copies deadlock against compiled
+  activation-checkpointed blocks on TPU). Upstream to torchtitan.
+- tools/utils.py `_TpuDeviceModule`: generic torch_tpu support (torch.tpu refuses device calls from outside torch and
+  lacks the memory-stats APIs torchtitan calls). Upstream to torchtitan as a torch.accelerator device module.
+
+FSDP's force-SUM reduction (tpu_dist has no PREMUL_SUM) lives in miles (TitanTrainer, Platform.premul_sum_reduce).
+
+diff --git a/torchtitan/distributed/fsdp.py b/torchtitan/distributed/fsdp.py
+index 0f6dd9e..3231350 100644
+--- a/torchtitan/distributed/fsdp.py
++++ b/torchtitan/distributed/fsdp.py
+@@ -24,6 +24,7 @@ from torchtitan.config.parallelism import FSDPSymmMemScope
+ from torchtitan.distributed.parallelism_context import ParallelismContext
+ from torchtitan.models.common.linear import GroupedLinear
+ from torchtitan.models.common.moe import MoE
++from torchtitan.tools.utils import device_type
+ 
+ __all__ = [
+     "apply_fsdp_to_decoder",
+@@ -153,6 +154,11 @@ def resolve_sparse_fsdp_mesh(
+     return sparse_mesh, DataParallelMeshDims(shard="edp_shard", replicate=replicate)
+ 
+ 
++def _cpu_offload_policy() -> CPUOffloadPolicy:
++    # on TPU, pinned non-blocking copies deadlock against compiled activation-checkpointed blocks
++    return CPUOffloadPolicy(pin_memory=device_type != "tpu")
++
++
+ def disable_fsdp_gradient_division(model: nn.Module) -> None:
+     """
+     Disable FSDP's automatic gradient division for all FSDP modules.
+@@ -251,7 +257,7 @@ def apply_fsdp_to_multimodal_encoder(
+         "dp_mesh_dims": dp_mesh_dims,
+     }
+     if cpu_offload:
+-        fsdp_config["offload_policy"] = CPUOffloadPolicy()
++        fsdp_config["offload_policy"] = _cpu_offload_policy()
+     fully_shard(encoder, **fsdp_config)
+ 
+ 
+@@ -323,7 +329,7 @@ def apply_fsdp_to_decoder(
+     if dp_mesh_dims is not None:
+         fsdp_config["dp_mesh_dims"] = dp_mesh_dims
+     if cpu_offload:
+-        fsdp_config["offload_policy"] = CPUOffloadPolicy()
++        fsdp_config["offload_policy"] = _cpu_offload_policy()
+ 
+     reshard_after_forward = get_fsdp_reshard_after_forward_policy(
+         reshard_after_forward_policy, pp_enabled
+diff --git a/torchtitan/tools/utils.py b/torchtitan/tools/utils.py
+index 5e1810e..f15d1eb 100644
+--- a/torchtitan/tools/utils.py
++++ b/torchtitan/tools/utils.py
+@@ -60,9 +60,67 @@ def has_rocm_capability(major: int, minor: int) -> bool:
+     )
+ 
+ 
++class _TpuDeviceModule(ModuleType):
++    """``torch.tpu`` with its device APIs routed to ``torch.accelerator``.
++
++    torch_tpu refuses calls to those ``torch.tpu`` APIs from outside torch and torch_tpu, and calls them itself,
++    so this is a view rather than a patch on ``torch.tpu``.
++    """
++
++    def __init__(self, tpu_module: ModuleType) -> None:
++        super().__init__(tpu_module.__name__, tpu_module.__doc__)
++        self._tpu_module = tpu_module
++
++    def __getattr__(self, name: str):
++        return getattr(self._tpu_module, name)
++
++    @staticmethod
++    def is_available() -> bool:
++        return torch.accelerator.is_available()
++
++    @staticmethod
++    def device_count() -> int:
++        return torch.accelerator.device_count()
++
++    @staticmethod
++    def current_device() -> int:
++        return torch.accelerator.current_device_index()
++
++    @staticmethod
++    def set_device(device: int | str | torch.device) -> None:
++        torch.accelerator.set_device_index(device)
++
++    @staticmethod
++    def synchronize(device: int | str | torch.device | None = None) -> None:
++        torch.accelerator.synchronize(device)
++
++    @staticmethod
++    def current_stream(device: int | str | torch.device | None = None):
++        return torch.accelerator.current_stream(device)
++
++    @staticmethod
++    def set_stream(stream) -> None:
++        torch.accelerator.set_stream(stream)
++
++    # torch_tpu implements these through torch.accelerator only
++    @staticmethod
++    def reset_peak_memory_stats(device: int | str | torch.device | None = None) -> None:
++        torch.accelerator.reset_peak_memory_stats(device)
++
++    @staticmethod
++    def empty_cache() -> None:
++        torch.accelerator.empty_cache()
++
++    @staticmethod
++    def memory_stats(device: int | str | torch.device | None = None) -> dict:
++        return torch.accelerator.memory_stats(device)
++
++
+ def get_device_info() -> tuple[str, ModuleType]:
+     device_type = _get_available_device_type() or "cuda"
+     device_module = _get_device_module(device_type)  # default device_module:torch.cuda
++    if device_type == "tpu":
++        device_module = _TpuDeviceModule(device_module)
+     return device_type, device_module
+ 
+ 

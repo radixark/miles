@@ -153,6 +153,7 @@ class Args:
     lora_alpha = 16
     lora_dropout = 0.0
     lora_A_init_method = "xavier"
+    multi_lora = False
     hf_lora_targets = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     mla_hf_lora_targets = [
         "q_a_proj",

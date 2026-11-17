@@ -29,6 +29,7 @@ Agent function contract:
 """
 
 import argparse
+import functools
 import logging
 import time
 from collections.abc import Callable
@@ -71,15 +72,11 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     custom_agent_function: Callable = load_function(agent_function_path)
     assert custom_agent_function is not None, f"Custom agent function {agent_function_path} not found"
 
-    max_seq_len = lower_limit(
-        getattr(
-            input.args, "max_seq_len", None
-        ),  # config-access-exempt: optional length limit registered by custom agent hooks
-        input.sample.max_seq_len,
-    )
+    max_seq_len = lower_limit(input.args.max_seq_len, input.sample.max_seq_len)
 
     metadata = input.sample.metadata
     if max_seq_len is not None:
+        _warn_max_seq_len_does_not_stop_the_agent()
         metadata = {**metadata, "max_seq_len": max_seq_len}
     if tracer.session_server_instance_id:
         metadata = {**metadata, "session_server_instance_id": tracer.session_server_instance_id}
@@ -198,6 +195,15 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     return GenerateFnOutput(samples=sample)
 
 
+@functools.cache
+def _warn_max_seq_len_does_not_stop_the_agent() -> None:
+    """Once per process: the session server leaves the agent's control flow alone, so the limit only truncates."""
+    logger.warning(
+        "max_seq_len reaches the agent as metadata['max_seq_len'] and truncates the collected samples; "
+        "Miles does not stop the agent at it, so an agent that does not read it runs on past it"
+    )
+
+
 def _add_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--custom-agent-function-mode",
@@ -205,15 +211,6 @@ def _add_arguments(parser: argparse.ArgumentParser):
         default="subproc",
         help="Where each agent call runs: subproc, a child process of its own so one episode's "
         "blocking step or crash cannot stall the others; or inline, on the rollout's event loop.",
-    )
-    parser.add_argument(
-        "--max-seq-len",
-        type=int,
-        default=None,
-        dest="max_seq_len",
-        help="Max sequence length in tokens (prompt + completion, including env responses) "
-        "per session. Truncation happens inside the session server during sample assembly; "
-        "also forwarded to the Harbor agent server (as max_seq_len) to abort the trial early.",
     )
 
 

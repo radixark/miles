@@ -12,9 +12,9 @@ from miles.utils.output_store.config import (
     check_output_store_args,
     connect_output_store,
     output_store_backend_config,
-    output_store_reader,
     sglang_output_store_server_args,
     sweep_output_store,
+    trainer_output_store,
 )
 
 MOONCAKE = {"master_server_address": "10.0.0.1:50051", "protocol": "tcp", "device_name": "mlx5_0"}
@@ -39,13 +39,14 @@ def make_args(**overrides) -> Namespace:
 @pytest.fixture
 def launch(monkeypatch):
     """What the checks read from the SGLang and Megatron configs, settable per test."""
-    state = SimpleNamespace(pd=False, multi_policy=False, sglang_has_store=True)
+    state = SimpleNamespace(pd=False, multi_policy=False, sglang_has_store=True, plugin_reads_ranges=True)
     state.check = lambda args: check_output_store_args(
         args,
         sglang=SimpleNamespace(has_pd_disaggregation=state.pd),
         megatron=SimpleNamespace(is_multi_policy=state.multi_policy),
     )
     monkeypatch.setattr(output_store_config, "_sglang_has_output_store", lambda: state.sglang_has_store)
+    monkeypatch.setattr(output_store_config, "_output_store_reads_ranges", lambda: state.plugin_reads_ranges)
     return state
 
 
@@ -85,22 +86,43 @@ class TestLaunchChecks:
             "use_rollout_indexer_replay": True,
             "rollout_indexer_topk_num_streams": 61,
             "rollout_indexer_topk_width": 2048,
-            "rollout_max_context_len": 32769,
+            "max_seq_len": 32769,
         }
         # 32768 rows x 61 streams x 2048 ids x 4 bytes: under the 16gb default, over 15gb
         launch.check(make_args(**dsa))
         with pytest.raises(ValueError, match="cannot hold the 16374562816 bytes of indexer top-k"):
             launch.check(make_args(**dsa, output_store_local_buffer_size="15gb"))
-        launch.check(make_args(**{**dsa, "rollout_max_context_len": None}, output_store_local_buffer_size="15gb"))
+        launch.check(make_args(**{**dsa, "max_seq_len": None}, output_store_local_buffer_size="15gb"))
 
-    def test_without_a_context_length_the_response_length_bounds_the_indexer_top_k(self, launch):
+    def test_under_the_session_server_a_turn_adds_a_full_response_to_the_context(self, launch):
+        dsa = {
+            "use_rollout_indexer_replay": True,
+            "rollout_indexer_topk_num_streams": 61,
+            "rollout_indexer_topk_width": 2048,
+            "max_seq_len": 16385,
+            "rollout_max_response_len": 16385,
+            "use_session_server": "v1",
+        }
+        # An agent that stops once its prompt fills max_seq_len may still send a 16384-token prompt and get a
+        # 16385-token response: 32768 rows, under the 16gb default and over 15gb.
+        launch.check(make_args(**dsa))
+        with pytest.raises(ValueError, match="cannot hold the 16374562816 bytes of indexer top-k"):
+            launch.check(make_args(**dsa, output_store_local_buffer_size="15gb"))
+        # /generate caps every request at max_seq_len: 16384 rows fit.
+        launch.check(make_args(**{**dsa, "use_session_server": None}, output_store_local_buffer_size="15gb"))
+        # Without a response limit the session check is still sized, from max_seq_len alone.
+        no_response_limit = {**dsa, "max_seq_len": 32769, "rollout_max_response_len": None}
+        with pytest.raises(ValueError, match="cannot hold the 16374562816 bytes of indexer top-k"):
+            launch.check(make_args(**no_response_limit, output_store_local_buffer_size="15gb"))
+
+    def test_without_max_seq_len_the_response_length_bounds_the_indexer_top_k(self, launch):
         dsa = {
             "use_rollout_indexer_replay": True,
             "rollout_indexer_topk_num_streams": 61,
             "rollout_indexer_topk_width": 2048,
             "rollout_max_response_len": 32768,
         }
-        # A response cut at 32768 tokens stores at least 32768 rows, as a 32769-token context does.
+        # A response cut at 32768 tokens stores at least 32768 rows, as a 32769-token --max-seq-len does.
         launch.check(make_args(**dsa))
         with pytest.raises(ValueError, match="cannot hold the 16374562816 bytes of indexer top-k"):
             launch.check(make_args(**dsa, output_store_local_buffer_size="15gb"))
@@ -110,13 +132,20 @@ class TestLaunchChecks:
 
     def test_the_launch_facts_owned_elsewhere_are_checked_and_reported_together(self, launch, monkeypatch):
         launch.pd = launch.multi_policy = True
-        launch.sglang_has_store = False
+        launch.sglang_has_store = launch.plugin_reads_ranges = False
         monkeypatch.setenv("MILES_USE_LEGACY_ROLLOUT_V1", "1")
 
         with pytest.raises(ValueError) as error:
             launch.check(make_args())
 
-        for reason in ("PD disaggregation", "multi-policy", "ServerArgs lacks output_store_backend", "legacy"):
+        reasons = (
+            "PD disaggregation",
+            "multi-policy",
+            "ServerArgs lacks output_store_backend",
+            "byte ranges",
+            "legacy",
+        )
+        for reason in reasons:
             assert reason in str(error.value)
 
 
@@ -181,8 +210,8 @@ class TestStoreClients:
             ("mooncake", "10.0.0.9", "mlx5_client"),
         ]
 
-    def test_no_reader_without_the_switch(self):
-        assert output_store_reader(make_args(use_output_store=False)) is None
+    def test_no_client_without_the_switch(self):
+        assert trainer_output_store(make_args(use_output_store=False)) is None
 
 
 class TestRunEndSweep:
@@ -229,3 +258,11 @@ class TestRunEndSweep:
             sweep_output_store(make_args(run_uuid="0123456789abcdef"))
 
         assert calls[-1] == ("close",)
+
+
+@pytest.mark.parametrize("has_read_slot", [False, True])
+def test_trainer_reads_need_a_plugin_with_read_slots(monkeypatch, has_read_slot):
+    plugin = types.ModuleType("radix_transfer_plugins")
+    plugin.OutputStore = type("OutputStore", (), {"read_slot": None} if has_read_slot else {"read_buffer": None})
+    monkeypatch.setitem(sys.modules, "radix_transfer_plugins", plugin)
+    assert output_store_config._output_store_reads_ranges() is has_read_slot

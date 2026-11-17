@@ -8,6 +8,19 @@ from miles.platforms import Platform
 
 class TpuPlatform(Platform):
     device_type = "tpu"
+    # torch_tpu lowers compiled graphs to XLA
+    compile_backend = "tpu"
+    triton_kernels = False
+    # torch_tpu runs FlexAttention as one dense L x L mask
+    flex_attention = False
+    # tpu_dist has no rooted reduce
+    rooted_reduce = False
+    # tpu_dist has no PREMUL_SUM
+    premul_sum_reduce = False
+    # device to device over the slice's ICI links; a TPU engine shares neither NCCL nor CUDA IPC with the trainer
+    weight_transfer_modes = frozenset({"ici"})
+    # sglang-torchtpu has no --enable-prefill-weight-versions, so its server args lack the key
+    prefill_weight_versions = False
     # the tpu compile backend takes static shapes only
     dynamic_shapes = False
     nvml_numa_affinity = False

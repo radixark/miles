@@ -3,7 +3,7 @@ import ast
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -24,7 +24,10 @@ def raw_mbridge_loader(monkeypatch: pytest.MonkeyPatch) -> Callable[[bool], list
             if fail:
                 raise RuntimeError("HF loading failed")
 
-        bridge = Mock(load_weights=load_weights)
+        # an HF vocab of 2, the vocab rows the tests build their models with; no
+        # padded_vocab_size, like most configs (a bare Mock would invent one)
+        text_config = SimpleNamespace(vocab_size=2)
+        bridge = Mock(load_weights=load_weights, hf_config=Mock(get_text_config=lambda: text_config))
         mbridge = ModuleType("mbridge")
         mbridge.AutoBridge = Mock(from_pretrained=Mock(return_value=bridge))
         monkeypatch.setitem(sys.modules, "mbridge", mbridge)

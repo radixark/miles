@@ -155,7 +155,7 @@ def make_args(
     generate_tool_specs_path: str = "miles.utils.test_utils.mock_tools.SAMPLE_TOOLS",
     generate_tool_call_parser: str = "qwen25",
     generate_execute_tool_function_path: str = "miles.utils.test_utils.mock_tools.execute_tool_call",
-    rollout_max_context_len: int | None = None,
+    max_seq_len: int | None = None,
     chat_template_path: str | None = None,
     num_layers: int | None = None,
 ) -> Namespace:
@@ -192,8 +192,8 @@ def make_args(
         argv.append("--use-rollout-routing-replay")
     if sglang_speculative_algorithm:
         argv.extend(["--sglang-speculative-algorithm", sglang_speculative_algorithm])
-    if rollout_max_context_len is not None:
-        argv.extend(["--rollout-max-context-len", str(rollout_max_context_len)])
+    if max_seq_len is not None:
+        argv.extend(["--max-seq-len", str(max_seq_len)])
 
     argv.extend(
         extra_argv_for_variant(

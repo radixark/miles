@@ -73,6 +73,10 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
         tokenizer,
         tokenizer_type=config.tito_model,
         chat_template_kwargs=config.apply_chat_template_kwargs,
+        allow_stop_token_replace=config.allow_stop_token_replace,
+    )
+    logger.info(
+        "[session] tito_model=%r allow_stop_token_replace=%s", config.tito_model, config.allow_stop_token_replace
     )
     merge_inline_system = not detect_inline_system_support(
         getattr(tokenizer, "chat_template", None)

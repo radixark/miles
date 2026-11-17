@@ -46,7 +46,7 @@ from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.function_registry import load_function
 from miles.utils.hf_utils.config import is_complete_hf_export
 from miles.utils.http_utils import init_http_client
-from miles.utils.init_once import InitOnce, init_once
+from miles.utils.init_once import InitOnce, InitState, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.output_store.config import connect_output_store, output_store_backend_config, sweep_output_store
@@ -101,6 +101,10 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         # Every rollout get() began is here until its release, so one left at dispose was never trained.
         self._unreleased_store_refs: dict[int, dict[str, Any]] = {}
         self._delete_store_refs = None
+        self.data_source = None
+        self.generate_rollout = None
+        self.eval_generate_rollout = None
+        self._metric_checker = None
 
     @init_once
     async def init(self) -> None:
@@ -169,11 +173,12 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
     # -------------------------- lifecycle -----------------------------
 
     async def dispose(self) -> None:
-        if self._disposed:
+        # the driver may dispose an executor whose init never started; a partial init still tears down what it built
+        if self._disposed or self._init_once.state is InitState.NOT_INITED:
             return
         self._disposed = True
 
-        if not self.use_legacy_rollout_v1 and self.generate_rollout is not None:
+        if self.generate_rollout is not None and not self.use_legacy_rollout_v1:
             await maybe_await(self.generate_rollout.dispose())
         if (
             close := getattr(self.data_source, "close", None)

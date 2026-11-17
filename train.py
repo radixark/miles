@@ -4,15 +4,10 @@ import os
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
-from miles.ray.placement_group import (
-    create_rollout_components,
-    create_trainer_handles,
-    create_training_models,
-    maybe_start_api_server,
-    update_weights,
-)
+from miles.ray.placement_group import create_components, create_trainer_handles, maybe_start_api_server, update_weights
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
 from miles.ray.specs.train import compute_trainer_configs
+from miles.utils import checkpoint_decay
 from miles.utils.async_utils import Disposer, with_disposer
 from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
@@ -41,16 +36,11 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
         ), "--colocate-memory-peak-device gpu requires --offload-train and --offload-rollout"
         assert not args.use_critic, "--colocate-memory-peak-device gpu is not wired for the critic path"
 
-    # create the rollout manager, with sglang engines inside.
-    # need to initialize rollout manager first to calculate num_rollout
-    inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(
-        args, capability=capability, trainer_handles=trainer_handles
+    # the rollout manager, with sglang engines inside, and the actor and critic models
+    components, actor_model, critic_model = await create_components(
+        args, capability=capability, trainer_handles=trainer_handles, disposer=disposer
     )
-    disposer.add(inference_controller, rollout_executor)
-
-    # create the actor and critic models
-    actor_model, critic_model = await create_training_models(args, rollout_executor, handles=trainer_handles)
-    disposer.add(critic_model, actor_model)
+    inference_controller, rollout_executor, num_rollout_per_epoch = components
 
     disposer.add(
         maybe_start_api_server(
@@ -155,6 +145,15 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
             rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
         ):
             await save(rollout_id, force_sync=external_save)
+            if args.keep_recent_checkpoints is not None:
+                await asyncio.to_thread(
+                    checkpoint_decay.prune_checkpoints,
+                    args.save,
+                    saved_step=rollout_id,
+                    keep_recent=args.keep_recent_checkpoints,
+                    keep_every=args.keep_checkpoint_every,
+                    pin_saved=external_save,
+                )
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 
