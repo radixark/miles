@@ -4,9 +4,11 @@ from megatron.core.transformer.enums import AttnBackend
 from mbridge.core import register_model
 from mbridge.models import DeepseekV3Bridge
 
+from miles_plugins.mbridge.deepseek_mtp import DeepseekMtpBridgeMixin
+
 
 @register_model("glm4_moe_lite")
-class GLM4MoELiteBridge(DeepseekV3Bridge):
+class GLM4MoELiteBridge(DeepseekMtpBridgeMixin, DeepseekV3Bridge):
     """Bridge for GLM-4.7 MoE Lite models (e.g. GLM-4.7-Flash).
 
     Here "runtime config" means the config object returned by
@@ -126,30 +128,11 @@ class GLM4MoELiteBridge(DeepseekV3Bridge):
             rotary_base=self.rope_theta,
         )
 
-    def _convert_mtp_param(self, name: str) -> tuple[list[str]]:
-        assert self.config.mtp_num_layers == 1, "only support one mtp layer for now"
+    def _convert_mtp_param(self, name: str) -> list[str]:
         assert (
             self.config.num_layers == self._EXPECTED_NUM_LAYERS
         ), f"glm4_moe_lite only supports {self._EXPECTED_NUM_LAYERS} layers for now"
-
-        mtp_layer_id = self.config.num_layers
-        direct_name_mapping = {
-            "mtp.layers.0.enorm.weight": f"model.layers.{mtp_layer_id}.enorm.weight",
-            "mtp.layers.0.hnorm.weight": f"model.layers.{mtp_layer_id}.hnorm.weight",
-            "mtp.layers.0.eh_proj.weight": f"model.layers.{mtp_layer_id}.eh_proj.weight",
-            "mtp.layers.0.final_layernorm.weight": f"model.layers.{mtp_layer_id}.shared_head.norm.weight",
-        }
-        if name in direct_name_mapping:
-            return [direct_name_mapping[name]]
-
-        _mtp_inner = next((p for p in ("transformer_layer", "mtp_model_layer") if f"mtp.layers.0.{p}" in name), None)
-        assert _mtp_inner is not None, "mtp not found"
-        proxy_name = name.replace(f"mtp.layers.0.{_mtp_inner}", f"decoder.layers.{mtp_layer_id}")
-        if "self_attention" in proxy_name or "input_layernorm.weight" in proxy_name:
-            return self._weight_name_mapping_attention(proxy_name)
-        if "mlp" in proxy_name:
-            return self._weight_name_mapping_mlp(proxy_name)
-        raise NotImplementedError(f"Unsupported parameter name: {name}")
+        return super()._convert_mtp_param(name)
 
     def _weight_to_hf_format(
         self, mcore_weights_name: str, mcore_weights: torch.Tensor
