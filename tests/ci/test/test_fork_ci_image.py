@@ -350,6 +350,7 @@ def test_observer_waits_past_an_old_attempt_job(monkeypatch, identity):
     request, run, _ = identity
     responses = iter([None, request])
     sleeps = []
+    monkeypatch.setattr(HANDLER, "find_publisher", lambda *args: None)
     monkeypatch.setattr(HANDLER, "resolve_request", lambda *args: next(responses))
     monkeypatch.setattr(HANDLER.time, "sleep", sleeps.append)
     monkeypatch.setattr(
@@ -359,7 +360,7 @@ def test_observer_waits_past_an_old_attempt_job(monkeypatch, identity):
             [dict(name="docker-build / docker-build", run_attempt=1, status="completed")] if "/jobs?" in path else run
         ),
     )
-    assert HANDLER.wait_request(dict(workflow_run=run), REPOSITORY) == request
+    assert HANDLER.wait_request(dict(workflow_run=run), REPOSITORY, 999) == request
     assert sleeps == [30]
 
 
@@ -371,6 +372,7 @@ def test_observer_stops_without_a_request(monkeypatch, identity, ended):
         current["status"] = "completed"
     elif ended == "new-attempt":
         current["run_attempt"] += 1
+    monkeypatch.setattr(HANDLER, "find_publisher", lambda *args: None)
     monkeypatch.setattr(HANDLER, "resolve_request", lambda *args: None)
     monkeypatch.setattr(
         HANDLER,
@@ -382,7 +384,7 @@ def test_observer_stops_without_a_request(monkeypatch, identity, ended):
         ),
     )
     monkeypatch.setattr(HANDLER.time, "sleep", lambda seconds: pytest.fail("No request can arrive"))
-    assert HANDLER.wait_request(dict(workflow_run=run), REPOSITORY) is None
+    assert HANDLER.wait_request(dict(workflow_run=run), REPOSITORY, 999) is None
 
 
 def publisher_run(**updates):
@@ -434,13 +436,22 @@ def test_waiter_correlates_publisher_and_waits_for_build_completion(monkeypatch,
     calls, sleeps = stub_publisher(
         monkeypatch,
         identity,
-        listings=[wrong, [publisher_run(status="in_progress", conclusion=None)]],
+        # A later duplicate trigger (id 1000) must not displace the earliest publisher.
+        listings=[wrong, [publisher_run(id=1000), publisher_run(status="in_progress", conclusion=None)]],
         result=publisher_run(),
     )
     HANDLER.wait_build(request, REPOSITORY)
     assert sleeps == [30, 30]
     assert any("/999/jobs?" in path for path in calls)
     assert all("/rerun" not in path for path in calls)
+
+
+@pytest.mark.parametrize("run_id, publishes", [(999, True), (1000, False)])
+def test_only_the_earliest_trigger_of_an_attempt_publishes(monkeypatch, identity, run_id, publishes):
+    request, run, _ = identity
+    stub_publisher(monkeypatch, identity, listings=[[publisher_run(id=1000), publisher_run()]])
+    monkeypatch.setattr(HANDLER, "resolve_request", lambda *args: request)
+    assert HANDLER.wait_request(dict(workflow_run=run), REPOSITORY, run_id) == (request if publishes else None)
 
 
 @pytest.mark.parametrize("conclusion", ["failure", "cancelled", "timed_out"])
@@ -543,6 +554,10 @@ def test_workflow_preserves_gate_and_build_publish_boundary():
         < names.index("Remove the builder before introducing publishing credentials")
         < names.index("Login to Docker Hub for publication")
     )
+    # docker-build runners cannot apt-install skopeo; publication runs a digest-pinned skopeo image.
+    publish = next(step for step in steps if step.get("name") == "Publish the PR image without executing it")
+    assert "quay.io/skopeo/stable:" in publish["run"] and "@sha256:" in publish["run"]
+    assert all("apt-get" not in step.get("run", "") or "skopeo" not in step["run"] for step in steps)
     buildx = next(step for step in steps if step.get("id") == "buildx")
     assert buildx["with"]["buildkitd-flags"] == "--oci-worker-net=bridge"
     assert "network=host" not in buildx["with"]["driver-opts"]

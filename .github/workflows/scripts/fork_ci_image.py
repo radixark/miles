@@ -142,8 +142,26 @@ def resolve_request(event, repository):
     return request
 
 
-def wait_request(event, repository):
+def find_publisher(source, repository):
+    # `workflow_run.in_progress` can fire several times per attempt; only the earliest triggered run publishes.
+    workflow = api(f"repos/{repository}/actions/workflows/build-fork-ci-image.yml")
+    query = urlencode({"event": "workflow_run", "created": f">={source['created_at']}", "per_page": 100})
+    title = f"fork-ci-image-{source['id']}-{source['run_attempt']}"
+    runs = api(f"repos/{repository}/actions/workflows/{workflow['id']}/runs?{query}", collection="workflow_runs")
+    matches = [
+        run
+        for run in runs
+        if run["display_title"] == title and run["event"] == "workflow_run" and run["workflow_id"] == workflow["id"]
+    ]
+    return min(matches, key=lambda run: run["id"], default=None)
+
+
+def wait_request(event, repository, run_id):
     source = event["workflow_run"]
+    publisher = find_publisher(source, repository)
+    if publisher and publisher["id"] < run_id:
+        print(f"{publisher['html_url']} publishes this attempt", flush=True)
+        return None
     while True:
         run = api(f"repos/{repository}/actions/runs/{source['id']}")
         if run["run_attempt"] != source["run_attempt"] or run["status"] == "completed":
@@ -174,26 +192,12 @@ def require_active_source(request, repository):
 
 
 def wait_build(request, repository):
-    source = require_active_source(request, repository)
-    workflow = api(f"repos/{repository}/actions/workflows/build-fork-ci-image.yml")
-    query = urlencode({"event": "workflow_run", "created": f">={source['created_at']}", "per_page": 100})
-    title = f"fork-ci-image-{request['run_id']}-{request['run_attempt']}"
     publisher = None
     while True:
-        require_active_source(request, repository)
+        source = require_active_source(request, repository)
         if publisher is None:
-            runs = api(
-                f"repos/{repository}/actions/workflows/{workflow['id']}/runs?{query}", collection="workflow_runs"
-            )
-            matches = [
-                run
-                for run in runs
-                if run["display_title"] == title
-                and run["event"] == "workflow_run"
-                and run["workflow_id"] == workflow["id"]
-            ]
-            if matches:
-                publisher = max(matches, key=lambda run: run["id"])
+            publisher = find_publisher(source, repository)
+            if publisher:
                 print(f"Waiting for {publisher['html_url']}", flush=True)
         else:
             publisher = api(f"repos/{repository}/actions/runs/{publisher['id']}")
@@ -317,7 +321,9 @@ def main():
         )
         return
     if args.mode == "resolve":
-        request = wait_request(json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text()), repository)
+        request = wait_request(
+            json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text()), repository, int(os.environ["GITHUB_RUN_ID"])
+        )
         if request:
             with open(os.environ["GITHUB_OUTPUT"], "a") as output:
                 output.write(
