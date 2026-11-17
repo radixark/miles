@@ -1,13 +1,13 @@
-"""Qwen3.5 / Qwen3.8 GRPO on one TPU v7x 2x2x1 host: torchtitan trainer + sglang-torchtpu rollout.
+"""Qwen3.5 / Qwen3.6 / Qwen3.8 GRPO on one TPU v7x 2x2x1 host: torchtitan trainer + sglang-torchtpu rollout.
 
-Both are one hybrid architecture: 3 of every 4 layers are gated delta-net (linear attention), the rest full
-attention, over a 248K vocabulary.
+All are one hybrid architecture: 3 of every 4 layers are gated delta-net (linear attention), the rest full
+attention, over a 248K vocabulary; Qwen3.6-35B-A3B makes the feed-forward layers MoE.
 sglang serves the policy on devices 4-7 and the trainer runs on devices 0-3 (scripts/tpu/torchtitan_launch.py).
 Run `prepare` once, then `sglang` in its own shell (it stays in the foreground), then `train`.
 scripts/tpu/README.md describes the environment both expect.
 
 Args:
-  --model-name: Qwen3.5-4B, Qwen3.5-27B or Qwen3.8-27B; also the checkpoint's directory under
+  --model-name: Qwen3.5-4B, Qwen3.5-27B, Qwen3.6-35B-A3B or Qwen3.8-27B; also the checkpoint's directory under
     --model-dir.
   --recipe: smoke (3 short rollouts), bench (4 full-shape rollouts, no eval) or full.
   --model-dir / --data-dir: directories holding the model / dapo-math-17k and aime-2024.
@@ -73,6 +73,17 @@ _MODELS: dict[str, TitanTpuModel] = {
         eval_data=_EVAL_DATA,
         train_args=_HOST_OPTIMIZER,
     ),
+    # as Qwen3-30B-A3B: sglang serves EP 4, the trainer keeps every expert on each rank (EP 1) with Adam on the host
+    "Qwen3.6-35B-A3B": TitanTpuModel(
+        name="Qwen3.6-35B-A3B",
+        titan_model_name="qwen3_6",
+        titan_model_flavor="35B-A3B",
+        sglang_args=_ENGINE_ARGS + "--ep-size 4 ",
+        sglang_env=_ENGINE_ENV,
+        rollout_args=_ROLLOUT_ARGS,
+        eval_data=_EVAL_DATA,
+        train_args=_HOST_OPTIMIZER + "--sglang-ep-size 4 ",
+    ),
     "Qwen3.8-27B": TitanTpuModel(
         name="Qwen3.8-27B",
         titan_model_name="qwen3_8",
@@ -88,7 +99,7 @@ _MODELS: dict[str, TitanTpuModel] = {
 
 @dataclass
 class Qwen35ScriptArgs(ScriptArgs):
-    model_name: Literal["Qwen3.5-4B", "Qwen3.5-27B", "Qwen3.8-27B"] = "Qwen3.5-4B"
+    model_name: Literal["Qwen3.5-4B", "Qwen3.5-27B", "Qwen3.6-35B-A3B", "Qwen3.8-27B"] = "Qwen3.5-4B"
 
     @property
     def model(self) -> TitanTpuModel:

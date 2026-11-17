@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       launchers:
-        description: 'Comma-separated launchers (qwen3_4b, qwen3_30b_a3b, glm4_7_flash_4layer, qwen3_5:Qwen3.8-27B); empty runs all'
+        description: 'Comma-separated launchers (qwen3_4b, qwen3_30b_a3b, glm4_7_flash_4layer, qwen3_5:Qwen3.8-27B, qwen3_5:Qwen3.6-35B-A3B); empty runs all'
         required: false
         type: string
         default: ''
@@ -77,8 +77,8 @@ jobs:
           set -euo pipefail
           # launcher -> JobSet deadline in minutes: download, both cold compiles and three steps;
           # <launcher>:<model-name> runs one row of a launcher's model table
-          declare -A timeout=([qwen3_4b]=90 [qwen3_30b_a3b]=180 [glm4_7_flash_4layer]=150 [qwen3_5:Qwen3.8-27B]=150)
-          all="qwen3_4b qwen3_30b_a3b glm4_7_flash_4layer qwen3_5:Qwen3.8-27B"
+          declare -A timeout=([qwen3_4b]=90 [qwen3_30b_a3b]=180 [glm4_7_flash_4layer]=150 [qwen3_5:Qwen3.8-27B]=150 [qwen3_5:Qwen3.6-35B-A3B]=180)
+          all="qwen3_4b qwen3_30b_a3b glm4_7_flash_4layer qwen3_5:Qwen3.8-27B qwen3_5:Qwen3.6-35B-A3B"
           case "$EVENT_NAME" in
             pull_request)
               selected=""
