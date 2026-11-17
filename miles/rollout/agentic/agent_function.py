@@ -197,11 +197,35 @@ def _child_main(parent_pid: int) -> None:
     except BaseException:
         traceback.print_exc()
         _exit(1)
-    # the deadline armed once the call was over bounds this wait
-    for thread in set(threading.enumerate()) - threads_before:
-        if not thread.daemon:
+    # the deadline armed once the call was over bounds what follows
+    # cleanup the call left running (closing its sandbox) runs as in the rollout process, executors included
+    while cleanup := _leftover_threads(threads_before) - _executor_threads():
+        for thread in cleanup:
+            thread.join()
+    # then interpreter shutdown's thread step: the exit hooks stop the executors, so idle workers exit
+    for hook in reversed(threading._threading_atexits):
+        hook()
+    while leftover := _leftover_threads(threads_before):
+        for thread in leftover:
             thread.join()
     _exit(0)
+
+
+def _leftover_threads(threads_before: set[threading.Thread]) -> set[threading.Thread]:
+    return {thread for thread in threading.enumerate() if not thread.daemon and thread not in threads_before}
+
+
+def _executor_threads() -> set[threading.Thread]:
+    """Threads that wait for executor work, which only the concurrent.futures threading exit hooks end."""
+    threads: set[threading.Thread] = set()
+    if (futures_thread := sys.modules.get("concurrent.futures.thread")) is not None:
+        # held while a thread pool registers a worker; cleanup may still be starting pools
+        with futures_thread._global_shutdown_lock:
+            threads |= set(futures_thread._threads_queues)
+    if (futures_process := sys.modules.get("concurrent.futures.process")) is not None:
+        # no module lock here: read as its own exit hook reads it
+        threads |= set(futures_process._threads_wakeups)
+    return threads
 
 
 def _die_with_parent(parent_pid: int) -> None:

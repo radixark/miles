@@ -3,6 +3,11 @@ name: PR CI Image Build
 
 on:
   workflow_call:
+    inputs:
+      arch:
+        description: PR image architecture, a key of PR_IMAGE_ARCHES in docker/image_inputs.py
+        required: true
+        type: string
     outputs:
       built:
         description: Whether this call built and pushed a PR-scoped image
@@ -12,10 +17,10 @@ on:
         value: ${{ jobs.docker-build.outputs.tag_available }}
 
 jobs:
-  # A PR keeps one image tag (pr-<number>) for its whole life. Rebuilds are driven by
-  # the content of the build inputs, not by whether the PR happens to touch them: the
-  # published tag records its inputs hash in a label, so reruns and unrelated pushes
-  # reuse the image instead of paying for an identical build.
+  # A PR keeps one image tag per architecture for its whole life (pr-<number> for amd64).
+  # Rebuilds are driven by the content of the build inputs, not by whether the PR happens
+  # to touch them: the published tag records its inputs hash in a label, so reruns and
+  # unrelated pushes reuse the image instead of paying for an identical build.
   docker-decide:
     if: github.event.action != 'closed'
     runs-on: ubuntu-latest
@@ -101,6 +106,7 @@ jobs:
           FORCE_REBUILD: ${{ steps.prepare.outputs.force_rebuild }}
           INSPECT_TAG: ${{ steps.prepare.outputs.inspect_tag }}
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          ARCH: ${{ inputs.arch }}
         run: |
           set -euo pipefail
           emit() { echo "needs_image=$1" >> "$GITHUB_OUTPUT"; echo "rebuild=$2" >> "$GITHUB_OUTPUT"; }
@@ -116,22 +122,23 @@ jobs:
             exit 0
           fi
 
-          PUBLISHED=$(docker buildx imagetools inspect "radixark/miles:pr-${PR_NUMBER}" \
+          read -r _ TAG < <(python3 docker/image_inputs.py --pr "$PR_NUMBER" --arch "$ARCH")
+          PUBLISHED=$(docker buildx imagetools inspect "radixark/miles:${TAG}" \
             --format '{{ json .Image }}' 2>/dev/null \
             | python3 docker/image_inputs.py --read-label || true)
 
           if [ -z "$PUBLISHED" ]; then
-            echo "No usable pr-${PR_NUMBER} image; building one."
+            echo "No usable ${TAG} image; building one."
             emit true true
           elif [ "$PUBLISHED" = "$CURRENT" ]; then
-            echo "pr-${PR_NUMBER} already matches the current build inputs; reusing it."
+            echo "${TAG} already matches the current build inputs; reusing it."
             emit true false
           else
-            echo "Build inputs changed since pr-${PR_NUMBER} was published; rebuilding."
+            echo "Build inputs changed since ${TAG} was published; rebuilding."
             emit true true
           fi
 
-  # Docker PRs build the multi-arch image after the caller's CPU gate passes.
+  # Docker PRs build this architecture's image after the caller's CPU gate passes.
   # Without a rebuild to do this stays on a free hosted runner as a no-op;
   # actual builds use docker-build nodes, never the GPU-suite pool.
   docker-build:
@@ -153,8 +160,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+      # One request covers both architectures; the amd64 call sends it.
       - name: Request a trusted fork image build
-        if: env.REQUEST_BUILD == 'true'
+        if: env.REQUEST_BUILD == 'true' && inputs.arch == 'amd64'
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           INPUTS_HASH: ${{ needs.docker-decide.outputs.current }}
@@ -173,7 +181,7 @@ jobs:
           (Path(os.environ['RUNNER_TEMP']) / 'fork-ci-image-request/request.json').write_text(json.dumps(request))
           PY
       - uses: actions/upload-artifact@v4
-        if: env.REQUEST_BUILD == 'true'
+        if: env.REQUEST_BUILD == 'true' && inputs.arch == 'amd64'
         with:
           name: fork-ci-image-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/fork-ci-image-request/request.json
@@ -184,8 +192,9 @@ jobs:
         if: env.REQUEST_BUILD == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          ARCH: ${{ inputs.arch }}
         run: |
-          python3 .github/workflows/scripts/fork_ci_image.py wait-build
+          python3 .github/workflows/scripts/fork_ci_image.py wait-build --arch "$ARCH"
           echo "built=true" >> "$GITHUB_OUTPUT"
       # Shared builders accumulate buildkit cache and orphaned builder volumes
       # until the disk fills and installs die with ENOSPC mid-layer. Reclaim
@@ -231,19 +240,12 @@ jobs:
         if: env.BUILD == 'true'
         env:
           BUILD_GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ARCH: ${{ inputs.arch }}
         run: |
-          python3 docker/build.py --variant cu13 --image-tag custom \
-            --custom-tag pr-${{ github.event.pull_request.number }} --push
+          read -r VARIANT TAG < <(python3 docker/image_inputs.py --pr "$PR_NUMBER" --arch "$ARCH")
+          python3 docker/build.py --variant "$VARIANT" --image-tag custom --custom-tag "$TAG" --push
           echo "built=true" >> "$GITHUB_OUTPUT"
-      # The label is a one-shot request: leaving it on would rebuild on every later run.
-      - name: Consume rebuild-ci-image label
-        if: steps.build.outputs.built == 'true' && needs.docker-decide.outputs.force_rebuild == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api -X DELETE \
-            "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels/rebuild-ci-image" \
-            || echo "::warning::Could not remove the rebuild-ci-image label; remove it by hand or every run will rebuild."
       - name: Nothing to build
         if: env.BUILD != 'true' && env.REQUEST_BUILD != 'true'
         run: echo "No rebuild needed; suites use the PR image if it exists, else the released one."
