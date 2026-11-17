@@ -53,7 +53,7 @@ See [Hardware requirements](#hardware-requirements) for per-GPU status.
 
 ## Method 2: pip (FSDP and torchtitan)
 
-Every tagged release after v0.2.0 publishes a pure-Python `miles` wheel to a pip index at
+Every tagged release after the v0.2 line publishes a pure-Python `miles` wheel to a pip index at
 `https://radixark.github.io/miles-wheels/simple/`, next to the `sglang` wheel it was tested with, which
 it depends on. Linux x86_64 or aarch64, Python 3.11 or 3.12.
 

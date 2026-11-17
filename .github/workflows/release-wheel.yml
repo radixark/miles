@@ -1,67 +1,56 @@
 # doc-dev: docs/developer/ci/04-release.md
 name: Release Wheel
-# Builds the miles wheel at v<version> with that exact version and a pin on the sglang-miles wheel the
-# release was tested with, runs the wheel smoke on it, and uploads the sdist and wheel to the v<version>
-# GitHub release (a draft when the tag had none). Once that release is public, the pip index on
-# radixark/miles-wheels lists them within the hour.
-# release-tag.yml dispatches this.
+# Runs on a release tag: release-tag.yml dispatches it there (--ref v<version>), so the workflow, the code
+# it builds and the lock it reads are all the tag's. Builds the miles wheel with the tag's exact version
+# and a pin on the sglang-miles wheel the release was tested with, runs the wheel smoke on it, and
+# uploads the sdist and wheel to the v<version> GitHub release (a draft when the tag had none). Once
+# that release is public, the pip index on radixark/miles-wheels lists them within the hour.
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to publish, without v prefix (e.g., 0.3.0)'
-        required: true
-        type: string
-      ref:
-        description: 'Tag or branch to build from (defaults to v{version})'
-        required: false
-        type: string
-        default: ''
 
 permissions:
   contents: write
 
 jobs:
-  # the sglang-miles commit the release was tested with (release-lock.json), as its published wheel
-  sglang-wheel:
+  # what the release build stamps: the tag's version, and the published wheel of the sglang-miles commit
+  # the release was tested with (release-lock.json)
+  pins:
     if: github.repository == 'radixark/miles'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      version: ${{ steps.lookup.outputs.version }}
+      version: ${{ steps.pins.outputs.version }}
+      sglang_wheel: ${{ steps.pins.outputs.sglang_wheel }}
     steps:
-      # this workflow's revision, not the tag's, which may predate the lookup
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: .github
-      - id: lookup
+      - id: pins
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          REF: ${{ inputs.ref || format('v{0}', inputs.version) }}
         run: |
-          SGLANG_COMMIT=$(gh api "repos/${GITHUB_REPOSITORY}/contents/release-lock.json?ref=${REF}" --jq .content \
-            | base64 -d | python3 -c 'import json, sys; print(json.load(sys.stdin)["sglang_commit"])')
-          VERSION=$(python3 .github/scripts/release/sglang_wheel_version.py "$SGLANG_COMMIT")
-          echo "sglang-miles ${SGLANG_COMMIT} -> sglang==${VERSION}"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          [ "$GITHUB_REF_TYPE" = tag ] && [[ "$GITHUB_REF_NAME" == v* ]] \
+            || { echo "::error::dispatch this on a release tag (--ref v<version>), not on $GITHUB_REF_NAME"; exit 1; }
+          SGLANG_COMMIT=$(python3 -c 'import json; print(json.load(open("release-lock.json"))["sglang_commit"])')
+          SGLANG_WHEEL=$(python3 .github/scripts/release/sglang_wheel_version.py "$SGLANG_COMMIT")
+          echo "sglang-miles ${SGLANG_COMMIT} -> sglang==${SGLANG_WHEEL}"
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "sglang_wheel=${SGLANG_WHEEL}" >> "$GITHUB_OUTPUT"
 
   smoke:
-    needs: sglang-wheel
+    needs: pins
     uses: ./.github/workflows/wheel-smoke.yml
     with:
-      ref: ${{ inputs.ref || format('v{0}', inputs.version) }}
-      version: ${{ inputs.version }}
-      sglang_wheel: ${{ needs.sglang-wheel.outputs.version }}
+      version: ${{ needs.pins.outputs.version }}
+      sglang_wheel: ${{ needs.pins.outputs.sglang_wheel }}
 
   publish:
-    needs: smoke
+    needs: [pins, smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      VERSION: ${{ inputs.version }}
-      TAG: v${{ inputs.version }}
+      VERSION: ${{ needs.pins.outputs.version }}
+      TAG: ${{ github.ref_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/download-artifact@v4

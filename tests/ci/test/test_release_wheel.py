@@ -14,6 +14,7 @@ register_cpu_ci(est_time=5, suite="stage-a-cpu", labels=[])
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = yaml.safe_load((ROOT / ".github/workflows/release-wheel.yml").read_text())
 SMOKE = yaml.safe_load((ROOT / ".github/workflows/wheel-smoke.yml").read_text())
+SGLANG_WHEEL = "0.5.22.post62+miles.g6136e6d2bd"
 
 
 def _step(workflow, job, name):
@@ -56,10 +57,39 @@ def _run(script, tmp_path, env, cwd=None):
     return result, outputs, log
 
 
+# --- the version and the sglang wheel a release stamps ---------------------------------------------------
+
+PINS = next(step["run"] for step in WORKFLOW["jobs"]["pins"]["steps"] if step.get("id") == "pins")
+
+
+def _tagged_tree(tmp_path):
+    """The tag's lock, and a lookup script that answers for its commit without the network."""
+    (tmp_path / "release-lock.json").write_text('{"sglang_commit": "abc123"}')
+    script = tmp_path / ".github/scripts/release/sglang_wheel_version.py"
+    script.parent.mkdir(parents=True)
+    script.write_text(f"import sys\nassert sys.argv[1:] == ['abc123']\nprint('{SGLANG_WHEEL}')\n")
+
+
+def test_the_version_is_the_tag_and_the_sglang_wheel_is_the_locked_commit(tmp_path):
+    _tagged_tree(tmp_path)
+    result, outputs, _ = _run(PINS, tmp_path, {"GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "v0.3.0rc1"})
+    assert result.returncode == 0, result.stderr
+    assert outputs == {"version": "0.3.0rc1", "sglang_wheel": SGLANG_WHEEL}
+
+
+@pytest.mark.parametrize(
+    "ref_type,ref_name", [("branch", "main"), ("branch", "v0.3.0"), ("tag", "sglang-miles-2026w46")]
+)
+def test_a_dispatch_off_a_release_tag_is_refused(tmp_path, ref_type, ref_name):
+    _tagged_tree(tmp_path)
+    result, outputs, _ = _run(PINS, tmp_path, {"GITHUB_REF_TYPE": ref_type, "GITHUB_REF_NAME": ref_name})
+    assert result.returncode == 1 and "dispatch this on a release tag" in result.stdout
+    assert outputs == {}
+
+
 # --- the release stamp in wheel-smoke.yml -------------------------------------------------------------
 
 STAMP = _step(SMOKE, "wheel-smoke", "Stamp the release version and its sglang pin")
-SGLANG_WHEEL = "0.5.22.post62+miles.g6136e6d2bd"
 
 
 def _release_tree(tmp_path):

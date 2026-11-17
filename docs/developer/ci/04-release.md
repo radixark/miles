@@ -119,7 +119,7 @@ The current manual interface does not cross-check `version` against `ref`; a mis
 
 ## 6. Verify the published wheel
 
-`release-wheel.yml` builds the pure-Python wheel and sdist at `v${EXACT_VERSION}` with that exact version stamped into `setup.py` (so an rc or post release is its own version) and a dependency on the published `sglang` wheel of the `sglang_commit` in `release-lock.json`, runs the wheel smoke on them (`wheel-smoke.yml`), checks that the wheel resolves together with that `sglang` wheel, and uploads both to the `v${EXACT_VERSION}` GitHub release. When the tag has no release yet, it creates a draft with empty notes (a prerelease for an rc) and never publishes it: write the notes there and publish it as usual. The wheel is public only once the release is, and the pip index on radixark/miles-wheels lists it within the hour after that. Check that the release carries `miles-${EXACT_VERSION}-py3-none-any.whl` and, once it is published, that the index lists it:
+`release-wheel.yml` runs on the tag itself, so the workflow, the code it builds and the lock it reads are all the tag's; a release line whose branch was cut before the workflow existed (v0.2.x) publishes no wheel, and the tag workflow only warns. It builds the pure-Python wheel and sdist with the tag's exact version stamped into `setup.py` (so an rc or post release is its own version) and a dependency on the published `sglang` wheel of the `sglang_commit` in `release-lock.json`, runs the wheel smoke on them (`wheel-smoke.yml`), checks that the wheel resolves together with that `sglang` wheel, and uploads both to the `v${EXACT_VERSION}` GitHub release. When the tag has no release yet, it creates a draft with empty notes (a prerelease for an rc) and never publishes it: write the notes there and publish it as usual. The wheel is public only once the release is, and the pip index on radixark/miles-wheels lists it within the hour after that. Check that the release carries `miles-${EXACT_VERSION}-py3-none-any.whl` and, once it is published, that the index lists it:
 
 ```bash
 gh release view "v${EXACT_VERSION}" --json assets --jq '.assets[].name'
@@ -132,8 +132,8 @@ If `build-wheels.yml` has not published that `sglang` wheel for every Python and
 gh workflow run build-wheels.yml -f wheels=sglang -f sglang_ref="$(jq -r .sglang_commit release-lock.json)"
 ```
 
-A published file is never replaced, since installs pin its hash, so a retry only adds what is missing. Only the tag workflow dispatches it; after a manually pushed tag, or to retry, keep the two inputs paired as for the Docker build:
+A published file is never replaced, since installs pin its hash, so a retry only adds what is missing. Only the tag workflow dispatches it; after a manually pushed tag, or to retry, dispatch it on the tag, which is its only input:
 
 ```bash
-gh workflow run release-wheel.yml -f version="${EXACT_VERSION}" -f ref="v${EXACT_VERSION}"
+gh workflow run release-wheel.yml --ref "v${EXACT_VERSION}"
 ```
