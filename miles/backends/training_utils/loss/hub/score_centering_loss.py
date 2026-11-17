@@ -62,30 +62,40 @@ def score_candidates(
 
 
 def fused_score_candidates(args: Namespace, batch: RolloutBatch, logits: torch.Tensor) -> dict[str, torch.Tensor]:
-    """``score_candidates`` on the fused backend: every row's sampled token and rollout candidates in one call."""
+    """``score_candidates`` on the fused backend, every row in one call: the sampled token and the rollout
+    candidates, over the recorded support under filtered sampling, otherwise over the vocabulary."""
     with_entropy = args.entropy_coef != 0 or args.observe_training_entropy
+    # startup rejects replay with reference KL, so replay here means the candidates are the whole support
+    support_only = args.use_sampling_support_replay
     # a Megatron flag; other backends' logits are exactly the vocabulary
     vocab_size = true_vocab_size(
         args.backend.vocab_size if args.train_backend == "megatron" else None,
         logits.size(-1),
         get_parallel_state().tp.size,
     )
-    # startup rejects sampling-support replay with the fused backend, so every row is full-vocabulary
-    selected, entropy = fused_response_log_probs(
+    candidate_ids = lambda i, sample_rows: _local_candidate_ids(batch, i, sample_rows, vocab_size)  # noqa: E731
+    scores = fused_response_log_probs(
         logits,
         args=args,
         unconcat_tokens=batch["unconcat_tokens"],
         total_lengths=batch["total_lengths"],
         response_lengths=batch["response_lengths"],
         max_seq_lens=batch.get("max_seq_lens"),
-        sample_candidates=lambda i, sample_rows: _local_candidate_ids(batch, i, sample_rows, vocab_size),
+        sample_candidates=None if support_only else candidate_ids,
+        sample_support=candidate_ids if support_only else None,
         with_entropy=with_entropy,
+        entropy_over_support=support_only,
+    )
+    selected = (
+        [torch.cat((sampled.unsqueeze(-1), support), dim=-1) for sampled, support in zip(scores.log_probs, scores.support_log_probs, strict=True)]
+        if support_only
+        else scores.log_probs
     )
     result = {"selected": selected}
     if args.use_kl_loss:
         result["kl_log_probs"] = [sample[:, 0] for sample in selected]
     if with_entropy:
-        result["entropy"] = entropy
+        result["entropy"] = scores.entropy
     if args.allgather_cp and get_parallel_state().cp.size > 1:
         allgather_cp_redistribute(
             result,
