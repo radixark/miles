@@ -21,8 +21,9 @@ jobs:
                                'password': '${{ secrets.DOCKERHUB_TOKEN }}'}).encode(),
               headers={'Content-Type': 'application/json'})
           print(json.load(urllib.request.urlopen(req))['token'])")
-          # pr-<number>-tpu is pr-test-tpu.yml's image for the PR
-          for tag in "pr-${{ github.event.pull_request.number }}" "pr-${{ github.event.pull_request.number }}-tpu"; do
+          # One tag per PR_IMAGE_ARCHES entry in docker/image_inputs.py, plus pr-test-tpu.yml's -tpu image.
+          for tag in "pr-${{ github.event.pull_request.number }}" "pr-${{ github.event.pull_request.number }}-arm64" \
+                     "pr-${{ github.event.pull_request.number }}-tpu"; do
             curl -s -X DELETE \
               -H "Authorization: JWT ${TOKEN}" \
               "https://hub.docker.com/v2/repositories/radixark/miles/tags/${tag}/" \

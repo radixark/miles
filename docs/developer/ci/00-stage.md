@@ -43,7 +43,7 @@ Both workflows treat `pull_request.closed` (including merges) as cancellation-on
 
 Both PR workflows expose reusable `workflow_call` entry points. Called runs group concurrency by `inputs.ref`, so redispatching the same release branch cancels the older run; literal `pr-test-` and `pr-test-rocm-` prefixes keep the workflows in separate concurrency groups.
 
-**Image selection (`resolve-ci-image`).** Both workflows select a test image only when GPU tests are selected, using the same priority:
+**Image selection (`resolve-ci-image-<arch>` for CUDA, `resolve-ci-image` for ROCm).** Both workflows select a test image only when GPU tests are selected, using the same priority:
 
 | Priority | Source |
 |---|---|
@@ -95,7 +95,7 @@ Shard sizing and concurrency policy live in [CI Maintenance](../../../.claude/ru
 
 **PR admission.** In `pr-test.yml`, a PR event starts jobs only when the PR's base is the default branch or the PR carries a `run-ci*` label. Otherwise `resolve-ci-policy` is skipped, and because every other job needs it, the run starts nothing. A stacked PR therefore runs `PR Test` only while labeled; retargeting a PR to `main` is an `edited` event, which does not start a run.
 
-**Dependencies / gating.** In `pr-test.yml`, `stage-a-cpu` requires only `resolve-ci-policy`; all four `stage-b-cpu` shards additionally wait for every `stage-a-cpu` shard to succeed. PR-image preparation requires the `stage-a-cpu` success/bypass gate, and image resolution additionally requires selected CUDA tests; NVIDIA GPU stages follow image resolution. `stage-b-cpu` does not gate that chain and is skipped if `stage-a-cpu` fails, including with `bypass-fastfail` or broad cadences. Resolved nightly, weekly, or release cadence and the `bypass-fastfail` PR label admit the chain after an actual `stage-a-cpu` failure and make each suite continue after a test failure. This fast-fail exception does not itself select GPU tests or bypass policy or Docker/image failure; cadence and labels determine selection as described above. GPU tiers `b` and `c` describe cost/role and can run concurrently after these gates, subject to runner and GPU capacity. Scheduled, manual, and called release runs retain their existing image preparation.
+**Dependencies / gating.** In `pr-test.yml`, `stage-a-cpu` requires only `resolve-ci-policy`; all four `stage-b-cpu` shards additionally wait for every `stage-a-cpu` shard to succeed. PR-image preparation requires the `stage-a-cpu` success/bypass gate and selected CUDA tests. Each CUDA stage declares its `image_arch` in `tests/ci/hardware.py::CUDA_STAGES` and requires `resolve-ci-image-<image_arch>`, which requires `docker-build-<image_arch>`. `stage-b-cpu` does not gate that chain and is skipped if `stage-a-cpu` fails, including with `bypass-fastfail` or broad cadences. Resolved nightly, weekly, or release cadence and the `bypass-fastfail` PR label admit the chain after an actual `stage-a-cpu` failure and make each suite continue after a test failure. This fast-fail exception does not itself select GPU tests or bypass policy or Docker/image failure; cadence and labels determine selection as described above. GPU tiers `b` and `c` describe cost/role and can run concurrently after these gates, subject to runner and GPU capacity. Scheduled, manual, and called release runs retain their existing image preparation.
 
 **Release CI.** `release-branch-cut.yml` calls `pr-test.yml` for CPU and CUDA coverage and passes the prune-exempt `release-vX.Y.Z-ci` image tag recorded in `release-lock.json`.
 

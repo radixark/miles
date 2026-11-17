@@ -190,7 +190,7 @@ def wait_request(event, repository, run_id):
             f"repos/{repository}/actions/runs/{source['id']}/jobs?filter=latest&per_page=100", collection="jobs"
         )
         if any(
-            job["name"] in ("docker-build", "docker-build / docker-build")
+            job["name"] in ("docker-build-amd64", "docker-build-amd64 / docker-build")
             and job["run_attempt"] == source["run_attempt"]
             and job["status"] == "completed"
             for job in jobs
@@ -208,43 +208,45 @@ def require_active_source(request, repository):
     return run
 
 
-def wait_build(request, repository):
+def wait_build(request, repository, arch):
+    # Each PR-side build job waits for its own architecture's publication.
+    job_name = f"build ({arch})"
     publisher = None
     while True:
         source = require_active_source(request, repository)
         if publisher is None:
             publisher = find_publisher(source, repository)
             if publisher:
-                print(f"Waiting for {publisher['html_url']}", flush=True)
+                print(f"Waiting for {job_name} in {publisher['html_url']}", flush=True)
         else:
             publisher = api(f"repos/{repository}/actions/runs/{publisher['id']}")
-        if publisher and publisher["status"] == "completed":
-            require(
-                publisher["conclusion"] == "success",
-                f"Image publication {publisher['conclusion']}: {publisher['html_url']}",
-            )
+        if publisher:
             jobs = api(
                 f"repos/{repository}/actions/runs/{publisher['id']}/jobs?filter=latest&per_page=100", collection="jobs"
             )
+            job = next((job for job in jobs if job["name"] == job_name), None)
+            if job and job["status"] == "completed":
+                require(job["conclusion"] == "success", f"{job_name} {job['conclusion']}: {publisher['html_url']}")
+                return
             require(
-                any(job["name"] == "build" and job["conclusion"] == "success" for job in jobs),
-                "Publisher completed without a successful image build",
+                publisher["status"] != "completed",
+                f"Image publication {publisher['conclusion']} without {job_name}: {publisher['html_url']}",
             )
-            return
         time.sleep(30)
 
 
-def build_image(request, repository, source):
+def build_image(request, repository, source, arch):
     require_active_source(request, repository)
+    variant, tag = image_inputs.pr_image(arch, request["pr"])
     command = [
         sys.executable,
         str(ROOT / "docker/build.py"),
         "--variant",
-        "cu13",
+        variant,
         "--image-tag",
         "custom",
         "--custom-tag",
-        f"pr-{request['pr']}",
+        tag,
         "--context",
         str(source),
         "--output",
@@ -301,40 +303,27 @@ def validate_source(request, pr, source):
     require(current == image_inputs.compute(root=source), "Build context differs from the frozen inputs")
 
 
-def verify_published(request):
-    manifest = json.loads(
-        subprocess.check_output(
-            [
-                "docker",
-                "buildx",
-                "imagetools",
-                "inspect",
-                f"radixark/miles:pr-{request['pr']}",
-                "--format",
-                "{{ json .Image }}",
-            ],
-            text=True,
-        )
+def verify_published(request, arch):
+    _, tag = image_inputs.pr_image(arch, request["pr"])
+    published = subprocess.check_output(
+        ["docker", "buildx", "imagetools", "inspect", f"radixark/miles:{tag}", "--format", "{{ json .Image }}"],
+        text=True,
     )
-    for platform in ("linux/amd64", "linux/arm64"):
-        configs = [config for key, config in manifest.items() if key == platform or key.startswith(platform + "/")]
-        require(
-            configs
-            and all(image_inputs.read_label(json.dumps(config)) == request["inputs_hash"] for config in configs),
-            f"Published {platform} inputs do not match",
-        )
+    require(image_inputs.read_label(published) == request["inputs_hash"], f"Published {tag} inputs do not match")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=["resolve", "wait-build", "check-source", "build", "check-current", "finish"])
     parser.add_argument("--source", type=Path)
+    parser.add_argument("--arch", choices=sorted(image_inputs.PR_IMAGE_ARCHES))
     args = parser.parse_args()
     repository = os.environ["GITHUB_REPOSITORY"]
     if args.mode == "wait-build":
         wait_build(
             dict(run_id=int(os.environ["GITHUB_RUN_ID"]), run_attempt=int(os.environ["GITHUB_RUN_ATTEMPT"])),
             repository,
+            args.arch,
         )
         return
     if args.mode == "resolve":
@@ -352,10 +341,11 @@ def main():
     pr = current_request(request, repository)
     validate_source(request, pr, args.source.resolve())
     if args.mode == "build":
-        build_image(request, repository, args.source.resolve())
+        build_image(request, repository, args.source.resolve(), args.arch)
     elif args.mode == "finish":
-        verify_published(request)
-        if request["force_rebuild"]:
+        verify_published(request, args.arch)
+        # The amd64 build owns the one-shot label, as on the same-repository path.
+        if request["force_rebuild"] and args.arch == "amd64":
             try:
                 api(f"repos/{repository}/issues/{request['pr']}/labels/rebuild-ci-image", method="DELETE")
             except OSError:
