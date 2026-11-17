@@ -8,6 +8,10 @@ torchtitan on torch_tpu, applied by docker/Dockerfile.tpu at TORCHTITAN_COMMIT; 
   ~6 min after). Upstream to torchtitan.
 - tools/utils.py `_TpuDeviceModule`: generic torch_tpu support (torch.tpu refuses device calls from outside torch and
   lacks the memory-stats APIs torchtitan calls). Upstream to torchtitan as a torch.accelerator device module.
+- distributed/utils.py `dtensor_rng_off_for_cpu_shards` around training_engine.py's init_weights: CPU-offloaded init
+  on an accelerator mesh (torch 2.14's trunc_normal_ never returns: DTensor's RNG tracker restores the CPU RNG after
+  every op; Qwen3.8-27B with the host optimizer hung in init_weights, 93 s after). Not TPU-specific. Backport of
+  pytorch/torchtitan#6161: drop these two hunks once TORCHTITAN_COMMIT includes it.
 
 FSDP's force-SUM reduction (tpu_dist has no PREMUL_SUM) lives in miles (TitanTrainer, Platform.premul_sum_reduce).
 
@@ -79,6 +83,71 @@ index 0f6dd9e..3231350 100644
                  **fsdp_config,
                  reshard_after_forward=reshard_after_forward_policy == "always",
              )
+diff --git a/torchtitan/distributed/utils.py b/torchtitan/distributed/utils.py
+index 9de899f..5c85764 100644
+--- a/torchtitan/distributed/utils.py
++++ b/torchtitan/distributed/utils.py
+@@ -6,11 +6,12 @@
+ 
+ from __future__ import annotations
+ 
++import contextlib
+ import logging
+ import math
+ import os
+ from collections import defaultdict
+-from collections.abc import Iterable
++from collections.abc import Iterable, Iterator
+ from datetime import timedelta
+ from typing import TYPE_CHECKING
+ 
+@@ -256,6 +257,46 @@ def set_determinism(
+         )
+ 
+ 
++@contextlib.contextmanager
++def dtensor_rng_off_for_cpu_shards(module: torch.nn.Module) -> Iterator[None]:
++    """Draw random init of CPU shards on an accelerator mesh from the CPU generator.
++
++    Under FSDP CPU offload the parameters are DTensors on an accelerator mesh
++    whose local shards live on CPU. DTensor runs random ops on them inside its
++    RNG tracker's ``fork_rng``, which restores the CPU generator after each op,
++    so every draw repeats the previous one and rejection loops such as
++    ``trunc_normal_`` with +-3 std bounds never return. With the tracker off,
++    the ops advance the CPU generator, which ``set_determinism`` seeds per FSDP
++    shard because CPU offload requires ``dp_shard`` in
++    ``debug.distinct_seed_mesh_axes``.
++    """
++    mesh = next(
++        (
++            p.device_mesh
++            for p in module.parameters()
++            if isinstance(p, DTensor)
++            and p.device_mesh.device_type != "cpu"
++            and p.to_local().device.type == "cpu"
++        ),
++        None,
++    )
++    if mesh is None:
++        yield
++        return
++    dtensor_random = torch.distributed.tensor._random
++    saved = dtensor_random._rng_tracker
++    # DTensor creates an enabled tracker on the first random op if none exists.
++    tracker = saved or dtensor_random.OffsetBasedRNGTracker(mesh, run_state_sync=False)
++    enabled = tracker.distribute_region_enabled
++    dtensor_random._rng_tracker = tracker
++    tracker.distribute_region_enabled = False
++    try:
++        yield
++    finally:
++        tracker.distribute_region_enabled = enabled
++        dtensor_random._rng_tracker = saved
++
++
+ def init_fake_mode(
+     world_size: int,
+     *,
 diff --git a/torchtitan/tools/utils.py b/torchtitan/tools/utils.py
 index 5e1810e..f15d1eb 100644
 --- a/torchtitan/tools/utils.py
@@ -150,4 +219,19 @@ index 5e1810e..f15d1eb 100644
 +        device_module = _TpuDeviceModule(device_module)
      return device_type, device_module
  
+ 
+diff --git a/torchtitan/training_engine.py b/torchtitan/training_engine.py
+index 19ad4c4..32dc8b2 100644
+--- a/torchtitan/training_engine.py
++++ b/torchtitan/training_engine.py
+@@ -410,7 +410,9 @@ class TrainingEngine(Configurable, torch.distributed.checkpoint.stateful.Statefu
+         with self.parallelism_context.activate_spmd():
+             for model_part in self.model_parts:
+                 model_part.to_empty(device=init_device)
+-                with torch.no_grad():
++                with torch.no_grad(), dist_utils.dtensor_rng_off_for_cpu_shards(
++                    model_part
++                ):
+                     model_part.init_weights(buffer_device=buffer_device)
+                 model_part.train()
  
