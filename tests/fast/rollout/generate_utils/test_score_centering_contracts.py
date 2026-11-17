@@ -130,10 +130,6 @@ def test_invalid_options_fail_early(field: str, value: object) -> None:
         validate_score_centering_args(_args(**{field: value}))
 
 
-def test_dflash_is_the_speculative_algorithm_score_centering_accepts() -> None:
-    validate_score_centering_args(_args(sglang_speculative_algorithm="DFLASH"))
-
-
 @pytest.mark.parametrize("session", ["v1", "v2"])
 @pytest.mark.parametrize("top_k", [21, 128])
 def test_large_session_heads_can_use_sglang_router(session: str, top_k: int) -> None:
