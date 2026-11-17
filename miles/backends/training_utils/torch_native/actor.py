@@ -237,7 +237,6 @@ class TorchNativeTrainRayActor(TrainRayActor):
         assert num_microbatches, f"empty microbatch schedule for micro_batch_size={self.args.micro_batch_size}"
         routing_replay.attach(
             self.args,
-            self.model_parts,
             data_iterators,
             num_microbatches,
             rollout_data,

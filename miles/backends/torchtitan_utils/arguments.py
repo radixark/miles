@@ -167,10 +167,10 @@ def _validate_platform_args(args) -> None:
             f"the splash attention kernel works in {FLASH_ATTENTION_BLOCK}-token blocks and every microbatch pads to "
             "--seq-length"
         )
-    if args.context_parallel_size != 1:
+    if args.seq_length % args.context_parallel_size:
         raise ValueError(
-            f"--context-parallel-size {args.context_parallel_size} is not supported on {platform.device_type}: "
-            "its fixed microbatch shape does not align microbatches to the CP shards"
+            f"--context-parallel-size {args.context_parallel_size} does not divide --seq-length {args.seq_length}: "
+            "every microbatch pads to --seq-length and shards evenly across the CP ranks"
         )
     if args.expert_model_parallel_size != 1:
         raise ValueError(
