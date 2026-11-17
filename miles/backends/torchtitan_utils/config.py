@@ -26,6 +26,7 @@ from torchtitan.models.common.attention.cp_attention import AllGatherKVFlexInner
 from torchtitan.models.common.attention.gdn import InnerGDN
 from torchtitan.models.common.linear import Linear
 from torchtitan.models.common.moe import MoE
+from torchtitan.models.common.multimodal import MultimodalModel
 
 from miles import platforms
 from miles.backends.torchtitan_utils import lora
@@ -73,6 +74,7 @@ def build_model_config(
     model = builder(args.backend.titan_model_flavor, **kwargs)
     _disable_load_balancing(model)
     if not platforms.current_platform.flex_attention:
+        _drop_multimodal_encoders(model)
         _replace_inner_attention(model)
     if parallelism.context_parallel_degree > 1:
         if platforms.current_platform.flex_attention:
@@ -261,6 +263,24 @@ def _replace_inner_attention(model: BaseModel.Config) -> None:
                     f"only {', '.join(c.__qualname__ for c in replacements)} do"
                 )
             setattr(parent, field_name, replacement())
+
+
+def _drop_multimodal_encoders(model: BaseModel.Config) -> None:
+    """Build the language model alone, where the encoders cannot train (validation refuses --multimodal-keys there).
+
+    Given no images, torchtitan still runs each encoder on dummy inputs every step. On TPU its FlexAttention has no
+    TPU kernel and recompiles every step, and torch_remat's eager replay of its recompute aborts. torchtitan's
+    multimodal models take every encoder as optional, and the token embedding keeps the layout the encoder's scatter
+    needs, so the decoder runs as before. Qwen3.5's checkpoint adapter keys its HF prefix on the encoder, which
+    docker/tpu_patch fixes to read it from the checkpoint.
+
+    TODO(multimodal on TPU): give the encoders' attention a TPU kernel, make their recompute replayable on torch_tpu,
+    and upstream the adapter fix; then keep the encoders and accept --multimodal-keys.
+    """
+    model_cls = type(model)._owner  # the class this config builds, which torchtitan's Configurable records
+    if issubclass(model_cls, MultimodalModel):
+        for encoder_fqn in model_cls.multimodal_encoder_fqns:
+            setattr(model, encoder_fqn, None)
 
 
 # not FreezeMoERoutingTransform: it also freezes the router gate, which RL trains

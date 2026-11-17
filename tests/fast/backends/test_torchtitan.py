@@ -76,6 +76,7 @@ def _args(**overrides) -> Namespace:
         custom_pg_loss_reducer_function_path=None,
         dump_details=None,
         multi_lora=False,
+        multimodal_keys=None,
     )
     return Namespace(**{**base, **overrides})
 
@@ -551,6 +552,28 @@ def test_gated_delta_layers_get_the_tpu_gated_delta_and_attention_layers_tpu_fla
     )
     inner = [type(layer.attention.inner_attention) for layer in model.layers]
     assert set(inner) == {TpuGatedDeltaInnerAttention.Config, TpuFlashInnerAttention.Config}
+
+
+@pytest.mark.parametrize("tpu", [True, False], ids=["tpu", "gpu"])
+def test_tpu_builds_the_language_model_without_the_vision_encoder(request, tpu):
+    pytest.importorskip("torchtitan")
+    from torchtitan.config.parallelism import ParallelismConfig
+
+    from miles.backends.torchtitan_utils.config import build_model_config
+
+    if tpu:
+        request.getfixturevalue("on_tpu")
+    config = build_model_config(
+        _config_args(titan_model_name="qwen3_5", titan_model_flavor="debugmodel"), parallelism=ParallelismConfig()
+    )
+    assert (config.vision_encoder is None) == tpu
+
+
+def test_tpu_refuses_multimodal_training(monkeypatch, on_tpu):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    with pytest.raises(ValueError, match="multimodal training is not supported"):
+        validate_torchtitan_args(_tpu_args(multimodal_keys={"image": "images"}))
+    validate_torchtitan_args(_tpu_args())
 
 
 def test_context_parallelism_swaps_in_the_all_gather_kv_attention(tmp_path, monkeypatch):

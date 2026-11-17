@@ -6,6 +6,9 @@ torchtitan on torch_tpu, applied by docker/Dockerfile.tpu at TORCHTITAN_COMMIT; 
 - fsdp.py final norm in the root unit, not with the vocab-sized weight (tied unit, or lm_head when untied): TPU compile
   time (its dim / world elements misalign that unit's per-rank buffer; a Qwen3-4B trainer cold-compiled ~33 min before,
   ~6 min after). Upstream to torchtitan.
+- qwen3_5/state_dict_adapter.py HF prefix from the checkpoint: on TPU the trainer builds Qwen3.5 without its vision
+  encoder (miles' `_drop_multimodal_encoders`), which made the adapter expect a text-only checkpoint's `model.*` keys
+  and load almost nothing from the multimodal checkpoint. Upstream to torchtitan.
 - tools/utils.py `_TpuDeviceModule`: generic torch_tpu support (torch.tpu refuses device calls from outside torch and
   lacks the memory-stats APIs torchtitan calls). Upstream to torchtitan as a torch.accelerator device module.
 - distributed/utils.py `dtensor_rng_off_for_cpu_shards` around training_engine.py's init_weights: CPU-offloaded init
@@ -148,6 +151,47 @@ index 9de899f..5c85764 100644
  def init_fake_mode(
      world_size: int,
      *,
+diff --git a/torchtitan/models/qwen3_5/state_dict_adapter.py b/torchtitan/models/qwen3_5/state_dict_adapter.py
+index f3c08f7..bbfd643 100644
+--- a/torchtitan/models/qwen3_5/state_dict_adapter.py
++++ b/torchtitan/models/qwen3_5/state_dict_adapter.py
+@@ -25,7 +25,9 @@ Other notable conversions:
+ - GatedDeltaNet Conv1d: HF fused conv1d <-> TT separate conv_q/k/v
+ """
+ 
++import json
+ import re
++from pathlib import Path
+ from typing import Any, TYPE_CHECKING
+ 
+ import torch
+@@ -40,10 +42,14 @@ class Qwen35StateDictAdapter(StateDictAdapter):
+     def __init__(self, model_config: Qwen35Model.Config, hf_assets_path: str | None):
+         super().__init__(model_config, hf_assets_path)
+         self.model_config = model_config
++        # a model built without its vision encoder (text-only training) still loads its multimodal checkpoint, whose
++        # config has a text_config and whose language model keys sit under model.language_model.*
++        multimodal_checkpoint = model_config.vision_encoder is not None or (
++            hf_assets_path is not None
++            and "text_config" in json.loads(Path(hf_assets_path, "config.json").read_text())
++        )
+         self.hf_language_model_prefix = (
+-            "model.language_model"
+-            if model_config.vision_encoder is not None
+-            else "model"
++            "model.language_model" if multimodal_checkpoint else "model"
+         )
+ 
+         self.from_hf_map = {
+@@ -114,7 +120,7 @@ class Qwen35StateDictAdapter(StateDictAdapter):
+             "model.visual.merger.linear_fc2.weight": "vision_encoder.merger.linear_fc2.weight",
+             "model.visual.merger.linear_fc2.bias": "vision_encoder.merger.linear_fc2.bias",
+         }
+-        if model_config.vision_encoder is None:
++        if not multimodal_checkpoint:
+             # multimodal checkpoints use model.language_model.*, while
+             # text-only checkpoints use model.*.
+             self.from_hf_map = {
 diff --git a/torchtitan/tools/utils.py b/torchtitan/tools/utils.py
 index 5e1810e..f15d1eb 100644
 --- a/torchtitan/tools/utils.py

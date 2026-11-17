@@ -146,6 +146,11 @@ def _validate_lora_args(args) -> None:
 
 def _validate_platform_args(args) -> None:
     platform = current_platform
+    if args.multimodal_keys is not None and not platform.flex_attention:
+        raise ValueError(
+            f"--multimodal-keys: multimodal training is not supported on {platform.device_type} yet; the trainer "
+            "builds the language model alone there (see _drop_multimodal_encoders in torchtitan_utils/config.py)"
+        )
     if args.log_probs_backend == "fused" and not platform.triton_kernels:
         raise ValueError(
             f"--log-probs-backend fused is a Triton kernel; on {platform.device_type} use --log-probs-backend torch"
