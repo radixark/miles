@@ -164,24 +164,23 @@ def test_forward_log_probs_and_entropy_match(temperature, entropy_coef):
             torch.testing.assert_close(got.reshape(-1), want.reshape(-1).cpu(), rtol=1e-6, atol=1e-6)
 
 
+# PackedSlices always scores with the torch path; PaddedRows takes RowLogProb when --entropy-coef is 0
+@pytest.mark.parametrize("entropy_coef", [0.01, 0.0], ids=["torch-scorer", "row-log-prob"])
 @pytest.mark.parametrize(
     "overrides",
     [
         dict(),
-        dict(entropy_coef=0.0),
-        dict(entropy_coef=0.0, observe_training_entropy=True),
+        dict(observe_training_entropy=True),
         dict(use_kl_loss=True, kl_loss_coef=0.05, kl_loss_type="low_var_kl"),
         dict(use_kl_loss=True, kl_loss_coef=0.05, use_unbiased_kl=True),
         dict(use_kl_loss=True, kl_loss_coef=0.05, kl_loss_type="k3"),
         dict(use_rollout_logprobs=True),
         dict(calculate_per_token_loss=True),
         dict(rollout_temperature=0.7),
-        dict(entropy_coef=0.0, rollout_temperature=0.7),
         dict(rollout_mask_sums=True),
     ],
     ids=[
         "default",
-        "no-entropy",
         "observe-entropy",
         "kl",
         "unbiased-kl",
@@ -189,13 +188,13 @@ def test_forward_log_probs_and_entropy_match(temperature, entropy_coef):
         "rollout-logprobs",
         "per-token",
         "temp",
-        "no-entropy-temp",
         "rollout-mask-sums",
     ],
 )
-def test_policy_loss_matches(monkeypatch, overrides):
+def test_policy_loss_matches(monkeypatch, overrides, entropy_coef):
+    overrides = dict(overrides)  # shared by both entropy_coef cases
     use_rollout_mask_sums = overrides.pop("rollout_mask_sums", False)
-    args = _args(**overrides)
+    args = _args(entropy_coef=entropy_coef, **overrides)
 
     def batch_of(inputs):
         batch = _batch(inputs, "policy_loss")
