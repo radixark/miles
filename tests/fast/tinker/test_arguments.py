@@ -24,10 +24,11 @@ def _tinker_args(**overrides) -> Namespace:
 class TestTinkerBatchOwnership:
     def test_preprocessing_enables_command_sized_batches_before_config_slicing(self) -> None:
         """Tinker preprocessing enables dynamic command batches before immutable component configs are built."""
-        args = _tinker_args()
+        args = _tinker_args(tinker_enable_profiling=True, multi_lora_n_adapters=8)
 
         configure_tinker_args(args)
 
+        assert args.multi_lora_n_adapters == 8
         assert args.use_dynamic_global_batch_size is True
         assert args.delay_split_train_data_by_dp is True
         assert args.tinker_lora_groups == ["attn"]

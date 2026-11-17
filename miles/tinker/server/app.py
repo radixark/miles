@@ -4,9 +4,11 @@ import asyncio
 import json
 import os
 from contextlib import suppress
+from typing import Annotated, Literal
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 from miles.tinker.core.future import FAILED, PENDING
 from miles.tinker.core.service import TinkerService
@@ -54,6 +56,27 @@ def _tenant(request: Request) -> str:
     return key
 
 
+class ProfileTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model_id: str
+    target: Literal["trainer", "inference"]
+
+
+class StartProfileRequest(ProfileTarget):
+    skip_first: int = Field(default=0, ge=0)
+    wait: int = Field(default=0, ge=0)
+    warmup: int = Field(default=0, ge=0)
+    active: int = Field(default=1, ge=1)
+    repeat: int = Field(default=1, ge=0)
+    max_duration_sec: int = Field(default=7200, ge=1, le=7200)
+    activities: list[Literal["CPU", "CUDA"]] = Field(default_factory=lambda: ["CPU", "CUDA"], min_length=1)
+    ranks: list[Annotated[int, Field(ge=0)]] = Field(default_factory=list)
+    record_shapes: bool = False
+    with_stack: bool = False
+    profile_memory: bool = False
+    profile_modules: bool = False
+
+
 def build_app(service: TinkerService) -> FastAPI:
     app = FastAPI()
 
@@ -68,6 +91,43 @@ def build_app(service: TinkerService) -> FastAPI:
     @app.exception_handler(NotFoundError)
     async def _not_found(request: Request, error: NotFoundError):
         return JSONResponse(status_code=404, content={"error": str(error)})
+
+    @app.post("/api/v1/start_profiling")
+    async def start_profiling(request: Request, payload: StartProfileRequest):
+        options = payload.model_dump(exclude={"target", "model_id"})
+        if payload.profile_modules and (not payload.profile_memory or payload.with_stack):
+            raise UserInputError("Module tracking requires profile_memory=true and with_stack=false")
+        if payload.target == "inference":
+            if payload.max_duration_sec != 7200 or (
+                payload.skip_first,
+                payload.wait,
+                payload.warmup,
+                payload.repeat,
+            ) != (0, 0, 0, 1):
+                raise UserInputError(
+                    "SGLang supports active steps only; schedules and duration limits are trainer-only"
+                )
+            options["num_steps"] = options.pop("active")
+            for key in ("skip_first", "wait", "warmup", "repeat", "max_duration_sec"):
+                options.pop(key)
+            if payload.profile_modules or payload.ranks:
+                raise UserInputError("Inference does not support module tracking or rank selection")
+            if payload.profile_memory:
+                options["activities"].append("MEM")
+            options = {
+                key: value
+                for key, value in options.items()
+                if key not in {"ranks", "profile_memory", "profile_modules"}
+            }
+        return await service.start_profile(_tenant(request), payload.model_id, payload.target, options)
+
+    @app.post("/api/v1/stop_profiling")
+    async def stop_profiling(request: Request, payload: ProfileTarget):
+        return await service.stop_profile(_tenant(request), payload.model_id, payload.target)
+
+    @app.get("/api/v1/profiling_status")
+    async def profiling_status(request: Request, model_id: str, target: Literal["trainer", "inference"]):
+        return await service.profiling_status(_tenant(request), model_id, target)
 
     @app.get("/api/v1/healthz")
     async def healthz():

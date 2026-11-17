@@ -165,7 +165,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         if self.args.offload_train:
             self.sleep()
 
-        self.prof.on_init_end()
+        self.prof.on_init_end(self.model_parts, self.optimizers)
 
         return int(self.args.start_rollout_id)
 

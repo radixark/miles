@@ -41,6 +41,7 @@ from miles.utils.object_store import StoreObjectRef
 from miles.utils.output_store.config import trainer_output_store
 from miles.utils.port_range import service_port_range
 from miles.utils.processing_utils import load_processor, load_tokenizer
+from miles.utils.profile_utils import TrainProfiler
 from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, fault_hook_controller
 from miles.utils.test_utils.fault_injector.models import FaultHookRecord
@@ -99,6 +100,19 @@ class TrainRayActor(NodeProbeMixin):
     token_space_processor: TrainerProcessor | None = None
     # This worker's client of the SGLang output store; set in __init__ with --use-output-store.
     output_store: "OutputStore | None" = None
+    prof: TrainProfiler
+
+    def start_profile(self, config: dict) -> dict:
+        return self.prof.start_dynamic(config)
+
+    def profiling_status(self) -> dict:
+        return self.prof.dynamic.status()
+
+    def profile_step(self) -> dict:
+        return self.prof.dynamic.profile_step()
+
+    def stop_profile(self) -> dict:
+        return self.prof.dynamic.stop()
 
     def __init__(
         self,

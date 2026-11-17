@@ -14,6 +14,7 @@ from miles.backends.training_utils.checkpoint.adapter.commit import UncommittedA
 from miles.backends.training_utils.data.rollout import get_rollout_data
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.object_store import StoreObjectRef
+from miles.utils.profile_utils import profile_training_operation
 from miles.utils.tracking_utils.structured_log import with_logs
 
 
@@ -23,6 +24,7 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         self._init_weight_updater_and_publisher(update_weights=False, publish_snapshots=True)
 
     @with_logs
+    @profile_training_operation
     def forward_backward(self, batch_id: int, rollout_data_ref: StoreObjectRef) -> dict:
         self._heartbeat.bump()
         with ExitStack() as stack:
@@ -39,11 +41,13 @@ class MultiLoRATrainRayActor(MegatronTrainRayActor):
         return result
 
     @with_logs
+    @profile_training_operation
     def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, dict]:
         self._heartbeat.bump()
         return lora_model.optim_step(self.slot_optimizers, adam_params_by_slot)
 
     @with_logs
+    @profile_training_operation
     def forward_only(self, batch_id: int, rollout_data_ref: StoreObjectRef) -> dict:
         """Same loss pass as forward_backward, without the backward: the Tinker
         forward() contract returns the requested loss per datum."""
