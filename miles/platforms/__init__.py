@@ -1,4 +1,5 @@
-"""The training process's platform: what differs between CUDA and TPU (torch_tpu), chosen once by MILES_ACCELERATOR.
+"""The training process's platform: what differs between CUDA, TPU (torch_tpu) and Neuron (torch-neuronx), chosen
+once by MILES_ACCELERATOR.
 
 Everything `torch.accelerator` covers (synchronize, empty_cache, memory stats, the device index) is called directly.
 """
@@ -60,7 +61,11 @@ def _select_platform() -> Platform:
         from miles.platforms.tpu import TpuPlatform
 
         return TpuPlatform()
-    raise ValueError(f"MILES_ACCELERATOR={device_type!r}; expected cuda or tpu")
+    if device_type == "neuron":
+        from miles.platforms.neuron import NeuronPlatform
+
+        return NeuronPlatform()
+    raise ValueError(f"MILES_ACCELERATOR={device_type!r}; expected cuda, tpu or neuron")
 
 
 current_platform = _select_platform()
