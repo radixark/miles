@@ -28,8 +28,8 @@ ARG WHEELS_REPO=radixark/miles-wheels
 ARG WHEELS_TAG=cu130-torch214-x86_64
 # torch_tpu main + docker/tpu_patch/torch_tpu_job_local_worlds.patch (--update-weight-transfer-mode ici)
 # + docker/tpu_patch/torch_tpu_chunk_cat.patch (FSDP2's reduce-scatter copy-in)
-ARG TORCH_TPU_WHEELS_TAG=torch-tpu-e8468781a-pr6110-pr6728
-ARG TORCH_TPU_WHEEL=torch_tpu-0.2.1.dev20261117-cp312-cp312-manylinux_2_31_x86_64.whl
+ARG TORCH_TPU_WHEELS_TAG=torch-tpu-e8468781a-pr6110-pr6728-v2
+ARG TORCH_TPU_WHEEL=torch_tpu-0.2.1.dev2026111702-cp312-cp312-manylinux_2_31_x86_64.whl
 ARG TARGETARCH
 
 # ====================================== Install sglang-torchtpu ============================================

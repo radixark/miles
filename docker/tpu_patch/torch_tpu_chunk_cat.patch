@@ -1,19 +1,19 @@
-From 5a93cb96b5d5b7b4dbce1e154a18078cadc9e62a Mon Sep 17 00:00:00 2001
+From 6e40eb8cd9be06c5c0799b60a45d765eb0f97873 Mon Sep 17 00:00:00 2001
 From: Hejian Sang <sanghj0923@gmail.com>
 Date: Tue, 17 Nov 2026 10:43:34 -0800
 Subject: [PATCH] Add a TPU kernel for _chunk_cat.out (FSDP2's reduce-scatter
  copy-in)
 
-Kernel part of google-pytorch/torch_tpu#6728 (head e163c49ee, tests left out)
+Kernel part of google-pytorch/torch_tpu#6728 (head 7eedc94f6, tests left out)
 applied on torch_tpu main e8468781a + torch_tpu_job_local_worlds.patch.
 ---
  csrc/eager/BUILD                             |   1 +
  csrc/eager/tpu_aten_kernels.cc               |   2 +
- csrc/ops/chunk_cat/BUILD                     |  47 +++++++
- csrc/ops/chunk_cat/chunk_cat_aten_kernels.cc | 140 +++++++++++++++++++
- csrc/ops/chunk_cat/chunk_cat_aten_kernels.h  |  32 +++++
+ csrc/ops/chunk_cat/BUILD                     |  47 ++++++
+ csrc/ops/chunk_cat/chunk_cat_aten_kernels.cc | 150 +++++++++++++++++++
+ csrc/ops/chunk_cat/chunk_cat_aten_kernels.h  |  32 ++++
  csrc/ops/op_names.h                          |   3 +
- 6 files changed, 225 insertions(+)
+ 6 files changed, 235 insertions(+)
  create mode 100644 csrc/ops/chunk_cat/BUILD
  create mode 100644 csrc/ops/chunk_cat/chunk_cat_aten_kernels.cc
  create mode 100644 csrc/ops/chunk_cat/chunk_cat_aten_kernels.h
@@ -105,10 +105,10 @@ index 000000000..9a0cec16e
 +torch_tpu_package_end()
 diff --git a/csrc/ops/chunk_cat/chunk_cat_aten_kernels.cc b/csrc/ops/chunk_cat/chunk_cat_aten_kernels.cc
 new file mode 100644
-index 000000000..9f6fbb148
+index 000000000..d703d5a8c
 --- /dev/null
 +++ b/csrc/ops/chunk_cat/chunk_cat_aten_kernels.cc
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,150 @@
 +/*
 + * Copyright 2026 Google LLC
 + *
@@ -204,21 +204,30 @@ index 000000000..9f6fbb148
 +    auto op_builder = [num_rows, num_chunks, chunk_numels, result_dims](
 +                          absl::Span<mlir::MlirOp> inputs,
 +                          mlir::MlirBuilder& builder) {
-+      const Indices stride = {1, 1};
++      // A single row (dim 0, as FSDP2 calls it) is kept 1-D: a (1, N) array
++      // makes the copy slower on TPU.
++      const int64_t axis = num_rows == 1 ? 0 : 1;
++      const auto row_shape = [num_rows](int64_t row_numel) {
++        return num_rows == 1 ? Dimensions{row_numel}
++                             : Dimensions{num_rows, row_numel};
++      };
++      const Indices stride(axis + 1, 1);
++      const Dimensions no_padding(axis + 1, 0);
 +      std::vector<mlir::MlirOp> rows;
 +      rows.reserve(inputs.size());
 +      for (size_t i = 0; i < inputs.size(); ++i) {
 +        const mlir::RankedTensorType type = GetTensorTypeOrDie(inputs[i]);
 +        const int64_t row_numel = type.getNumElements() / num_rows;
 +        mlir::MlirOp row =
-+            mlir::stablehlo::Reshape(inputs[i], {num_rows, row_numel});
-+        const int64_t padding = num_chunks * chunk_numels[i] - row_numel;
-+        if (padding > 0) {
++            mlir::stablehlo::Reshape(inputs[i], row_shape(row_numel));
++        Dimensions padding = no_padding;
++        padding[axis] = num_chunks * chunk_numels[i] - row_numel;
++        if (padding[axis] > 0) {
 +          mlir::MlirOp zero =
 +              MakeScalarConstant(builder, 0, type.getElementType());
-+          row = mlir::stablehlo::Pad(row, zero, /*edge_padding_low=*/{0, 0},
-+                                     /*edge_padding_high=*/{0, padding},
-+                                     /*interior_padding=*/{0, 0});
++          row = mlir::stablehlo::Pad(row, zero, /*edge_padding_low=*/no_padding,
++                                     /*edge_padding_high=*/padding,
++                                     /*interior_padding=*/no_padding);
 +        }
 +        rows.push_back(row);
 +      }
@@ -226,13 +235,14 @@ index 000000000..9f6fbb148
 +      chunks.reserve(num_chunks * inputs.size());
 +      for (int64_t chunk = 0; chunk < num_chunks; ++chunk) {
 +        for (size_t i = 0; i < inputs.size(); ++i) {
-+          const Indices begin = {0, chunk * chunk_numels[i]};
-+          const Indices limit = {num_rows, (chunk + 1) * chunk_numels[i]};
++          Indices begin(axis + 1, 0);
++          begin[axis] = chunk * chunk_numels[i];
++          const Indices limit = row_shape((chunk + 1) * chunk_numels[i]);
 +          chunks.push_back(
 +              mlir::stablehlo::Slice(rows[i], begin, limit, stride));
 +        }
 +      }
-+      mlir::MlirOp result = mlir::stablehlo::Concatenate(builder, chunks, 1);
++      mlir::MlirOp result = mlir::stablehlo::Concatenate(builder, chunks, axis);
 +      return mlir::stablehlo::Reshape(result, result_dims);
 +    };
 +    TT_ASSIGN_OR_THROW(DeviceBufferRef result_buf,
