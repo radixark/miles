@@ -30,7 +30,8 @@ from miles.utils.test_utils.fault_injector.models import (
     ObservedFaultHookTarget,
 )
 from miles.utils.workers.cell_operations.base import StaleFaultTargetError
-from miles.utils.workers.cell_operations.ray import RayCellOperations
+from miles.utils.workers.worker_manager.client import ManagerCellOperations
+from miles.utils.workers.worker_provider.ray import RayWorkerManagerClient
 
 from .conftest import (
     MockHandler,
@@ -323,8 +324,8 @@ class TestStartApiServerRegistration:
             ),
             port=18080,
             ft_components=ft_components,
-            cell_operations=RayCellOperations(
-                worker_manager_handle=manager,
+            cell_operations=ManagerCellOperations(
+                RayWorkerManagerClient(manager),
             ),
         )
 
@@ -416,8 +417,8 @@ class TestStartApiServerRegistration:
             inference_controller=MockInferenceController(),
             port=19137,
             ft_components=["train"],
-            cell_operations=RayCellOperations(
-                worker_manager_handle=manager,
+            cell_operations=ManagerCellOperations(
+                RayWorkerManagerClient(manager),
             ),
         )
 

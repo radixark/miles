@@ -27,7 +27,8 @@ from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.types import WorkerCommBackend
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
-from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+from miles.utils.workers.worker_manager.client import ManagerWorkerProvider
+from miles.utils.workers.worker_provider.ray import RayWorkerManagerClient
 
 CELL_ID = compute_cell_id(pool_id=POOL_ID, cell_index=0)
 
@@ -63,7 +64,7 @@ def _launch_rpc_pool() -> _LaunchedPool:
         {},
         comm_backend=WorkerCommBackend.RPC,
     )
-    provider = RayWorkerProvider(worker_manager_handle=manager, pool_ids=[POOL_ID])
+    provider = ManagerWorkerProvider(RayWorkerManagerClient(manager), pool_ids=[POOL_ID])
     (infos,) = provider.get_worker_infos(cell_ids=[CELL_ID])
     handles = provider.get_handles_of_worker_infos(infos)
     return _LaunchedPool(manager=manager, infos=infos, handles=[handles[info.name] for info in infos])

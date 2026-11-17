@@ -8,10 +8,11 @@ from tests.fast.utils.workers.conftest import worker_manager_args
 from tests.fast.utils.workers.fake_ray import EVENT_KILL, READINESS_METHOD, FakeRayCluster
 from tests.fast.utils.workers.fake_specs import FakeServeSpec
 
-from miles.utils.workers import ray_worker_manager
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.types import WorkerCommBackend
-from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+from miles.utils.workers.worker_manager import core as worker_manager_core
+from miles.utils.workers.worker_manager.client import ManagerWorkerProvider
+from miles.utils.workers.worker_provider.ray import RayWorkerManagerClient
 from miles.utils.workers.worker_spec import DEFAULT_RPC_PORT_INFO, BaseServeSpec, PortInfo, SchedulingSpec
 
 
@@ -55,7 +56,7 @@ def _kill_worker_process(cluster: FakeRayCluster, *, handle_index: int) -> None:
 
 @pytest.fixture
 def instant_scans(monkeypatch) -> None:
-    monkeypatch.setattr(ray_worker_manager, "_LIVENESS_SCAN_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(worker_manager_core, "_LIVENESS_SCAN_INTERVAL_SECONDS", 0.0)
 
 
 class TestScanLivenessOnce:
@@ -274,8 +275,8 @@ class TestTheDeathReachesTheProvider:
     async def test_a_worker_that_died_alone_is_reconciled_away(self, fake_ray_cluster: FakeRayCluster):
         """Noticing the death is only worth anything if the watcher that rebuilds cells hears about it."""
         manager = await _launch([_make_spec("engine")], comm_backend=WorkerCommBackend.RPC)
-        provider = RayWorkerProvider(
-            worker_manager_handle=_ManagerHandleShim(manager),
+        provider = ManagerWorkerProvider(
+            RayWorkerManagerClient(_ManagerHandleShim(manager)),
             pool_ids=["engine"],
             poll_interval_seconds=0.001,
         )
@@ -294,8 +295,8 @@ class TestTheDeathReachesTheProvider:
     async def test_the_rebuilt_cell_is_reconciled_back_with_a_new_hash(self, fake_ray_cluster: FakeRayCluster):
         """A cell dropped by the scan must be startable again and look new, or nothing reconnects to it."""
         manager = await _launch([_make_spec("engine")], comm_backend=WorkerCommBackend.RPC)
-        provider = RayWorkerProvider(
-            worker_manager_handle=_ManagerHandleShim(manager),
+        provider = ManagerWorkerProvider(
+            RayWorkerManagerClient(_ManagerHandleShim(manager)),
             pool_ids=["engine"],
             poll_interval_seconds=0.001,
         )

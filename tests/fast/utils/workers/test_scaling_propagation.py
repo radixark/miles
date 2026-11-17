@@ -12,7 +12,8 @@ from miles.utils.workers.connection_config import (
     build_static_conn_config,
     build_worker_annotations,
 )
-from miles.utils.workers.ray_worker_manager import RayWorkerManager, _PoolManager
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.worker_manager.core import _PoolManager
 from miles.utils.workers.worker_spec import SchedulingSpec
 
 
