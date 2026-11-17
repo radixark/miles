@@ -53,7 +53,7 @@ The ROCm resolver in `tests/ci/rocm.py` selects, in order: the called workflow's
 
 `_build-pr-ci-image.yml` builds or reuses the ROCm PR image whenever its inputs differ from the base, regardless of test selection. Image resolution runs only for selected ROCm stages or changed-file jobs. A failed build blocks image resolution and AMD execution. Changed-file jobs wait for this same resolved image. [Docker Build](/developer/ci/02-docker-build#rocm-pr-images) describes input hashing and trusted publication through a Spur compute-node build.
 
-CPU-only PRs skip both CUDA and ROCm image resolution; a CPU-only PR still builds CUDA and ROCm images whose inputs changed.
+CUDA and ROCm image builds are independent of test selection. The `resolve-ci-image` job only runs when GPU tests need an image.
 
 Distinct from image selection, the **`run-ci-image` label** selects the test scope — every enabled tag except `long`, `ft-short`, and `ft-long` — which validates an image bump without selecting those domains implicitly.
 
