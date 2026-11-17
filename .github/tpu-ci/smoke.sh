@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # TPU CI pod entrypoint (render_jobset.py): run one scripts/tpu launcher's recipe on the pod's v7x 2x2x1 host.
-# Env: MILES_SHA, LAUNCHER (run_<LAUNCHER>_torchtitan.py), RECIPE. Exits with train's code, or 1 if sglang dies first.
+# Env: MILES_SHA, LAUNCHER (run_<LAUNCHER>_torchtitan.py), MODEL_NAME (the launcher's --model-name, may be empty),
+# RECIPE. Exits with train's code, or 1 if sglang dies first.
 set -uo pipefail
 
 # core files of crashed TPU processes run to tens of GB
@@ -16,12 +17,15 @@ if ! git fetch -q --depth 1 origin "$MILES_SHA" || ! git checkout -q FETCH_HEAD;
 fi
 # the image installed miles' dependencies; only the source changes here
 pip install -q --no-deps -e . || { echo "FAIL: pip install miles"; exit 1; }
-echo "== miles $(git rev-parse HEAD) launcher=${LAUNCHER} recipe=${RECIPE} =="
+echo "== miles $(git rev-parse HEAD) launcher=${LAUNCHER} model=${MODEL_NAME:-default} recipe=${RECIPE} =="
 
 # the launchers import `scripts.tpu`, which only the repo root on the path provides
 export PYTHONPATH="/root/miles${PYTHONPATH:+:$PYTHONPATH}"
 script="scripts/tpu/run_${LAUNCHER}_torchtitan.py"
 args=(--recipe "$RECIPE" --model-dir /data/models --data-dir /data/datasets)
+if [ -n "${MODEL_NAME:-}" ]; then
+  args+=(--model-name "$MODEL_NAME")
+fi
 
 # the engine serves the checkpoint, so it must be on disk before sglang starts
 python3 "$script" prepare "${args[@]}" || { echo "FAIL: ${script} prepare"; exit 1; }

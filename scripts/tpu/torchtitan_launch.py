@@ -32,7 +32,16 @@ class TitanTpuModel:
     titan_model_name: str
     titan_model_flavor: str
     sglang_args: str = ""
+    # environment assignments for the sglang server, e.g. "NAME=value "
+    sglang_env: str = ""
+    # how rollouts are prompted and scored; math grades the last \boxed{}, deepscaler only after </think>, which a
+    # thinking-off response lacks
+    rollout_args: str = "--rm-type math "
+    # the AIME eval's grader, when the rollouts' cannot read its answers
+    eval_rm_type: str = ""
     train_args: str = ""
+    # MoE: replay the engine's expert routing (R3); no compile warmup, whose synthetic batch has no routing to replay
+    routing_replay: bool = False
 
 
 @dataclass(frozen=True)
@@ -134,6 +143,7 @@ def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
         f"SGLANG_TPU_SHARED_SLICE={_shared_slice(args, rank_offset=NUM_TRAINER_DEVICES)} "
         # the batched ragged paged attention reads this KV layout fastest; the cache stays bf16
         "SGLANG_TPU_USE_SEQ_ALONG_LANE_KV=1 "
+        f"{model.sglang_env}"
         "python3 -m sglang.launch_server "
         f"--model-path {args.model_dir}/{model.name} "
         "--device tpu "
@@ -158,6 +168,7 @@ def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
         "--max-running-requests 128 "
         "--torch-compile-max-bs 128 "
         f"{model.sglang_args}"
+        f"{'--enable-return-routed-experts ' if model.routing_replay else ''}"
         f"--host 0.0.0.0 --port {args.sglang_port}"
     )
 
@@ -170,6 +181,15 @@ def prepare_model_and_data(args: ScriptArgs, model_commands: Sequence[str]) -> N
         U.exec_command_cpu(command)
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
+
+
+def _aime_eval_data(args: ScriptArgs, model: TitanTpuModel) -> str:
+    path = f"{args.data_dir}/aime-2024/aime-2024.jsonl"
+    if not model.eval_rm_type:
+        return f"--eval-prompt-data aime {path} "
+    # a per-dataset grader needs --eval-config; the other eval settings stay flags
+    config = f"eval:\n  datasets:\n    - name: aime\n      path: {path}\n      rm_type: {model.eval_rm_type}\n"
+    return f"--eval-config {command_utils.encode_pseudo_file(config)} "
 
 
 def _trainer_env(args: ScriptArgs) -> dict[str, str]:
@@ -207,8 +227,7 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
         # thinking off: a thinking response often runs out of tokens before its answer, so every reward is 0
         """--apply-chat-template-kwargs '{"enable_thinking":false}' """
         "--rollout-shuffle "
-        # grades the last \boxed{}; deepscaler grades only after </think>, which a thinking-off response lacks
-        "--rm-type math "
+        f"{model.rollout_args}"
         f"--num-rollout {recipe.num_rollout} "
         f"--rollout-batch-size {recipe.rollout_batch_size} "
         f"--n-samples-per-prompt {recipe.n_samples_per_prompt} "
@@ -221,7 +240,7 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
     if recipe.enable_eval:
         eval_args = (
             "--eval-interval 10 "
-            f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
+            f"{_aime_eval_data(args, model)}"
             "--n-samples-per-eval-prompt 4 "
             f"--eval-max-response-len {recipe.max_response_len} "
             "--eval-top-p 1 "
@@ -254,7 +273,8 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
         "--micro-batch-size 1 "
         "--gradient-checkpointing "
         "--distributed-backend tpu_dist "
-        f"{'--compile-warmup ' if args.compile_warmup else ''}"
+        f"{'--compile-warmup ' if args.compile_warmup and not model.routing_replay else ''}"
+        f"{'--use-rollout-routing-replay ' if model.routing_replay else ''}"
         "--use-dynamic-batch-size "
         f"--max-tokens-per-gpu {SEQ_LEN} "
         f"{model.train_args}"

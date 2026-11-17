@@ -15,7 +15,7 @@ norm/              grouped_rmsnorm (device helpers shared by hc and ple)
 position/          rope: apply_rotary_emb
 quant/             fp8_blockwise_cast · act_quant · fake_quant_{fp8,fp4,compressed_kv} · fused_nvfp4_qdq · int4_fake/ (CUDA)
 softmax/           token_log_softmax
-tpu/               flash_attention (causal within each segment; JAX's Pallas splash kernel through torch_tpu)
+tpu/               flash_attention (causal within each segment; JAX's Pallas splash kernel through torch_tpu) · gated_delta_rule (Qwen3.5's gated delta-net per segment; plain torch)
 ```
 
 - Only kernels we write (Triton, TileLang, CuTe, CUDA). A third-party kernel we merely call stays with its caller.
