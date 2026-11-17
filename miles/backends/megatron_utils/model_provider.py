@@ -101,14 +101,6 @@ def _apply_bridge_runtime_config(provider, args: TrainerConfig) -> None:
     # MoE token dispatcher (same-name, always present)
     provider.moe_token_dispatcher_type = args.backend.moe_token_dispatcher_type
 
-    # arg name != provider field; arg default None, so propagate only when the user set it
-    if args.backend.decoder_first_pipeline_num_layers is not None:
-        provider.num_layers_in_first_pipeline_stage = args.backend.decoder_first_pipeline_num_layers
-    if args.backend.decoder_last_pipeline_num_layers is not None:
-        provider.num_layers_in_last_pipeline_stage = args.backend.decoder_last_pipeline_num_layers
-    if args.backend.pipeline_model_parallel_layout is not None:
-        provider.pipeline_model_parallel_layout = args.backend.pipeline_model_parallel_layout
-
     # MoE training knobs: override only when explicitly set, else keep the provider's value
     if args.backend.moe_router_bias_update_rate is not None:
         provider.moe_router_bias_update_rate = args.backend.moe_router_bias_update_rate
@@ -116,8 +108,9 @@ def _apply_bridge_runtime_config(provider, args: TrainerConfig) -> None:
         provider.moe_aux_loss_coeff = args.backend.moe_aux_loss_coeff
 
     # Imported here: test_bridge_mtp_detachment.py exec()s this function's AST in a bare namespace (no module names).
-    from miles.utils.megatron_bridge_utils import apply_dsa_backend_args
+    from miles.utils.megatron_bridge_utils import apply_dsa_backend_args, apply_pipeline_layout
 
+    apply_pipeline_layout(provider, args)
     apply_dsa_backend_args(provider, args)
 
 
