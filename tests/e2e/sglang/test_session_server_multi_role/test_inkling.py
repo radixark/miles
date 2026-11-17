@@ -7,7 +7,7 @@ register_cuda_ci(
     suite="stage-c-2-gpu-h200",
     labels=["sglang"],
     hardware=["hopper", "blackwell"],
-    disabled="Inkling replies with several tool calls never match the template render (special-token mismatches); re-enable once they do (#4747)",
+    disabled="Inkling replies with several tool calls never match the template render (special-token mismatches); re-enable once they do (#4925)",
     num_gpus=2,
 )
 register_ci_gate(metric_key="rollout/tito_session_mismatch_rate/v1/assistant_text")

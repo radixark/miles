@@ -3,7 +3,7 @@ from tests.ci.metric_history import register_ci_gate
 from tests.e2e.sglang.test_session_server_multi_role._common import ModelConfig, run_both_versions
 
 register_cuda_ci(
-    est_time=1200, suite="stage-c-2-gpu-h200", labels=["sglang"], hardware=["hopper", "blackwell"], num_gpus=2
+    est_time=1300, suite="stage-c-2-gpu-h200", labels=["sglang"], hardware=["hopper", "blackwell"], num_gpus=2
 )
 register_rocm_ci(est_time=700, suite="stage-c-2-gpu-mi350", labels=["sglang"])
 # Each rate covers 32 sessions, so it moves in 1/32 steps and healthy runs land up to 0.125 above the mean.
