@@ -320,7 +320,9 @@ def test_image_builds_and_resolvers_need_cuda():
     resolver = cuda.split("\n  resolve-ci-image:\n", 1)[1].split("\n  stage-a-cpu:\n", 1)[0]
     assert "needs_cuda_image: ${{ steps.resolve.outputs.needs_cuda_image }}" in cuda
     # Both the amd64 and the arm64 call.
-    assert builds.count("needs.resolve-ci-policy.outputs.needs_cuda_image == 'true'") == 2
+    assert builds.count("(needs.resolve-ci-policy.outputs.needs_cuda_image == 'true' ||") == 2
+    # A CPU-only PR build-tests its image on request.
+    assert builds.count("contains(github.event.pull_request.labels.*.name, 'rebuild-ci-image')) &&") == 2
     assert "needs: [resolve-ci-policy, docker-build-amd64]" in resolver
     assert "needs.docker-build-amd64.result == 'success'" in resolver
     assert "needs.resolve-ci-policy.outputs.needs_cuda_image == 'true'" in resolver

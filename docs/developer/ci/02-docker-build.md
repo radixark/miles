@@ -73,7 +73,7 @@ The `tpu` variant builds from sglang-torchtpu's release image (`SGLANG_TPU_IMAGE
 
 ## PR build check (in `pr-test.yml`)
 
-A PR that changes the image inputs and selects CUDA tests builds its image before those tests run; a CPU-only PR builds none. PR CI runs only on amd64, so the PR image is one tag per architecture (`PR_IMAGE_ARCHES` in `docker/image_inputs.py`): the amd64 `pr-<num>` gates the GPU stages, and `pr-<num>-arm64` proves the image still builds for arm64 while those stages run. A failed arm64 build fails the run without holding back GPU tests.
+A PR that changes the image inputs and selects CUDA tests builds its image before those tests run; a CPU-only PR builds none unless it carries `rebuild-ci-image`. PR CI runs only on amd64, so the PR image is one tag per architecture (`PR_IMAGE_ARCHES` in `docker/image_inputs.py`): the amd64 `pr-<num>` gates the GPU stages, and `pr-<num>-arm64` proves the image still builds for arm64 while those stages run. A failed arm64 build fails the run without holding back GPU tests.
 
 `pr-test.yml` calls `_build-pr-ci-image.yml` once per architecture (`docker-build-amd64`, `docker-build-arm64`) after `stage-a-cpu` satisfies its success/bypass gate, when the final stage selection contains CUDA tests (`needs_cuda_image`). Each call is a hosted-runner no-op when the inputs match the base. Only `resolve-ci-image` waits on the amd64 call. Both CPU stages run without waiting for images. An eligible PR keeps each architecture's tag for its whole life, and rebuilds it only when the content that feeds it changes:
 
@@ -88,7 +88,7 @@ So a rerun, or a push that touches only source files, reuses the image the PR al
 
 `docker/image_inputs.py` is the single source of truth for what counts as an input (`docker/Dockerfile`, `docker/Dockerfile.rubin`, `docker/build.py`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, `docker/patch/**`, `requirements.txt`). `Dockerfile.rocm` is deliberately excluded — it feeds the `rocm/sgl-dev` images, not the `cu13` image built here.
 
-To rebuild an eligible PR image when its inputs did not change — a moved base image, a floating dependency, a corrupt push — add the **`rebuild-ci-image`** label. It rebuilds every architecture. The label does not select tests or make a PR whose build inputs match the base eligible. Once consumed by the amd64 build, it is removed so later runs can reuse the images.
+To rebuild an eligible PR image when its inputs did not change — a moved base image, a floating dependency, a corrupt push — add the **`rebuild-ci-image`** label. It rebuilds every architecture, and it is also how a PR that selects no CUDA tests build-tests its image. The label does not select tests or make a PR whose build inputs match the base eligible. Once consumed by the amd64 build, it is removed so later runs can reuse the images.
 
 ### Fork PR publication
 
