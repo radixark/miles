@@ -52,7 +52,7 @@ def _vocabulary_worker(*, actor_module: ModuleType, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(actor_module.TrainRayActor, "_init_common", lambda *args, **kwargs: None)
     monkeypatch.setattr(actor_module, "monkey_patch_torch_dist", lambda: None)
     monkeypatch.setattr(actor_module, "all_replay_managers", [])
-    monkeypatch.setattr(actor_module, "routing_replay_manager", SimpleNamespace())
+    monkeypatch.setattr(actor_module, "routing_replay_manager", SimpleNamespace(enabled=False))
     monkeypatch.setattr(actor_module, "init", lambda *args, **kwargs: None)
     monkeypatch.setattr(actor_module, "fault_hook_controller", SimpleNamespace(configure=lambda **kwargs: None))
     monkeypatch.setattr(actor_module, "is_first_replica_megatron_main_rank", lambda: False)
