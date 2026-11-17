@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from argparse import Namespace
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -13,11 +14,14 @@ from typing import Any
 
 import pytest
 from ray import cloudpickle
+from tests.fast.utils.conftest import _TrackingResource
 from tests.fast.utils.workers.conftest import worker_manager_args
 from tests.fast.utils.workers.fake_ray import EVENT_KILL, FakeRayCluster
 from tests.fast.utils.workers.fake_specs import FakeServeSpec
 
 from miles.ray.placement_group import PlacementGroupInfo
+from miles.utils.tracking_utils import tracking
+from miles.utils.tracking_utils.base import TrackingManager
 from miles.utils.workers import ray_worker_manager as rwm
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.ray_worker_manager import RayWorkerManager, _build_serve_worker, bootstrapped_worker_class
@@ -85,6 +89,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[4]
 _REBUILD_IN_CHILD = """
 import json
 import sys
+from argparse import Namespace
 
 from ray import cloudpickle
 
@@ -407,8 +412,35 @@ class TestConcurrencyGroupsAreDeclaredOnce:
 
 
 class TestServeWorkersAreStopped:
-    async def test_stopping_kills_the_actor_without_a_graceful_shutdown(self, fake_ray_cluster: FakeRayCluster):
-        """Serve workers expose no shutdown rpc, so asking for one only logs noise."""
+    async def test_rpc_transport_does_not_request_tracking_flush(self, fake_ray_cluster: FakeRayCluster):
+        manager = await _launch([_make_spec()], comm_backend=WorkerCommBackend.RPC)
+        await manager.stop_cells(["trainer-00000"])
+        assert fake_ray_cluster.calls_of("finish_tracking") == []
+        assert fake_ray_cluster.events.count(EVENT_KILL) == 1
+
+    async def test_tracking_is_flushed_before_the_actor_is_killed(self, fake_ray_cluster: FakeRayCluster):
+        manager = await _launch([_make_spec()])
+        await manager.stop_cells(["trainer-00000"])
+        assert fake_ray_cluster.first_event_index("finish_tracking") < fake_ray_cluster.first_event_index(EVENT_KILL)
+
+    async def test_tracking_flush_failure_still_kills_the_actor(self, fake_ray_cluster: FakeRayCluster, capfd):
+        manager = await _launch([_make_spec()])
+        fake_ray_cluster.method_errors["finish_tracking"] = RuntimeError("tracking backend unavailable")
+        await manager.stop_cells(["trainer-00000"])
+        assert fake_ray_cluster.events.count(EVENT_KILL) == 1
+        assert fake_ray_cluster.first_event_index("finish_tracking") < fake_ray_cluster.first_event_index(EVENT_KILL)
+        assert "tracking backend unavailable" in capfd.readouterr().err
+
+    async def test_tracking_flush_timeout_still_kills_the_actor(self, fake_ray_cluster: FakeRayCluster, monkeypatch):
+        manager = await _launch([_make_spec()])
+        fake_ray_cluster.handles[0].hanging_methods["finish_tracking"] = 10
+        monkeypatch.setattr(rwm, "_SHUTDOWN_TIMEOUT", 0.01)
+        await manager.stop_cells(["trainer-00000"])
+        assert fake_ray_cluster.events.count(EVENT_KILL) == 1
+        assert fake_ray_cluster.calls_of("finish_tracking")
+
+    async def test_stopping_does_not_request_an_unsupported_shutdown_rpc(self, fake_ray_cluster: FakeRayCluster):
+        """Bootstrap supports tracking flush, but serve workers expose no shutdown RPC."""
         manager = await _launch([_make_spec()])
 
         await manager.stop_cells(["trainer-00000"])
@@ -428,6 +460,18 @@ class TestServeAndCommandSpecsCoexist:
 
 
 class TestTheBootstrappedClass:
+    async def test_tracking_hook_releases_the_process_tracking_resources(self, monkeypatch):
+        resources = []
+        tracking_manager = TrackingManager({"memory": (_TrackingResource, "enabled")})
+        tracking_manager.init(Namespace(enabled=True, resources=resources))
+        assert len(resources) == 1
+        monkeypatch.setattr(tracking, "_manager", tracking_manager)
+        worker = _build_serve_worker(
+            worker_class_path=_WORKER_CLASS_PATH, ctor_kwargs=lambda _: {}, context=_launch_context()
+        )
+        worker.finish_tracking()
+        assert resources == []
+
     async def test_evaluates_the_handed_ctor_kwargs_with_the_handed_context(self):
         """The class captures nothing: the recipe and the identity both arrive as constructor arguments."""
         probe = _CtorKwargsProbe()

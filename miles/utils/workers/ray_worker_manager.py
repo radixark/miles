@@ -486,6 +486,12 @@ class _CommandActorManager(_BaseActorManager[BaseCommandSpec]):
 
 @dataclass
 class _ServeActorRayCommManager(_BaseActorManager[BaseServeSpec]):
+    async def _shutdown_gracefully(self) -> None:
+        try:
+            await asyncio.wait_for(self.actor_handle.finish_tracking.remote(), timeout=_SHUTDOWN_TIMEOUT)
+        except Exception as e:
+            logger.warning(f"Tracking flush before shutdown failed ({self=}, {e})")
+
     def _compute_remote_options(self) -> dict:
         groups = self.spec.concurrency_groups
         return {} if groups is None else dict(concurrency_groups=groups)
@@ -573,6 +579,12 @@ def bootstrapped_worker_class(worker_class_path: str) -> type:
             self, *, ctor_kwargs: Callable[[WorkerCtorContext], dict[str, Any]], context: WorkerLaunchContext
         ) -> None:
             super().__init__(**ctor_kwargs(_ctor_context(context)))
+
+        def finish_tracking(self) -> None:
+            # Tracking backends are optional and owned by the worker process.
+            from miles.utils.tracking_utils.tracking import finish_tracking
+
+            finish_tracking()
 
     BootstrappedWorker.__name__ = worker_class.__name__
     BootstrappedWorker.__qualname__ = worker_class.__qualname__
