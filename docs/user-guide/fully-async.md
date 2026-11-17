@@ -241,7 +241,7 @@ follow, which backend runs the eval and where that backend gets its weights.
 | Backend | Selected by | Cost |
 |---|---|---|
 | Shared engines | None of the flags below, which is the default | Rollout production pauses for the eval duration |
-| Carved-out engines | `--eval-pool-num-engines K` | K rollout engines leave training while an eval runs; training never pauses |
+| Carved-out engines | `--eval-pool-num-engines K` | K rollout engines leave training while an eval runs; training waits only for an eval still running at the next eval point (`backpressure`) |
 | Dedicated fleet | `--eval-num-gpus N` | N GPUs carved out of the job; training never pauses |
 | External backend | `--eval-function-path` pointing at a `CheckpointEvalFn` | Nothing from the training job beyond the snapshot export |
 
@@ -276,7 +276,8 @@ Eval runs on rollout engines, but only on K of them, and only while it runs:
 At an eval-due step, right after `update_weights`, the trainer moves the last K serving
 engines from the training router to an eval router, which starts empty. Those engines
 keep the weights of that step and receive no weight update while the eval runs, so every
-eval token comes from one version. Training never waits: the producer keeps submitting,
+eval token comes from one version. Training does not wait while the eval runs (an eval still
+running at the next eval point is covered below): the producer keeps submitting,
 the other engines keep generating, and every later `update_weights` reaches exactly the
 engines still in training, so training staleness is the same as without eval. Evaluation
 sessions of the session server go to the eval router; training sessions never do. When the
