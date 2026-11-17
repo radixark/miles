@@ -2,7 +2,7 @@
 
 Each run dumps train data to ``{dump_dir}/{mode}/{rollout_id}_{rank}.pt`` (``--save-debug-train-data``), which keeps
 rollout_routed_experts as routing replay consumed it on that rank: each sample's rows at the rank's CP positions, of
-its pipeline stage's layers, padded, before packing. The output store run reads only those rows, so the two runs are
+the layers it replays, padded, before packing. The output store run reads only those rows, so the two runs are
 compared per CP rank.
 """
 
