@@ -96,6 +96,9 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         self._snapshot: dict[str, np.ndarray] = {}
         self._baseline_captured = False
         self._snapshot_file_version = 0
+        self._max_bytes = -1
+        self._free_q: queue.Queue = queue.Queue()
+        self._use_pinned = False
         # Post-write hook: object-store-backed shared filesystems lack cross-host
         # read-after-write consistency, so written files need an explicit step
         # (e.g. uploading them to the backing object store) before the engines can see them.
@@ -262,16 +265,18 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         self._checksums: dict[str, str] = {}  # changed tensor name -> new-state checksum
         self.changed_bytes = self.total_bytes = 0
 
-        # Pinned host-buffer pool: a pinned non_blocking GPU->CPU copy is far faster than .cpu().
-        self._max_bytes = max((int(v.nbytes) for v in self._snapshot.values()), default=0)
-        self._free_q: queue.Queue = queue.Queue()
-        self._use_pinned = True
-        try:
-            for _ in range(max(4, min(2 * NUM_WORKERS, (32 << 30) // max(self._max_bytes, 1)))):
-                self._free_q.put(torch.empty(self._max_bytes, dtype=torch.uint8, pin_memory=True))
-        except RuntimeError as e:  # low memlock limit
-            logger.warning("pinned host buffers unavailable (%s); using pageable .cpu()", e)
-            self._use_pinned = False
+        # pinned non_blocking D2H beats .cpu(); kept across syncs, as freed pinned memory never goes back to the OS
+        max_bytes = max((int(v.nbytes) for v in self._snapshot.values()), default=0)
+        if max_bytes != self._max_bytes:
+            self._max_bytes = max_bytes
+            self._free_q = queue.Queue()
+            self._use_pinned = True
+            try:
+                for _ in range(max(4, min(2 * NUM_WORKERS, (32 << 30) // max(max_bytes, 1)))):
+                    self._free_q.put(torch.empty(max_bytes, dtype=torch.uint8, pin_memory=True))
+            except RuntimeError as e:  # low memlock limit
+                logger.warning("pinned host buffers unavailable (%s); using pageable .cpu()", e)
+                self._use_pinned = False
 
         self._pool = ThreadPoolExecutor(max_workers=NUM_WORKERS)
         self._inflight: deque = deque()
