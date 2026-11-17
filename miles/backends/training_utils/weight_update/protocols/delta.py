@@ -144,7 +144,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             if self._use_pinned and nbytes <= self._max_bytes:
                 buf = self._free_q.get()  # blocks when all buffers are in flight -> backpressures the gather
                 buf[:nbytes].copy_(flat, non_blocking=True)
-                torch.cuda.current_stream().synchronize()
+                torch.accelerator.current_stream().synchronize()
                 payload, pinned = buf, True
             else:
                 payload, pinned = flat.cpu().numpy(), False
@@ -417,12 +417,9 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
     def _record_metrics(self, *, weight_version: int) -> None:
         """All-reduce the byte counts and record changed-fraction / wire size; the actor drains
         update_weight_metrics onto the step log."""
-        counts = torch.tensor(
-            [self.changed_bytes, self.total_bytes, self.wire_bytes],
-            dtype=torch.int64,
-            device=torch.cuda.current_device(),
-        )
-        dist.all_reduce(counts)
+        # byte counts pass 2**31, which some device collectives (neuron) saturate to int32
+        counts = torch.tensor([self.changed_bytes, self.total_bytes, self.wire_bytes], dtype=torch.int64)
+        dist.all_reduce(counts, group=get_gloo_group())
         changed, total, wire = counts.tolist()
         self.update_weight_metrics = {
             "perf/update_weights_density": changed / max(total, 1),
