@@ -624,7 +624,7 @@ def test_the_actor_starts_after_the_restored_rollout_and_saves_lora_as_adapter_d
         model_parts=[],
         optimizers=SimpleNamespace(optimizers=[]),
         align_token_side_channel=None,
-        configure_loss_reduction=lambda: None,
+        configure_loss_reduction=lambda *, gather_cp_logits: None,
         configure_fixed_shape_compile=lambda *, num_passes: None,
         has_last_stage=lambda: True,
         parallelism=SimpleNamespace(get_optional_mesh=lambda name: None),

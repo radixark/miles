@@ -593,9 +593,11 @@ well (`--gradient-checkpointing` stays as the FSDP-side spelling).
 
 Two notes on how they behave here:
 
-- **Context parallelism is internal.** The trainer shards the sequence for attention and
-  gathers the logits back before the loss sees them, so the RL loss and its metrics behave
-  exactly as at `cp=1` and cost the same memory.
+- **Context parallelism is internal.** The trainer shards the sequence for attention, and the
+  RL loss and its metrics behave exactly as at `cp=1`. On GPU the logits are gathered back
+  before the loss, so the loss costs the same memory as at `cp=1`. On TPU each rank scores its
+  own share of the logit rows and only the per-row results are gathered, so no rank holds the
+  whole sequence's logits.
 - **Pipeline parallelism needs one shape for the whole run**, so every microbatch is padded
   to `--seq-length`. Weight-tied flavors (qwen3 0.6B / 1.7B / 4B) cannot be pipelined —
   torchtitan refuses, by design.
