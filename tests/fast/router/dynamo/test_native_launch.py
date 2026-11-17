@@ -14,7 +14,7 @@ from miles.router.dynamo.config import DynamoConfig
 from miles.router.dynamo.sidecar import sidecar_command, sidecar_env, sidecar_overrides, sidecar_ports
 from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.workers.launch_gate import GATE_PORT_NAME
-from miles.utils.workers.worker_spec import HostAndPort, LaunchCommandContext
+from miles.utils.workers.worker_spec import HostAndPort, LaunchCommandContext, WorkerLaunchContext
 
 
 @pytest.fixture
@@ -62,6 +62,24 @@ def test_miles_allocates_and_launches_sidecar_with_engine(config, monkeypatch):
     assert spec.env_var(ctx)["DYN_SGLANG_API_KEY"] == "test-key"
     assert spec.category == "inference_engine"
     assert spec.scheduling(scaling).pg_name == "rollout"
+
+
+@pytest.mark.parametrize("api_key", [None, "group-key"])
+def test_engine_env_uses_effective_credentials_before_ports_are_allocated(config, monkeypatch, api_key):
+    monkeypatch.setenv("DYN_SGLANG_API_KEY", "inherited-key")
+    args = make_args(dynamo_config=config, sglang_api_key="base-key")
+    model = args.sglang.models[0]
+    group = model.server_groups[0]
+    group = group.model_copy(update={"overrides": {**group.overrides, "api_key": api_key}})
+    args.sglang = args.sglang.model_copy(update={"models": [model.model_copy(update={"server_groups": [group]})]})
+    spec = InferenceEngineSpec.create(args)[0]
+    ctx = WorkerLaunchContext(args=args, cell_index=0, worker_in_cell_index=0, num_workers_per_cell=1, gpu_ids=[0])
+
+    env = spec.env_var(ctx)
+
+    assert env.get("DYN_SGLANG_API_KEY") == api_key
+    assert "DYN_SYSTEM_HOST" not in env
+    assert "DYN_SYSTEM_PORT" not in env
 
 
 def test_sidecar_does_not_accept_conflicting_admission_env(config):
