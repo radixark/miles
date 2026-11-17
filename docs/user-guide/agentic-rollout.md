@@ -335,6 +335,7 @@ Some agent harnesses do not replay model messages verbatim: they may reserialize
 |---|---|
 | `strict` | Preserves the existing comparison of `role`, `content`, `reasoning_content`, and `tool_calls`, including empty-value and tool-call `index` normalization. |
 | `loose_tool_call` | Accepts everything `strict` accepts, plus equivalent JSON-object representations of `tool_calls[].function.arguments`. Call IDs, types, function names, order, unknown fields, and `reasoning_content` still have to match. |
+| `loose_tool_call_ignore_reasoning` | Accepts everything `loose_tool_call` accepts, and leaves `reasoning_content` out of the comparison, so a replay that drops or rewrites it still matches. Content, tool calls and call IDs still have to match. |
 | `role_content_only` | Compares only normalized `role` and `content`. **High risk:** different tool-call or reasoning histories can collapse into one session lineage. |
 | dotted import path | Loads a trusted synchronous custom matcher; see [Customization](/user-guide/customization#session-message-matcher). |
 
@@ -342,6 +343,14 @@ The matcher only decides whether the message a client replays and the message st
 
 - On a mismatch, the existing paths apply: v1 rolls back (or rejects), v2 branches.
 - On a match, the stored messages and token snapshot stay authoritative inside the reusable prefix; only the suffix beyond it is tokenized anew from the client input.
+
+Under v2 a replay the matcher rejects is still answered with a 200 and the session branches; a client that rewrites every assistant turn opens a new root on each turn, so each turn trains as its own sample. Rollout metrics report `rollout/session/roots_per_episode`, `rollout/session/leaves_per_episode` and `rollout/session/one_turn_per_root_ratio` (multi-turn sessions in which every turn opened a root), and the rollout logs a warning when that ratio passes one half. A clean single conversation is one root and one leaf.
+
+Choose the matcher for the agent framework a recipe runs:
+
+- Keep `strict` for a client that replays model messages verbatim.
+- Choose `loose_tool_call` for a client that re-serializes tool-call arguments, for example to compact JSON.
+- Choose `loose_tool_call_ignore_reasoning` when the engine runs a reasoning parser and the client resends assistant turns without `reasoning_content`. The stored reasoning stays in the training tokens.
 
 Miles does not reconcile tool-call IDs across that boundary: deployments choosing `role_content_only` must themselves keep a stored call ID `A` followed by a replayed tool result referencing `B` protocol-compatible.
 
