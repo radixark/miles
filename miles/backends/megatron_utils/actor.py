@@ -37,7 +37,7 @@ from miles.backends.training_utils.model_companion import (
     ModelCompanionInstallationUtils,
     ModelCompanionWeightVersionUtils,
 )
-from miles.backends.training_utils.replay.data import fill_replay_data, register_replay_list_sequential
+from miles.backends.training_utils.replay.data import attach_replay_data, register_replay_list_sequential
 from miles.backends.training_utils.types import TrainStepOutput
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
@@ -96,7 +96,7 @@ from .model import (
 from .named_weights import named_params_and_buffers
 from .optimizer_utils import reset_optimizer_state
 from .parallel import verify_megatron_parallel_state
-from .replay_utils import register_replay_list_moe
+from .replay_utils import register_replay_list_moe, replay_blocks
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
@@ -631,6 +631,12 @@ class MegatronTrainRayActor(TrainRayActor):
         for m in all_replay_managers:
             m.stage = stage
 
+    def _clear_replays(self) -> None:
+        """Drop this step's replay entries, stopping the fills still running."""
+        for m in all_replay_managers:
+            if m.enabled:
+                m.clear_all()
+
     @with_logs
     def _compute_log_prob(
         self,
@@ -677,7 +683,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 rollout_data, store_get_result = get_rollout_data(
                     args=self.args,
                     rollout_data_ref=rollout_data_ref,
-                    output_store_read=self.output_store_read,
+                    output_store=self.output_store,
                     witness_info=witness_info,
                     token_space_processor=self.token_space_processor,
                     train_parallel_config=get_parallel_state().train_parallel_config(
@@ -685,6 +691,8 @@ class MegatronTrainRayActor(TrainRayActor):
                     ),
                 )
                 stack.enter_context(store_get_result)
+                # Before the shard is released, on failure too: the replay fills still read it.
+                stack.callback(self._clear_replays)
                 if self.args.debug_rollout_only:
                     log_rollout_data(rollout_id, self.args, rollout_data)
                     return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
@@ -772,19 +780,16 @@ class MegatronTrainRayActor(TrainRayActor):
 
         for m in all_replay_managers:
             if self._use_rollout_replay(m):
-                fill_replay_data(
+                attach_replay_data(
+                    m,
                     args=self.args,
                     models=self.model,
                     data_iterator=data_iterator,
                     num_microbatches=num_microbatches,
                     rollout_data=rollout_data,
-                    data_key=m.data_key,
-                    replay_list=m.replays,
-                    register_replay_list_func=m.register_replay_list_func,
-                    if_sp_region=m.if_sp_region,
-                    indices_are_token_positions=m.replay_indices_are_token_positions,
+                    output_store=self.output_store,
                     sequence_first=m is routing_replay_manager,
-                    kept_in_train_dump=m.kept_in_train_dump,
+                    blocks=replay_blocks(m, self.model),
                 )
 
         with inverse_timer("train_wait"), timer("train"):
@@ -880,10 +885,6 @@ class MegatronTrainRayActor(TrainRayActor):
             self.prof.step(rollout_id=rollout_id)
 
         train_dump.save_debug_train_data(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
-
-        for m in all_replay_managers:
-            if m.enabled:
-                m.clear_all()
 
         if train_step_outcome == TrainStepOutcome.NORMAL:
             # update the cpu actor weight to the latest model

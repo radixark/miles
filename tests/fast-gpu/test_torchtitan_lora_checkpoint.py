@@ -2,11 +2,12 @@ from tests.ci.ci_register import register_cuda_ci
 
 # CPU-only checks, on this stage because only the GPU image ships torchtitan
 register_cuda_ci(
-    est_time=20, suite="stage-b-2-gpu-h200", labels=["torchtitan", "lora"], hardware=["hopper"], num_gpus=2
+    est_time=140, suite="stage-b-2-gpu-h200", labels=["torchtitan", "lora"], hardware=["hopper"], num_gpus=2
 )
 
 import os
 import socket
+import sys
 import weakref
 from dataclasses import dataclass, replace
 from datetime import timedelta
@@ -886,3 +887,7 @@ def _pipeline_stages(rank, world_size, port):
 
 def test_pipeline_stages_share_the_runs_groups_and_modules():
     run_multiprocess(_pipeline_stages)
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-v"]))
