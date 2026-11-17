@@ -70,7 +70,7 @@ def attach_replay_data(
     The manager fills the micro batches in order on its worker thread, ahead of the forwards
     that pop them; the column is dropped once the last one has been waited for.
 
-    `blocks` are the `(start, end)` stream ranges this rank registers (Megatron: `replay_blocks`),
+    `blocks` are the `(start, end)` stream ranges this rank registers (Megatron: `stream_blocks`),
     read from the stored parts that hold them; None means every stream, the whole stored field.
     Only their streams are read and padded, one tensor per block, and registered with `blocks=`.
 
@@ -137,10 +137,7 @@ def attach_replay_data(
         )
         local_ranges = layout.local_ranges([t.size(0) for t in tokens])
         if from_store:
-            # A rank that replays nothing, e.g. a pipeline stage of dense layers only, may read all-zero rows.
-            rows = _read_local_rows(
-                manager.read_slot, samples, local_ranges, blocks=blocks, check=bool(manager.replays)
-            )
+            rows = _read_local_rows(manager.read_slot, samples, local_ranges, blocks=blocks)
         else:
             rows = [
                 [r[:, start:end] for start, end in blocks]
@@ -203,15 +200,14 @@ def _read_local_rows(
     local_ranges: Sequence[Sequence[tuple[int, int]]],
     *,
     blocks: Sequence[tuple[int, int]],
-    check: bool,
 ) -> list[list[torch.Tensor]]:
     """Each sample's rows at this rank's local positions, one tensor per block, read in one call into a reused slot.
 
     The slot holds, in turn, each stored part with a stream of `blocks`, every sample's local rows of it: a block
     is usually one part, but a rank's streams can be fewer than the part holding them (an indexer on some layers
     only), and a run of them can cross parts (adjacent chunks of one rank). Positions past a sample's last row are
-    padded with -1, as `take_ranges` pads inline rows. With `check`, the rows read from each object are checked,
-    those of every part together.
+    padded with -1, as `take_ranges` pads inline rows. The rows read from each object are checked, those of every
+    part together.
     """
     if not blocks:
         # This rank registers no stream.
@@ -245,13 +241,12 @@ def _read_local_rows(
         into=buffer,
     )
     rows = [region.rows(buffer, num_rows=sum(counts)) for region in regions]
-    if check:
-        # Every region holds the same local rows: check those of each object read of the first part in all.
-        first = regions[0]
-        for r in first.reads:
-            start = (r.dst_offset - first.offset) // first.row_bytes
-            end = start + r.nbytes // first.row_bytes
-            samples[0].check_rows([rows_of_part[start:end] for rows_of_part in rows])
+    # Every region holds the same local rows: check those of each object read of the first part in all.
+    first = regions[0]
+    for r in first.reads:
+        start = (r.dst_offset - first.offset) // first.row_bytes
+        end = start + r.nbytes // first.row_bytes
+        samples[0].check_rows([rows_of_part[start:end] for rows_of_part in rows])
     part_rows = [torch.from_numpy(rows_of_part) for rows_of_part in rows]
     by_block = [_block_streams(part_rows, parts, block).split(counts) for block in blocks]
     return [list(sample_rows) for sample_rows in zip(*by_block, strict=True)]

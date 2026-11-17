@@ -755,7 +755,7 @@ def test_a_block_past_the_stored_streams_fails_the_fill(monkeypatch, fake_plugin
         )
 
 
-def test_all_zero_routed_experts_fail_only_a_rank_that_replays_them(monkeypatch, fake_plugin):
+def test_all_zero_routed_experts_fail_the_rank_that_reads_them(monkeypatch, fake_plugin):
     args = SimpleNamespace(
         qkv_format="thd",
         allgather_cp=False,
@@ -786,8 +786,8 @@ def test_all_zero_routed_experts_fail_only_a_rank_that_replays_them(monkeypatch,
             blocks=blocks,
         )
 
-    # A rank holding both parts (two VPP chunks), and a stage of the dense layer only, which replays nothing.
+    # Rows of both parts, one of them all zeros; then a stage of the dense layer only, which reads nothing.
     attach([(0, 1), (1, 2)], [_Replay(stream_idx=1)])
-    attach([(0, 1)], [])
+    attach([], [])
     with pytest.raises(StorePlanError, match="all zeros"):
         attach([(0, 1)], [_Replay(stream_idx=0)])

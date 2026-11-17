@@ -37,7 +37,11 @@ from miles.backends.training_utils.model_companion import (
     ModelCompanionInstallationUtils,
     ModelCompanionWeightVersionUtils,
 )
-from miles.backends.training_utils.replay.data import attach_replay_data, register_replay_list_sequential
+from miles.backends.training_utils.replay.data import (
+    attach_replay_data,
+    register_replay_list_sequential,
+    stream_blocks,
+)
 from miles.backends.training_utils.types import TrainStepOutput
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
@@ -96,7 +100,7 @@ from .model import (
 from .named_weights import named_params_and_buffers
 from .optimizer_utils import reset_optimizer_state
 from .parallel import verify_megatron_parallel_state
-from .replay_utils import register_replay_list_moe, replay_blocks
+from .replay_utils import assign_routed_experts_streams
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
@@ -155,7 +159,6 @@ class MegatronTrainRayActor(TrainRayActor):
 
         for m in all_replay_managers:
             m.register_replay_list_func = register_replay_list_sequential
-        routing_replay_manager.register_replay_list_func = register_replay_list_moe
 
         init(
             args,
@@ -232,6 +235,8 @@ class MegatronTrainRayActor(TrainRayActor):
         )
         with ckpt_load_config.apply(args.backend):
             self.model, self.optimizer, self.opt_param_scheduler = build_model_and_optimizer(args, role=role)
+        if routing_replay_manager.enabled and args.use_rollout_routing_replay:
+            assign_routed_experts_streams(routing_replay_manager.replays, self.model)
         self._post_init_random_state = RandomState.capture()
 
         parallel_state = get_parallel_state()
@@ -789,7 +794,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     rollout_data=rollout_data,
                     output_store=self.output_store,
                     sequence_first=m is routing_replay_manager,
-                    blocks=replay_blocks(m, self.model),
+                    blocks=stream_blocks(m.replays),
                 )
 
         with inverse_timer("train_wait"), timer("train"):
