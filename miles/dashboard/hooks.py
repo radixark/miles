@@ -225,7 +225,11 @@ class TrajectorySink:
             event = TrajectoryEvent(
                 ts=time.time() if ts is None else ts,
                 kind=kind,
-                sample_index=sample.index if sample.index is not None else -1,
+                sample_index=(
+                    sample.lineage.source_sample_index
+                    if sample.lineage is not None
+                    else sample.index if sample.index is not None else -1
+                ),
                 group_index=sample.group_index if sample.group_index is not None else -1,
                 turn=turn,
                 weight_version=str(versions[-1]) if versions else "",

@@ -31,6 +31,7 @@ import os
 import random
 import time
 from argparse import Namespace
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -269,3 +270,49 @@ def blank_samples(dump_dir: Path, rollout_id: int, *, seconds: float = 100.0) ->
 
     stamp = time.time() - seconds
     os.utime(path, (stamp, stamp))
+
+
+def dump_segmented_run(
+    dump_dir: Path,
+    *,
+    explicit_ids: bool = True,
+    compact_rewards: bool = True,
+    lengths: tuple[int, int, int, int] = (3, 1, 2, 2),
+    reward_key: str | None = None,
+    prepare: Callable[[list[Sample]], None] | None = None,
+) -> list[Sample]:
+    args = _make_args(dump_dir, num_prompts=2, n_samples_per_prompt=2)
+    args.reward_key = reward_key
+    rng = random.Random(41)
+    samples = []
+    rewards = [1.0, 0.0, 0.25, 0.75]
+    for episode, length in enumerate(lengths):
+        for _ in range(length):
+            sample = _make_sample(
+                rng, index=len(samples) if explicit_ids else episode, group_index=episode // 2, max_response_len=16
+            )
+            sample.rollout_id = 100 + episode * 7 if explicit_ids else None
+            sample.reward = rewards[episode] if reward_key is None else {reward_key: rewards[episode], "format": 1.0}
+            sample.metadata["messages"] = _dummy_messages(sample)
+            samples.append(sample)
+    if prepare is not None:
+        prepare(samples)
+    args.global_batch_size = len(samples)
+    save_debug_rollout_data(args, samples, rollout_id=0, evaluation=False)
+    save_debug_rollout_data(args, {"cua": {"samples": samples}}, rollout_id=0, evaluation=True)
+    train_data = convert_samples_to_train_data(
+        args,
+        samples,
+        metadata={},
+        custom_convert_samples_to_train_data_func=None,
+        custom_reward_post_process_func=None,
+    )
+    if compact_rewards:
+        train_data["raw_reward"] = rewards
+    for rank, shard in enumerate(split_train_data_by_dp_raw(args, train_data, dp_size=2)):
+        shard = process_rollout_data_shard(args, shard)
+        _apply_dummy_actor_columns(shard, torch.Generator().manual_seed(rank), with_entropy=True)
+        for replica in range(2):
+            save_debug_train_data_for_rank(args, rollout_id=0, rollout_data=shard, rank=rank * 2 + replica)
+    age_files(dump_dir)
+    return samples
