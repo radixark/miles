@@ -90,7 +90,7 @@ register_cuda_ci(
 )
 ```
 
-- A GPU file has one top-level `register_cuda_ci(...)`, one `register_rocm_ci(...)` per ROCm suite it runs in, or both. The calls are parsed from the AST: top-level, literal arguments, no alias. `tests/fast/` files need none only when the implicit fast CPU registration fits; slower files declare `register_cpu_ci(...)` as specified above.
+- A GPU file has one top-level `register_cuda_ci(...)`, one `register_rocm_ci(...)`, or both. The calls are parsed from the AST: top-level, literal arguments, no alias. `tests/fast/` files need none only when the implicit fast CPU registration fits; slower files declare `register_cpu_ci(...)` as specified above.
 - `labels`: reuse a domain label from `tests/ci/labels.py`. A new label also
   needs a `run-ci-<key>` repository label, which only a maintainer can create,
   and an entry in `.github/workflows/policies/comment-command-access.json` to

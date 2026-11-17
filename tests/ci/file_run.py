@@ -69,9 +69,8 @@ def plan_file_run(all_tests, test_file: str, image_tag: str, *, hw: str = "auto"
 
     An explicit file request is the selection, so domain labels and the
     nightly cadence gate do not apply; only `disabled` still blocks the run.
-    AUTO preserves CPU/CUDA selection. Explicit ROCm requests prefer an
-    enabled nightly registration, whose allocation records the original GPU
-    count, over a wider PR registration. Ambiguous selections are errors.
+    AUTO preserves CPU/CUDA selection. An explicit ROCm request uses the file's
+    one enabled ROCm registration. Ambiguous selections are errors.
     """
     if hw not in {"auto", "rocm"}:
         raise FileRunError(f"unsupported file-run hardware: {hw!r}")

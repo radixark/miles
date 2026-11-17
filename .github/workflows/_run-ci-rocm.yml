@@ -16,11 +16,9 @@ on:
         required: false
         default: 4
       container_image:
-        # Keep in sync with DEFAULT_IMAGE_TAG in tests/ci/rocm.py, which the
-        # callers resolve; this default only serves callers that pass none.
+        # No default: tests/ci/rocm.py resolves the image for every caller.
         type: string
-        required: false
-        default: 'rocm/sgl-dev:miles-rocm10-mi35x'
+        required: true
       timeout_minutes:
         description: 'Job budget, including Slurm queueing, setup, execution, and cleanup. The run step keeps its own 240-minute limit, so values above 250 do not extend the run; keep it at least 10 minutes above that limit for the cancel step. launch.sh still caps the cluster job at its 3-hour TIME_LIMIT.'
         type: number

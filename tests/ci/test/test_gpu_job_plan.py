@@ -10,7 +10,6 @@ import pytest
 import yaml
 
 from tests.ci.ci_register import register_cpu_ci
-from tests.ci.rocm import container_image as rocm_container_image
 
 register_cpu_ci(est_time=2, suite="stage-a-cpu", labels=[])
 
@@ -247,9 +246,3 @@ def test_b200_suite_and_file_runs_allow_long_test_timeout():
     assert "'stage-c-4-gpu-b200' && 540 || 360" in rerun["with"]["timeout_minutes"]
     reusable = yaml.safe_load((workflows / "_run-ci.yml").read_text())
     assert reusable["jobs"]["run"]["timeout-minutes"] == "${{ inputs.timeout_minutes }}"
-
-
-def test_rocm_workflow_default_image_is_the_resolver_default():
-    workflow = yaml.safe_load((ROOT / ".github/workflows/_run-ci-rocm.yml").read_text())
-    inputs = workflow.get("on", workflow.get(True))["workflow_call"]["inputs"]
-    assert inputs["container_image"]["default"] == rocm_container_image()
