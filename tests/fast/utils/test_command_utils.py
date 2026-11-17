@@ -683,6 +683,19 @@ class TestExecuteTrain:
         assert "ray job submit" in commands[-1]
         assert sum("pkill -9 sglang" in command for command in commands) == 1
 
+    def test_a_graceful_run_stops_ray_without_sigkill(self, commands):
+        """A SIGKILL of a process holding a TPU can take the host's TPU session, the engine included, down."""
+        config = command_utils.default_config()
+        config.graceful_ray_stop = True
+        config.create_backend().execute_train(
+            train_args="--rollout-external-engine-addrs host:30000",
+            num_gpus_per_node=8,
+            megatron_model_type="qwen3-4B",
+        )
+
+        assert not any("pkill -9" in command or "ray stop --force" in command for command in commands)
+        assert sum("ray stop --grace-period" in command for command in commands) == 1
+
     def test_expands_the_model_config_into_the_submitted_command(self, commands):
         """The megatron model type is expanded into the argv its model script declares."""
         _backend().execute_train(train_args="--x 1", num_gpus_per_node=8, megatron_model_type="qwen3-4B")

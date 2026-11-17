@@ -24,7 +24,15 @@ class LoraConfig(BaseConfig):
     ] = True
 
     lora_rank: A[int, Arg(help="LoRA rank. Set to 0 to disable LoRA (default: 0)")] = 0
-    lora_alpha: A[int, Arg(help="LoRA alpha for scaling (default: 16)")] = 16
+    lora_alpha: A[
+        float | None,
+        Arg(
+            help=(
+                "LoRA alpha for scaling. Default: the --lora-adapter-path source's alpha, else 16; "
+                "a source that records none (torchtitan) needs it explicitly"
+            )
+        ),
+    ] = None
     lora_dropout: A[float, Arg(help="LoRA dropout rate (default: 0.0)")] = 0.0
     lora_A_init_method: A[
         str,
@@ -57,6 +65,15 @@ class LoraConfig(BaseConfig):
     ] = None
     exclude_modules: A[str | None, Arg(help="Modules to exclude from LoRA (comma-separated)")] = None
     lora_adapter_path: A[str | None, Arg(help="Path to load pre-trained LoRA adapter weights (default: None)")] = None
+    lora_adapter_convert_save: A[
+        str | None,
+        Arg(
+            help=(
+                "Commit --lora-adapter-path, as loaded into this run, to this adapter dir; "
+                "use with --num-rollout 0 to convert a checkpoint only a trainer can read"
+            )
+        ),
+    ] = None
     lora_sync_from_tensor: A[
         bool,
         Arg(help="Sync LoRA weights via tensor instead of file (more efficient)"),

@@ -123,6 +123,13 @@ class DataBuffer(ABC):
     def load_state_dict(self, state: Any) -> None:
         raise NotImplementedError(f"{type(self).__name__} must implement load_state_dict() for checkpointing")
 
+    def admits(self, *, in_flight: int) -> bool:
+        """Whether the producer may submit one more group while ``in_flight`` groups are generating.
+
+        Asked again whenever a group finishes, a get() starts, or a group goes to the unused handler.
+        """
+        return True
+
     def drop_saved_state(self, state: Any, *, reason: str) -> None:
         """Instead of ``load_state_dict``: record the saved groups as dropped, e.g. after a data source reset."""
         raise NotImplementedError(f"{type(self).__name__} must implement drop_saved_state() for a data reset")
@@ -171,6 +178,7 @@ class DefaultDataBuffer(DataBuffer):
         self._dynamic_filter = load_function(args.dynamic_sampling_filter_path)
         self._cond = asyncio.Condition()
         self._current_version: int | None = None
+        self._get_pending = False
 
         self._metric_gatherer = MetricGatherer()
         self._metric_aborted_groups = 0
@@ -223,6 +231,13 @@ class DefaultDataBuffer(DataBuffer):
         return True
 
     async def get(self, *, num_groups: int, current_version: int | None = None, **_) -> list[DataBufferInput]:
+        self._get_pending = True
+        try:
+            return await self._take(num_groups=num_groups, current_version=current_version)
+        finally:
+            self._get_pending = False
+
+    async def _take(self, *, num_groups: int, current_version: int | None) -> list[DataBufferInput]:
         if current_version is not None:
             self._current_version = current_version
         async with self._cond:
@@ -299,6 +314,14 @@ class DefaultDataBuffer(DataBuffer):
                 self._unused_handler_fn(entry.prompt_group, UnusedReason.RESTORED)
             else:
                 self._buffer.append(entry)
+
+    def admits(self, *, in_flight: int) -> bool:
+        if not self._args.async_submit_within_staleness:
+            return True
+        # get() hands out groups in completion order, one weight version per call, so a group that enters the
+        # buffer is trained at most max_weight_staleness versions later.
+        window = self._args.max_weight_staleness + int(self._get_pending)
+        return len(self._buffer) + in_flight < window * self._args.rollout_batch_size
 
     def drop_saved_state(self, state: list[DataBufferInput], *, reason: str) -> None:
         record_dropped_samples([[entry.prompt_group, entry.group] for entry in state])

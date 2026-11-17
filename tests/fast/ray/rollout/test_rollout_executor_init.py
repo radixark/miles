@@ -77,3 +77,39 @@ class TestInitRunsExactlyOnce:
         """An executor process the previous script initialized is about to be replaced, not re-initialized."""
         with pytest.raises(AssertionError, match="stale worker"):
             await _inited_executor().init()
+
+
+def _fresh_executor() -> RolloutExecutor:
+    return RolloutExecutor(
+        args=make_args(),
+        router_providers=[],
+        session_server_provider=None,
+        inference_controller_provider=FakeInferenceTopologyProvider(
+            InferenceRuntimeImmutState(engine_count=1, gpu_count=1)
+        ),
+    )
+
+
+async def test_disposing_an_executor_that_never_initialized_is_a_no_op() -> None:
+    """The driver may dispose it after a startup failure elsewhere, before its init created anything to dispose."""
+    executor = _fresh_executor()
+
+    await executor.dispose()
+
+    assert executor._init_once.state is InitState.NOT_INITED
+
+
+async def test_disposing_an_executor_whose_init_failed_still_sweeps_the_output_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure after init connected the output store must not leak what the run wrote to it."""
+    executor = _fresh_executor()
+    executor._delete_store_refs = MagicMock()
+    swept = []
+    monkeypatch.setattr(executor, "_sweep_output_store", lambda: swept.append(True))
+    with pytest.raises(RuntimeError), executor._init_once.guarding():
+        raise RuntimeError("data source failed to load")
+
+    await executor.dispose()
+
+    assert swept == [True]

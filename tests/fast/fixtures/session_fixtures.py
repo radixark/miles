@@ -16,6 +16,7 @@ def make_session_server_config(**overrides: Any) -> SessionServerConfig:
         hf_checkpoint=None,
         chat_template_path=None,
         tito_model="default",
+        allow_stop_token_replace=False,
         apply_chat_template_kwargs=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,

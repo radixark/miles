@@ -43,6 +43,9 @@ SessionWireFormat = Literal["openai", "anthropic"]
 # mismatch types (special_token_count / special_token_type / non_assistant_text)
 # are journaled per sample and rejected by the run-level gate — those must be 0.
 ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD = 0.2
+# How many per-sample assistant_text examples a failed soft gate quotes, so a CI
+# log shows what drifted without the preserved sidecar file.
+_ASSISTANT_MISMATCH_EXAMPLES = 3
 
 PROMPT_DATA_PATH = "/root/datasets/session_multi_role_verify.jsonl"
 LOCAL_MODELS_ROOT = "/root/models"
@@ -323,6 +326,7 @@ def assert_session_verify_metrics(
     soft and is checked only against the caller-provided ratio threshold.
     """
     samples_with_mismatch = 0
+    assistant_mismatch_examples: list[dict] = []
     total_samples = 0
     has_append_tool = False
     samples_with_special_token_count_only = 0
@@ -359,6 +363,10 @@ def assert_session_verify_metrics(
             has_append_tool = has_append_tool or "append_tool" in entry.get("driver_events", [])
             if entry.get("had_assistant_mismatch"):
                 samples_with_mismatch += 1
+                if len(assistant_mismatch_examples) < _ASSISTANT_MISMATCH_EXAMPLES and entry.get(
+                    "assistant_mismatch_example"
+                ):
+                    assistant_mismatch_examples.append(entry["assistant_mismatch_example"])
             entry_hard_types = entry.get("hard_mismatch_types", [])
             entry_hard_count = entry.get("hard_mismatch_count", len(entry_hard_types))
             if entry_hard_count or entry_hard_types:
@@ -430,5 +438,6 @@ def assert_session_verify_metrics(
             f"threshold {assistant_text_threshold}.  TITO "
             "tokenization for assistant content has drifted from the chat "
             "template's canonical render — investigate via "
-            "verify_session_tito_tokenizer.py + sample-level mismatch logs."
+            "verify_session_tito_tokenizer.py + sample-level mismatch logs.  "
+            f"First examples (expected vs actual): {assistant_mismatch_examples!r}"
         )

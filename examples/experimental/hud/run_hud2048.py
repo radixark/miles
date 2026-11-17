@@ -95,7 +95,7 @@ def execute():
         f"--rollout-batch-size {BATCH_SIZE} "
         f"--n-samples-per-prompt {SAMPLES_PER_PROMPT} "
         "--rollout-max-response-len 12288 "
-        "--rollout-max-context-len 16384 "
+        "--max-seq-len 16384 "
         "--rollout-temperature 1.0 "
         f"--global-batch-size {BATCH_SIZE * SAMPLES_PER_PROMPT} "
     )

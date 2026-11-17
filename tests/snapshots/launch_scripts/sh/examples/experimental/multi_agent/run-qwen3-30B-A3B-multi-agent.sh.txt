@@ -151,7 +151,7 @@
 "32"
 "--n-samples-per-prompt"
 "8"
-"--rollout-max-context-len"
+"--max-seq-len"
 "16384"
 "--rollout-max-response-len"
 "8192"

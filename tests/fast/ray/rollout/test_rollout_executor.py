@@ -38,6 +38,7 @@ from miles.utils.audit_utils.event_logger.models import (
 )
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
+from miles.utils.init_once import InitOnce
 from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.output_store import dropped
 from miles.utils.output_store.dropped import take_dropped_refs
@@ -80,6 +81,15 @@ class FakeEvalFunction:
         return RolloutFnEvalOutput(data={})
 
 
+def _inited_executor() -> RolloutExecutor:
+    """An executor built as init leaves it, so dispose tears it down."""
+    executor = RolloutExecutor.__new__(RolloutExecutor)
+    executor._init_once = InitOnce("RolloutExecutor")
+    with executor._init_once.guarding():
+        pass
+    return executor
+
+
 class _SynchronousDisposable:
     def __init__(self, disposed: list[str], name: str) -> None:
         self._disposed = disposed
@@ -95,7 +105,7 @@ class TestDispose:
         self, tmp_path: Path, issued_rollout_id: int
     ) -> None:
         """Shutdown defers only immature losses and never fabricates drops for prefetched output."""
-        executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor = _inited_executor()
         executor._disposed = False
         executor.use_legacy_rollout_v1 = False
         executor.generate_rollout = None
@@ -154,7 +164,7 @@ class TestDispose:
     ) -> None:
         """Out-of-tree rollout hooks may tear down synchronously without returning an awaitable."""
         disposed: list[str] = []
-        executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor = _inited_executor()
         executor._disposed = False
         executor.use_legacy_rollout_v1 = False
         executor.generate_rollout = _SynchronousDisposable(disposed, "train")
@@ -179,7 +189,7 @@ class TestDispose:
     ) -> None:
         """Last, so the producers have stopped writing and a failed CI check raises after the other teardown."""
         disposed: list[str] = []
-        executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor = _inited_executor()
         executor._disposed = False
         executor.use_legacy_rollout_v1 = False
         executor.generate_rollout = _SynchronousDisposable(disposed, "train")
@@ -204,7 +214,7 @@ class TestDispose:
     async def test_the_final_ownership_check_runs_before_the_run_ends(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Violations that only mature after the last get would otherwise never be checked."""
         checked: list[Namespace] = []
-        executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor = _inited_executor()
         executor._disposed = False
         executor.use_legacy_rollout_v1 = False
         executor.generate_rollout = None
@@ -236,7 +246,7 @@ class TestSetEvalFleetInfo:
         controller = FakeInferenceController()
         provider = FakeInferenceControllerProvider(controller)
         eval_function = FakeEvalFunction()
-        executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor = _inited_executor()
         executor._disposed = False
         executor.args = make_rollout_config(
             chat_template_path=None,
@@ -338,7 +348,7 @@ class _FakeObjectStore:
 
 
 def _make_executor(tmp_path: Path, rollout_fn: _CountingRolloutFn) -> RolloutExecutor:
-    executor = RolloutExecutor.__new__(RolloutExecutor)
+    executor = _inited_executor()
     executor.args = _make_runtime_args(load=str(tmp_path), save=str(tmp_path))
     executor.use_legacy_rollout_v1 = True
     executor.generate_rollout = rollout_fn

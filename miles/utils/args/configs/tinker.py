@@ -14,3 +14,10 @@ class TinkerConfig(BaseConfig):
         str | None,
         Arg(help="Directory for tinker:// checkpoints (required by serve_tinker.py)"),
     ] = None
+    tinker_public_url: A[
+        str | None,
+        Arg(
+            help="URL clients reach the gateway at, e.g. https://gw.example.com/tinker/ behind a TLS or path-prefix "
+            "ingress; download URLs are built from it (default: the URL each request arrived at)"
+        ),
+    ] = None

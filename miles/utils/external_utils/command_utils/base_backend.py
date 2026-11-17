@@ -101,6 +101,9 @@ class ExecuteTrainConfig(CommandUtilConfig):
     skip_upgrade_check: bool = False
     external_mooncake: bool = False
     ray_submission_id: str | None = None
+    # stop ray with SIGTERM and a grace period, and skip the pkill -9 sweep: a SIGKILL of a process holding a TPU can
+    # take the host's TPU session, and an engine sharing it, down with it
+    graceful_ray_stop: bool = False
 
     @property
     def parsed_hot_restart(self) -> list[HotRestartComponent]:

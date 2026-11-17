@@ -13,7 +13,7 @@ class TestAgentRuntimeIsolation:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Concurrent agent responses keep mutable state local to their rollout."""
-        config = ImmutableNamespace(rollout_max_context_len=8, sglang_router_ip="localhost", sglang_router_port=8000)
+        config = ImmutableNamespace(max_seq_len=8, sglang_router_ip="localhost", sglang_router_port=8000)
         entered: list[int] = []
         both_entered = asyncio.Event()
 
@@ -59,7 +59,7 @@ class TestAgentRuntimeIsolation:
 
     async def test_exhausted_context_does_not_publish_a_partial_sample(self) -> None:
         """A prompt filling the context window leaves the rollout's result lists untouched."""
-        config = ImmutableNamespace(rollout_max_context_len=2, sglang_router_ip="localhost", sglang_router_port=8000)
+        config = ImmutableNamespace(max_seq_len=2, sglang_router_ip="localhost", sglang_router_port=8000)
         state = AgentState(
             sample=Sample(prompt="original"),
             tokenizer=lambda *args, **kwargs: {"input_ids": [1, 2]},

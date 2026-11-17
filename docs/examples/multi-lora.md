@@ -41,6 +41,10 @@ python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve     # Tinker API 
 
 Checkpoints default to `<output_dir>/checkpoints/<run_id>`; use `--save-dir` to choose another root.
 
+Adapters run on Megatron-Bridge by default. `--megatron-to-hf-mode raw` runs them as miles-native LoRA
+instead, which serves dense models only: download one, pass it as `--hf-checkpoint` with its `--model-type` (a `scripts/models` entry) and `--ep 1`
+(`prepare` fetches only Qwen3-30B-A3B).
+
 The launcher sets `--log-probs-chunk-size 1024`, which computes log-probs in 1024-token chunks
 to bound peak GPU memory on long sequences. To override it, add
 `--extra-args "--log-probs-chunk-size <N>"` to the `serve` command.
@@ -117,15 +121,20 @@ loading and `update_weights: true` are rejected. Ordinary full-model and
 single-LoRA training continue to use the existing weight updater.
 
 `--tinker-checkpoint-root` must be on storage shared by the trainers, gateway,
-and every inference engine. All trainer ranks participate in adapter gathering;
-rank 0 writes the tensors and config, then `META.json` after all ranks finish.
+and every inference engine. All trainer ranks participate in adapter gathering.
+`sampler_weights/<v>` is a link to `.<v>.<commit_id>/`, which holds the adapter
+files, `tenant.json` (the tenant digest) and `adapter_parametrization.json`; the
+gateway commits the link after all ranks finish writing.
 Existing sampler versions cannot be overwritten. Saving between `forward_backward`
 and `optim_step` neither applies nor discards pending gradients.
 
-Training checkpoint saves and loads are serialized within the gateway. Overwriting
-deletes the previous checkpoint before writing the new one; a failed overwrite does
-not preserve the previous checkpoint. Checkpoints are ordinary directories;
-overwriting does not retain hidden versions.
+Training checkpoint saves and loads are serialized within the gateway, and one
+gateway holds a checkpoint root at a time (an `flock` on the root). That needs a filesystem that
+enforces `flock` across hosts: NFS mounted `nolock` and Lustre with `localflock` lock only within one host,
+so two gateways on different hosts could both hold the root. A save writes a
+new commit and then points the name at it; an overwrite retires the previous commit
+only after the new one is committed, so a failed overwrite keeps the previous
+checkpoint. A load adopts the alpha the checkpoint was trained with.
 
 ### Adapter layout
 
@@ -134,7 +143,11 @@ matching PEFT and the Tinker cookbook; it is the default for `serve_tinker.py`.
 `--lora-type lora` keeps one adapter for each fused QKV or gate/up linear.
 It can be combined with `--experts-shared-outer-loras`: expert gate and up then each
 have their own A matrix shared across experts; their B matrices remain per expert.
-These settings are fixed for the gateway, and training checkpoints must use the same layout.
+Saving and loading such slots in the committed checkpoint format has not been verified on GPU yet.
+These settings are fixed for the gateway. A training checkpoint saved under another layout loads its
+weights only, converted to this gateway's layout where that is exact: a shared factor splits, but
+per-component or per-expert factors become shared only when they are equal. Its optimizer state, and
+a checkpoint saved before commits, need the same layout.
 Canonical Q/K/V needs every TP rank to hold whole KV heads (`num_query_groups >= tensor_model_parallel_size`),
 and canonical gate/up needs separate HF gate and up tensors in dense MLPs; a model or layout outside that fails at
 startup, so launch it with `--lora-type lora`.

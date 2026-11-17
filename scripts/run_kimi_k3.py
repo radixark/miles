@@ -482,6 +482,8 @@ def _train(args: ScriptArgs) -> None:
     misc_args += "--check-weight-update-skip-list vision_tower. mm_projector. --check-weight-update-allow-quant-error "
     if args.check_weight_update_equal:
         misc_args += "--check-weight-update-equal "
+    # the adapter checkpoint stores Adam state, and debug_minimal trains with SGD
+    assert args.skip_saving or not (is_debug and is_lora), "debug_minimal LoRA cannot --save; pass --skip-saving"
     if not args.skip_saving:
         misc_args += f"--save {args.save_dir}/{args.run_id} --save-interval 50 "
 

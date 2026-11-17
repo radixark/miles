@@ -1,11 +1,9 @@
-import importlib.util
-import sys
-from contextlib import nullcontext
-from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 import torch
+
+from tests.fast.backends.megatron_utils.test_lora_actor import _lora_actor_module
 
 from miles.utils.profile_utils import TrainProfiler
 
@@ -13,32 +11,13 @@ from miles.utils.profile_utils import TrainProfiler
 @pytest.mark.parametrize("method", ["forward_backward", "forward_only"])
 def test_lora_pass_emits_scheduled_trace(monkeypatch, method):
     model = SimpleNamespace(run_forward_backward=lambda *args, **kwargs: torch.ones(2).sum())
-    dependencies = {
-        "miles.backends.megatron_utils.actor": {"MegatronTrainRayActor": object},
-        "miles.backends.megatron_utils.lora": {"checkpoint": None, "model": model},
-        "miles.backends.megatron_utils.lora.optimizer": {"SlotOptimizer": object},
-        "miles.backends.training_utils.data.rollout": {
-            "get_rollout_data": lambda *args, **kwargs: ({}, nullcontext())
-        },
-        "miles.backends.training_utils.parallel": {
-            "get_parallel_state": lambda: SimpleNamespace(train_parallel_config=lambda **kwargs: None)
-        },
-        "miles.utils.lora.utils": {"AdapterSpec": object},
-        "miles.utils.object_store": {"StoreObjectRef": object},
-        "miles.utils.tracking_utils.structured_log": {"with_logs": lambda fn: fn},
-    }
-    for name, attributes in dependencies.items():
-        module = ModuleType(name)
-        module.__dict__.update(attributes)
-        monkeypatch.setitem(sys.modules, name, module)
-    path = Path(__file__).resolve().parents[4] / "miles/backends/megatron_utils/lora/actor.py"
-    spec = importlib.util.spec_from_file_location("lora_actor_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _lora_actor_module(monkeypatch, model=model)
     actor = module.MultiLoRATrainRayActor()
     actor.args = SimpleNamespace()
     actor.output_store_read = None
+    actor.token_space_processor = None
     actor.model = []
+    actor.adapter_slots = None
     actor._heartbeat = SimpleNamespace(bump=lambda: None)
     actor.prof = TrainProfiler(
         SimpleNamespace(backend=SimpleNamespace(use_pytorch_profiler=False, record_memory_history=False))

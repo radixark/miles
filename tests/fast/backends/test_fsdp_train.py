@@ -10,6 +10,7 @@ import torch
 from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
 from miles.backends.fsdp_utils import actor as actor_module
+from miles.backends.training_utils.loss.hub import response_layout as layout_module
 from miles.backends.training_utils.torch_native import actor as base_module
 from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
 
@@ -84,8 +85,8 @@ def test_only_the_actor_pass_scores_replay_rollout_sampling_support(
     monkeypatch.setattr(base_module, "timer", _noop_timer)
     monkeypatch.setattr(base_module.dist, "get_rank", lambda: 0)
     monkeypatch.setattr(base_module, "get_batch", get_batch)
-    monkeypatch.setattr(base_module, "get_rollout_sampling_masks", lambda _batch: sampling_masks)
-    monkeypatch.setattr(base_module, "get_log_probs_and_entropy", get_log_probs_and_entropy)
+    monkeypatch.setattr(layout_module, "get_rollout_sampling_masks", lambda _batch: sampling_masks)
+    monkeypatch.setattr(layout_module, "get_log_probs_and_entropy", get_log_probs_and_entropy)
     monkeypatch.setattr(base_module, "aggregate_forward_results", lambda *_args, **_kwargs: {})
 
     actor._log_probs(runner, Mock(), [1], store_prefix=store_prefix)
