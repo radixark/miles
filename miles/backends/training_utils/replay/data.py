@@ -11,7 +11,7 @@ from miles.utils.output_store.plan import ForwardSegments, StorePlanError, is_se
 from miles.utils.replay_base import BaseReplayManager
 
 if TYPE_CHECKING:
-    from radix_transfer_plugins import OutputStore, ReadBuffer
+    from radix_transfer_plugins import ReadSlot
 
 
 def register_replay_list_sequential(replay_list, replay_data, **_kwargs):
@@ -29,32 +29,6 @@ def register_replay_list_sequential(replay_list, replay_data, **_kwargs):
                 f"replay stream_idx {stream_idx} out of range " f"(replay_data has {replay_data.shape[1]} streams)"
             )
         replay.record(replay_data[:, stream_idx])
-
-
-class ReadSlots:
-    """The ReadBuffers a replay manager reads output store rows into.
-
-    Kept across steps, so each is registered once; a slot too small for a micro batch is replaced
-    by one that fits. Registering per read would take about half of each read, and over 80% below
-    4 GiB; measurements: https://github.com/radixark/miles/pull/4573#issuecomment-6593240538
-    """
-
-    def __init__(self, store: "OutputStore", *, count: int):
-        self.store = store
-        self._buffers: list[ReadBuffer | None] = [None] * count
-
-    def get(self, index: int, nbytes: int) -> "ReadBuffer":
-        buffer = self._buffers[index]
-        if buffer is None or buffer.nbytes < nbytes:
-            if buffer is not None:
-                buffer.close()
-            buffer = self._buffers[index] = self.store.read_buffer(nbytes)
-        return buffer
-
-    def close(self) -> None:
-        for buffer in self._buffers:
-            if buffer is not None:
-                buffer.close()
 
 
 def attach_replay_data(
@@ -93,10 +67,10 @@ def attach_replay_data(
     if from_store:
         if output_store is None:
             raise StorePlanError(f"{data_key} is in the output store, but this trainer has no output store client")
-        if manager.read_slots is None or manager.read_slots.store is not output_store:
-            if manager.read_slots is not None:
-                manager.read_slots.close()
-            manager.read_slots = ReadSlots(output_store, count=1)
+        if manager.read_slot is None or manager.read_slot.store is not output_store:
+            if manager.read_slot is not None:
+                manager.read_slot.close()
+            manager.read_slot = output_store.read_slot()
     # A train-data dump, written after training, replaces the column with each sample's local rows
     # (after CP padding, before packing), what replay consumed on this rank; None for a sample
     # no micro batch holds, which a fixed schedule leaves when the batch does not divide evenly.
@@ -139,7 +113,7 @@ def attach_replay_data(
         )
         local_ranges = layout.local_ranges([t.size(0) for t in tokens])
         if from_store:
-            replay_data = _read_local_rows(manager.read_slots, replay_data, local_ranges)
+            replay_data = _read_local_rows(manager.read_slot, replay_data, local_ranges)
         else:
             replay_data = [
                 take_ranges(r, ranges, pad_func) for r, ranges in zip(replay_data, local_ranges, strict=True)
@@ -192,7 +166,7 @@ def attach_replay_data(
 
 
 def _read_local_rows(
-    slots: ReadSlots, samples: Sequence[ForwardSegments], local_ranges: Sequence[Sequence[tuple[int, int]]]
+    slot: "ReadSlot", samples: Sequence[ForwardSegments], local_ranges: Sequence[Sequence[tuple[int, int]]]
 ) -> list[torch.Tensor]:
     """Each sample's rows at this rank's local positions, read in one call into a reused slot.
 
@@ -213,9 +187,9 @@ def _read_local_rows(
         reads += sample_reads
         pads += [(first + start, first + end) for start, end in sample_pads]
         counts.append(sum(end - start for start, end in ranges))
-    buffer = slots.get(0, sum(counts) * row_bytes)
+    buffer = slot.reserve(sum(counts) * row_bytes)
     (name,) = samples[0].stored
-    slots.store.read_ranges(
+    slot.store.read_ranges(
         [
             RangeRead(ref=r.ref, field=name, src_offset=r.src_offset, nbytes=r.nbytes, dst_offset=r.dst_offset)
             for r in reads
