@@ -17,6 +17,7 @@ from miles.utils.ft_utils.health_checker import BaseHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import NonRetryableError
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles.utils.workers.cell_handle import cell_handle_of
 from miles.utils.workers.rpc.client.misc import ServerRestartedError
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
@@ -255,10 +256,8 @@ class TrainerCell:
         )
         start = time.monotonic()
         try:
-            result = await self._cancellabel_tasks.gather(
-                (
-                    getattr(handle, fn_name)(**compute_kwargs(i)) for i, handle in enumerate(handles)
-                ),  # config-access-exempt: attribute selected at runtime from fn_name
+            [result] = await self._cancellabel_tasks.gather(
+                [cell_handle_of(handles).call_each(fn_name, [compute_kwargs(i) for i in range(len(handles))])],
                 timeout=timeout,
             )
             log_structured(

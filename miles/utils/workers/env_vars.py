@@ -8,6 +8,9 @@ BASE_GPU_ID_ENV_VAR = "MILES_BASE_GPU_ID"
 NAMESPACE_ENV_VAR = "MILES_K8S_NAMESPACE"
 RELEASE_ENV_VAR = "MILES_K8S_RELEASE"
 WORKER_METADATA_ENV_VAR = "MILES_WORKER_METADATA"
+# The physical gpu ids the worker manager placed a worker on, comma separated; the worker reads them instead of
+# asking the cluster backend which gpus it was given.
+WORKER_GPU_IDS_ENV_VAR = "MILES_WORKER_GPU_IDS"
 
 PLATFORM_IDENTITY_ENV_VARS = (
     SUBPROCESS_INDEX_ENV_VAR,

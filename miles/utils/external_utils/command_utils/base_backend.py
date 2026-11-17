@@ -84,6 +84,10 @@ class CommandUtilConfig:
                 from miles.utils.external_utils.command_utils.ray_backend.backend import RayCommandBackend
 
                 return RayCommandBackend(self)
+            case ClusterBackend.MONARCH:
+                from miles.utils.external_utils.command_utils.monarch_backend.backend import MonarchCommandBackend
+
+                return MonarchCommandBackend(self)
 
 
 # This class can be extended by concrete scripts

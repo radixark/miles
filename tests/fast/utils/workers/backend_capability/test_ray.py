@@ -9,7 +9,7 @@ from miles.utils.test_utils.fault_injector.actions.process import KillProcessAct
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
 from miles.utils.test_utils.fault_injector.models import FaultHookRequest, ObservedFaultHookTarget
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
-from miles.utils.workers.cell_operations.ray import RayCellOperations
+from miles.utils.workers.worker_manager.client import ManagerCellOperations
 
 
 @dataclass
@@ -71,8 +71,8 @@ class TestRayBackendCapabilityCellOperations:
 
         operations = RayBackendCapability(worker_manager_handle=worker_manager).cell_operations()
 
-        assert isinstance(operations, RayCellOperations)
-        assert operations._worker_manager_handle is worker_manager
+        assert isinstance(operations, ManagerCellOperations)
+        assert operations._client._handle is worker_manager
 
     def test_building_cell_operations_needs_no_inference_controller(self) -> None:
         """Resolving one at construction time is what forced this layer to import miles.ray."""
@@ -82,7 +82,7 @@ class TestRayBackendCapabilityCellOperations:
         second = RayBackendCapability(worker_manager_handle=worker_manager).cell_operations()
 
         assert first is not second
-        assert list(vars(first)) == ["_worker_manager_handle"]
+        assert list(vars(first)) == ["_client"]
 
     def test_the_module_does_not_import_the_ray_application_layer(self) -> None:
         """The deliberate layering violation existed only to resolve the inference controller."""

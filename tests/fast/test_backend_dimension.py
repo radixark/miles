@@ -7,6 +7,7 @@ from tests.utils.cluster_backends import both_backends, require_backend
 
 import miles.utils.external_utils.command_utils as command_utils
 from miles.utils.external_utils.command_utils.helm_backend.backend import KubernetesCommandBackend
+from miles.utils.external_utils.command_utils.monarch_backend.backend import MonarchCommandBackend
 from miles.utils.external_utils.command_utils.ray_backend.backend import RayCommandBackend
 from miles.utils.workers.types import ClusterBackend
 
@@ -94,7 +95,7 @@ def _capture_backend(monkeypatch) -> list[ClusterBackend]:
     def _execute_train_inner(self, *, request, config, guard) -> None:
         chosen.append(config.cluster_backend)
 
-    for backend_cls in (RayCommandBackend, KubernetesCommandBackend):
+    for backend_cls in (RayCommandBackend, KubernetesCommandBackend, MonarchCommandBackend):
         monkeypatch.setattr(backend_cls, "_execute_train_inner", _execute_train_inner)
     return chosen
 
