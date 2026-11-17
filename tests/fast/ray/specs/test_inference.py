@@ -320,6 +320,7 @@ class TestComputeSpecRouterLaunchCommand:
             miles_router_timeout=None,
             miles_router_health_check_failure_threshold=3,
             rollout_health_check_interval=10.0,
+            rollout_health_check_timeout=30.0,
         )
         spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
         argv = shlex.split(spec.launch_command(_make_router_ctx(spec.args)))
