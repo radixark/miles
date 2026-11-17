@@ -2,3 +2,10 @@ Miles
 Copyright 2025-2026 RadixArk, Inc.
 This product includes software developed from Slime (https://github.com/THUDM/slime),
 Copyright 2025 Zhipu AI, licensed under the Apache License, Version 2.0.
+
+Adapter-slot co-permutation in
+miles/backends/megatron_utils/lora/native/modules/expert_slots.py
+is adapted from Megatron-Bridge's multi_lora_layers.py:
+https://github.com/radixark/Megatron-Bridge/blob/05f33f7b4ede08977c386c1a5c80c3fdfac0dedc/src/megatron/bridge/peft/multi_lora_layers.py
+Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
+Licensed under the Apache License, Version 2.0; see LICENSE.

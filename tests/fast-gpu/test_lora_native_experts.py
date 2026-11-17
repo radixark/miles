@@ -9,6 +9,7 @@ from datetime import timedelta
 import torch
 import torch.distributed as dist
 from megatron.core import parallel_state
+from megatron.core.distributed.finalize_model_grads import _update_router_expert_bias
 from megatron.core.models.gpt.moe_module_specs import get_moe_module_spec
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
@@ -26,7 +27,8 @@ from miles.backends.megatron_utils.lora.native.modules.linear import (
     iter_slot_adapters,
 )
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
-from miles.backends.megatron_utils.lora.native.spec.moe import GroupedExpertsSpec
+from miles.backends.megatron_utils.lora.native.spec.moe import HFGroupedExpertsSpec
+from miles.backends.megatron_utils.lora.utils import freeze_router_bias
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
 
@@ -39,7 +41,11 @@ register_cuda_ci(
 )
 
 
-def _case():
+class _UngatedExpertsSpec(HFGroupedExpertsSpec):
+    gate_up_hf_leaves = ("up_proj",)
+
+
+def _case(gated, shared_outer):
     config = TransformerConfig(
         num_layers=1,
         hidden_size=64,
@@ -52,12 +58,15 @@ def _case():
         num_moe_experts=4,
         moe_ffn_hidden_size=64,
         moe_router_topk=2,
+        moe_router_score_function="sigmoid",
+        moe_router_enable_expert_bias=True,
+        moe_router_bias_update_rate=0.01,
         moe_grouped_gemm=True,
         moe_token_dispatcher_type="alltoall",
         moe_permute_fusion=False,
         moe_shared_expert_overlap=False,
         add_bias_linear=False,
-        gated_linear_unit=True,
+        gated_linear_unit=gated,
         bias_activation_fusion=False,
         params_dtype=torch.bfloat16,
         bf16=True,
@@ -70,14 +79,21 @@ def _case():
     )
     for parameter in mlp.parameters():
         parameter.requires_grad = False
+    freeze_router_bias([mlp])
+    before_bias = mlp.router.expert_bias.clone()
+    mlp.router.local_tokens_per_expert.copy_(torch.arange(4, device="cuda"))
+    _update_router_expert_bias([mlp], config, None)
+    torch.testing.assert_close(mlp.router.expert_bias, before_bias, rtol=0, atol=0)
     context = AttachContext(
-        lora=LoRAConfig(rank=32, alpha=32, dropout=0, target_modules=None, num_slots=3),
+        lora=LoRAConfig(
+            rank=32, alpha=32, dropout=0, target_modules=None, num_slots=3, experts_shared_outer_loras=shared_outer
+        ),
         transformer_config=config,
         tp_size=2,
         tp_rank=parallel_state.get_tensor_model_parallel_rank(),
-        naming=FixedPrefixNaming("model.layers.0.block_sparse_moe.experts."),
+        naming=FixedPrefixNaming("model.layers.0.mlp.experts."),
     )
-    expert_spec = GroupedExpertsSpec()
+    expert_spec = HFGroupedExpertsSpec() if gated else _UngatedExpertsSpec()
     assert expert_spec.attach(mlp, None, context) == 2
     assert_every_adapter_slotted([mlp])
     wrappers = list(iter_multi_lora_adapters([mlp]))
@@ -118,12 +134,17 @@ def _case():
         tensors = export_lora_hf_named(iter_slot_adapters([mlp], slot))
         for name, value in tensors:
             assert value.shape[0] in (1, 4), (name, value.shape)
+            if not shared_outer:
+                assert value.shape[0] == 4, (name, value.shape)
             gathered = [torch.empty_like(value) for _ in range(2)]
             dist.all_gather(gathered, value)
             torch.testing.assert_close(gathered[0], gathered[1], rtol=0, atol=0)
     targets = HfLoraTargets(
         attention=(),
-        mlp=tuple(f"model.layers.*.block_sparse_moe.experts.*.{leaf}" for leaf in ("w1", "w3", "w2")),
+        mlp=tuple(
+            f"model.layers.*.mlp.experts.{leaf}"
+            for leaf in (("gate_up_proj", "down_proj") if gated else ("*.up_proj", "*.down_proj"))
+        ),
         unembed=("lm_head",),
     )
     slots = NativeAdapterSlots([mlp], None, targets, multi_lora=True)
@@ -146,8 +167,12 @@ if __name__ == "__main__":
         tensor_model_parallel_size=2, expert_model_parallel_size=2, expert_tensor_parallel_size=1
     )
     model_parallel_cuda_manual_seed(1234)
-    _case()
+    for gated in (True, False):
+        for shared_outer in (False, True):
+            _case(gated, shared_outer)
     if dist.get_rank() == 0:
-        print("Native expert slots passed: shared-outer factors, mixed ranks/scales, TP2/EP2, recompute, export")
+        print(
+            "Native expert slots passed: gated/ungated, independent/shared factors, mixed ranks/scales, TP2/EP2, recompute, export"
+        )
     parallel_state.destroy_model_parallel()
     dist.destroy_process_group()

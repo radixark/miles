@@ -22,6 +22,7 @@ class LoRAConfig:
     target_modules: tuple[str, ...] | None
     a_init_method: str = "xavier"
     num_slots: int | None = None
+    experts_shared_outer_loras: bool = True
 
     @property
     def scale(self) -> float:
@@ -41,4 +42,5 @@ class LoRAConfig:
             target_modules=None if select_all else tuple(args.hf_lora_targets),
             a_init_method=args.lora_A_init_method,
             num_slots=args.multi_lora_n_adapters if args.multi_lora else None,
+            experts_shared_outer_loras=args.experts_shared_outer_loras,
         )

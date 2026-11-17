@@ -39,6 +39,7 @@ class _Linear(nn.Module):
 class _GroupedLinear(nn.Module):
     def __init__(self, num_experts, out_features, in_features):
         super().__init__()
+        self.in_features, self.out_features, self.params_dtype = in_features, out_features, torch.float32
         for index in range(num_experts):
             self.register_parameter(f"weight{index}", nn.Parameter(torch.randn(out_features, in_features)))
 
@@ -116,10 +117,9 @@ def _single_rank_comms(monkeypatch):
     monkeypatch.setattr(parallel_state, "get_expert_model_parallel_world_size", lambda: 2)
 
 
-def _model(*, include_fc2=True, include_experts=True, sequence_parallel=False, num_slots=None):
+def _model(*, leaves=("w1", "w3", "w2"), sequence_parallel=False, num_slots=None):
     """Layer 3: MLA attention + dense MLP. Layer 4: KDA attention + routed and shared experts."""
-    leaves = ("w1", "w3", "w2") if include_fc2 else ("w1", "w3")
-    targets = [f"{PREFIX}*.block_sparse_moe.experts.*.{leaf}" for leaf in leaves] if include_experts else []
+    targets = [f"{PREFIX}*.block_sparse_moe.experts.*.{leaf}" for leaf in leaves]
     targets += [f"{PREFIX}*.{block}.{leaf}" for block, leaf in _NON_EXPERT_TARGETS]
     context = _context(tuple(targets), sequence_parallel=sequence_parallel, num_slots=num_slots)
     model = nn.Module()
@@ -166,7 +166,9 @@ def test_export_names_and_shapes_match_sglang(include_fc2):
     targets = resolve_hf_lora_targets(_k3_hf_config())
     if not include_fc2:
         targets = [target for target in targets if not target.endswith(".experts.*.w2")]
-    exported = dict(export_lora_hf_named(iter_adapters([_model(include_fc2=include_fc2)])))
+    exported = dict(
+        export_lora_hf_named(iter_adapters([_model(leaves=("w1", "w3", "w2") if include_fc2 else ("w1", "w3"))]))
+    )
 
     served = _resolve(targets)
     for module in get_adapter_target_modules(exported):
@@ -352,6 +354,12 @@ def test_the_routed_expert_down_projection_is_optional():
     assert not any(target.endswith(".w2") for target in served)
 
 
+@pytest.mark.parametrize("leaf", ["w1", "w3"])
+def test_routed_expert_gate_and_up_are_adapted_together(leaf):
+    with pytest.raises(AssertionError, match="select the expert gate and up projections together"):
+        _model(leaves=(leaf,))
+
+
 def test_grouped_linear_uses_expert_token_boundaries():
     """Wrong boundaries apply expert i's adapter to expert j's tokens without any error."""
     inputs = torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
@@ -412,7 +420,7 @@ def test_kda_o_proj_delta_stays_a_partial_sum(monkeypatch):
 
 
 def test_slots_wrap_dense_and_shared_hosts_when_routed_experts_are_omitted():
-    model = _model(include_experts=False, num_slots=3)
+    model = _model(leaves=(), num_slots=3)
 
     multi_adapters = list(iter_multi_lora_adapters([model]))
     assert {len(multi_adapter.adapters) for multi_adapter in multi_adapters} == {3}

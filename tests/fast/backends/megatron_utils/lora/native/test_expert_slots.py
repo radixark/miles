@@ -24,10 +24,12 @@ def _context():
     )
 
 
-@pytest.mark.parametrize("projection", ["gate_up", "down"])
+@pytest.mark.parametrize("projection", ["gate_up", "up", "down"])
 @pytest.mark.parametrize("counts", [(3, 0, 2), (0, 0, 0)])
-def test_expert_major_forward_and_gradients_match_per_token_reference(monkeypatch, projection, counts):
+@pytest.mark.parametrize("shared_outer", [True, False])
+def test_expert_major_forward_and_gradients_match_per_token_reference(monkeypatch, projection, counts, shared_outer):
     context = _context()
+    context = replace(context, lora=replace(context.lora, experts_shared_outer_loras=shared_outer))
     common = dict(
         hf_prefix="model.layers.0.mlp.experts.",
         reference=torch.empty(()),
@@ -37,7 +39,15 @@ def test_expert_major_forward_and_gradients_match_per_token_reference(monkeypatc
         width=6,
         is_ep=False,
     )
-    build = (lambda: LoRAGroupedFC2(**common)) if projection == "down" else (lambda: LoRAGroupedFC1(**common))
+    build = (
+        (lambda: LoRAGroupedFC2(hf_leaf="down_proj", **common))
+        if projection == "down"
+        else (
+            lambda: LoRAGroupedFC1(
+                hf_leaves=("up_proj",) if projection == "up" else ("gate_proj", "up_proj"), **common
+            )
+        )
+    )
     adapter = NativeMultiLoRAExpertAdapter([build() for _ in counts], context)
     for slot in range(3):
         adapter.init_slot(slot, slot + 1, 6)
@@ -60,10 +70,10 @@ def test_expert_major_forward_and_gradients_match_per_token_reference(monkeypatc
     for row, slot, expert in zip(x, dispatched_slots.tolist(), [0] * sum(counts) + [1] * sum(counts), strict=True):
         single = adapter.adapters[slot]
         if projection == "down":
-            b = single.w2_B
+            b = single.w2_B if shared_outer else single.w2_B[expert]
             delta = b @ (single.w2_A[expert] @ row)
         else:
-            delta = torch.cat([single.w1_B[expert] @ (single.w1_A @ row), single.w3_B[expert] @ (single.w3_A @ row)])
+            delta = torch.cat([b[expert] @ ((a if shared_outer else a[expert]) @ row) for _, a, b in single.factors()])
         expected.append((6 / (slot + 1)) * delta)
     reference = torch.stack(expected) if expected else actual.new_empty(actual.shape)
     torch.testing.assert_close(actual, reference)

@@ -1,8 +1,7 @@
-# Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Native multi-LoRA routing for Megatron's CUDA all-to-all expert dispatcher.
 
-The co-permutation follows Megatron-Bridge's Apache-2.0 multi_lora_layers.py.
+Adapter-slot co-permutation adapted from Megatron-Bridge; see NOTICE.
 """
 
 from dataclasses import dataclass

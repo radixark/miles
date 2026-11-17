@@ -36,6 +36,11 @@ _LORA_A_INITS = {
 }
 
 
+def _initialize_lora_a(tensor: torch.Tensor, method: str) -> None:
+    for matrix in tensor.reshape(-1, *tensor.shape[-2:]):
+        _LORA_A_INITS[method](matrix)
+
+
 def new_lora_parameter(
     reference: torch.Tensor,
     shape,
@@ -49,7 +54,7 @@ def new_lora_parameter(
     if init == "zero":
         tensor.zero_()
     else:
-        _LORA_A_INITS[init](tensor)
+        _initialize_lora_a(tensor, init)
     parameter = nn.Parameter(tensor)
     parameter.tensor_model_parallel = partition_dim is not None
     parameter.partition_dim = partition_dim if partition_dim is not None else -1
@@ -572,14 +577,14 @@ class NativeMultiLoRAAdapter(nn.Module):
         self.lora_alphas_by_slot = [0.0] * len(adapters)
         self.token_counts_by_slot: tuple[int, ...] | None = None
 
-    def bind_host(self, host: nn.Module) -> None:
-        for adapter in self.adapters:
-            adapter.bind_host(host)
-
     def _validate_adapter_types(self, adapters: Sequence[NativeLoRAAdapter]) -> None:
         assert all(
             isinstance(adapter, PhasedLoRAAdapter) for adapter in adapters
         ), f"{type(adapters[0]).__name__} has no per-phase forward to route slots through"
+
+    def bind_host(self, host: nn.Module) -> None:
+        for adapter in self.adapters:
+            adapter.bind_host(host)
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
         """The unscaled delta, one row per token; ``add_delta`` applies each slot's scale."""
@@ -656,7 +661,7 @@ class NativeMultiLoRAAdapter(nn.Module):
         self.assert_slot(slot)
         for name, param in self.adapters[slot].named_parameters():
             if name.endswith("_A"):
-                _LORA_A_INITS[self.context.lora.a_init_method](param)
+                _initialize_lora_a(param, self.context.lora.a_init_method)
             else:
                 assert name.endswith("_B"), f"{name} is neither a LoRA A nor a LoRA B"
                 param.zero_()
