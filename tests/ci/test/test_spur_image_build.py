@@ -58,8 +58,8 @@ def test_rocm_same_repository_request_uses_the_trusted_boundary(identity):
 
 
 def test_rocm_handoff_carries_literals_and_frozen_identity(rocm_upgrade_source, monkeypatch, environment):
-    root, request, pr, policy, sentinel, base, wheels, _ = rocm_upgrade_source
-    HANDLER.validate_source(request, pr, policy, root)
+    root, request, pr, sentinel, base, wheels, _ = rocm_upgrade_source
+    HANDLER.validate_source(request, pr, root)
     seen = []
 
     class Process:
@@ -239,8 +239,8 @@ def test_missing_or_failed_cluster_completion_blocks_publication(monkeypatch, tm
 def test_compute_build_runs_trusted_cli_without_credentials_or_devices(
     rocm_upgrade_source, monkeypatch, environment, tmp_path, failure
 ):
-    root, request, pr, policy, sentinel, base, wheels, _ = rocm_upgrade_source
-    HANDLER.validate_source(request, pr, policy, root)
+    root, request, pr, sentinel, base, wheels, _ = rocm_upgrade_source
+    HANDLER.validate_source(request, pr, root)
     command = HANDLER.build_command(request, root)
     (environment / "build.json").write_text(
         json.dumps(

@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-from tests.ci.ci_policy import resolve_workflow_inputs
 from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=2, suite="stage-a-cpu", labels=[])
@@ -222,9 +221,6 @@ def source(tmp_path, identity):
         "KNOWN_LABELS: dict[str, str] = {'megatron': 'Megatron tests'}\n"
     )
     (root / "tests/e2e").mkdir(parents=True)
-    (root / "tests/e2e/test_new.py").write_text(
-        "raise RuntimeError('PR imports must not execute')\nregister_cuda_ci(est_time=1, suite='stage-b-2-gpu-h200', labels=['megatron'], hardware=['hopper'])\n"
-    )
     git("add", "docker/Dockerfile", "tests")
     git("commit", "-qm", "fork")
     head = git("rev-parse", "HEAD")
@@ -233,17 +229,12 @@ def source(tmp_path, identity):
     request, _, pr = copy.deepcopy(identity)
     request.update(merge_sha=merge, inputs_hash=HANDLER.image_inputs.compute("HEAD", root=root))
     pr["head"]["sha"] = head
-    policy = resolve_workflow_inputs("pull_request", "", '["run-ci-image"]')
-    return root, request, pr, policy
+    return root, request, pr
 
 
-def test_validates_new_pr_registration_without_executing_source(source):
-    root, request, pr, policy = source
-    HANDLER.validate_source(request, pr, policy, root)
-    for labels in ([], ["run-ci"], ["run-ci-unknown"], ["run-on-blackwell"]):
-        cpu_policy = resolve_workflow_inputs("pull_request", "", json.dumps(labels))
-        with pytest.raises(ValueError, match="No CUDA tests"):
-            HANDLER.validate_source(request, pr, cpu_policy, root)
+def test_validates_changed_inputs_without_executing_source(source):
+    root, request, pr = source
+    HANDLER.validate_source(request, pr, root)
 
 
 @pytest.mark.parametrize(
@@ -254,8 +245,8 @@ def test_validates_new_pr_registration_without_executing_source(source):
         (["run-ci-image", "bypass-fastfail"], "failure"),
     ],
 )
-def test_label_removal_preserves_source_selection_and_cpu_gate(monkeypatch, identity, source, labels, cpu):
-    root, request, pr, _ = source
+def test_label_removal_preserves_source_cpu_gate(monkeypatch, identity, source, labels, cpu):
+    root, request, pr = source
     request["labels"] = labels
     pr["labels"] = []
     run = copy.deepcopy(identity[1])
@@ -266,10 +257,8 @@ def test_label_removal_preserves_source_selection_and_cpu_gate(monkeypatch, iden
     )
     stub_api(monkeypatch, (request, run, pr), cpu=cpu)
     parsed = HANDLER.parse_request(archive_request(request))
-    current_pr, fork_policy = HANDLER.current_request(parsed, REPOSITORY)
-    caller_policy = resolve_workflow_inputs("pull_request", "", json.dumps(labels))
-    assert fork_policy == caller_policy
-    HANDLER.validate_source(parsed, current_pr, fork_policy, root)
+    current_pr = HANDLER.current_request(parsed, REPOSITORY)
+    HANDLER.validate_source(parsed, current_pr, root)
 
 
 def test_live_bypass_label_cannot_change_source_cpu_gate(monkeypatch, identity):
@@ -286,29 +275,28 @@ def test_live_bypass_label_cannot_change_source_cpu_gate(monkeypatch, identity):
         "docker/build.py",
         ".dockerignore",
         "docker/Dockerfile.dockerignore",
-        "tests/e2e/test_new.py",
     ],
 )
 def test_source_symlinks_cannot_reach_host_files(source, tmp_path, path):
-    root, request, pr, policy = source
+    root, request, pr = source
     target = tmp_path / "outside"
     target.write_text("host data")
     link = root / path
     link.unlink(missing_ok=True)
     link.symlink_to(target)
     with pytest.raises(Exception, match="symlink"):
-        HANDLER.validate_source(request, pr, policy, root)
+        HANDLER.validate_source(request, pr, root)
 
 
 def test_context_hash_must_match_frozen_source(source):
-    root, request, pr, policy = source
+    root, request, pr = source
     (root / "docker/Dockerfile").write_text("FROM scratch\nLABEL pin=other\n")
     with pytest.raises(ValueError, match="Build context differs"):
-        HANDLER.validate_source(request, pr, policy, root)
+        HANDLER.validate_source(request, pr, root)
 
 
 def test_oci_build_uses_trusted_driver_and_supplied_context(source, monkeypatch):
-    root, request, _, _ = source
+    root, request, _ = source
     spec = importlib.util.spec_from_file_location("build", ROOT / "docker/build.py")
     build = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(build)
@@ -344,13 +332,13 @@ def test_publication_requires_matching_hash_on_both_architectures(identity, monk
 
 @pytest.mark.parametrize("force,remove_fails", [(False, False), (True, False), (True, True)])
 def test_publication_only_consumes_the_original_force_request(source, monkeypatch, capsys, force, remove_fails):
-    root, request, pr, policy = source
+    root, request, pr = source
     request["force_rebuild"] = force
     pr["labels"].append(dict(name="rebuild-ci-image"))
     monkeypatch.setenv("GITHUB_REPOSITORY", REPOSITORY)
     monkeypatch.setenv("REQUEST_JSON", json.dumps(request))
     monkeypatch.setattr(sys, "argv", ["fork_ci_image.py", "finish", "--source", str(root)])
-    monkeypatch.setattr(HANDLER, "current_request", lambda *args: (pr, policy))
+    monkeypatch.setattr(HANDLER, "current_request", lambda *args: pr)
     monkeypatch.setattr(HANDLER, "verify_published", lambda request: None)
     mutations = []
 
@@ -369,6 +357,7 @@ def test_observer_waits_past_an_old_attempt_job(monkeypatch, identity):
     request, run, _ = identity
     responses = iter([None, request])
     sleeps = []
+    monkeypatch.setattr(HANDLER, "find_publisher", lambda *args: None)
     monkeypatch.setattr(HANDLER, "resolve_request", lambda *args: next(responses))
     monkeypatch.setattr(HANDLER.time, "sleep", sleeps.append)
     monkeypatch.setattr(
@@ -378,7 +367,7 @@ def test_observer_waits_past_an_old_attempt_job(monkeypatch, identity):
             [dict(name="docker-build / docker-build", run_attempt=1, status="completed")] if "/jobs?" in path else run
         ),
     )
-    assert HANDLER.wait_request(dict(workflow_run=run), REPOSITORY) == request
+    assert HANDLER.wait_request(dict(workflow_run=run), REPOSITORY, 999) == request
     assert sleeps == [30]
 
 
@@ -390,6 +379,7 @@ def test_observer_stops_without_a_request(monkeypatch, identity, ended):
         current["status"] = "completed"
     elif ended == "new-attempt":
         current["run_attempt"] += 1
+    monkeypatch.setattr(HANDLER, "find_publisher", lambda *args: None)
     monkeypatch.setattr(HANDLER, "resolve_request", lambda *args: None)
     monkeypatch.setattr(
         HANDLER,
@@ -401,7 +391,7 @@ def test_observer_stops_without_a_request(monkeypatch, identity, ended):
         ),
     )
     monkeypatch.setattr(HANDLER.time, "sleep", lambda seconds: pytest.fail("No request can arrive"))
-    assert HANDLER.wait_request(dict(workflow_run=run), REPOSITORY) is None
+    assert HANDLER.wait_request(dict(workflow_run=run), REPOSITORY, 999) is None
 
 
 def publisher_run(**updates):
@@ -453,13 +443,22 @@ def test_waiter_correlates_publisher_and_waits_for_build_completion(monkeypatch,
     calls, sleeps = stub_publisher(
         monkeypatch,
         identity,
-        listings=[wrong, [publisher_run(status="in_progress", conclusion=None)]],
+        # A later duplicate trigger (id 1000) must not displace the earliest publisher.
+        listings=[wrong, [publisher_run(id=1000), publisher_run(status="in_progress", conclusion=None)]],
         result=publisher_run(),
     )
     HANDLER.wait_build(request, REPOSITORY)
     assert sleeps == [30, 30]
     assert any("/999/jobs?" in path for path in calls)
     assert all("/rerun" not in path for path in calls)
+
+
+@pytest.mark.parametrize("run_id, publishes", [(999, True), (1000, False)])
+def test_only_the_earliest_trigger_of_an_attempt_publishes(monkeypatch, identity, run_id, publishes):
+    request, run, _ = identity
+    stub_publisher(monkeypatch, identity, listings=[[publisher_run(id=1000), publisher_run()]])
+    monkeypatch.setattr(HANDLER, "resolve_request", lambda *args: request)
+    assert HANDLER.wait_request(dict(workflow_run=run), REPOSITORY, run_id) == (request if publishes else None)
 
 
 @pytest.mark.parametrize("conclusion", ["failure", "cancelled", "timed_out"])
@@ -562,6 +561,10 @@ def test_workflow_preserves_gate_and_build_publish_boundary():
         < names.index("Remove the builder before introducing publishing credentials")
         < names.index("Login to Docker Hub for publication")
     )
+    # docker-build runners cannot apt-install skopeo; publication runs a digest-pinned skopeo image.
+    publish = next(step for step in steps if step.get("name") == "Publish the PR image without executing it")
+    assert "quay.io/skopeo/stable:" in publish["run"] and "@sha256:" in publish["run"]
+    assert all("apt-get" not in step.get("run", "") or "skopeo" not in step["run"] for step in steps)
     buildx = next(step for step in steps if step.get("id") == "buildx")
     assert buildx["with"]["buildkitd-flags"] == "--oci-worker-net=bridge"
     assert "network=host" not in buildx["with"]["driver-opts"]
@@ -586,17 +589,17 @@ def test_rocm_request_is_bound_to_the_rocm_workflow(identity):
 
 
 def test_rocm_source_requires_rocm_demand_and_rocm_inputs(source):
-    root, request, pr, policy = source
+    root, request, pr = source
     request["variant"] = "rocm10-mi35x-pr"
     with pytest.raises(ValueError, match="Requested inputs hash"):
-        HANDLER.validate_source(request, pr, policy, root)
+        HANDLER.validate_source(request, pr, root)
     (root / "docker/Dockerfile.rocm").write_text("FROM scratch\n")
     subprocess.run(["git", "add", "docker/Dockerfile.rocm"], cwd=root, check=True)
     subprocess.run(["git", "commit", "--amend", "--no-edit", "-q"], cwd=root, check=True)
     request["merge_sha"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
     request["inputs_hash"] = HANDLER.image_inputs.compute("HEAD", root=root, variant=request["variant"])
     with pytest.raises(ValueError, match="No ROCm tests"):
-        HANDLER.validate_source(request, pr, policy, root)
+        HANDLER.validate_source(request, pr, root)
     (root / "tests/e2e/test_new.py").write_text(
         "raise RuntimeError('PR code must not execute')\n"
         "register_rocm_ci(est_time=1, suite='stage-c-4-gpu-mi350', labels=['megatron'])\n"
@@ -604,11 +607,11 @@ def test_rocm_source_requires_rocm_demand_and_rocm_inputs(source):
     subprocess.run(["git", "add", "tests"], cwd=root, check=True)
     subprocess.run(["git", "commit", "--amend", "--no-edit", "-q"], cwd=root, check=True)
     request["merge_sha"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
-    HANDLER.validate_source(request, pr, policy, root)
+    HANDLER.validate_source(request, pr, root)
     (root / "docker/Dockerfile.rocm").unlink()
     (root / "docker/Dockerfile.rocm").symlink_to("/etc/hostname")
     with pytest.raises(ValueError, match="symlink"):
-        HANDLER.validate_source(request, pr, policy, root)
+        HANDLER.validate_source(request, pr, root)
 
 
 def test_rocm_current_request_checks_latest_rocm_run_without_a_cuda_cpu_gate(monkeypatch, identity):
@@ -649,7 +652,7 @@ def test_rocm_publication_checks_amd64_and_the_fixed_tag(identity, monkeypatch, 
 
 
 def test_rocm_pr_build_uses_the_existing_recipe_and_rocm_hash(source, monkeypatch):
-    root, _, _, _ = source
+    root, _, _ = source
     (root / "docker/Dockerfile.rocm").write_text("FROM scratch\n")
     subprocess.run(["git", "add", "docker/Dockerfile.rocm"], cwd=root, check=True)
     spec = importlib.util.spec_from_file_location("build", ROOT / "docker/build.py")
@@ -668,7 +671,7 @@ def test_rocm_pr_build_uses_the_existing_recipe_and_rocm_hash(source, monkeypatc
 
 
 def test_rocm_file_only_demand_is_recomputed_from_the_frozen_diff(source):
-    root, request, pr, _ = source
+    root, request, pr = source
     request["variant"] = "rocm10-mi35x-pr"
     (root / "docker/Dockerfile.rocm").write_text("FROM scratch\n")
     (root / "tests/e2e/test_new.py").write_text(
@@ -679,17 +682,16 @@ def test_rocm_file_only_demand_is_recomputed_from_the_frozen_diff(source):
     subprocess.run(["git", "commit", "--amend", "--no-edit", "-q"], cwd=root, check=True)
     request["merge_sha"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
     request["inputs_hash"] = HANDLER.image_inputs.compute("HEAD", root=root, variant=request["variant"])
-    policy = resolve_workflow_inputs("pull_request", "", '["run-ci-image"]')
+    request["labels"] = ["run-ci-image"]
     with pytest.raises(ValueError, match="No ROCm tests"):
-        HANDLER.validate_source(request, pr, policy, root)
+        HANDLER.validate_source(request, pr, root)
     request["labels"] = ["run-ci-amd"]
-    policy = resolve_workflow_inputs("pull_request", "", json.dumps(request["labels"]))
-    HANDLER.validate_source(request, pr, policy, root)
+    HANDLER.validate_source(request, pr, root)
 
 
 @pytest.fixture
 def rocm_upgrade_source(source, tmp_path, request):
-    root, image_request, pr, policy = source
+    root, image_request, pr = source
     sentinel = tmp_path / "fork-python-executed"
     driver = (
         f"from pathlib import Path\nPath({str(sentinel)!r}).write_text('unsafe')\n"
@@ -739,13 +741,13 @@ def rocm_upgrade_source(source, tmp_path, request):
     assert image_request["inputs_hash"] != HANDLER.image_inputs.compute(
         "HEAD^1", root=root, variant=image_request["variant"]
     )
-    return root, image_request, pr, policy, sentinel, new_base, new_wheels, base
+    return root, image_request, pr, sentinel, new_base, new_wheels, base
 
 
 @pytest.mark.parametrize("rocm_upgrade_source", [False, True], indirect=True, ids=["single-variant", "three-variants"])
 def test_fork_rocm_upgrade_builds_the_pr_arguments_with_the_pr_hash(rocm_upgrade_source, monkeypatch, tmp_path):
-    root, request, pr, policy, sentinel, new_base, new_wheels, _ = rocm_upgrade_source
-    HANDLER.validate_source(request, pr, policy, root)
+    root, request, pr, sentinel, new_base, new_wheels, _ = rocm_upgrade_source
+    HANDLER.validate_source(request, pr, root)
 
     # Execute the real trusted driver and its CLI, intercepting only Docker.
     binary = tmp_path / "docker"
@@ -769,7 +771,7 @@ def test_fork_rocm_upgrade_builds_the_pr_arguments_with_the_pr_hash(rocm_upgrade
 
 @pytest.mark.parametrize("edit", ["assignment", "update", "derived", "cuda", "format"])
 def test_fork_rocm_only_allows_literal_argument_edits_and_formatting(rocm_upgrade_source, monkeypatch, edit):
-    root, request, pr, policy, sentinel, _, _, base = rocm_upgrade_source
+    root, request, pr, sentinel, _, _, base = rocm_upgrade_source
 
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
@@ -800,12 +802,12 @@ def test_fork_rocm_only_allows_literal_argument_edits_and_formatting(rocm_upgrad
     )
     pr["head"]["sha"] = head
     if edit == "format":
-        HANDLER.validate_source(request, pr, policy, root)
+        HANDLER.validate_source(request, pr, root)
     else:
         monkeypatch.setenv("GITHUB_REPOSITORY", REPOSITORY)
         monkeypatch.setenv("REQUEST_JSON", json.dumps(request))
         monkeypatch.setattr(sys, "argv", ["fork_ci_image.py", "build", "--source", str(root)])
-        monkeypatch.setattr(HANDLER, "current_request", lambda *args: (pr, policy))
+        monkeypatch.setattr(HANDLER, "current_request", lambda *args: pr)
         monkeypatch.setattr(
             HANDLER, "build_image", lambda *args: pytest.fail("Unsupported driver edit reached the build")
         )

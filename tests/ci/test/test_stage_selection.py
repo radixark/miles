@@ -304,14 +304,15 @@ def test_policy_cli_image_demand_matches_selected_gpu_tests(
     assert outputs["needs_cuda_image"] == str("stage-c-4-gpu-h200" in expected_stages).lower()
 
 
-def test_image_jobs_require_their_selected_gpu_stages():
+def test_image_build_ignores_gpu_selection_and_resolvers_require_it():
     cuda = WORKFLOW.read_text()
     build = cuda.split("\n  docker-build:\n", 1)[1].split("\n  resolve-ci-image:\n", 1)[0]
     resolver = cuda.split("\n  resolve-ci-image:\n", 1)[1].split("\n  stage-a-cpu:\n", 1)[0]
     assert "needs_cuda_image: ${{ steps.resolve.outputs.needs_cuda_image }}" in cuda
-    assert "needs.resolve-ci-policy.outputs.needs_cuda_image == 'true'" in build
-    assert "needs: [docker-build]" in resolver
+    assert "needs_cuda_image" not in build
+    assert "needs: [resolve-ci-policy, docker-build]" in resolver
     assert "needs.docker-build.result == 'success'" in resolver
+    assert "needs.resolve-ci-policy.outputs.needs_cuda_image == 'true'" in resolver
 
     rocm = WORKFLOW.with_name("pr-test-rocm.yml").read_text()
     build = rocm.split("\n  docker-build:\n", 1)[1].split("\n  resolve-ci-image:\n", 1)[0]

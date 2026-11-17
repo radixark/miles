@@ -101,9 +101,9 @@ jobs:
       - name: Install build tools
         if: env.IMAGE_VARIANT == 'cu13'
         run: |
-          if ! command -v skopeo >/dev/null || ! command -v pip3 >/dev/null; then
+          if ! command -v pip3 >/dev/null; then
             apt-get -o DPkg::Lock::Timeout=600 update
-            apt-get -o DPkg::Lock::Timeout=600 install -y skopeo python3-pip
+            apt-get -o DPkg::Lock::Timeout=600 install -y python3-pip
           fi
           PIP_BSP=""
           pip3 install --help | grep -q -- --break-system-packages && PIP_BSP="--break-system-packages"
@@ -119,7 +119,7 @@ jobs:
           # Replace the action's default network.host/security.insecure entitlements.
           buildkitd-flags: --oci-worker-net=bridge
           driver-opts: image=moby/buildkit:latest
-      - name: Validate source and image demand (CUDA also checks its CPU gate)
+      - name: Validate source, CUDA CPU gate, and ROCm demand
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 trusted/.github/workflows/scripts/fork_ci_image.py check-source --source source
@@ -144,9 +144,19 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Publish the PR image without executing it
+        # docker-build runners have no skopeo and no root for apt; use the pinned upstream image.
         run: |
-          skopeo copy --all --retry-times 3 --authfile "$DOCKER_CONFIG/config.json" \
-            "oci:${OCI_OUTPUT}" "docker://radixark/miles:${IMAGE_TAG}"
+          if [ "$IMAGE_VARIANT" = rocm10-mi35x-pr ]; then
+            skopeo copy --all --retry-times 3 --authfile "$DOCKER_CONFIG/config.json" \
+              "oci:${OCI_OUTPUT}" "docker://radixark/miles:${IMAGE_TAG}"
+          else
+            docker run --rm --network host \
+              -v "${OCI_OUTPUT}:/oci:ro" \
+              -v "${DOCKER_CONFIG}/config.json:/auth.json:ro" \
+              quay.io/skopeo/stable:v1.22.3-immutable@sha256:c0ee1f4edca5c01cb8d5611124f92f3cc47196ecab68aee5d0f90834e00574d5 \
+              copy --all --retry-times 3 --authfile /auth.json \
+              oci:/oci "docker://radixark/miles:${IMAGE_TAG}"
+          fi
       - name: Verify published platforms and consume the rebuild label
         env:
           GH_TOKEN: ${{ github.token }}

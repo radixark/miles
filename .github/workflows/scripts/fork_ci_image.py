@@ -30,9 +30,9 @@ sys.path.insert(0, str(ROOT / "docker"))
 import image_inputs  # noqa: E402
 from tests.ci.ci_policy import resolve_policy, resolve_workflow_inputs  # noqa: E402
 from tests.ci.file_run import collect_snapshot_tests  # noqa: E402
-from tests.ci.hardware import CUDA_STAGES  # noqa: E402
+from tests.ci.rocm import ROCM_STAGES  # noqa: E402
 from tests.ci.rocm_file_plan import is_opted_in, plan_jobs  # noqa: E402
-from tests.ci.stage_selection import PR_GPU_STAGES, read_changed_files, select_skipped_gpu_stages  # noqa: E402
+from tests.ci.stage_selection import read_changed_files, select_skipped_gpu_stages  # noqa: E402
 
 CPU_JOBS = {f"stage-a-cpu ({partition}) / run-cpu" for partition in range(4)}
 REQUEST_KEYS = {"pr", "merge_sha", "inputs_hash", "run_id", "run_attempt", "force_rebuild", "labels"}
@@ -139,7 +139,7 @@ def current_request(request, repository):
     # Match the caller's event snapshot, including on reruns and after label removal.
     policy = resolve_workflow_inputs("pull_request", "", json.dumps(request["labels"]))
     # ROCm's caller has no CPU A gate. Preserve CUDA's existing success/bypass
-    # check; both callers still validate demand and the frozen fork context.
+    # check; both callers still validate the frozen build context.
     if variant(request) == "cu13" and not policy.bypass_fastfail:
         jobs = api(
             f"repos/{repository}/actions/runs/{run['id']}/jobs?filter=all&per_page=100",
@@ -154,7 +154,7 @@ def current_request(request, repository):
             cpu.keys() == CPU_JOBS and all(job["conclusion"] == "success" for job in cpu.values()),
             "CPU A gate did not pass",
         )
-    return pr, policy
+    return pr
 
 
 def resolve_request(event, repository):
@@ -175,8 +175,26 @@ def resolve_request(event, repository):
     return request
 
 
-def wait_request(event, repository):
+def find_publisher(source, repository):
+    # `workflow_run.in_progress` can fire several times per attempt; only the earliest triggered run publishes.
+    workflow = api(f"repos/{repository}/actions/workflows/build-fork-ci-image.yml")
+    query = urlencode({"event": "workflow_run", "created": f">={source['created_at']}", "per_page": 100})
+    title = f"fork-ci-image-{source['id']}-{source['run_attempt']}"
+    runs = api(f"repos/{repository}/actions/workflows/{workflow['id']}/runs?{query}", collection="workflow_runs")
+    matches = [
+        run
+        for run in runs
+        if run["display_title"] == title and run["event"] == "workflow_run" and run["workflow_id"] == workflow["id"]
+    ]
+    return min(matches, key=lambda run: run["id"], default=None)
+
+
+def wait_request(event, repository, run_id):
     source = event["workflow_run"]
+    publisher = find_publisher(source, repository)
+    if publisher and publisher["id"] < run_id:
+        print(f"{publisher['html_url']} publishes this attempt", flush=True)
+        return None
     while True:
         run = api(f"repos/{repository}/actions/runs/{source['id']}")
         if run["run_attempt"] != source["run_attempt"] or run["status"] == "completed":
@@ -207,26 +225,12 @@ def require_active_source(request, repository):
 
 
 def wait_build(request, repository):
-    source = require_active_source(request, repository)
-    workflow = api(f"repos/{repository}/actions/workflows/build-fork-ci-image.yml")
-    query = urlencode({"event": "workflow_run", "created": f">={source['created_at']}", "per_page": 100})
-    title = f"fork-ci-image-{request['run_id']}-{request['run_attempt']}"
     publisher = None
     while True:
-        require_active_source(request, repository)
+        source = require_active_source(request, repository)
         if publisher is None:
-            runs = api(
-                f"repos/{repository}/actions/workflows/{workflow['id']}/runs?{query}", collection="workflow_runs"
-            )
-            matches = [
-                run
-                for run in runs
-                if run["display_title"] == title
-                and run["event"] == "workflow_run"
-                and run["workflow_id"] == workflow["id"]
-            ]
-            if matches:
-                publisher = max(matches, key=lambda run: run["id"])
+            publisher = find_publisher(source, repository)
+            if publisher:
                 print(f"Waiting for {publisher['html_url']}", flush=True)
         else:
             publisher = api(f"repos/{repository}/actions/runs/{publisher['id']}")
@@ -368,7 +372,7 @@ def build_image(request, repository, source):
                 process.wait()
 
 
-def validate_source(request, pr, policy, source):
+def validate_source(request, pr, source):
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=source, text=True).strip()
 
@@ -404,19 +408,17 @@ def validate_source(request, pr, policy, source):
                 _rocm_recipe(driver)[1] == _rocm_recipe(base_driver)[1],
                 "Fork ROCm images only honor literal build_args edits in docker/build.py",
             )
-    run_policy = resolve_policy(policy.cadence, set(policy.raw_labels))
-    registrations = collect_snapshot_tests(source)
-    skipped = select_skipped_gpu_stages(
-        event_name="pull_request",
-        changed_files=None,
-        registrations=registrations,
-        run_policy=run_policy,
-        raw_labels=policy.raw_labels,
-    )
-    if variant(request) == "cu13":
-        require(CUDA_STAGES.keys() - set(skipped), "No CUDA tests selected")
-    else:
-        selected = (PR_GPU_STAGES - CUDA_STAGES.keys()) - set(skipped)
+        policy = resolve_workflow_inputs("pull_request", "", json.dumps(request["labels"]))
+        run_policy = resolve_policy(policy.cadence, set(policy.raw_labels))
+        registrations = collect_snapshot_tests(source)
+        skipped = select_skipped_gpu_stages(
+            event_name="pull_request",
+            changed_files=None,
+            registrations=registrations,
+            run_policy=run_policy,
+            raw_labels=policy.raw_labels,
+        )
+        selected = ROCM_STAGES.keys() - set(skipped)
         jobs = []
         labels = set(policy.raw_labels)
         if not selected and is_opted_in(labels):
@@ -481,7 +483,9 @@ def main():
         )
         return
     if args.mode == "resolve":
-        request = wait_request(json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text()), repository)
+        request = wait_request(
+            json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text()), repository, int(os.environ["GITHUB_RUN_ID"])
+        )
         if request:
             with open(os.environ["GITHUB_OUTPUT"], "a") as output:
                 output.write(
@@ -491,8 +495,8 @@ def main():
         return
 
     request = json.loads(os.environ["REQUEST_JSON"])
-    pr, policy = current_request(request, repository)
-    validate_source(request, pr, policy, args.source.resolve())
+    pr = current_request(request, repository)
+    validate_source(request, pr, args.source.resolve())
     if args.mode == "build":
         build_image(request, repository, args.source.resolve())
     elif args.mode == "finish":
