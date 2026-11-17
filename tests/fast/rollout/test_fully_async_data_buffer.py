@@ -1,4 +1,5 @@
 import logging
+import random
 from argparse import Namespace
 
 import numpy as np
@@ -98,12 +99,14 @@ def _make_args() -> Namespace:
     return _with_megatron_config(
         Namespace(
             async_data_buffer_capacity_factor=1.0,
+            async_data_buffer_selection="fifo",
             custom_async_data_buffer_path_per_model=None,
             dynamic_sampling_filter_path=None,
             max_weight_staleness=None,
             megatron_config=encode_megatron_config("solver", "verifier"),
             reward_key=None,
             rollout_batch_size=1,
+            rollout_seed=0,
             use_output_store=False,
         )
     )
@@ -136,9 +139,9 @@ class TestPerPolicyMetrics:
 
         await buffer.put(DataBufferInput(prompt_group=group, group=group))
 
-        assert buffer.get_metrics("solver")["rollout/raw_reward_unfiltered"] == 1.0
-        assert buffer.get_metrics("verifier")["rollout/raw_reward_unfiltered"] == 3.0
-        assert "rollout/raw_reward_unfiltered" not in buffer.get_metrics("verifier")
+        assert buffer.get_metrics("solver")["rollout/raw_reward"] == 1.0
+        assert buffer.get_metrics("verifier")["rollout/raw_reward"] == 3.0
+        assert "rollout/raw_reward" not in buffer.get_metrics("verifier")
 
 
 # ================================ test setup ================================
@@ -156,11 +159,13 @@ GROUP_SIZE = 2
 def _make_single_policy_args(**overrides) -> Namespace:
     defaults = dict(
         async_data_buffer_capacity_factor=1000.0,
+        async_data_buffer_selection="fifo",
         dynamic_sampling_filter_path=None,
         enable_sample_ownership_checker=False,
         max_weight_staleness=None,
         reward_key=None,
         rollout_batch_size=1,
+        rollout_seed=0,
         use_output_store=False,
     )
     defaults.update(overrides)
@@ -361,6 +366,40 @@ class TestBatchedGet:
         assert [entry.group[0].group_index for entry in await waiting] == [1, 2, 3]
 
 
+class TestRandomSelection:
+    async def test_a_random_get_takes_a_seeded_subset_and_both_parts_keep_completion_order(self) -> None:
+        """Random selection only changes which groups a get takes; taken and left groups stay in completion order."""
+        under_test = _make_buffer(async_data_buffer_selection="random", rollout_batch_size=3, rollout_seed=7)
+        for group_index in range(8):
+            await _put(under_test.buffer, _make_finished_group(group_index))
+
+        entries = await under_test.buffer.get(num_groups=3)
+
+        taken = sorted(random.Random(7).sample(range(8), 3))
+        assert [entry.group[0].group_index for entry in entries] == taken
+        assert [entry.group[0].group_index for entry in under_test.buffer.state_dict()] == [
+            group_index for group_index in range(8) if group_index not in taken
+        ]
+
+    async def test_stale_groups_are_dropped_before_the_random_pick(self) -> None:
+        """The staleness filter runs first, so a random get picks only among groups training may still see."""
+        under_test = _make_buffer(
+            async_data_buffer_selection="random", max_weight_staleness=0, rollout_batch_size=2, rollout_seed=7
+        )
+        stale = [_make_finished_group(group_index, weight_version=9) for group_index in range(4)]
+        fresh_indices = list(range(4, 8))
+        for group in stale:
+            await _put(under_test.buffer, group)
+        for group_index in fresh_indices:
+            await _put(under_test.buffer, _make_finished_group(group_index, weight_version=10))
+
+        entries = await under_test.buffer.get(num_groups=2, current_version=10)
+
+        taken = [fresh_indices[i] for i in sorted(random.Random(7).sample(range(4), 2))]
+        assert [entry.group[0].group_index for entry in entries] == taken
+        assert under_test.unused == [(group, UnusedReason.STALE) for group in stale]
+
+
 # =============================== capacity =================================
 
 
@@ -493,13 +532,13 @@ class TestMetricWindows:
         first = under_test.buffer.get_metrics()
         assert first["rollout/fully_async/aborted_groups_filtered"] == 1
         assert first["rollout/fully_async/stale_groups_filtered"] == 1
-        assert first["rollout/raw_reward_unfiltered"] == 1.0
+        assert first["rollout/raw_reward"] == 1.0
 
         second = under_test.buffer.get_metrics()
         assert second["rollout/fully_async/aborted_groups_filtered"] == 0
         assert second["rollout/fully_async/stale_groups_filtered"] == 0
         assert "rollout/fully_async/avg_staleness" not in second
-        assert "rollout/raw_reward_unfiltered" not in second
+        assert "rollout/raw_reward" not in second
 
     async def test_the_queue_size_metric_survives_the_window_reset(self) -> None:
         """Queue depth is a snapshot of what is held, not something accumulated since the last step."""

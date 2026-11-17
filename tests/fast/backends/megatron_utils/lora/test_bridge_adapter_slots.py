@@ -568,6 +568,14 @@ def _slots_of(pieces, real_rank):
     return slots
 
 
+def test_global_shapes_leave_out_the_vocab_padding():
+    """Only the TP rank holding padded head rows has the piece; an imported source would be checked for it."""
+    head_b = HfPiece("lm_head.lora_B", (10, 4), (5, 0), torch.arange(20).view(5, 4))
+    padding = HfPiece("lm_head.lora_B.vocab_padding", (2, 4), (0, 0), torch.arange(20, 28).view(2, 4))
+
+    assert _slots_of([head_b, padding], real_rank=2).global_shapes(2) == {"lm_head.lora_B": (10, 2)}
+
+
 def _trim_a_tp_split_rank(rank, world_size, port):
     init_gloo(rank, world_size, port=port)
     init_gloo_group()

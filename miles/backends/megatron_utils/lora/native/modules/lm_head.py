@@ -7,11 +7,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from miles.backends.megatron_utils.lora.native.distributed import branch_input
-from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter, new_lora_parameter
+from miles.backends.megatron_utils.lora.native.modules.linear import PhasedLoRAAdapter, new_lora_parameter
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 
 
-class LoRAOutputHead(NativeLoRAAdapter):
+class LoRAOutputHead(PhasedLoRAAdapter):
     """The lm_head projection, with optional muP input scaling and vocab-pad trim."""
 
     def __init__(
@@ -43,10 +43,15 @@ class LoRAOutputHead(NativeLoRAAdapter):
             "head_B", new_lora_parameter(reference, (vocab_local, context.lora.rank), init="zero", partition_dim=0)
         )
 
-    def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
+    def prepare_input(self, x: torch.Tensor, base_module: nn.Module) -> torch.Tensor:
         scaled = x / self.mup if self.mup else x
-        scaled = branch_input(scaled, base_module, self.context)
-        return F.linear(F.linear(scaled, self.head_A), self.head_B)
+        return branch_input(scaled, base_module, self.context)
+
+    def project_down(self, x: torch.Tensor) -> torch.Tensor:
+        return F.linear(x, self.head_A)
+
+    def project_up(self, down: torch.Tensor) -> torch.Tensor:
+        return F.linear(down, self.head_B)
 
     def weight_deltas(self):
         """The host divides its input by muP too, so the merged head carries the full delta."""

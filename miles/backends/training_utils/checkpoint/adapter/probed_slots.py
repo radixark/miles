@@ -17,6 +17,7 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_dir import HeadRow
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     LocalShardSpec,
     gloo_group,
+    is_vocab_padding,
     raise_if_any_rank_failed,
 )
 from miles.backends.training_utils.checkpoint.adapter.parametrization import AdapterParametrization
@@ -167,6 +168,7 @@ class ProbedAdapterSlots(abc.ABC):
                 for axis, n in enumerate(piece.global_shape)
             )
             for piece in self.row_mapping.pieces
+            if not is_vocab_padding(piece.key)
         }
 
     def get_local_shard_specs(self, slot: int) -> list[LocalShardSpec]:

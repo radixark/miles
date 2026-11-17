@@ -1,4 +1,5 @@
 import logging
+import time
 from contextlib import contextmanager
 
 import torch
@@ -7,6 +8,7 @@ import torch.distributed as dist
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.torchtitan_utils import compat
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
+from miles.backends.torchtitan_utils.compile_warmup import warmup_shard
 from miles.backends.torchtitan_utils.config import build_trainer_config
 from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
 from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanLoraCheckpoint
@@ -97,8 +99,10 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         )
         install_routing_replay(self.trainer.model_parts)
 
+        # torchtitan shards sequences inside the model, so CP peers hold the same rollout data
         cp_mesh = self.trainer.parallelism.get_optional_mesh("cp")
         cp_rank0 = cp_mesh is None or dist.get_rank(cp_mesh.get_group()) == 0
+        self.dumps_train_data = cp_rank0
         if cp_rank0 and get_parallel_state().is_metrics_rank:
             init_tracking(args, primary=False)
 
@@ -120,6 +124,9 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
 
         self.weight_updater = self._build_weight_updater(self.trainer, TitanHfWeightIterator.build)
 
+        if args.compile_warmup:
+            self._compile_warmup()
+
         clear_memory()
         if args.offload_train:
             self.sleep()
@@ -136,6 +143,13 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         clear_memory()
         dist.barrier(group=get_gloo_group())
         print_memory(f"after releasing the GPU cache for {where}")
+
+    def _compile_warmup(self) -> None:
+        """Compile the first step's programs on a synthetic batch, before the engines are up."""
+        start = time.monotonic()
+        num_samples = self.args.backend.global_batch_size // get_parallel_state().effective_dp.size
+        self._compile_warmup_passes(warmup_shard(num_samples))
+        logger.info(f"Compiled the first step's programs in {time.monotonic() - start:.1f} s")
 
     def _step_runner(self):
         return self.trainer.step_runner()

@@ -5,7 +5,7 @@ GDN in_proj, per-expert names) comes from Bridge's own export, run once on index
 """
 
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from typing import Literal
 
@@ -116,7 +116,10 @@ def probe_bridge_row_mapping(
     stand_ins, start = [], 0
     for param in params:
         codes = torch.arange(start, start + param.numel(), dtype=torch.float64, device=param.device)
-        stand_ins.append(torch.nn.Parameter((codes + rank * _RANK_STRIDE).view(param.shape), requires_grad=False))
+        stand_in = torch.nn.Parameter((codes + rank * _RANK_STRIDE).view(param.shape), requires_grad=False)
+        # the parallel layout attributes an export may read
+        stand_in.__dict__.update({key: value for key, value in param.__dict__.items() if key != "main_grad"})
+        stand_ins.append(stand_in)
         start += param.numel()
     error = None
     try:
@@ -192,8 +195,62 @@ def _registered_in_place_of(
             module._parameters[name] = param
 
 
-class BridgeAdapterSlots(ProbedAdapterSlots):
-    """Checkpoint members of Bridge LoRA; single LoRA is slot 0 of one, multi-LoRA slots are its MultiLoRALinears'.
+class SlotComputeMembers:
+    """Multi-LoRA slots' compute members: claim, free and routing, checked here, done by the backend's hooks.
+
+    A slot is claimed from ``init`` to ``clear``.
+    """
+
+    def _count_slots(self) -> None:
+        # multi-LoRA runs PP=1, so every rank holds slot modules
+        self.num_slots = self._local_num_slots()
+        assert self.num_slots > 0, "a multi-LoRA model holds no slot modules"
+        self._claimed_slots: set[int] = set()
+
+    def init(self, slot: int, lora_rank: int, lora_alpha: float, seed: int | None) -> None:
+        """Claim ``slot``, masking its weights past ``lora_rank``.
+
+        With ``seed`` the weights are first re-drawn through the RNG tracker from it; without, they stay as the
+        model built them or the last ``clear`` re-drew them.
+        """
+        self._assert_slot(slot)
+        # a re-draw would wipe the tenant's adapter
+        assert slot not in self._claimed_slots, f"slot {slot} is already claimed"
+        self._init_slot(slot, lora_rank, lora_alpha, seed)
+        self._claimed_slots.add(slot)
+
+    def clear(self, slot: int) -> None:
+        """Free ``slot``; its weights are re-drawn through the RNG tracker for the next claim."""
+        self._assert_slot(slot)
+        self._clear_slot(slot)
+        self._claimed_slots.discard(slot)
+
+    def route_tokens(self, token_counts_by_slot: Sequence[int] | torch.Tensor) -> None:
+        """Route the next forward's tokens on this rank (after any CP split), sorted by slot, until the next call.
+
+        Every TP rank must pass the same counts: a row-parallel adapter reduces the slots' partial sums together.
+        Recomputation reruns the forward inside the backward, after the forward step has returned.
+        """
+        assert self._multi_lora, "single LoRA routes no tokens"
+        counts_tensor = torch.as_tensor(token_counts_by_slot)
+        assert counts_tensor.dim() == 1 and not (
+            counts_tensor.is_floating_point() or counts_tensor.is_complex() or counts_tensor.dtype == torch.bool
+        ), f"token counts must be a 1-D integer sequence, got {counts_tensor.dtype} of shape {tuple(counts_tensor.shape)}"
+        # one host sync per forward
+        counts = tuple(counts_tensor.tolist())
+        assert len(counts) == self.num_slots, f"{len(counts)} token counts for {self.num_slots} slots"
+        assert min(counts) >= 0, f"negative token counts {counts}"
+        unclaimed = [slot for slot, count in enumerate(counts) if count and slot not in self._claimed_slots]
+        assert not unclaimed, f"tokens routed to unclaimed slots {unclaimed}"
+        self._install_routing(counts)
+
+    def _assert_slot(self, slot: int) -> None:
+        assert self._multi_lora, "single LoRA's adapter is built with the model"
+        assert 0 <= slot < self.num_slots, f"slot {slot} is not in [0, {self.num_slots})"
+
+
+class BridgeAdapterSlots(SlotComputeMembers, ProbedAdapterSlots):
+    """Bridge LoRA's adapter slots; single LoRA is slot 0 of one, multi-LoRA slots are its MultiLoRALinears'.
 
     Multi-LoRA slots are padded to ``max_rank``; a slot's HF tensors have its real rank.
     """
@@ -207,6 +264,38 @@ class BridgeAdapterSlots(ProbedAdapterSlots):
         # every slot has the same layout
         row_mapping = probe_bridge_row_mapping(model, self.slot_parameters(0), self._export_probe, targets)
         super().__init__(row_mapping, targets, iterator)
+        if multi_lora:
+            self._count_slots()
+
+    def _local_num_slots(self) -> int:
+        from megatron.bridge.peft.multi_lora_layers import MultiLoRALinear
+
+        modules = (m for chunk in self._model for m in chunk.modules() if isinstance(m, MultiLoRALinear))
+        return next((module.n_adapters for module in modules), 0)
+
+    def _init_slot(self, slot: int, lora_rank: int, lora_alpha: float, seed: int | None) -> None:
+        from megatron.bridge.peft.multi_lora_layers import init_adapter_slot
+
+        init_adapter_slot(self._model, slot, rank=lora_rank, alpha=lora_alpha, seed=seed)
+
+    def _clear_slot(self, slot: int) -> None:
+        from megatron.bridge.peft.multi_lora_layers import clear_adapter_slot
+
+        clear_adapter_slot(self._model, slot)
+
+    def _install_routing(self, counts: tuple[int, ...]) -> None:
+        from megatron.bridge.peft.multi_lora_layers import set_tokens_per_adapter_slot
+
+        set_tokens_per_adapter_slot(self._model, torch.tensor(counts))
+
+    def adapters_hidden_context(self):
+        """Hides the adapters from the Bridge walk that loads the base checkpoint."""
+        if not self._multi_lora:
+            # Bridge's single-LoRA base load skips the adapter parameters itself
+            return nullcontext()
+        from megatron.bridge.peft.multi_lora_layers import hide_adapters
+
+        return hide_adapters(self._model)
 
     def slot_parameters(self, slot: int) -> list[torch.nn.Parameter]:
         if self._multi_lora:

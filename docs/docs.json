@@ -114,6 +114,7 @@
         "group": "Thinking Machines",
         "pages": [
          "models/thinkingmachines/index",
+         "models/thinkingmachines/inkling-2-small",
          "models/thinkingmachines/inkling",
          "models/thinkingmachines/inkling-small"
         ],
@@ -277,6 +278,8 @@
       "pages": [
        "examples/geo3k-vlm",
        "examples/geo3k-vlm/multi-turn",
+       "examples/timelens-video",
+       "examples/avqa-audio",
        "examples/multi-lora",
        "examples/multi-lora/harbor-tinker",
        "examples/multi-lora/tinker-agent",
@@ -411,7 +414,8 @@
     "pages": [
      "hardware-platforms/overview",
      "hardware-platforms/nvidia-gpus",
-     "hardware-platforms/amd-gpus"
+     "hardware-platforms/amd-gpus",
+     "hardware-platforms/google-tpus"
     ]
    }
   ]

@@ -23,7 +23,9 @@ def resolve_sglang_config_and_scaling(args: Namespace) -> tuple[SglangConfig, Sg
 
 
 def make_sglang_config(**base_args: Any) -> SglangConfig:
-    group = ServerGroupConfig(worker_type=WorkerType.REGULAR, num_gpus_per_engine=1, needs_offload=False)
+    group = ServerGroupConfig(
+        worker_type=WorkerType.REGULAR, num_gpus_per_engine=1, needs_offload=False, overrides={"model_path": "/ckpt"}
+    )
     model = ModelConfig(name="default", model_path=None, server_groups=[group], update_weights=True)
     return SglangConfig(models=[model], base_args=base_args)
 

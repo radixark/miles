@@ -16,6 +16,8 @@ def test_real_hf_load_refreshes_optimizer_masters_from_backend_precision(
     """HF weight loading uses backend precision to refresh masters or reject checkpoint masters."""
     observed = raw_mbridge_loader(False)
     model = torch.nn.Linear(2, 2)
+    # GPTModel's vocab rows
+    model.vocab_size = 2
     calls = []
     optimizer = SimpleNamespace(reload_model_params=lambda: calls.append("reload"))
     args = SimpleNamespace(

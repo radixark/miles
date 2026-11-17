@@ -36,7 +36,7 @@ from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
 register_cuda_ci(est_time=120, suite="stage-b-2-gpu-h200", labels=["lora"], hardware=["hopper"], num_gpus=2)
-register_rocm_ci(est_time=60, suite="nightly-stage-c-2-gpu-mi350", labels=["lora"])
+register_rocm_ci(est_time=60, suite="stage-c-2-gpu-mi350", labels=["lora"])
 
 ADAM = dict(learning_rate=3e-4, beta1=0.9, beta2=0.95, eps=1e-8, weight_decay=0.01, grad_clip_norm=1.0)
 
@@ -149,7 +149,7 @@ def run_worker(checkpoint_dir):
         lora_type="lora",
         experts_shared_outer_loras=False,
     )
-    source = optimizers[0] = SlotOptimizer(args, model, slot=0)
+    source = optimizers[0] = SlotOptimizer(args, model, 0, adapter_slot_parameters(model, 0))
     for step in (1, 2, 3):
         apply_step(model, source, step)
     saved = snapshot(model, source)
@@ -177,7 +177,7 @@ def run_worker(checkpoint_dir):
         commit_adapter_dir(checkpoint_dir, "ck", written, overwrite=False)
     dist.barrier()
     checkpoint_dir = resolve_adapter_dir(checkpoint_dir, "ck", tenant="tenant").path
-    resumed = optimizers[1] = SlotOptimizer(args, model, slot=1)
+    resumed = optimizers[1] = SlotOptimizer(args, model, 1, adapter_slot_parameters(model, 1))
     load_slot(model, members, resumed, str(checkpoint_dir), run, targets, load_optimizer=True)
     # Adam's hyperparameters are not checkpointed: every step passes them
     resumed.apply_adam_params(ADAM)
@@ -200,7 +200,7 @@ def run_worker(checkpoint_dir):
         assert_same_state(snapshot(model, resumed), saved)
     print(f"rank={dist.get_rank()} negative control: rounding masters is detected", flush=True)
 
-    resumed = optimizers[1] = SlotOptimizer(args, model, slot=1)
+    resumed = optimizers[1] = SlotOptimizer(args, model, 1, adapter_slot_parameters(model, 1))
     load_slot(model, members, resumed, str(checkpoint_dir), run, targets, load_optimizer=False)
     apply_step(model, resumed, 4)
     with pytest.raises(AssertionError):

@@ -11,7 +11,7 @@ GPU CI runs inside `radixark/miles`. This doc maps which Dockerfiles exist, the 
 | ------------------------ | ------------------------ | -------------------------------------- |
 | `docker/Dockerfile`      | `radixark/miles` (CUDA)  | `docker-build.yml`, `release-docker.yml` |
 | `docker/Dockerfile.rubin` | Vera Rubin (aarch64/SM107) | `docker-build.yml` (`rubin` manual variant) |
-| `docker/Dockerfile.tpu` | TPU v7x through torch_tpu (x86_64) | `docker-build.yml` (`tpu` manual variant) |
+| `docker/Dockerfile.tpu` | TPU v7x through torch_tpu (x86_64) | `docker-build.yml` (`tpu` variant, rolling `dev-tpu`) |
 | `docker/Dockerfile.rocm` | AMD ROCm (MI35x, MI30x) | `docker-build.yml` (`rocm*-mi35x`, `rocm10-mi30x` variants) |
 | `docker/Dockerfile.cu12` | Deprecated CUDA 12.9 (x86_64), unmaintained | Manual builds only |
 
@@ -65,40 +65,40 @@ The cu13 variants share one multi-arch CUDA base image and differ only in platfo
 
 The **Tag** column is for `--image-tag dev`, which also pushes a timestamped `dev-<YYYYMMDDHHMM>` sibling; `latest` swaps the prefix to `latest`, `custom` uses `--custom-tag`. `cu13` / `cu13-x86` / `cu13-aarch64` intentionally share `radixark/miles:dev` — the daily build runs `cu13` (multi-arch), while a single-arch variant overwrites `dev` with one arch when run alone.
 
-A multi-arch build (`cu13`) needs Buildx's `docker-container` driver. Use `--push` to publish directly, or `--output type=oci,dest=/tmp/image,tar=false` to export a local OCI layout for later publication; it cannot load into the local image store. Use `cu13-x86` / `cu13-aarch64` (single-platform; the arm64 one cross-builds via QEMU on an x86 host) for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`, and repeatable `--build-arg KEY=VALUE`. `--context <repository>` selects a separate build context while keeping the driver and hash reader in their original checkout.
+A multi-arch build (`cu13`) needs Buildx's `docker-container` driver. Use `--push` to publish directly, or `--output type=oci,dest=/tmp/image,tar=false` to export a local OCI layout for later publication; it cannot load into the local image store. Use `cu13-x86` / `cu13-aarch64` (single-platform; the arm64 one cross-builds via QEMU on an x86 host) for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`, and repeatable `--build-arg KEY=VALUE`. `--context <repository>` selects a separate build context while keeping the driver and hash reader in their original checkout. With `BUILD_GITHUB_TOKEN` set, `build.py` hands it to the build as the BuildKit secret `github_token`, which the Dockerfiles' GitHub API release lookups authenticate with; anonymous lookups from a shared builder IP hit GitHub's rate limit (HTTP 403). The trusted CI builds pass the job token; fork builds never get it.
 
 The `rubin` variant uses the existing `docker-build` runner and targets `linux/arm64`, like `cu13-aarch64`. It is not included in scheduled builds, automatic tag promotion/pruning, regular CUDA PR images or versioned releases.
 
-The `tpu` variant builds from sglang-torchtpu's release image (`SGLANG_TPU_IMAGE_TAG`): it swaps in sglang-torchtpu at `SGLANG_TPU_COMMIT` (the release's libtpu and jax), replaces torch_tpu with the wheel from the `TORCH_TPU_WHEELS_TAG` release of `WHEELS_REPO` (torch_tpu main plus `docker/tpu_patch/torch_tpu_job_local_worlds.patch`), moves the one Python environment to `TORCH_VERSION` (the CUDA image's torch; the torchtitan backend needs >= 2.14), and adds torchtitan at `TORCHTITAN_COMMIT` with `docker/tpu_patch/torchtitan_torch_tpu.patch` and miles. `docker/tpu_patch/` feeds only this image, so it stays out of `docker/image_inputs.py`. Like `rubin`, it is manual only. `scripts/tpu/README.md` runs it.
+The `tpu` variant builds from sglang-torchtpu's release image (`SGLANG_TPU_IMAGE_TAG`): it swaps in sglang-torchtpu at `SGLANG_TPU_COMMIT` (the release's libtpu and jax), replaces torch_tpu with the wheel from the `TORCH_TPU_WHEELS_TAG` release of `WHEELS_REPO` (torch_tpu main plus `docker/tpu_patch/torch_tpu_job_local_worlds.patch`), moves the one Python environment to `TORCH_VERSION` (the CUDA image's torch; the torchtitan backend needs >= 2.14), and adds torchtitan at `TORCHTITAN_COMMIT` with `docker/tpu_patch/torchtitan_torch_tpu.patch` and miles. `docker/tpu_patch/` feeds only this image, so it stays out of `docker/image_inputs.py`. The automatic `docker-build.yml` runs build it next to `cu13` as `radixark/miles:dev-tpu` (see Rolling Docker build); it has no versioned release. A PR that changes its inputs gets `radixark/miles:pr-<number>-tpu` from `pr-test-tpu.yml` ([`.github/tpu-ci/README.md`](../../../.github/tpu-ci/README.md)), deleted with `pr-<number>` when the PR closes. `scripts/tpu/README.md` runs it.
 
 ## PR build check (in `pr-test.yml`)
 
-Dockerfile changes can be build-tested on the PR itself, before merge, by selecting CUDA tests, for example with `run-ci-image`. A Dockerfile change alone does not request GPU execution or a PR image build.
+A PR that changes the image inputs and selects CUDA tests builds its image before those tests run; a CPU-only PR builds none unless it carries `rebuild-ci-image`. The PR image is one tag per architecture (`PR_IMAGE_ARCHES` in `docker/image_inputs.py`): `pr-<num>` for amd64 and `pr-<num>-arm64`, each built by its own job. A CUDA stage requires the image of its declared architecture; see [stage dependencies](/developer/ci/00-stage).
 
-`pr-test.yml` calls `_build-pr-ci-image.yml` only when its final stage selection contains CUDA tests and `stage-a-cpu` satisfies its success/bypass gate. CPU-only PRs skip both the build call and its downstream `resolve-ci-image`. Both CPU stages run without waiting for images. An eligible PR keeps **one** image tag, `radixark/miles:pr-<num>`, for its whole life, and rebuilds it only when the content that feeds it changes:
+`pr-test.yml` calls `_build-pr-ci-image.yml` once per architecture (`docker-build-amd64`, `docker-build-arm64`) after `stage-a-cpu` satisfies its success/bypass gate, when the final stage selection contains CUDA tests (`needs_cuda_image`). Each call is a hosted-runner no-op when the inputs match the base. `resolve-ci-image-<arch>` requires `docker-build-<arch>`. Both CPU stages run without waiting for images. An eligible PR keeps each architecture's tag for its whole life, and rebuilds it only when the content that feeds it changes:
 
 | Job | What it does |
 | --- | --- |
-| `docker-decide` | hashes the build inputs (`docker/image_inputs.py`) and compares. Inputs equal to the base branch → no PR image, suites run on `dev`. Otherwise it reads the `miles.image-inputs` label off the published `pr-<num>` tag: same hash → reuse it, different or absent → rebuild. Forks inspect the public tag without repository secrets |
-| `docker-build` | builds `cu13` for `linux/amd64` and `linux/arm64` and pushes `pr-<num>`, stamped with the inputs hash. Same-repository rebuilds use a `docker-build` node. Fork rebuilds wait on a hosted runner for `Build Fork CI Image` to return success; otherwise this job is a hosted-runner no-op |
-| `resolve-ci-image` | resolves the CI image to `pr-<num>` whenever that tag is current — whether this run built it or an earlier one did — so **every GPU suite runs inside the PR's image**; a failed build stops the matrix instead of testing a stale image. A PR image outranks a `ci-image-tag:` PR-body directive, which applies only when the PR has no image (PRs whose image inputs match the base) |
-| `delete-pr-tag` (`docker-pr-tag-cleanup.yml`) | removes the `pr-<num>` tag when the PR closes; the tag stays available for re-runs while the PR is open |
+| `docker-decide` | hashes the build inputs (`docker/image_inputs.py`) and compares. Inputs equal to the base branch → no PR image, suites run on `dev`. Otherwise it reads the `miles.image-inputs` label off its architecture's published tag: same hash → reuse it, different or absent → rebuild. Forks inspect the public tag without repository secrets |
+| `docker-build` | builds its architecture's variant (`cu13-x86` or `cu13-aarch64`) and pushes `pr-<num>` or `pr-<num>-arm64`, stamped with the inputs hash. Same-repository rebuilds use a `docker-build` node. Fork rebuilds wait on a hosted runner for `Build Fork CI Image` to return success; otherwise this job is a hosted-runner no-op |
+| `resolve-ci-image-amd64` | resolves the CI image to `pr-<num>` whenever that tag is current — whether this run built it or an earlier one did — so **every GPU suite runs inside the PR's image**; a failed build stops the matrix instead of testing a stale image. A PR image outranks a `ci-image-tag:` PR-body directive, which applies only when the PR has no image (PRs whose image inputs match the base) |
+| `delete-pr-tag` (`docker-pr-tag-cleanup.yml`) | removes the PR's image tags when the PR closes; they stay available for re-runs while the PR is open |
 
 So a rerun, or a push that touches only source files, reuses the image the PR already has instead of rebuilding an identical one. Non-docker PRs are untouched: no PR image, matrix on `dev`, as before.
 
 `docker/image_inputs.py` is the single source of truth for what counts as an input (`docker/Dockerfile`, `docker/Dockerfile.rubin`, `docker/build.py`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, `docker/patch/**`, `requirements.txt`). `Dockerfile.rocm` is deliberately excluded — it feeds the `rocm/sgl-dev` images, not the `cu13` image built here.
 
-To rebuild an eligible PR image when its inputs did not change — a moved base image, a floating dependency, a corrupt push — add the **`rebuild-ci-image`** label alongside a CUDA test request. The label does not select tests or make a PR whose build inputs match the base eligible. Once consumed by a build, it is removed so later runs can reuse the image.
+To rebuild an eligible PR image when its inputs did not change — a moved base image, a floating dependency, a corrupt push — add the **`rebuild-ci-image`** label. It rebuilds every architecture, and it is also how a PR that selects no CUDA tests build-tests its image. The label does not select tests or make a PR whose build inputs match the base eligible. Every run rebuilds while the PR carries the label; remove it so later runs reuse the images.
 
 ### Fork PR publication
 
-Fork `pull_request` runs do not receive Docker Hub secrets. Their image job uses the same CUDA selection, CPU A success/bypass gate, hash decision, and output contract as same-repository PRs. When a rebuild is needed, it submits an attempt-bound request and waits for trusted publication. Success continues to `resolve-ci-image` and GPU tests in the same CI attempt; a publication failure fails the image job. CPU tests are not rerun.
+Fork `pull_request` runs do not receive Docker Hub secrets. Their image job uses the same CPU A success/bypass gate, hash decision, and output contract as same-repository PRs. When a rebuild is needed, the amd64 job submits one attempt-bound request for both architectures, and each job waits for its own architecture's trusted publication. An arm64 tag that is stale while the amd64 tag is current gets no request; `rebuild-ci-image` rebuilds both. Success continues to any selected CUDA tests in the same CI attempt; a publication failure fails the image job. CPU tests are not rerun.
 
-`build-fork-ci-image.yml` starts on `PR Test`'s `workflow_run.in_progress` event and waits for the request artifact, which is readable before the source run finishes. Only a request allocates a builder. The caller waits for the matching publisher run and its build job to succeed, so an existing tag cannot satisfy a forced rebuild prematurely. The hosted handoff has a 360-minute limit covering queue and build time; the builder retains its 180-minute limit.
+`build-fork-ci-image.yml` starts on `PR Test`'s `workflow_run.in_progress` event and waits for the request artifact, which is readable before the source run finishes; it then builds each architecture in its own `build (<arch>)` job. GitHub can fire that event several times for one attempt; only the earliest triggered run publishes, and later ones exit without a request. Only a request allocates a builder. The caller waits for that earliest publisher run's `build (<arch>)` job to succeed, so an existing tag cannot satisfy a forced rebuild prematurely. The hosted handoff has a 360-minute limit covering queue and build time; the builder retains its 180-minute limit.
 
-The trusted workflow binds the request to its source run and attempt, the open fork PR and current head, the latest matching PR Test run, and the original merge SHA recorded by GitHub for `_build-pr-ci-image.yml`. It resolves selection and fast-fail policy from the request's original PR-event labels, matching the caller even after labels are removed. These labels are policy input from the source workflow, not proof of publishing authority; credential isolation is described below. It checks the CPU gate, including successful jobs retained by partial reruns, and uses trusted code to parse the PR's test registrations without importing them. A later main advance does not change the frozen merge.
+The trusted workflow binds the request to its source run and attempt, the open fork PR and current head, the latest matching PR Test run that was not cancelled, and the original merge SHA recorded by GitHub for `_build-pr-ci-image.yml`. It resolves fast-fail policy from the request's original PR-event labels, matching the caller even after labels are removed. These labels are policy input from the source workflow, not proof of publishing authority; credential isolation is described below. It checks the CPU gate, including successful jobs retained by partial reruns, and recomputes that the build inputs differ from the base. A later main advance does not change the frozen merge.
 
-Host orchestration comes from the default branch. Only the fork Dockerfile and build context enter an isolated BuildKit instance, with no secret forwarding or insecure entitlements. Both architectures are exported as a local OCI layout. BuildKit is removed before Docker Hub login; the publisher copies the layout to the fixed `pr-<num>` tag without running the image and verifies both architectures' inputs hashes. Fork edits to the host build driver, hash reader, or workflow take effect after merge.
+Host orchestration comes from the default branch. Only the fork Dockerfile and build context enter an isolated BuildKit instance, with no secret forwarding or insecure entitlements. Each architecture is exported as a local OCI layout. BuildKit is removed before Docker Hub login; the publisher copies the layout to that architecture's fixed tag with a digest-pinned skopeo container, without running the image, and verifies its inputs hash. Fork edits to the host build driver, hash reader, or workflow take effect after merge.
 
 A new request cancels an older build for the same PR. During building, the trusted helper checks every 30 seconds that the source attempt remains active and stops its build process group if it ends or is superseded. The publisher rechecks the live PR and source before publication. Builder and local-output cleanup also run on failure or cancellation. A forced build consumes its original one-shot label, with the same removal-failure warning as same-repository builds.
 
@@ -106,17 +106,18 @@ This path requires `build-fork-ci-image.yml` and its trusted helpers on the defa
 
 ## Rolling Docker build (`docker-build.yml`)
 
-This workflow owns the rolling `dev` and `latest` image families. It has three jobs:
+This workflow owns the rolling `dev` / `latest` (CUDA) and `dev-tpu` / `latest-tpu` (TPU) image families. It has four jobs:
 
 - **`check-upstream`** (schedule / `simulate_schedule` only) — polls the inputs the image bakes: the HEAD SHA of sglang `sglang-miles` (`sgl-project/sglang`) and Megatron-LM `miles-main` (`radixark/Megatron-LM`) — the source branches it builds — plus a fingerprint of the selected `radixark/miles-wheels` rolling release, so a rebuilt sgl-router or other wheel also triggers a build (re-uploads to the same tag are caught by fingerprint, not commit SHA). It compares against the values cached from the last build and sets `should_build=true` if any moved. `miles` itself is intentionally not polled — that would rebuild far too often. The cron polls every 10 minutes (off the top of the hour), so an upstream move starts a build within about 30 minutes, and this check is what stops those polls from rebuilding an unchanged image, with one staleness bound: because the image also bakes a `miles` checkout, `should_build` is forced to `true` once the last triggered build is **12h** old, so `dev` never drifts more than half a day behind the `miles` repo even when sglang / Megatron / wheels are quiet. A lookup that still fails after three attempts, or returns a malformed value, fails that poll (the run goes red) without building or saving state, and the next poll retries, so a lookup that keeps failing shows up as red runs rather than silently stopping rebuilds. (The cache file's last line records the epoch of the last triggered build; it is only re-saved when a build fires.)
-- **`build-and-push`** (self-hosted `docker-build` runner) — calls `docker/build.py` to build + push, then conditionally points `latest` at the new `dev` and prunes old timestamped tags.
+- **`push-variants`** (push only) — diffs the push against its `before` commit and picks the variants whose inputs it touched: `cu13` for `docker/Dockerfile` and `docker/verify_transformer_engine.py`, `tpu` for `docker/Dockerfile.tpu` and `docker/tpu_patch/**`, both for `docker/install-kube-tools.sh` and `requirements.txt`. A TPU-only change therefore never rebuilds the multi-arch cu13 image.
+- **`build-and-push`** (self-hosted `docker-build` runner) — one matrix job per variant (`cu13` and `tpu` on a schedule, the `push-variants` pick on a push, the picked one on a manual dispatch) calls `docker/build.py` to build + push, then conditionally points that variant's `latest` at its new `dev` and prunes its old timestamped tags. The TPU image pins its sglang-torchtpu, torch_tpu and torchtitan sources, so its only moving inputs are the baked miles checkout (bounded by the 12h rebuild) and the x86 wheels release (fingerprinted by `check-upstream`); it shares the cu13 gate.
 - **`notify-build-failure`** — when an automatic build (schedule or push) fails, posts one card to the Miles CI Lark group with the failed job and step (`lark_notify.py docker-build-failure`). A failed manual dispatch is not reported.
 
-`build-and-push` runs when `check-upstream` was skipped, or ran and reported `should_build=true`. Automatic builds (schedule, push) share one concurrency group, so they run one at a time and at most one waits; a newer waiting build replaces an older one, and it still builds the newest heads because the Dockerfile clones them when the build starts. Manual dispatches stay outside that group.
+`build-and-push` runs when `check-upstream` was skipped, or ran and reported `should_build=true`, and on a push only after `push-variants` succeeded. Automatic builds (schedule, push) share one concurrency group per variant, so each variant builds one at a time and at most one waits; a newer waiting build replaces an older one, and it still builds the newest heads because the Dockerfile clones them when the build starts. Manual dispatches stay outside that group.
 
 ### Triggers: automatic vs manual
 
-- **Automatic** (no human) — the **schedule** (10-minute poll, gated by `check-upstream`) and any **push to `main` that touches `docker/Dockerfile`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, or `requirements.txt`**. Both leave `--variant` empty and build `cu13` → `radixark/miles` (multi-arch).
+- **Automatic** (no human) — the **schedule** (10-minute poll, gated by `check-upstream`) and any **push to `main` that touches `docker/Dockerfile`, `docker/Dockerfile.tpu`, `docker/tpu_patch/**`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, or `requirements.txt`**. The schedule builds `cu13` → `radixark/miles:dev` (multi-arch) and `tpu` → `radixark/miles:dev-tpu` (amd64); a push builds only the variants whose inputs it touched (see `push-variants` above).
 - **Manual** — `workflow_dispatch` (pick one variant — see Trigger a build yourself below) or running `docker/build.py` locally. The `rubin` and ROCm images (`rocm*-mi35x`, `rocm10-mi30x`) have **no automatic path in this repo** (ROCm nightlies live in sgl-project/sglang) (`cu13-x86` / `cu13-aarch64` just rebuild the same `dev` image single-arch).
 
 `docker/build.py` and `docker/patch/**` participate in PR image validation but are not `main`-push triggers; [Release a Version](/developer/ci/04-release) treats them as manual preflight cases.
@@ -124,8 +125,8 @@ This workflow owns the rolling `dev` and `latest` image families. It has three j
 
 | Trigger                                     | `check-upstream`                   | builds                | `latest` move     | prune      |
 | ------------------------------------------- | ---------------------------------- | --------------------- | ----------------- | ---------- |
-| schedule (10-minute poll)                   | runs; build if upstream moved or last build ≥ 12h ago | `cu13`   | yes        | yes |
-| push to `main` touching `docker/Dockerfile`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, or `requirements.txt` | skipped                            | `cu13`   | no                | no         |
+| schedule (10-minute poll)                   | runs; build if upstream moved or last build ≥ 12h ago | `cu13`, `tpu` | yes        | yes |
+| push to `main` touching `docker/Dockerfile`, `docker/Dockerfile.tpu`, `docker/tpu_patch/**`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, or `requirements.txt` | skipped                            | the touched variants (`push-variants`) | no                | no         |
 | `workflow_dispatch`                         | skipped                            | the one input variant | no                | no         |
 | `workflow_dispatch` + `simulate_schedule`   | runs                               | the one input variant | no                | no         |
 
@@ -138,10 +139,11 @@ All images push to **Docker Hub**. CUDA variants → `radixark/miles`; ROCm vari
 | --- | --- | --- |
 | `cu13` / `cu13-x86` / `cu13-aarch64` | `radixark/miles:dev` + `radixark/miles:dev-<YYYYMMDDHHMM>` | `radixark/miles:latest` |
 | `rubin` | `radixark/miles:dev-rubin` (+ timestamped sibling) | `radixark/miles:latest-rubin` |
+| `tpu` | `radixark/miles:dev-tpu` + `radixark/miles:dev-tpu-<YYYYMMDDHHMM>` | `radixark/miles:latest-tpu` |
 | `rocm724-mi35x` / `rocm10-mi35x` | `rocm/sgl-dev:miles-rocm*-mi35x` (+ timestamped sibling) | `rocm/sgl-dev:latest-rocm*-mi35x` |
 | `rocm10-mi30x` | `rocm/sgl-dev:miles-rocm10-mi30x` (+ timestamped sibling) | `rocm/sgl-dev:latest-rocm10-mi30x` |
 
-What **moves a shared tag**: `--image-tag dev` overwrites `:dev` and adds a timestamped sibling; on a **scheduled** run `latest`→`dev` advances; pruning likewise runs **only on schedule**, keeping the newest 20 `dev-<ts>` tags and never deleting a tag younger than 14 days. Any `workflow_dispatch` — **including** `simulate_schedule` — writes its own tag(s) but never moves `latest` or prunes; only the real cron mutates published tags. See the trigger table above.
+What **moves a shared tag**: `--image-tag dev` overwrites `:dev` and adds a timestamped sibling; on a **scheduled** run `latest`→`dev` and `latest-tpu`→`dev-tpu` advance; pruning likewise runs **only on schedule**, keeping the newest 20 `dev-<ts>` and, separately, `dev-tpu-<ts>` tags and never deleting a tag younger than 14 days. Any `workflow_dispatch` — **including** `simulate_schedule` — writes its own tag(s) but never moves `latest` or prunes; only the real cron mutates published tags. See the trigger table above.
 
 ### Trigger a build yourself
 
@@ -158,7 +160,7 @@ gh workflow run docker-build.yml -f variant=cu13-x86 -f image_tag=custom -f cust
 
 | input | required | values / default |
 | ----- | -------- | ---------------- |
-| `variant` | yes | `cu13` / `cu13-x86` / `cu13-aarch64` / `rubin` / `rocm724-mi35x` / `rocm10-mi35x` / `rocm10-mi30x` |
+| `variant` | yes | `cu13` / `cu13-x86` / `cu13-aarch64` / `rubin` / `tpu` / `rocm724-mi35x` / `rocm10-mi35x` / `rocm10-mi30x` |
 | `image_tag` | yes | `dev` / `latest` / `custom` |
 | `custom_tag` | no | tag name; required when `image_tag=custom` |
 | `dockerfile` | no | path to Dockerfile (default `docker/Dockerfile`) |
@@ -167,9 +169,9 @@ gh workflow run docker-build.yml -f variant=cu13-x86 -f image_tag=custom -f cust
 ### Steps (`build-and-push`)
 
 1. checkout → Buildx → install Python + typer → Docker Hub login.
-2. **Build + push** via `build.py` — automatic runs build `cu13`; a manual dispatch builds only the one variant you picked.
-3. **schedule only** — point `latest`→`dev`.
-4. **schedule only** — prune the `dev-<timestamp>` series to the newest 20, keeping every tag younger than 14 days.
+2. **Build + push** via `build.py` — a schedule builds `cu13` and `tpu` as two matrix jobs, a push only the variants it touched, and a manual dispatch builds only the one variant you picked.
+3. **schedule only** — point `latest`→`dev` (`latest-tpu`→`dev-tpu` for `tpu`).
+4. **schedule only** — prune that variant's `dev-<timestamp>` or `dev-tpu-<timestamp>` series to the newest 20, keeping every tag younger than 14 days.
 
 ### Push auth & permissions
 
@@ -188,4 +190,4 @@ The independent [Wheels rebuild workflow](/developer/ci/06-build-wheels) publish
 
 ## Image retention (open)
 
-`docker-build.yml` prunes `dev-<timestamp>`, keeping the newest 20 plus every tag younger than 14 days; `dev` / `latest` move forward. Ordinary PR, nightly, and weekly CI therefore has no durable image record. A release branch cut instead retags the newest timestamped `dev` image, or mutable `dev` when none exists, as prune-exempt `release-vX.Y.Z-ci` and records that tag in `release-lock.json`. The guarded preflight is documented in [Release a Version](/developer/ci/04-release).
+`docker-build.yml` prunes `dev-<timestamp>` and `dev-tpu-<timestamp>`, keeping the newest 20 of each plus every tag younger than 14 days; `dev` / `latest` and `dev-tpu` / `latest-tpu` move forward. Ordinary PR, nightly, and weekly CI therefore has no durable image record. A release branch cut instead retags the newest timestamped `dev` image, or mutable `dev` when none exists, as prune-exempt `release-vX.Y.Z-ci` and records that tag in `release-lock.json`. The guarded preflight is documented in [Release a Version](/developer/ci/04-release).

@@ -62,12 +62,11 @@ _OPTIM_KEY = "adapter_optimizer"
 
 
 class LayerWiseSlotMembers:
-    """Checkpoint members of Bridge multi-LoRA slots trained by per-slot LayerWise optimizers."""
-
-    bf16_adapter_key_style = "peft"
+    """Checkpoint members of multi-LoRA slots trained by per-slot LayerWise optimizers."""
 
     def __init__(self, adapter_slots: BridgeAdapterSlots, slot_optimizers: dict[int, SlotOptimizer]):
         self._slots, self._optimizers = adapter_slots, slot_optimizers
+        self.bf16_adapter_key_style = adapter_slots.bf16_adapter_key_style
 
     @property
     def head_rows(self) -> HeadRows | None:
@@ -593,7 +592,10 @@ def _slot_weights_sharded_state_dict(model: Sequence[DDP], slot: int) -> dict:
         sharded |= chunk.sharded_state_dict()
     marker = f".adapters.{slot}."
     slot_sharded = {key: value for key, value in sharded.items() if marker in key}
-    assert slot_sharded, f"slot {slot} exposed no adapter tensors"
+    assert slot_sharded, (
+        f"slot {slot} exposes no adapter shards (native adapters hold none; a legacy Tinker checkpoint is "
+        "Bridge adapter shards and loads on a --megatron-to-hf-mode bridge gateway)"
+    )
     return slot_sharded
 
 
@@ -622,7 +624,7 @@ def _load_legacy_slot(shells: dict, slot_optimizer: SlotOptimizer, path: str, lo
 def build_adapter_slots(args, model, iterator, targets) -> BridgeAdapterSlots | NativeAdapterSlots:
     """Collective: the run's adapter checkpoint view, Bridge's (single or multi-LoRA) or native's."""
     if args.megatron_to_hf_mode == "raw":
-        return NativeAdapterSlots(model, iterator, targets)
+        return NativeAdapterSlots(model, iterator, targets, multi_lora=args.multi_lora)
     return BridgeAdapterSlots(model, iterator, targets, multi_lora=args.multi_lora)
 
 

@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 import torch
-from tests.fast.fixtures.args_fixtures import parse_megatron_test_config
+from tests.fast.fixtures.args_fixtures import parse_megatron_test_config, parser_defaults
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config, write_megatron_config_trainers
 from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
@@ -25,12 +25,14 @@ from miles.backends.sglang_utils.arguments import validate_args as validate_sgla
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
 from miles.backends.torchtitan_utils.arguments import build_torchtitan_parser
+from miles.backends.training_utils.data.token_space_media_process import RolloutEngineProcessorArgs
 from miles.router.backend import RouterKind
 from miles.utils.args.configs.router import RouterConfig
 from miles.utils.args.trainer_utils import compute_trainer_ckpt_load_config
 from miles.utils.arguments import (
     CAKE_BACKEND_ARGS,
     FULLY_ASYNC_ROLLOUT_PATH,
+    _check_multimodal_token_space_processing_args,
     _check_stop_token_replace_streaming_session,
     _compute_custom_inference_engine_provider_path,
     _compute_rollout_external,
@@ -42,6 +44,7 @@ from miles.utils.arguments import (
     _resolve_run_uuid,
     _resolve_sample_ownership_check,
     _validate_deploy_component,
+    _validate_fused_lm_head_lora_targets,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
     miles_validate_args,
@@ -49,6 +52,7 @@ from miles.utils.arguments import (
     resolve_rollout_function_paths,
     supports_partial_target_weight_update,
     validate_async_off_policy_correction,
+    validate_compile_warmup,
     validate_log_probs_backend_args,
     validate_miles_ext_kernels_args,
     validate_skip_actor_forward_only,
@@ -1283,6 +1287,87 @@ def test_fused_log_probs_backend_rejects_what_it_does_not_cover(extra, vocab_siz
 
     with pytest.raises(ValueError, match=message):
         validate_log_probs_backend_args(args)
+
+
+def _fused_lm_head_args(extra):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(["--log-probs-backend", "fused_lm_head", "--num-rollout", "1"] + extra + REQUIRED_ARGS)
+    args.vocab_size = 151_936  # a Megatron flag, absent from this parser
+    args.use_sampling_support_replay = False  # derived by miles_validate_args
+    args.overlap_moe_expert_parallel_comm = False  # Megatron flags
+    args.defer_embedding_wgrad_compute = False
+    return args
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (["--true-on-policy-mode"], "fused_lm_head does not support --true-on-policy-mode"),
+        (["--train-backend", "fsdp"], "needs --train-backend megatron"),
+        (["--loss-type", "custom_loss"], "supports --loss-type policy_loss and sft_loss"),
+        (["--loss-type", "score_centering"], "supports --loss-type policy_loss and sft_loss"),
+        (["--multi-lora-n-adapters", "2"], "does not support multi-LoRA"),
+    ],
+    ids=["true_on_policy", "fsdp", "custom_loss", "score_centering", "multi_lora"],
+)
+def test_fused_lm_head_backend_rejects_what_it_does_not_cover(extra, message):
+    with pytest.raises(ValueError, match=message):
+        validate_log_probs_backend_args(_fused_lm_head_args(extra))
+
+
+@pytest.mark.parametrize(
+    ("megatron_flag", "message"),
+    [
+        ("overlap_moe_expert_parallel_comm", "does not support --overlap-moe-expert-parallel-comm"),
+        ("defer_embedding_wgrad_compute", "does not support --defer-embedding-wgrad-compute"),
+    ],
+)
+def test_fused_lm_head_backend_rejects_megatron_schedules_it_breaks(megatron_flag, message):
+    args = _fused_lm_head_args(["--train-backend", "megatron"])
+    setattr(args, megatron_flag, True)
+    with pytest.raises(ValueError, match=message):
+        validate_log_probs_backend_args(args)
+
+
+@pytest.mark.parametrize(
+    ("backend", "lora_rank", "targets", "rejected"),
+    [
+        ("fused_lm_head", 8, ["model.layers.*.self_attn.q_proj", "lm_head"], True),
+        ("fused_lm_head", 8, ["model.layers.*.self_attn.q_proj"], False),
+        ("fused_lm_head", 0, ["lm_head"], False),
+        ("fused", 8, ["lm_head"], False),
+    ],
+    ids=["unembed_adapted", "no_unembed", "lora_off", "other_backend"],
+)
+def test_fused_lm_head_backend_rejects_lora_on_the_output_layer(backend, lora_rank, targets, rejected):
+    args = SimpleNamespace(
+        log_probs_backend=backend,
+        lora_rank=lora_rank,
+        lora_adapter_path=None,
+        hf_lora_targets=targets,
+        hf_checkpoint="unused",
+    )
+    hf_config = SimpleNamespace(to_dict=lambda: {"model_type": "qwen3"})
+    with patch("miles.utils.arguments.load_hf_config", return_value=hf_config):
+        if rejected:
+            with pytest.raises(ValueError, match="does not support LoRA on the output layer"):
+                _validate_fused_lm_head_lora_targets(args)
+        else:
+            _validate_fused_lm_head_lora_targets(args)
+
+
+@pytest.mark.parametrize("loss_type", ["policy_loss", "sft_loss"])
+def test_fused_lm_head_backend_accepts_policy_and_sft_losses_on_megatron(loss_type):
+    validate_log_probs_backend_args(_fused_lm_head_args(["--loss-type", loss_type, "--train-backend", "megatron"]))
+
+
+@pytest.mark.parametrize("mtp_training", [False, True])
+def test_fused_lm_head_backend_warns_once_that_mtp_heads_keep_their_logits(mtp_training, caplog):
+    extra = ["--train-backend", "megatron"] + (["--enable-mtp-training"] if mtp_training else [])
+    with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+        validate_log_probs_backend_args(_fused_lm_head_args(extra))
+    assert caplog.text.count("does not cover the MTP heads") == int(mtp_training)
 
 
 @pytest.mark.parametrize(
@@ -2702,6 +2787,13 @@ class TestTitoFixedTemplateConfiguration:
         miles_validate_args(args)
         assert args.chat_template_path.endswith("/qwen3_fixed.jinja")
         assert args.apply_chat_template_kwargs == {"clear_thinking": False}
+
+    def test_muse_spark_resolves_family(self):
+        args = self._parse(["--use-session-server", "--tito-model", "muse_spark"])
+        miles_validate_args(args)
+        assert args.chat_template_path.endswith("/muse_spark_fixed.jinja")
+        assert args.sglang_chat_template == args.chat_template_path
+        assert args.apply_chat_template_kwargs == {}
 
     @pytest.mark.parametrize(
         ("family", "template"),
@@ -4280,6 +4372,16 @@ def test_dumper_retention_override_is_only_added_for_megatron(backend: str) -> N
         assert args.save_retain_interval is None
 
 
+def test_checkpoint_decay_rejects_megatron_save_retain_interval() -> None:
+    """Megatron's retention deletes on its own schedule, so the steps decay keeps or pins would not survive it."""
+    decay_args = ["--save", "/checkpoints/run", "--save-interval", "20"]
+    decay_args += ["--keep-recent-checkpoints", "2", "--keep-checkpoint-every", "40"]
+
+    miles_validate_args(_parse_megatron_args(decay_args))
+    with pytest.raises(AssertionError, match="cannot be combined with --save-retain-interval"):
+        miles_validate_args(_parse_megatron_args(decay_args + ["--save-retain-interval", "20"]))
+
+
 @pytest.mark.parametrize("backend", ["fsdp", "torchtitan"])
 @pytest.mark.parametrize("detach_heads", [True, False])
 def test_native_backends_own_the_mtp_detach_heads_argument(
@@ -4345,3 +4447,186 @@ class TestLoRATypeResolution:
         args = self._parse(tmp_path, ["--megatron-to-hf-mode", "raw", "--lora-type", "lora"])
         with pytest.raises(AssertionError, match="--lora-type lora shares one lora_A"):
             validate_lora_args_after_megatron(args)
+
+
+def _compile_warmup_args(**overrides) -> SimpleNamespace:
+    defaults = dict(
+        train_backend="torchtitan",
+        use_dynamic_batch_size=True,
+        pipeline_model_parallel_size=1,
+        context_parallel_size=1,
+    )
+    return SimpleNamespace(**{**parser_defaults(), **defaults, **overrides})
+
+
+class TestValidateCompileWarmup:
+    def test_the_torchtitan_parse_path_reads_every_argument_it_checks(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(torch, "__version__", "2.14.0")  # the backend's floor; CI's torch is older
+        argv = ["test", "--train-backend", "torchtitan", "--rollout-batch-size", "2", "--num-rollout", "1"]
+        argv += ["--actor-num-gpus-per-node", "1", "--rollout-max-response-len", "1024"]
+        argv += ["--use-dynamic-batch-size", "--max-tokens-per-gpu", "4096", "--compile-warmup"]
+        monkeypatch.setattr(sys, "argv", argv)
+
+        args, _ = parse_args_and_get_parser()
+
+        assert args.compile_warmup
+
+    @pytest.mark.parametrize(
+        ("overrides", "flag"),
+        [
+            ({"train_backend": "fsdp"}, "--train-backend torchtitan"),
+            ({"use_dynamic_batch_size": False}, "--use-dynamic-batch-size"),
+            ({"colocate": True}, "--colocate"),
+            ({"pipeline_model_parallel_size": 2}, "--pipeline-model-parallel-size"),
+            ({"multimodal_token_space_processing": True}, "--multimodal-token-space-processing"),
+            ({"use_rollout_routing_replay": True}, "--use-rollout-routing-replay"),
+            ({"use_critic": True}, "--use-critic"),
+            ({"custom_convert_samples_to_train_data_path": "x.py"}, "--custom-convert-samples-to-train-data-path"),
+            ({"custom_reward_post_process_path": "x.py"}, "--custom-reward-post-process-path"),
+        ],
+    )
+    def test_a_run_the_synthetic_batch_cannot_mirror_is_refused(self, overrides: dict, flag: str) -> None:
+        validate_compile_warmup(_compile_warmup_args())
+
+        with pytest.raises(ValueError, match=re.escape(flag)):
+            validate_compile_warmup(_compile_warmup_args(**overrides))
+
+
+class TestMultimodalTokenSpaceProcessingArgs:
+    """The trainer rebuilds the rollout engines' media features, so it must reject settings it cannot follow."""
+
+    _SUPPORTED = {
+        "enable_token_space_processor": True,
+        "rl_on_policy_target": None,
+        "true_on_policy_contract": None,
+        "decrypted_config_file": None,
+        "tokenizer_path": None,
+        "tokenizer_mode": "auto",
+        "tokenizer_backend": "huggingface",
+        "revision": None,
+        "model_config_parser": "auto",
+        "json_model_override_args": "{}",
+        "image_processor_backend": "auto",
+        "disable_fast_image_processor": False,
+        "mm_process_config": None,
+        "token_space_preprocess_cache_dir": None,
+        "mm_attention_backend": None,
+    }
+
+    @pytest.mark.parametrize(
+        ("engine_overrides", "external_engines", "match"),
+        [
+            ({"enable_token_space_processor": False}, None, "--sglang-enable-token-space-processor"),
+            ({}, ["10.0.0.1:30000"], "external engines"),
+            ({"rl_on_policy_target": "fsdp"}, None, "--sglang-rl-on-policy-target"),
+            ({"true_on_policy_contract": "qwen3_dense_v1"}, None, "--sglang-true-on-policy-contract"),
+            ({"decrypted_config_file": "/ckpt/override.json"}, None, "--sglang-decrypted-config-file"),
+            ({"mm_attention_backend": "triton_attn"}, None, "--sglang-mm-attention-backend"),
+        ],
+    )
+    def test_settings_the_trainer_cannot_follow_are_rejected(self, engine_overrides, external_engines, match):
+        args = SimpleNamespace(
+            multimodal_token_space_processing=True,
+            rollout_external_engine_addrs=external_engines,
+            trainer_mm_processor_worker_num=1,
+            trainer_mm_io_worker_num=0,
+            hf_checkpoint="/ckpt",
+            train_backend="megatron",
+        )
+        sglang = make_sglang_config(**{**self._SUPPORTED, **engine_overrides})
+
+        with pytest.raises(ValueError, match=match):
+            _check_multimodal_token_space_processing_args(args, sglang=sglang)
+
+    @pytest.mark.parametrize("train_backend", ["fsdp", "torchtitan"])
+    def test_a_trainer_that_never_consumes_the_rebuilt_features_is_rejected(self, train_backend):
+        """torchtitan has no consumer of multimodal_train_inputs, so it would train on placeholder tokens alone."""
+        args = SimpleNamespace(
+            multimodal_token_space_processing=True,
+            rollout_external_engine_addrs=None,
+            hf_checkpoint="/ckpt",
+            train_backend=train_backend,
+        )
+
+        with pytest.raises(ValueError, match="Megatron backend only"):
+            _check_multimodal_token_space_processing_args(args, sglang=make_sglang_config(**self._SUPPORTED))
+
+    def test_supported_settings_pass(self):
+        args = SimpleNamespace(
+            multimodal_token_space_processing=True,
+            rollout_external_engine_addrs=None,
+            trainer_mm_processor_worker_num=1,
+            trainer_mm_io_worker_num=0,
+            hf_checkpoint="/ckpt",
+            train_backend="megatron",
+        )
+
+        _check_multimodal_token_space_processing_args(args, sglang=make_sglang_config(**self._SUPPORTED))
+
+    def test_a_frozen_model_may_use_its_own_processor_settings_without_token_space(self):
+        """A reward model with another tokenizer and token space off neither fails the check nor leaks into the
+        processor the trainer builds for the actor engines' samples."""
+        args = SimpleNamespace(
+            multimodal_token_space_processing=True,
+            rollout_external_engine_addrs=None,
+            trainer_mm_processor_worker_num=1,
+            trainer_mm_io_worker_num=0,
+            hf_checkpoint="/ckpt",
+            train_backend="megatron",
+        )
+        actor_group = ServerGroupConfig(
+            worker_type=WorkerType.REGULAR,
+            num_gpus_per_engine=1,
+            needs_offload=False,
+            overrides={"model_path": "/ckpt"},
+        )
+        reward_group = ServerGroupConfig(
+            worker_type=WorkerType.REGULAR,
+            num_gpus_per_engine=1,
+            needs_offload=False,
+            overrides={
+                "model_path": "/reward",
+                "tokenizer_path": "/reward-tokenizer",
+                "json_model_override_args": '{"num_hidden_layers": 2}',
+                "enable_token_space_processor": False,
+            },
+        )
+        sglang = SglangConfig(
+            models=[
+                ModelConfig(name="actor", model_path=None, server_groups=[actor_group], update_weights=True),
+                ModelConfig(name="reward", model_path="/reward", server_groups=[reward_group], update_weights=False),
+            ],
+            base_args=self._SUPPORTED,
+        )
+
+        _check_multimodal_token_space_processing_args(args, sglang=sglang)
+        rollout_engine_args = RolloutEngineProcessorArgs.from_sglang_config(sglang, hf_checkpoint="/ckpt")
+
+        assert (rollout_engine_args.model_path, rollout_engine_args.tokenizer_path) == ("/ckpt", "/ckpt")
+        assert rollout_engine_args.model_override_args_json == "{}"
+
+    def test_engine_groups_that_disagree_on_a_processor_setting_are_rejected_at_startup(self):
+        """The trainer builds one processor, so two engine groups with different settings cannot both be mirrored."""
+        args = SimpleNamespace(
+            multimodal_token_space_processing=True,
+            rollout_external_engine_addrs=None,
+            trainer_mm_processor_worker_num=1,
+            trainer_mm_io_worker_num=0,
+            hf_checkpoint="/ckpt",
+            train_backend="megatron",
+        )
+        groups = [
+            ServerGroupConfig(
+                worker_type=WorkerType.REGULAR,
+                num_gpus_per_engine=1,
+                needs_offload=False,
+                overrides={"model_path": "/ckpt", "image_processor_backend": backend},
+            )
+            for backend in ("pil", "auto")
+        ]
+        actor = ModelConfig(name="actor", model_path=None, server_groups=groups, update_weights=True)
+
+        with pytest.raises(AssertionError, match="Field 'image_processor_backend' differs"):
+            _check_multimodal_token_space_processing_args(
+                args, sglang=SglangConfig(models=[actor], base_args=self._SUPPORTED)
+            )

@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import re
 import sys
 from argparse import Namespace
 from pathlib import Path
@@ -32,13 +33,13 @@ def _args(**overrides) -> Namespace:
         log_probs_backend="torch",
         colocate=False,
         update_weight_transfer_mode="broadcast",
+        titan_fsdp_gather_once=False,
         pipeline_model_parallel_size=1,
         context_parallel_size=1,
         expert_model_parallel_size=1,
         max_seq_len=8192,
         rollout_max_response_len=4096,
         ref_update_interval=None,
-        save_debug_train_data=None,
         ci_test=False,
         use_routing_replay=False,
         use_rollout_routing_replay=False,
@@ -57,6 +58,7 @@ def _args(**overrides) -> Namespace:
         lora_adapter_path=None,
         lora_train_only=False,
         colocate_memory_peak_device="cpu",
+        titan_fsdp_reduce_dtype="float32",
         # read by the padded-rows loss layout's startup check on a static-shape platform
         train_backend="torchtitan",
         loss_type="policy_loss",
@@ -144,17 +146,23 @@ def test_a_tpu_microbatch_cannot_outgrow_the_largest_length_bucket(monkeypatch, 
 
 
 def test_tpu_sequence_length_is_a_whole_number_of_attention_blocks(monkeypatch, on_tpu):
-    """The largest length bucket is --seq-length, and the TPU attention kernel reshapes it into 1024-token blocks."""
+    """Every microbatch pads to --seq-length, which the TPU attention kernel reshapes into 1024-token blocks."""
     monkeypatch.setattr(torch, "__version__", "2.14.0")
     with pytest.raises(ValueError, match="seq-length 3000 must be a multiple of 1024"):
         validate_torchtitan_args(_tpu_args(seq_length=3000, max_seq_len=None, rollout_max_response_len=2048))
     validate_torchtitan_args(_tpu_args(seq_length=8192))
 
 
-def test_tpu_refuses_context_and_expert_parallelism(monkeypatch, on_tpu):
+def test_tpu_context_parallelism_needs_a_sequence_length_that_shards_evenly(monkeypatch, on_tpu):
     monkeypatch.setattr(torch, "__version__", "2.14.0")
-    with pytest.raises(ValueError, match="context-parallel-size 2"):
-        validate_torchtitan_args(_tpu_args(context_parallel_size=2))
+    validate_torchtitan_args(_tpu_args(context_parallel_size=2))
+    validate_torchtitan_args(_tpu_args(context_parallel_size=3, seq_length=3072, max_seq_len=3072))
+    with pytest.raises(ValueError, match="context-parallel-size 3 does not divide --seq-length 4096"):
+        validate_torchtitan_args(_tpu_args(context_parallel_size=3, seq_length=4096, max_seq_len=4096))
+
+
+def test_tpu_refuses_expert_parallelism(monkeypatch, on_tpu):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
     with pytest.raises(ValueError, match="expert-model-parallel-size 2"):
         validate_torchtitan_args(_tpu_args(expert_model_parallel_size=2))
 
@@ -180,19 +188,8 @@ def test_gpu_validation_ignores_the_tpu_limits(monkeypatch):
     )
 
 
-@pytest.mark.parametrize("seq_len", [1000, 1024, 3000, 8192])
-def test_the_recompile_limit_counts_every_length_bucket(seq_len):
-    """A bucket the limit misses is one compile too many, which a fullgraph block turns into a crash."""
-    pytest.importorskip("torchtitan")
-    from miles.backends.torchtitan_utils.trainer import fixed_shape_length_bucket, fixed_shape_length_buckets
-
-    buckets = {fixed_shape_length_bucket(n, seq_len) for n in range(1, seq_len + 1)}
-    assert buckets == fixed_shape_length_buckets(seq_len)
-    assert max(buckets) == seq_len
-
-
-@pytest.mark.parametrize(("n_tokens", "padded"), [(1, 1024), (1024, 1024), (1025, 2048), (5000, 8192), (8192, 8192)])
-def test_a_static_shape_platform_pads_each_microbatch_to_a_length_bucket(monkeypatch, n_tokens, padded):
+@pytest.mark.parametrize("n_tokens", [1, 1024, 5000, 8192])
+def test_a_static_shape_platform_pads_each_microbatch_to_the_sequence_length(monkeypatch, n_tokens):
     pytest.importorskip("torchtitan")
     from miles.backends.torchtitan_utils.trainer import TitanTrainer
 
@@ -202,8 +199,8 @@ def test_a_static_shape_platform_pads_each_microbatch_to_a_length_bucket(monkeyp
     )
     assert TitanTrainer.padded_length(trainer, n_tokens) == n_tokens, "a dynamic-shape platform keeps the length"
     monkeypatch.setattr(platforms.current_platform, "dynamic_shapes", False)
-    assert TitanTrainer.padded_length(trainer, n_tokens) == padded
-    with pytest.raises(ValueError, match="largest length bucket"):
+    assert TitanTrainer.padded_length(trainer, n_tokens) == 8192
+    with pytest.raises(ValueError, match="the fixed shape every microbatch pads to"):
         TitanTrainer.padded_length(trainer, 8193)
 
 
@@ -249,11 +246,11 @@ def test_a_static_shape_platform_compiles_static_graphs_for_every_pass_and_bucke
 
         monkeypatch.setattr(platforms.current_platform, "dynamic_shapes", False)
         configure_fixed_shape_compile(num_passes=2)
-        # buckets 1024, 2048, 4096, 8192, and two block variants (dense and MoE) per class
-        assert torch._dynamo.config.recompile_limit == 2 * 2 * 4
+        # one shape, and two block variants (dense and MoE) per class
+        assert torch._dynamo.config.recompile_limit == 2 * 2
         assert not torch._dynamo.config.automatic_dynamic_shapes
         configure_fixed_shape_compile(num_passes=3)
-        assert torch._dynamo.config.recompile_limit == 2 * 3 * 4
+        assert torch._dynamo.config.recompile_limit == 2 * 3
 
 
 def test_context_parallelism_is_rejected_for_qwen3_5(monkeypatch):
@@ -266,8 +263,6 @@ def test_unsupported_flags_are_rejected_rather_than_ignored(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.14.0")
     with pytest.raises(ValueError, match="ref-update-interval"):
         validate_torchtitan_args(_args(ref_update_interval=4))
-    with pytest.raises(ValueError, match="save-debug-train-data"):
-        validate_torchtitan_args(_args(save_debug_train_data="/tmp/dump"))
 
 
 def test_the_replay_checker_is_refused_where_blocks_compile_fullgraph(monkeypatch):
@@ -412,6 +407,8 @@ def _config_args(**overrides: object) -> Namespace:
         seed=1,
         gradient_checkpointing=False,
         optimizer_cpu_offload=False,
+        titan_fsdp_gather_once=False,
+        titan_fsdp_reduce_dtype="float32",
         save=None,
         load=None,
     )
@@ -557,6 +554,25 @@ def test_context_parallelism_swaps_in_the_all_gather_kv_attention(tmp_path, monk
     assert config.parallelism.context_parallel_load_balancer is None
     inner = {type(layer.attention.inner_attention) for layer in config.model.layers}
     assert inner == {AllGatherKVFlexInnerAttention.Config}
+
+
+def test_tpu_context_parallelism_shards_heads_around_the_flash_attention(on_tpu):
+    """Without sparse flex attention, CP runs Ulysses around the TPU kernel, which then sees the whole sequence."""
+    pytest.importorskip("torchtitan")
+    from torchtitan.config.parallelism import ParallelismConfig
+
+    from miles.backends.torchtitan_utils.config import UlyssesTpuFlashInnerAttention, build_model_config
+
+    # qwen3 0.6B: 16 query heads, 8 key/value heads
+    model = build_model_config(_config_args(), parallelism=ParallelismConfig(context_parallel_degree=8))
+    assert {type(layer.attention.inner_attention) for layer in model.layers} == {UlyssesTpuFlashInnerAttention.Config}
+    with pytest.raises(ValueError, match="16 query and 8 key/value heads do not divide by 16"):
+        build_model_config(_config_args(), parallelism=ParallelismConfig(context_parallel_degree=16))
+    # each rank holds a tensor-parallel share of the heads
+    with pytest.raises(ValueError, match="2 TP x 8 CP ranks"):
+        build_model_config(
+            _config_args(), parallelism=ParallelismConfig(context_parallel_degree=8, tensor_parallel_degree=2)
+        )
 
 
 class _Mesh:
@@ -846,3 +862,111 @@ def test_sleep_and_wake_leave_cpu_offloaded_training_state_on_the_host(monkeypat
     actor.wake_up()
 
     assert moved == ([] if cpu_offload else [True, False])
+
+
+class _SplittingExpertAdapter:
+    """Converts grouped experts as DeepSeek-V3's adapter does: w13 is split into w1_EFD and w3_EFD before it records
+    each one's local expert range."""
+
+    def __init__(self, start: int, end: int) -> None:
+        self.local_experts_indices: dict[str, tuple[int, int]] = {}
+        self._span = (start, end)
+
+    def to_hf(self, state):
+        (key, value), *_ = state.items()
+        template = re.sub(r"(\d+)", "{}", key, count=1)
+        hf = {}
+        for name in ("w1_EFD", "w3_EFD"):
+            self.local_experts_indices[template.replace("w13.weight", name)] = self._span
+            hf[f"model.layers.1.mlp.experts.{self._span[0]}.{name}"] = value[0]
+        return hf
+
+
+def test_local_experts_find_their_range_under_the_names_the_adapter_converted_to(monkeypatch):
+    """GLM-4.7-Flash's ICI export died on a KeyError: its adapter records w13's range as w1_EFD's and w3_EFD's."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils import hf_weight_iterator
+
+    monkeypatch.setattr(hf_weight_iterator.dist, "get_rank", lambda: 1)
+    monkeypatch.setattr(hf_weight_iterator.dist, "get_world_size", lambda: 4)
+    monkeypatch.setattr(
+        hf_weight_iterator, "current_platform", SimpleNamespace(current_device=lambda: torch.device("cpu"))
+    )
+    key = "layers.1.feed_forward.routed_experts.w13.weight"
+    state = {key: torch.zeros(16, 2, 3)}
+
+    exported = dict(hf_weight_iterator._local_experts(_SplittingExpertAdapter(4, 8), state, [key]))
+    assert set(exported) == {"model.layers.1.mlp.experts.4.w1_EFD", "model.layers.1.mlp.experts.4.w3_EFD"}
+
+    with pytest.raises(AssertionError, match="not the engine's even split"):
+        list(hf_weight_iterator._local_experts(_SplittingExpertAdapter(0, 4), state, [key]))
+
+
+def test_fsdp_gather_once_is_refused_under_pipeline_parallelism(monkeypatch):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    with pytest.raises(ValueError, match="gather-once"):
+        validate_torchtitan_args(_args(titan_fsdp_gather_once=True, pipeline_model_parallel_size=2))
+    validate_torchtitan_args(_args(titan_fsdp_gather_once=True))
+
+
+@pytest.mark.parametrize("gather_once", [False, True])
+def test_gather_once_reduces_gradients_on_the_last_microbatch_only(monkeypatch, gather_once):
+    """One reduce-scatter per step: earlier microbatches keep params gathered and gradients local."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils import trainer as titan_trainer
+    from miles.backends.torchtitan_utils.trainer import TitanTrainer
+
+    calls = []
+
+    class Root(torch.nn.Module):
+        def set_is_last_backward(self, value):
+            calls.append(("is_last_backward", value))
+
+        def set_reshard_after_backward(self, value):
+            calls.append(("reshard_after_backward", value))
+
+        def set_requires_gradient_sync(self, value):
+            calls.append(("requires_gradient_sync", value))
+
+        def reshard(self):
+            calls.append(("reshard", None))
+
+    monkeypatch.setattr(titan_trainer, "FSDPModule", Root)
+    trainer = SimpleNamespace(
+        model_parts=[Root()],
+        config=SimpleNamespace(
+            parallelism=SimpleNamespace(
+                fsdp_defer_gradient_reduction=gather_once,
+                fsdp_reshard_after_forward="never" if gather_once else "default",
+            )
+        ),
+    )
+    for is_last in (False, False, True):
+        TitanTrainer._defer_gradient_reduction(trainer, is_last_microbatch=is_last)
+    TitanTrainer._reshard_kept_params(trainer)
+    if not gather_once:
+        assert calls == []
+        return
+    per_microbatch = [
+        [("is_last_backward", last), ("reshard_after_backward", last), ("requires_gradient_sync", last)]
+        for last in (False, False, True)
+    ]
+    assert calls == [call for group in per_microbatch for call in group] + [("reshard", None)]
+
+
+def test_the_fsdp_reduce_dtype_reaches_torchtitans_training_config(monkeypatch, tmp_path, single_gpu_dims):
+    from miles.backends.torchtitan_utils.config import build_trainer_config
+
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    with pytest.raises(ValueError, match="fsdp-reduce-dtype"):
+        validate_torchtitan_args(_args(titan_fsdp_reduce_dtype="float16"))
+    with pytest.raises(ValueError, match="accumulate microbatch gradients"):
+        validate_torchtitan_args(_args(titan_fsdp_reduce_dtype="bfloat16", titan_fsdp_gather_once=True))
+    validate_torchtitan_args(_args(titan_fsdp_reduce_dtype="bfloat16"))
+    config = build_trainer_config(
+        _config_args(titan_fsdp_reduce_dtype="bfloat16"),
+        hf_assets_path=_checkpoint_dir(tmp_path, tie_word_embeddings=False),
+        lr_total_steps=1,
+        dump_subdir="x",
+    )
+    assert config.training.mixed_precision_reduce == "bfloat16"

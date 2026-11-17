@@ -306,6 +306,22 @@ class SglangConfig(FrozenStrictBaseModel):
         ]
         return _list_of_dicts_get(values or [self.base_args], name)
 
+    def actor_value(self, name: str) -> Any:
+        """The actor engines' value of ``name``; raises when their groups disagree.
+
+        Actor engines belong to a model with ``update_weights``: they receive the trainer's weights and produce
+        its samples. A frozen reference, reward or eval model may set ``name`` differently. With no actor engine
+        (``--debug-train-only``) the base args stand in.
+        """
+        values = [
+            self.base_args | group.overrides
+            for model in self.models
+            if model.update_weights
+            for group in model.server_groups
+            if group.worker_type != WorkerType.PLACEHOLDER
+        ]
+        return _list_of_dicts_get(values or [self.base_args], name)
+
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
         SglangClientConfig.add_arguments(parser=parser)

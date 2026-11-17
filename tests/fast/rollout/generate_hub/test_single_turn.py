@@ -2,6 +2,7 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=220, suite="stage-b-cpu", labels=["rollout"])
 
+from dataclasses import replace
 import numpy as np
 import pybase64
 import pytest
@@ -50,6 +51,7 @@ def expected_request(
     return_indexer_topk: bool = False,
     image_data: list[str] | None = None,
     extra_key: str | None = None,
+    token_space: bool = False,
 ) -> dict:
     result = {
         "input_ids": input_ids or PROMPT_TOKENS,
@@ -62,6 +64,9 @@ def expected_request(
         result["return_indexer_topk"] = return_indexer_topk
     if image_data is not None:
         result["image_data"] = image_data
+    if token_space:
+        result["mm_token_expansion_start_len"] = 0
+        result["return_prompt_token_ids"] = True
     if extra_key is not None:
         result["extra_key"] = extra_key
     return result
@@ -559,3 +564,24 @@ class TestMultimodal:
             multimodal_inputs=multimodal_inputs,
             multimodal_train_inputs=actual_mti,
         )
+
+    @pytest.mark.parametrize("generation_env", [{"args_kwargs": {"model_name": VLM_MODEL_NAME}}], indirect=True)
+    def test_token_space_sends_template_ids_and_paths_only(self, variant, generation_env, tmp_path):
+        if variant == "multi_turn":
+            pytest.skip("not tested yet")
+        image_path = tmp_path / "red.png"
+        Image.new("RGB", (64, 64), color="red").save(image_path)
+        multimodal_inputs = {"images": [str(image_path)]}
+        # Only the request Miles builds is under test, so the flag goes onto the parsed args: on the command line the
+        # argument check would reject it, since token space runs on the Megatron backend only.
+        args = generation_env.args.model_copy(update={"multimodal_token_space_processing": True})
+        env = replace(generation_env, args=args)
+
+        result = _run_generate(variant, env, _make_sample(multimodal_inputs=multimodal_inputs))
+
+        # Miles runs no processor: SGLang expands the placeholders and the trainer builds the tensors.
+        assert result.requests == [
+            expected_request(variant, input_ids=PROMPT_TOKENS, image_data=[str(image_path)], token_space=True)
+        ]
+        assert result.sample.multimodal_train_inputs is None
+        assert result.sample.multimodal_inputs == multimodal_inputs

@@ -76,8 +76,10 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --micro-batch-size 1
   --gradient-checkpointing
   --distributed-backend tpu_dist
+  --compile-warmup
   --use-dynamic-batch-size
-  --max-tokens-per-gpu 8192 
+  --max-tokens-per-gpu 8192
+  --titan-fsdp-gather-once 
   --actor-num-nodes 1
   --actor-num-gpus-per-node 4
   --num-gpus-per-node 4   

@@ -261,7 +261,9 @@ async def _create_training_models(
     handles = placement_group_module.create_trainer_handles(
         args, trainer_configs=placement_group_module.compute_trainer_configs(args), capability=capability
     )
-    return await placement_group_module.create_training_models(args, rollout_executor, handles=handles)
+    actor_model, critic_model = await placement_group_module.init_training_models(args, handles=handles)
+    await placement_group_module.attach_trainers_to_rollout(args, rollout_executor, actor_model)
+    return actor_model, critic_model
 
 
 def _training_models_args(tmp_path: Path, *, use_critic: bool = True, **updates: Any) -> AllConfig:

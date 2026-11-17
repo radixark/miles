@@ -21,6 +21,7 @@ def _members(param: torch.Tensor, master: torch.Tensor) -> LayerWiseSlotMembers:
         slot_parameters=lambda slot: [param],
         local_shard_specs=lambda slot, holds: [SimpleNamespace(local_shape=param.shape)],
         piece_parameter=lambda slot, holds: [(0, torch.arange(param.numel()).view(param.shape))],
+        bf16_adapter_key_style="peft",
     )
     child = SimpleNamespace(
         optimizer=SimpleNamespace(param_groups=[{"step": 1}], state={master: {}}),
@@ -53,6 +54,7 @@ def test_an_export_reads_only_the_parameters_this_rank_holds():
     slots = SimpleNamespace(
         slot_parameters=lambda slot: [held, elsewhere],
         local_shard_specs=lambda slot, holds: [SimpleNamespace(local_shape=held.shape)],
+        bf16_adapter_key_style="peft",
         piece_parameter=lambda slot, holds: [(0, torch.arange(2).view(1, 2))],
     )
     child = SimpleNamespace(
@@ -67,7 +69,11 @@ def test_an_export_reads_only_the_parameters_this_rank_holds():
 
 def _importing_members(master: torch.Tensor, adam: dict, group: dict, offsets: torch.Tensor, calls: list):
     param = master.to(torch.bfloat16)
-    slots = SimpleNamespace(slot_parameters=lambda slot: [param], piece_parameter=lambda slot, holds: [(0, offsets)])
+    slots = SimpleNamespace(
+        slot_parameters=lambda slot: [param],
+        piece_parameter=lambda slot, holds: [(0, offsets)],
+        bf16_adapter_key_style="peft",
+    )
     child = SimpleNamespace(
         optimizer=SimpleNamespace(param_groups=[group], state={master: adam}),
         float16_groups=[[param]],
