@@ -39,6 +39,8 @@ from miles.rollout.agentic.session import openai_session_url
 
 logger = logging.getLogger(__name__)
 
+WORKER_ENV = ("NEMO_GYM_*",)
+
 # Deliberately no miles imports: importing miles pulls in torch, and this
 # adapter (plus its offline tests and the eval_nemogym_via_api scan) must load
 # on CPU-only machines too.

@@ -20,6 +20,7 @@ errors count as throttling, and how its start hook wires the materialization.
 """
 
 import asyncio
+import importlib
 import logging
 import sys
 import threading
@@ -28,6 +29,11 @@ from contextlib import asynccontextmanager
 import openenv_agent_function as oaf
 import openenv_sandbox_common as common
 import pytest
+from aiohttp.test_utils import TestServer
+
+from miles.rollout.agentic.agent_function import call_agent_function
+from miles.rollout.agentic.errors import InfraAbort
+from miles.rollout.agentic.worker import create_app
 
 from . import EXAMPLE_DIR
 from .test_openenv_agent_function import _CLASSES, _FakeEnv, _FakePolicy, _FakeResult
@@ -108,8 +114,28 @@ def test_every_backend_exposes_the_entry_points(name):
     backend = common.load_backend(name)
     assert isinstance(backend, common.SandboxBackend)
     module = sys.modules[common.AGENT_MODULES[name]]
-    assert module.run == backend.run
     assert module.run_episode == backend.run_episode
+
+
+@pytest.mark.parametrize("name", sorted(common.AGENT_MODULES))
+def test_a_backend_runs_on_an_agent_worker(name):
+    module = importlib.import_module(common.AGENT_MODULES[name])
+
+    async def scenario():
+        async with TestServer(create_app()) as server:
+            return await call_agent_function(
+                module.run,
+                mode="worker",
+                worker=str(server.make_url("")),
+                base_url="http://127.0.0.1:9",
+                prompt="p",
+                metadata={},
+            )
+
+    try:
+        assert asyncio.run(scenario()) is None
+    except InfraAbort as error:
+        assert "tbench2_env" in str(error)
 
 
 @pytest.mark.parametrize("name", sorted(common.AGENT_MODULES))

@@ -23,6 +23,8 @@ from miles.utils.http_utils import post
 
 logger = logging.getLogger(__name__)
 
+WORKER_ENV = ("AGENT_*", "SWE_AGENT_*")
+
 # Backstop for an unreachable agent server; its own --agent-timeout should fire first.
 _DEFAULT_AGENT_TRIAL_TIMEOUT_S = 7200
 
