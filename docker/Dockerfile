@@ -55,14 +55,18 @@ RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
 # `wheel[s]/` is a glob — silently no-ops when wheels/ is absent (CI's path).
 COPY wheel[s]/ /tmp/wheels/
 
-RUN case "${TARGETARCH}" in \
+# github_token (docker/build.py's BUILD_GITHUB_TOKEN) authenticates the API lookup; builds without it go anonymous
+RUN --mount=type=secret,id=github_token \
+    case "${TARGETARCH}" in \
       amd64) WHEELS_TAG="${WHEELS_TAG_X86}" ;; \
       arm64) WHEELS_TAG="${WHEELS_TAG_ARM64}" ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac && \
     echo "Fetching wheels release ${WHEELS_TAG}" && \
     mkdir -p /tmp/wheels && \
-    curl -sL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
+    if [ -s /run/secrets/github_token ]; then set -- -H "Authorization: Bearer $(cat /run/secrets/github_token)"; \
+    else set --; fi && \
+    curl -fsSL "$@" "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
     | python3 -c "import sys,json,subprocess,os; w='/tmp/wheels'; \
 [subprocess.run(['curl','-fSL','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) \
  for a in json.load(sys.stdin).get('assets',[]) \
