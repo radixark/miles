@@ -1,4 +1,5 @@
 # doc-dev: docs/developer/ci/02-docker-build.md
+# Throwaway change for the #4893 / #4894 build test; never merge.
 # Build via docker/build.py (single source of truth for variant defaults,
 # platforms, tags, and build-arg ordering); callers may append explicit
 # build-arg overrides. See docs/developer/ci/02-docker-build.md. Examples:
