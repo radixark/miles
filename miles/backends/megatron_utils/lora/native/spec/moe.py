@@ -7,6 +7,10 @@ import functools
 import torch
 import torch.nn as nn
 
+from miles.backends.megatron_utils.lora.native.modules.expert_slots import (
+    NativeMultiLoRAExpertAdapter,
+    install_expert_slot_routing,
+)
 from miles.backends.megatron_utils.lora.native.modules.linear import attach_adapter_forward, attach_delta_forward
 from miles.backends.megatron_utils.lora.native.modules.moe import (
     LoRAGroupedFC1,
@@ -41,22 +45,27 @@ class GroupedExpertsSpec:
             is_ep=parallel_state.get_expert_model_parallel_world_size() > 1,
         )
         count = 0
+        slotted = []
         fc1_prefix = context.naming.block_prefix(layer, fc1.weight0, ["w1", "w3"])
         # selectors address one expert ("experts.*.w1"); shared-outer adapters cover them all
         if context.lora.selects(f"{fc1_prefix}0.w1") or context.lora.selects(f"{fc1_prefix}0.w3"):
-            experts.lora_fc1_adapter = LoRAGroupedFC1(
-                hf_prefix=fc1_prefix, reference=fc1.weight0, width=fc1.weight0.shape[1], **common
+            build_fc1 = functools.partial(
+                LoRAGroupedFC1, hf_prefix=fc1_prefix, reference=fc1.weight0, width=fc1.weight0.shape[1], **common
             )
+            experts.lora_fc1_adapter = _build_expert_adapter(build_fc1, context, slotted)
             attach_adapter_forward(fc1, experts.lora_fc1_adapter)
             count += 1
         fc2_prefix = context.naming.block_prefix(layer, fc2.weight0, ["w2"])
         if context.lora.selects(f"{fc2_prefix}0.w2"):
-            experts.lora_fc2_adapter = LoRAGroupedFC2(
-                hf_prefix=fc2_prefix, reference=fc2.weight0, width=fc2.weight0.shape[0], **common
+            build_fc2 = functools.partial(
+                LoRAGroupedFC2, hf_prefix=fc2_prefix, reference=fc2.weight0, width=fc2.weight0.shape[0], **common
             )
+            experts.lora_fc2_adapter = _build_expert_adapter(build_fc2, context, slotted)
             attach_adapter_forward(fc2, experts.lora_fc2_adapter)
             count += 1
 
+        if slotted:
+            install_expert_slot_routing(mlp, slotted)
         shared = getattr(
             mlp, "shared_experts", None
         )  # absent on MoEs without shared experts  # config-access-exempt: MoE implementations may omit shared experts
@@ -92,3 +101,11 @@ class GroupedExpertsSpec:
 
 def _sub_expert_delta(delta, index: int, x: torch.Tensor, host: nn.Module, *_host_args) -> torch.Tensor:
     return delta(x, host, index)
+
+
+def _build_expert_adapter(build, context, slotted):
+    if context.lora.num_slots is None:
+        return build()
+    adapter = NativeMultiLoRAExpertAdapter([build() for _ in range(context.lora.num_slots)], context)
+    slotted.append(adapter)
+    return adapter

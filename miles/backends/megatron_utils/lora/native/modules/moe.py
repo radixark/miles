@@ -13,7 +13,7 @@ from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 
 def _grouped_linear(inputs: torch.Tensor, weights: torch.Tensor, tokens_per_expert) -> torch.Tensor:
     """Per-local-expert matmul over the permuted token buffer, one grouped GEMM."""
-    if inputs.is_cuda:
+    if inputs.is_cuda and inputs.shape[0] > 0:
         offsets = torch.as_tensor(list(tokens_per_expert), device=inputs.device, dtype=torch.int32).cumsum(
             0, dtype=torch.int32
         )

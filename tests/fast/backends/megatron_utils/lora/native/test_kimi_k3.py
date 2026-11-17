@@ -116,10 +116,10 @@ def _single_rank_comms(monkeypatch):
     monkeypatch.setattr(parallel_state, "get_expert_model_parallel_world_size", lambda: 2)
 
 
-def _model(*, include_fc2=True, sequence_parallel=False, num_slots=None):
+def _model(*, include_fc2=True, include_experts=True, sequence_parallel=False, num_slots=None):
     """Layer 3: MLA attention + dense MLP. Layer 4: KDA attention + routed and shared experts."""
     leaves = ("w1", "w3", "w2") if include_fc2 else ("w1", "w3")
-    targets = [f"{PREFIX}*.block_sparse_moe.experts.*.{leaf}" for leaf in leaves]
+    targets = [f"{PREFIX}*.block_sparse_moe.experts.*.{leaf}" for leaf in leaves] if include_experts else []
     targets += [f"{PREFIX}*.{block}.{leaf}" for block, leaf in _NON_EXPERT_TARGETS]
     context = _context(tuple(targets), sequence_parallel=sequence_parallel, num_slots=num_slots)
     model = nn.Module()
@@ -411,13 +411,11 @@ def test_kda_o_proj_delta_stays_a_partial_sum(monkeypatch):
     torch.testing.assert_close(output, inputs @ (weight + scale * lora_b @ lora_a).t())
 
 
-def test_slots_wrap_every_dense_host_and_leave_the_grouped_experts_outside():
-    """The specs' own attach builds slot modules; the grouped experts have none, which a multi-LoRA attach refuses."""
-    model = _model(num_slots=3)
+def test_slots_wrap_dense_and_shared_hosts_when_routed_experts_are_omitted():
+    model = _model(include_experts=False, num_slots=3)
 
     multi_adapters = list(iter_multi_lora_adapters([model]))
     assert {len(multi_adapter.adapters) for multi_adapter in multi_adapters} == {3}
     blocks = {name.rsplit(".", 1)[0] for name, module in model.named_modules() if module in multi_adapters}
     assert {"mla", "dense", "moe.shared_experts"} <= blocks, blocks
-    with pytest.raises(AssertionError, match="sit outside the slots"):
-        assert_every_adapter_slotted([model])
+    assert_every_adapter_slotted([model])

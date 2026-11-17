@@ -560,11 +560,9 @@ class NativeMultiLoRAAdapter(nn.Module):
     rows and B's columns past its rank at zero, and with them their gradients.
     """
 
-    def __init__(self, adapters: Sequence[PhasedLoRAAdapter], context: AttachContext):
+    def __init__(self, adapters: Sequence[NativeLoRAAdapter], context: AttachContext):
         super().__init__()
-        assert all(
-            isinstance(adapter, PhasedLoRAAdapter) for adapter in adapters
-        ), f"{type(adapters[0]).__name__} has no per-phase forward to route slots through"
+        self._validate_adapter_types(adapters)
         self.adapters = nn.ModuleList(adapters)
         self.context = context
         self.host_returns_bias = adapters[0].host_returns_bias
@@ -577,6 +575,11 @@ class NativeMultiLoRAAdapter(nn.Module):
     def bind_host(self, host: nn.Module) -> None:
         for adapter in self.adapters:
             adapter.bind_host(host)
+
+    def _validate_adapter_types(self, adapters: Sequence[NativeLoRAAdapter]) -> None:
+        assert all(
+            isinstance(adapter, PhasedLoRAAdapter) for adapter in adapters
+        ), f"{type(adapters[0]).__name__} has no per-phase forward to route slots through"
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
         """The unscaled delta, one row per token; ``add_delta`` applies each slot's scale."""
@@ -641,10 +644,10 @@ class NativeMultiLoRAAdapter(nn.Module):
         assert lora_alpha > 0, f"LoRA alpha {lora_alpha} must be positive"
         for name, param in self.adapters[slot].named_parameters():
             if name.endswith("_A"):
-                param[lora_rank:].zero_()
+                param[..., lora_rank:, :].zero_()
             else:
                 assert name.endswith("_B"), f"{name} is neither a LoRA A nor a LoRA B"
-                param[:, lora_rank:].zero_()
+                param[..., lora_rank:].zero_()
         self.lora_ranks_by_slot[slot], self.lora_alphas_by_slot[slot] = lora_rank, float(lora_alpha)
 
     @torch.no_grad()
@@ -748,7 +751,7 @@ def assert_every_adapter_slotted(model_chunks: Sequence[nn.Module]) -> None:
         if isinstance(child, NativeLoRAAdapter) and id(child) not in slotted
     ]
     assert not unslotted, (
-        f"multi-LoRA slots cover dense projections and lm_head; {len(unslotted)} adapters sit outside the slots, e.g. {unslotted[:4]}. "
+        f"multi-LoRA slots cover dense projections, grouped routed experts and lm_head; {len(unslotted)} adapters sit outside the slots, e.g. {unslotted[:4]}. "
         "Drop their targets, or use --megatron-to-hf-mode bridge"
     )
 
