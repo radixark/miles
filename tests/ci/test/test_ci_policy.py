@@ -10,11 +10,13 @@ import pytest
 from tests.ci.ci_policy import (
     NIGHTLY_CADENCE,
     REGULAR_CADENCE,
+    RELEASE_CADENCE,
     WEEKLY_CADENCE,
     resolve_policy,
     resolve_workflow_inputs,
 )
 from tests.ci.ci_register import register_cpu_ci
+from tests.ci.hardware import KNOWN_ARCHES
 from tests.ci.stage_selection import PR_GPU_STAGES
 
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
@@ -103,6 +105,28 @@ def test_weekly_schedule_resolves_to_independent_full_policy():
     assert policy.admit_nightly_tests is True
     assert policy.bypass_fastfail is True
     assert policy.write_baseline is True
+    assert policy.dispatch_arches == frozenset(KNOWN_ARCHES)
+    assert policy.absorb is True
+
+
+@pytest.mark.parametrize("cadence", [WEEKLY_CADENCE, RELEASE_CADENCE])
+def test_full_cadences_run_every_supported_generation(cadence):
+    assert resolve_policy(cadence, set()) == resolve_policy(cadence, {"run-on-hopper", "run-on-blackwell"})
+
+
+@pytest.mark.parametrize("cadence", [REGULAR_CADENCE, NIGHTLY_CADENCE])
+def test_other_cadences_keep_each_test_at_its_home_stage(cadence):
+    policy = resolve_policy(cadence, set())
+
+    assert policy.dispatch_arches == frozenset()
+    assert policy.absorb is False
+
+
+def test_explicit_run_on_label_narrows_a_full_cadence():
+    policy = resolve_policy(WEEKLY_CADENCE, {"run-on-hopper"})
+
+    assert policy.dispatch_arches == frozenset({"hopper"})
+    assert policy.absorb is True
 
 
 @pytest.mark.parametrize(
