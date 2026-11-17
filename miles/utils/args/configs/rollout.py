@@ -307,6 +307,16 @@ class RolloutRelatedConfig(BaseConfig):
             )
         ),
     ] = None
+    update_weight_disk_reload_wave: A[
+        int | None,
+        Arg(
+            help=(
+                "How many rollout engines reload a disk-delta sync at once; all of them when unset. Each engine "
+                "stages its shard of the new weights in host memory while it reloads, so engines sharing a host "
+                "can reload in smaller waves to bound that host's peak memory."
+            )
+        ),
+    ] = None
     update_weight_local_checkpoint_dir: A[
         str | None,
         Arg(

@@ -397,17 +397,20 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             )
             if mode != "in_place":
                 async_utils.wait_futures([async_utils.submit(client.flush_cache()) for client in self.rollout_engines])
-            results = async_utils.wait_futures(
-                [
-                    async_utils.submit(
-                        client.update_weights_from_disk(
-                            model_path=self.args.update_weight_local_checkpoint_dir,
-                            weight_version=str(weight_version),
+            wave = self.args.update_weight_disk_reload_wave or len(self.rollout_engines)
+            results = []
+            for start in range(0, len(self.rollout_engines), wave):
+                results += async_utils.wait_futures(
+                    [
+                        async_utils.submit(
+                            client.update_weights_from_disk(
+                                model_path=self.args.update_weight_local_checkpoint_dir,
+                                weight_version=str(weight_version),
+                            )
                         )
-                    )
-                    for client in self.rollout_engines
-                ]
-            )
+                        for client in self.rollout_engines[start : start + wave]
+                    ]
+                )
             check_weight_sync_results(results, is_lora=False)
             async_utils.wait_futures(
                 [async_utils.submit(client.continue_generation()) for client in self.rollout_engines]

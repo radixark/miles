@@ -48,6 +48,7 @@ class TestReloadEnginesFailureTransitions:
         protocol = UpdateWeightFromDiskDelta.__new__(UpdateWeightFromDiskDelta)
         protocol.args = Namespace(
             update_weight_local_checkpoint_dir="/local/ckpt",
+            update_weight_disk_reload_wave=None,
             update_weight_disk_dir="/shared/delta",
             pause_generation_mode="retract",
             check_weight_update_equal=False,
@@ -137,6 +138,7 @@ class TestDeltaPublicationLifecycle:
                 hf_checkpoint=str(checkpoint),
                 update_weight_disk_dir=str(tmp_path / "deltas"),
                 update_weight_local_checkpoint_dir=str(tmp_path / "receiver"),
+                update_weight_disk_reload_wave=None,
                 update_weight_delta_encoding="xor",
                 update_weight_delta_checksum="adler32",
                 custom_update_weight_post_write_path=None,

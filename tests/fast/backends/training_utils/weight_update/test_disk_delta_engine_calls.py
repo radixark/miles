@@ -29,6 +29,7 @@ def _make_protocol(calls: list[tuple[str, dict]]) -> UpdateWeightFromDiskDelta:
     protocol = UpdateWeightFromDiskDelta.__new__(UpdateWeightFromDiskDelta)
     protocol.args = Namespace(
         update_weight_local_checkpoint_dir="/local/ckpt",
+        update_weight_disk_reload_wave=None,
         update_weight_disk_dir="/shared/delta",
         pause_generation_mode="retract",
         check_weight_update_equal=False,
@@ -76,6 +77,20 @@ def test_in_place_pause_mode_skips_the_flush():
         protocol._reload_engines(weight_version=42)
 
     assert "flush_cache" not in [name for name, _kwargs in calls]
+
+
+def test_reload_wave_reloads_every_engine():
+    """Reloading in waves smaller than the engine count still reloads each engine exactly once."""
+    calls: list[tuple[str, dict]] = []
+    protocol = _make_protocol(calls)
+    protocol.args.update_weight_disk_reload_wave = 2
+    protocol.rollout_engines = [_RecordingApiClient(calls) for _ in range(5)]
+
+    with patch(f"{_MODULE}.dist") as dist_mock, patch(f"{_MODULE}.get_gloo_group", return_value=MagicMock()):
+        dist_mock.get_rank.return_value = 0
+        protocol._reload_engines(weight_version=42)
+
+    assert [name for name, _kwargs in calls].count("update_weights_from_disk") == 5
 
 
 def test_non_source_rank_issues_no_requests():
@@ -153,6 +168,7 @@ def test_initial_sync_encodes_loaded_trainer_from_hf_baseline(tmp_path, changed)
             hf_checkpoint=str(tmp_path),
             update_weight_disk_dir=str(tmp_path / "delta"),
             update_weight_local_checkpoint_dir="/local/ckpt",
+            update_weight_disk_reload_wave=None,
             update_weight_delta_encoding="xor",
             update_weight_delta_checksum="adler32",
             custom_update_weight_post_write_path=None,
