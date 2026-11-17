@@ -10,7 +10,12 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+# one run per tag: two would each create a draft release
+concurrency:
+  group: release-wheel-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   # what the release build stamps: the tag's version, and the published wheel of the sglang-miles commit
@@ -48,6 +53,8 @@ jobs:
     needs: [pins, smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
     env:
       VERSION: ${{ needs.pins.outputs.version }}
       TAG: ${{ github.ref_name }}
@@ -80,6 +87,6 @@ jobs:
         run: |
           PUBLISHED=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
           for f in dist/*; do
-            if grep -qx "$(basename "$f")" <<<"$PUBLISHED"; then echo "keeping published $(basename "$f")"; continue; fi
+            if grep -qxF "$(basename "$f")" <<<"$PUBLISHED"; then echo "keeping published $(basename "$f")"; continue; fi
             gh release upload "$TAG" "$f" --repo "$GITHUB_REPOSITORY"
           done

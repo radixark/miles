@@ -118,6 +118,10 @@ jobs:
         run: |
           gh workflow run release-docker.yml -f version="$VERSION" -f ref="v$VERSION"
           echo "::notice::Dispatched release-docker.yml for v$VERSION"
-          # release-wheel.yml runs from the tag, which a release line cut before it does not carry
-          gh workflow run release-wheel.yml --ref "v$VERSION" \
-            || echo "::warning::release-wheel.yml was not dispatched: v$VERSION publishes no pip wheel"
+          # release-wheel.yml runs from the tag (this checkout), which a release line cut before it does not carry
+          if [ -f .github/workflows/release-wheel.yml ]; then
+            gh workflow run release-wheel.yml --ref "v$VERSION"
+            echo "::notice::Dispatched release-wheel.yml on v$VERSION"
+          else
+            echo "::warning::v$VERSION does not carry release-wheel.yml: it publishes no pip wheel"
+          fi

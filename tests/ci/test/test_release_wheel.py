@@ -57,6 +57,35 @@ def _run(script, tmp_path, env, cwd=None):
     return result, outputs, log
 
 
+# --- the dispatch in release-tag.yml -------------------------------------------------------------------
+
+DISPATCH = _step(
+    yaml.safe_load((ROOT / ".github/workflows/release-tag.yml").read_text()),
+    "create-tag",
+    "Trigger the release-docker and release-wheel builds",
+)
+
+
+@pytest.mark.parametrize("carried", [True, False], ids=["tag-carries-the-workflow", "older-release-line"])
+def test_the_wheel_build_is_dispatched_on_the_tag_only_when_the_tag_carries_it(tmp_path, carried):
+    if carried:
+        (tmp_path / ".github/workflows").mkdir(parents=True)
+        (tmp_path / ".github/workflows/release-wheel.yml").touch()
+    _fake_gh(tmp_path, "")
+    result, _, log = _run(DISPATCH, tmp_path, {"VERSION": "0.3.0"})
+    assert result.returncode == 0, result.stderr
+    assert log[0] == "workflow run release-docker.yml -f version=0.3.0 -f ref=v0.3.0"
+    assert log[1:] == (["workflow run release-wheel.yml --ref v0.3.0"] if carried else [])
+    assert ("publishes no pip wheel" in result.stdout) == (not carried)
+
+
+def test_a_failed_wheel_dispatch_fails_the_tag_workflow(tmp_path):
+    (tmp_path / ".github/workflows").mkdir(parents=True)
+    (tmp_path / ".github/workflows/release-wheel.yml").touch()
+    _fake_gh(tmp_path, "sys.exit('release-wheel.yml' in args)")
+    assert _run(DISPATCH, tmp_path, {"VERSION": "0.3.0"})[0].returncode == 1
+
+
 # --- the version and the sglang wheel a release stamps ---------------------------------------------------
 
 PINS = next(step["run"] for step in WORKFLOW["jobs"]["pins"]["steps"] if step.get("id") == "pins")
