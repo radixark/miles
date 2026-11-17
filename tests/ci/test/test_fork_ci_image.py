@@ -329,51 +329,66 @@ def test_context_hash_must_match_frozen_source(source):
         HANDLER.validate_source(request, pr, root)
 
 
-def test_oci_build_uses_trusted_driver_and_supplied_context(source, monkeypatch):
+@pytest.mark.parametrize(
+    "arch, variant, platform, tag",
+    [("amd64", "cu13-x86", "linux/amd64", "pr-3192"), ("arm64", "cu13-aarch64", "linux/arm64", "pr-3192-arm64")],
+)
+def test_oci_build_uses_trusted_driver_and_supplied_context(source, monkeypatch, arch, variant, platform, tag):
     root, request, _ = source
+    assert HANDLER.image_inputs.pr_image(arch, request["pr"]) == (variant, tag)
     spec = importlib.util.spec_from_file_location("build", ROOT / "docker/build.py")
     build = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(build)
     commands = []
     monkeypatch.setattr(build, "run", lambda cmd, dry_run: commands.append(cmd))
     build.build_and_push(
-        "cu13",
+        variant,
         "custom",
         False,
         "docker/Dockerfile",
-        custom_tag="pr-3192",
+        custom_tag=tag,
         context=root,
         output="type=oci,dest=/tmp/output,tar=false",
     )
     command = commands[0]
     assert command[-1] == str(root)
     assert command[command.index("-f") + 1] == str(root / "docker/Dockerfile")
-    assert command[command.index("--platform") + 1] == "linux/amd64,linux/arm64"
+    assert command[command.index("--platform") + 1] == platform
     assert command[command.index("--label") + 1] == f"miles.image-inputs={request['inputs_hash']}"
     assert "--push" not in command
 
 
-def test_publication_requires_matching_hash_on_both_architectures(identity, monkeypatch):
+@pytest.mark.parametrize("arch, tag", [("amd64", "pr-3192"), ("arm64", "pr-3192-arm64")])
+def test_publication_requires_matching_hash_on_its_tag(identity, monkeypatch, arch, tag):
     request, _, _ = identity
-    config = dict(config=dict(Labels={"miles.image-inputs": request["inputs_hash"]}))
-    manifest = {"linux/amd64": config, "linux/arm64": config}
-    monkeypatch.setattr(subprocess, "check_output", lambda *args, **kwargs: json.dumps(manifest))
-    HANDLER.verify_published(request)
-    manifest["linux/arm64"] = dict(config=dict(Labels={"miles.image-inputs": "old"}))
-    with pytest.raises(ValueError, match="linux/arm64"):
-        HANDLER.verify_published(request)
+    published = dict(config=dict(Labels={"miles.image-inputs": request["inputs_hash"]}))
+    inspected = []
+
+    def check_output(command, **kwargs):
+        inspected.append(command[4])
+        return json.dumps(published)
+
+    monkeypatch.setattr(subprocess, "check_output", check_output)
+    HANDLER.verify_published(request, arch)
+    assert inspected == [f"radixark/miles:{tag}"]
+    published["config"]["Labels"]["miles.image-inputs"] = "old"
+    with pytest.raises(ValueError, match=tag):
+        HANDLER.verify_published(request, arch)
 
 
-@pytest.mark.parametrize("force,remove_fails", [(False, False), (True, False), (True, True)])
-def test_publication_only_consumes_the_original_force_request(source, monkeypatch, capsys, force, remove_fails):
+@pytest.mark.parametrize(
+    "arch,force,remove_fails",
+    [("amd64", False, False), ("amd64", True, False), ("amd64", True, True), ("arm64", True, False)],
+)
+def test_publication_only_consumes_the_original_force_request(source, monkeypatch, capsys, arch, force, remove_fails):
     root, request, pr = source
     request["force_rebuild"] = force
     pr["labels"].append(dict(name="rebuild-ci-image"))
     monkeypatch.setenv("GITHUB_REPOSITORY", REPOSITORY)
     monkeypatch.setenv("REQUEST_JSON", json.dumps(request))
-    monkeypatch.setattr(sys, "argv", ["fork_ci_image.py", "finish", "--source", str(root)])
+    monkeypatch.setattr(sys, "argv", ["fork_ci_image.py", "finish", "--source", str(root), "--arch", arch])
     monkeypatch.setattr(HANDLER, "current_request", lambda *args: pr)
-    monkeypatch.setattr(HANDLER, "verify_published", lambda request: None)
+    monkeypatch.setattr(HANDLER, "verify_published", lambda request, arch: None)
     mutations = []
 
     def api(path, *, method):
@@ -383,7 +398,9 @@ def test_publication_only_consumes_the_original_force_request(source, monkeypatc
 
     monkeypatch.setattr(HANDLER, "api", api)
     HANDLER.main()
-    assert mutations == ([(f"repos/{REPOSITORY}/issues/3192/labels/rebuild-ci-image", "DELETE")] if force else [])
+    # The amd64 build owns the one-shot label.
+    consumes = force and arch == "amd64"
+    assert mutations == ([(f"repos/{REPOSITORY}/issues/3192/labels/rebuild-ci-image", "DELETE")] if consumes else [])
     assert ("::warning::" in capsys.readouterr().out) == remove_fails
 
 
@@ -398,7 +415,9 @@ def test_observer_waits_past_an_old_attempt_job(monkeypatch, identity):
         HANDLER,
         "api",
         lambda path, **kwargs: (
-            [dict(name="docker-build / docker-build", run_attempt=1, status="completed")] if "/jobs?" in path else run
+            [dict(name="docker-build-amd64 / docker-build", run_attempt=1, status="completed")]
+            if "/jobs?" in path
+            else run
         ),
     )
     assert HANDLER.wait_request(dict(workflow_run=run), REPOSITORY, 999) == request
@@ -419,7 +438,7 @@ def test_observer_stops_without_a_request(monkeypatch, identity, ended):
         HANDLER,
         "api",
         lambda path, **kwargs: (
-            [dict(name="docker-build / docker-build", run_attempt=2, status="completed")]
+            [dict(name="docker-build-amd64 / docker-build", run_attempt=2, status="completed")]
             if "/jobs?" in path
             else current
         ),
@@ -443,9 +462,14 @@ def publisher_run(**updates):
     )
 
 
-def stub_publisher(monkeypatch, identity, *, listings, result=None, build="success"):
+def build_job(arch="amd64", status="completed", conclusion="success"):
+    return dict(name=f"build ({arch})", status=status, conclusion=conclusion)
+
+
+def stub_publisher(monkeypatch, identity, *, listings, result=None, jobs=None):
     _, source, _ = identity
     results = iter(listings)
+    job_listings = iter(jobs or [[build_job()]])
     calls, sleeps = [], []
 
     def api(path, **kwargs):
@@ -459,7 +483,7 @@ def stub_publisher(monkeypatch, identity, *, listings, result=None, build="succe
         if path.endswith("/actions/runs/999"):
             return result
         if "/actions/runs/999/jobs?" in path:
-            return [dict(name="build", conclusion=build)]
+            return list(next(job_listings))
         raise AssertionError(path)
 
     monkeypatch.setattr(HANDLER, "api", api)
@@ -479,9 +503,14 @@ def test_waiter_correlates_publisher_and_waits_for_build_completion(monkeypatch,
         identity,
         # A later duplicate trigger (id 1000) must not displace the earliest publisher.
         listings=[wrong, [publisher_run(id=1000), publisher_run(status="in_progress", conclusion=None)]],
-        result=publisher_run(),
+        result=publisher_run(status="in_progress", conclusion=None),
+        # arm64 is still building when amd64 succeeds; the amd64 waiter does not wait for it.
+        jobs=[
+            [build_job(status="in_progress", conclusion=None), build_job("arm64", "in_progress", None)],
+            [build_job(), build_job("arm64", "in_progress", None)],
+        ],
     )
-    HANDLER.wait_build(request, REPOSITORY)
+    HANDLER.wait_build(request, REPOSITORY, "amd64")
     assert sleeps == [30, 30]
     assert any("/999/jobs?" in path for path in calls)
     assert all("/rerun" not in path for path in calls)
@@ -497,15 +526,23 @@ def test_only_the_earliest_trigger_of_an_attempt_publishes(monkeypatch, identity
 
 @pytest.mark.parametrize("conclusion", ["failure", "cancelled", "timed_out"])
 def test_waiter_propagates_publication_failure(monkeypatch, identity, conclusion):
-    stub_publisher(monkeypatch, identity, listings=[[publisher_run(conclusion=conclusion)]])
+    stub_publisher(
+        monkeypatch,
+        identity,
+        listings=[[publisher_run(conclusion=conclusion)]],
+        jobs=[[build_job(conclusion=conclusion), build_job("arm64")]],
+    )
     with pytest.raises(ValueError, match=conclusion):
-        HANDLER.wait_build(identity[0], REPOSITORY)
+        HANDLER.wait_build(identity[0], REPOSITORY, "amd64")
 
 
-def test_successful_workflow_without_a_build_cannot_unblock_gpu(monkeypatch, identity):
-    stub_publisher(monkeypatch, identity, listings=[[publisher_run()]], build="skipped")
-    with pytest.raises(ValueError, match="without a successful image build"):
-        HANDLER.wait_build(identity[0], REPOSITORY)
+@pytest.mark.parametrize(
+    "jobs, message", [([build_job(conclusion="skipped")], "skipped"), ([build_job("arm64")], "without build")]
+)
+def test_successful_workflow_without_a_build_cannot_unblock_gpu(monkeypatch, identity, jobs, message):
+    stub_publisher(monkeypatch, identity, listings=[[publisher_run()]], jobs=[jobs])
+    with pytest.raises(ValueError, match=message):
+        HANDLER.wait_build(identity[0], REPOSITORY, "amd64")
 
 
 @pytest.mark.parametrize("updates", [dict(status="completed"), dict(run_attempt=3)])
@@ -514,7 +551,7 @@ def test_waiter_rejects_an_inactive_source(monkeypatch, identity, updates):
     run.update(updates)
     stub_publisher(monkeypatch, identity, listings=[])
     with pytest.raises(ValueError, match="no longer active"):
-        HANDLER.wait_build(request, REPOSITORY)
+        HANDLER.wait_build(request, REPOSITORY, "amd64")
 
 
 def test_source_cancellation_stops_the_build_process_group(monkeypatch, identity, tmp_path):
@@ -555,7 +592,7 @@ def test_source_cancellation_stops_the_build_process_group(monkeypatch, identity
     monkeypatch.setattr(HANDLER, "require_active_source", active)
     monkeypatch.setattr(HANDLER.subprocess, "Popen", popen)
     with pytest.raises(ValueError, match="no longer active"):
-        HANDLER.build_image(identity[0], REPOSITORY, tmp_path)
+        HANDLER.build_image(identity[0], REPOSITORY, tmp_path, "amd64")
     pid = int(child_pid.read_text())
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -577,13 +614,25 @@ def test_workflow_preserves_gate_and_build_publish_boundary():
     assert "head.repo.full_name == github.repository" in image_job["runs-on"]
     assert "steps.wait.outputs.built" in image_job["outputs"]["built"]
     assert "steps.wait.outputs.built == 'true'" in image_job["outputs"]["tag_available"]
-    assert parent["jobs"]["docker-build"]["permissions"]["actions"] == "read"
+    # One call per PR image architecture; only the amd64 one sends the fork request.
+    for arch in HANDLER.image_inputs.PR_IMAGE_ARCHES:
+        call = parent["jobs"][f"docker-build-{arch}"]
+        assert call["with"] == dict(arch=arch) and call["permissions"]["actions"] == "read"
+    assert parent["jobs"]["resolve-ci-image"]["needs"] == ["resolve-ci-policy", "docker-build-amd64"]
+    request_steps = [step for step in image_job["steps"] if "REQUEST_BUILD == 'true' &&" in step.get("if", "")]
+    assert len(request_steps) == 2 and all("inputs.arch == 'amd64'" in step["if"] for step in request_steps)
     wait = next(step for step in image_job["steps"] if step.get("id") == "wait")
-    assert "wait-build" in wait["run"] and 'echo "built=true"' in wait["run"]
+    assert 'wait-build --arch "$ARCH"' in wait["run"] and 'echo "built=true"' in wait["run"]
     workflow = yaml.safe_load((ROOT / ".github/workflows/build-fork-ci-image.yml").read_text())
     assert workflow[True]["workflow_run"]["types"] == ["in_progress"]
     assert workflow["jobs"]["build"]["permissions"]["actions"] == "read"
     assert workflow["jobs"]["build"]["concurrency"]["cancel-in-progress"] is True
+    # The PR-side waiter looks the job up by this name.
+    assert workflow["jobs"]["build"]["name"] == "build (${{ matrix.arch }})"
+    assert workflow["jobs"]["build"]["strategy"]["matrix"]["arch"] == list(HANDLER.image_inputs.PR_IMAGE_ARCHES)
+    assert workflow["jobs"]["build"]["concurrency"]["group"].endswith("-${{ matrix.arch }}")
+    cleanup_tags = (ROOT / ".github/workflows/docker-pr-tag-cleanup.yml").read_text()
+    assert all(f'number }}}}{suffix}"' in cleanup_tags for _, suffix in HANDLER.image_inputs.PR_IMAGE_ARCHES.values())
     steps = workflow["jobs"]["build"]["steps"]
     cleanup = next(
         step for step in steps if step.get("name") == "Remove the builder before introducing publishing credentials"

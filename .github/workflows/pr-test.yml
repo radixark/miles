@@ -127,16 +127,16 @@ jobs:
           CHANGED_FILES_PATH: ${{ runner.temp }}/changed-files.z
         run: python -m tests.ci.ci_policy
 
-  # Runs after the fast CPU gate whether or not CUDA tests are selected, so a PR
-  # that changes the image inputs always build-tests its image; `docker-decide`
-  # makes this a no-op when the inputs match the base.
+  # Selected CUDA tests need the amd64 image after the fast CPU gate completes;
+  # `docker-decide` makes this a no-op when the inputs match the base.
   # Nightly, weekly, and bypass-fastfail preserve their cross-stage exception.
-  docker-build:
+  docker-build-amd64:
     needs: [resolve-ci-policy, stage-a-cpu]
     if: |
       always() && !cancelled() &&
       github.event.action != 'closed' &&
       needs.resolve-ci-policy.result == 'success' &&
+      needs.resolve-ci-policy.outputs.needs_cuda_image == 'true' &&
       (needs.stage-a-cpu.result == 'success' ||
          needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
     # Scoped to this call: a build consumes the one-shot rebuild-ci-image label by
@@ -146,6 +146,28 @@ jobs:
       actions: read
       pull-requests: write
     uses: ./.github/workflows/_build-pr-ci-image.yml
+    with:
+      arch: amd64
+    secrets: inherit
+
+  # The same image built for arm64. No suite consumes it, so it runs beside the GPU
+  # stages instead of gating them; a failed build still fails the run.
+  docker-build-arm64:
+    needs: [resolve-ci-policy, stage-a-cpu]
+    if: |
+      always() && !cancelled() &&
+      github.event.action != 'closed' &&
+      needs.resolve-ci-policy.result == 'success' &&
+      needs.resolve-ci-policy.outputs.needs_cuda_image == 'true' &&
+      (needs.stage-a-cpu.result == 'success' ||
+         needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    uses: ./.github/workflows/_build-pr-ci-image.yml
+    with:
+      arch: arm64
     secrets: inherit
 
   # Gate on this build alone. Without an `if` the default success() spans the whole
@@ -153,10 +175,10 @@ jobs:
   # on a nightly, whose policy sets bypass_fastfail precisely to keep them running.
   # Only selected CUDA tests consume the resolved image.
   resolve-ci-image:
-    needs: [resolve-ci-policy, docker-build]
+    needs: [resolve-ci-policy, docker-build-amd64]
     if: |
       always() && !cancelled() &&
-      needs.docker-build.result == 'success' &&
+      needs.docker-build-amd64.result == 'success' &&
       needs.resolve-ci-policy.outputs.needs_cuda_image == 'true'
     runs-on: ubuntu-latest
     outputs:
@@ -172,7 +194,7 @@ jobs:
           INPUT_CI_IMAGE_TAG: ${{ inputs.image_tag || github.event.inputs.ci_image_tag || '' }}
           # Not `built`: a run that reused an unchanged image published earlier must still
           # test against that image rather than silently falling back to the released one.
-          PR_IMAGE_AVAILABLE: ${{ needs.docker-build.outputs.tag_available }}
+          PR_IMAGE_AVAILABLE: ${{ needs.docker-build-amd64.outputs.tag_available }}
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
         run: |
           CI_IMAGE_TAG="${INPUT_CI_IMAGE_TAG}"

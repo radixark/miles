@@ -26,7 +26,7 @@ def test_a_cpu_failure_cannot_skip_the_gpu_stages_a_nightly_asked_for():
     """
     workflow = WORKFLOW.read_text()
     blocks = dict(re.findall(r"\n  ([a-z][a-z0-9-]*):\n(.*?)(?=\n  [a-z][a-z0-9-]*:\n|\Z)", workflow, re.S))
-    for job in ("docker-build", "resolve-ci-image"):
+    for job in ("docker-build-amd64", "docker-build-arm64", "resolve-ci-image"):
         block = blocks[job]
         assert "if:" in block, f"{job} inherits success() over the closure, defeating bypass_fastfail"
         assert "always()" in block, f"{job} must not be gated on an unrelated upstream failure"
@@ -314,14 +314,15 @@ def test_policy_cli_image_demand_matches_selected_gpu_tests(
     assert outputs["needs_cuda_image"] == str("stage-c-4-gpu-h200" in expected_stages).lower()
 
 
-def test_image_build_ignores_gpu_selection_and_resolvers_require_it():
+def test_image_builds_and_resolvers_need_cuda():
     cuda = WORKFLOW.read_text()
-    build = cuda.split("\n  docker-build:\n", 1)[1].split("\n  resolve-ci-image:\n", 1)[0]
+    builds = cuda.split("\n  docker-build-amd64:\n", 1)[1].split("\n  resolve-ci-image:\n", 1)[0]
     resolver = cuda.split("\n  resolve-ci-image:\n", 1)[1].split("\n  stage-a-cpu:\n", 1)[0]
     assert "needs_cuda_image: ${{ steps.resolve.outputs.needs_cuda_image }}" in cuda
-    assert "needs_cuda_image" not in build
-    assert "needs: [resolve-ci-policy, docker-build]" in resolver
-    assert "needs.docker-build.result == 'success'" in resolver
+    # Both the amd64 and the arm64 call.
+    assert builds.count("needs.resolve-ci-policy.outputs.needs_cuda_image == 'true'") == 2
+    assert "needs: [resolve-ci-policy, docker-build-amd64]" in resolver
+    assert "needs.docker-build-amd64.result == 'success'" in resolver
     assert "needs.resolve-ci-policy.outputs.needs_cuda_image == 'true'" in resolver
 
     rocm = WORKFLOW.with_name("pr-test-rocm.yml").read_text()
