@@ -193,6 +193,34 @@ def test_fill_replay_thd_preserves_packed_order(
         assert ("routes" in rollout_data) == (kept_in_train_dump and save_debug_train_data is not None)
 
 
+def test_a_dump_keeps_none_for_a_sample_no_micro_batch_holds(monkeypatch):
+    # A fixed schedule of one micro batch of 2 leaves sample 2 out, as torch_native does with untrimmed samples.
+    args = SimpleNamespace(
+        qkv_format="thd",
+        allgather_cp=False,
+        train_backend="megatron",
+        backend=SimpleNamespace(sequence_parallel=False),
+        data_pad_size_multiplier=1,
+        save_debug_train_data="/tmp/{rollout_id}_{rank}.pt",
+    )
+    state = SimpleNamespace(cp=SimpleNamespace(size=1, rank=0), tp=SimpleNamespace(size=1, rank=0))
+    monkeypatch.setattr(parallel, "_parallel_state", state)
+    rollout_data = {
+        "routes": [torch.full((2, 1, 1), i) for i in range(3)],
+        "tokens": [torch.arange(3)] * 3,
+        "max_seq_lens": None,
+    }
+    attach_replay_data(
+        _manager([_Replay()], kept_in_train_dump=True),
+        args=args,
+        models=None,
+        data_iterator=[DataIterator(rollout_data, micro_batch_size=2)],
+        num_microbatches=[1],
+        rollout_data=rollout_data,
+    )
+    assert [rows is None for rows in rollout_data["routes"]] == [False, False, True]
+
+
 def _fill_thd_cp2(monkeypatch, *, cp_rank, allgather_cp, lengths, data_pad_size_multiplier, indexer):
     """Fill one thd micro batch on CP rank ``cp_rank`` of 2; sample ``i`` has replay rows ``10(i+1) + j``."""
     args = SimpleNamespace(
@@ -503,38 +531,12 @@ def test_store_rows_fill_the_inline_entries(monkeypatch, fake_plugin, qkv_format
             assert len(inline_entries) == len(stored_entries) == 2
             for a, b in zip(inline_entries, stored_entries, strict=True):
                 assert a.dtype == b.dtype and torch.equal(a, b)
-        # A dump holds each sample's rows, the same both ways.
+        # A dump holds each sample's local rows, the same both ways.
         for a, b in zip(inline_dump, stored_dump, strict=True):
             assert torch.equal(a, b)
         read_bytes += store.read_bytes
-    # Every CP rank reads each sample's rows whole.
-    assert read_bytes == cp_size * sum(n - 1 for n in lengths) * 2 * 2 * 4
-
-
-def test_a_store_dump_keeps_none_for_a_sample_no_micro_batch_holds(monkeypatch, fake_plugin):
-    # A fixed schedule of one micro batch of 2 leaves sample 2 out, as torch_native does with untrimmed samples.
-    args = SimpleNamespace(
-        qkv_format="thd",
-        allgather_cp=False,
-        train_backend="megatron",
-        backend=SimpleNamespace(sequence_parallel=False),
-        data_pad_size_multiplier=1,
-        save_debug_train_data="/tmp/{rollout_id}_{rank}.pt",
-    )
-    state = SimpleNamespace(cp=SimpleNamespace(size=1, rank=0), tp=SimpleNamespace(size=1, rank=0))
-    monkeypatch.setattr(parallel, "_parallel_state", state)
-    column, objects = _stored([torch.full((2, 1, 1), i + 1, dtype=torch.int32) for i in range(3)], indexer=False)
-    rollout_data = {"routes": column, "tokens": [torch.arange(3)] * 3, "max_seq_lens": None}
-    attach_replay_data(
-        _manager([_Replay()], kept_in_train_dump=True),
-        args=args,
-        models=None,
-        data_iterator=[DataIterator(rollout_data, micro_batch_size=2)],
-        num_microbatches=[1],
-        rollout_data=rollout_data,
-        output_store=_FakeOutputStore(objects),
-    )
-    assert [rows is None for rows in rollout_data["routes"]] == [False, False, True]
+    # Each real row is read once across the CP ranks.
+    assert read_bytes == sum(n - 1 for n in lengths) * 2 * 2 * 4
 
 
 def test_the_read_slot_is_kept_across_steps_until_the_store_changes(monkeypatch, fake_plugin):

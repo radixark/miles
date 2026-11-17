@@ -5,7 +5,7 @@ top-k, sampling mask) as one object and returns its ref; the rollout never reads
 event on a sample edits its ``StorePlan`` only: which rows of which objects each field takes, and
 where forced rows go. The trainer reads the sampling mask's objects once and has the plan materialize
 its training columns; a forward field's column is its segments, whose rows each trainer rank reads
-per micro batch (``ForwardSegments.row_reads``).
+per micro batch (``ForwardSegments.range_reads``).
 
 Three things, and nothing else:
 
@@ -24,6 +24,8 @@ rows like the inline path: forward fields ``len(tokens) - 1``, the mask ``respon
 
 from __future__ import annotations
 
+import bisect
+import itertools
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -172,8 +174,8 @@ class Segments:
 class ForwardSegments(Segments):
     """A forward output: a row per sequence position but the last.
 
-    Its training column is the segments themselves: each trainer rank reads their rows per micro batch,
-    with ``row_reads``.
+    Its training column is the segments themselves: each trainer rank reads only its own rows, per micro
+    batch, with ``range_reads``.
 
     The request's start position (``start_key``) alone decides how a response's rows combine
     with the earlier ones; ``from_ref`` reads it once:
@@ -233,7 +235,7 @@ class ForwardSegments(Segments):
         return {self.column: self}
 
     def needed(self, *, support_topk: int) -> tuple[str, ...]:
-        # Read per micro batch by row_reads, not with the shard.
+        # Read per micro batch by range_reads, never whole.
         return ()
 
     def row_format(self, *, indexer_streams: int | None = None) -> tuple[np.dtype, tuple[int, ...]]:
@@ -254,19 +256,48 @@ class ForwardSegments(Segments):
         self.check_spec(spec, indexer_streams=indexer_streams)
         return np.dtype(dtype), row_shape
 
-    def row_reads(self, *, dst_offset: int) -> list[RowRead]:
-        """Reads of every row, a segment each: row k lands at ``dst_offset + k * row_bytes``."""
+    def range_reads(
+        self, ranges: Sequence[tuple[int, int]], *, dst_offset: int
+    ) -> tuple[list[RowRead], list[tuple[int, int]]]:
+        """Reads of the rows at a rank's local positions, and the local rows to pad.
+
+        ``ranges`` are the rank's positions of this sample in local order (``CPLayout.local_ranges``).
+        Local row k lands at ``dst_offset + k * row_bytes``. Position p has row p for p < ``num_rows()``;
+        the local rows of later positions come back as ``[start, end)`` spans the caller pads.
+        """
         dtype, row_shape = self.row_format()
         row_bytes = dtype.itemsize * int(np.prod(row_shape, dtype=np.int64))
-        reads = []
-        row = 0
-        for seg in self.segs:
-            count = seg.end - seg.start
-            if seg.ref is None:
-                raise StorePlanError(f"{self.name} rows {row}-{row + count} have no object to read")
-            reads.append(RowRead(seg.ref, seg.start * row_bytes, count * row_bytes, dst_offset + row * row_bytes))
-            row += count
-        return reads
+        # Field row where each segment starts.
+        starts = list(itertools.accumulate((seg.end - seg.start for seg in self.segs), initial=0))
+        num_rows = starts[-1]
+        reads: list[list] = []
+        pads = []
+        local = 0
+        for a, b in ranges:
+            row = a
+            while row < min(b, num_rows):
+                i = bisect.bisect_right(starts, row) - 1
+                seg = self.segs[i]
+                if seg.ref is None:
+                    raise StorePlanError(f"{self.name} rows {starts[i]}-{starts[i + 1]} have no object to read")
+                count = min(b, num_rows, starts[i + 1]) - row
+                src = (seg.start + row - starts[i]) * row_bytes
+                dst = dst_offset + (local + row - a) * row_bytes
+                last = reads[-1] if reads else None
+                if (
+                    last is not None
+                    and last[0].key == seg.ref.key
+                    and last[1] + last[2] == src
+                    and last[3] + last[2] == dst
+                ):
+                    last[2] += count * row_bytes  # e.g. the two zigzag chunks of the last CP rank
+                else:
+                    reads.append([seg.ref, src, count * row_bytes, dst])
+                row += count
+            if max(a, num_rows) < b:
+                pads.append((local + max(a, num_rows) - a, local + b - a))
+            local += b - a
+        return [RowRead(*read) for read in reads], pads
 
     def check_spec(self, spec: Any, *, indexer_streams: int | None) -> None:
         """The field's check of a stored array's spec."""

@@ -76,7 +76,8 @@ def check_output_store_args(args: argparse.Namespace, *, sglang: SglangConfig, m
             (
                 not _output_store_reads_ranges(),
                 "the installed radix_transfer_plugins cannot read byte ranges into a ReadBuffer it keeps "
-                "(OutputStore.read_slot), which trainer ranks read replay rows through; rebuild the image",
+                "(OutputStore.read_slot), which trainer ranks need to read only their own replay rows; "
+                "rebuild the image",
             ),
             (
                 use_legacy_rollout_v1(),

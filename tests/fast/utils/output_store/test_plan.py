@@ -354,12 +354,14 @@ def seq_rows_of(name: str, *segs: tuple[str | None, int, int], rows: int = 6):
 
 
 def read_rows(segments: ForwardSegments, objects: dict) -> np.ndarray:
-    """All of a sample's rows from ``objects``, read through ``row_reads`` as replay reads them."""
+    """All of a sample's rows from ``objects``, read through ``range_reads`` as replay reads a rank's rows."""
     dtype, row_shape = segments.row_format()
     (name,) = segments.stored
     rows = np.empty((segments.num_rows(), *row_shape), dtype=dtype)
     dst = rows.reshape(-1).view(np.uint8)
-    for read in segments.row_reads(dst_offset=0):
+    reads, pads = segments.range_reads([(0, segments.num_rows())], dst_offset=0)
+    assert pads == []
+    for read in reads:
         src = np.ascontiguousarray(objects[read.ref.key][name]).reshape(-1).view(np.uint8)
         dst[read.dst_offset : read.dst_offset + read.nbytes] = src[read.src_offset : read.src_offset + read.nbytes]
     return rows
@@ -389,23 +391,36 @@ class TestMaterializeForward:
             segments.materialize({}, response_tokens=np.empty(0), **opts(indexer_streams=4))
 
 
-class TestRowReads:
+class TestRangeReads:
     ROW = 2 * 4 * 4  # bytes of an R3 row of ref(): 2 streams x 4 ids x int32
 
-    def test_each_segment_is_one_read_and_the_rows_land_in_order(self):
-        # A two-turn session sample: rows 0-4 are rows 1-5 of object a, rows 5-7 are rows 0-2 of object b.
-        segments = seq_rows_of(R3, ("a", 1, 6), ("b", 0, 3))
+    def test_a_ranks_rows_come_from_each_segment_and_positions_past_the_rows_are_padding(self):
+        # A two-turn session sample with T = 10: rows 0-5 in object a, rows 6-8 in object b.
+        # cp 2 zigzag in chunks of 3: rank 0 holds positions [0, 3) and [9, 12), rank 1 [3, 6) and [6, 9).
+        segments = seq_rows_of(R3, ("a", 0, 6), ("b", 0, 3))
         a, b = segments.segs[0].ref, segments.segs[1].ref
         row = self.ROW
 
-        assert segments.row_reads(dst_offset=64) == [
-            RowRead(a, row, 5 * row, 64),
-            RowRead(b, 0, 3 * row, 64 + 5 * row),
-        ]
+        assert segments.range_reads([(0, 3), (9, 12)], dst_offset=0) == ([RowRead(a, 0, 3 * row, 0)], [(3, 6)])
+        assert segments.range_reads([(3, 6), (6, 9)], dst_offset=64) == (
+            [RowRead(a, 3 * row, 3 * row, 64), RowRead(b, 0, 3 * row, 64 + 3 * row)],
+            [],
+        )
+
+    def test_adjacent_rows_of_one_object_are_one_read(self):
+        segments = seq_rows_of(R3, ("a", 1, 6), rows=8)
+        a, row = segments.segs[0].ref, self.ROW
+        # Local positions 2-3 then 3-5 (the last zigzag rank's two chunks) are object rows 3-6.
+        assert segments.range_reads([(2, 3), (3, 5)], dst_offset=0) == ([RowRead(a, 3 * row, 3 * row, 0)], [])
+        # Out of local order, two reads.
+        assert segments.range_reads([(3, 5), (2, 3)], dst_offset=0) == (
+            [RowRead(a, 4 * row, 2 * row, 0), RowRead(a, 3 * row, row, 2 * row)],
+            [],
+        )
 
     def test_rows_no_object_holds_or_of_two_formats_cannot_be_read(self):
         with pytest.raises(StorePlanError, match="no object to read"):
-            seq_rows_of(R3, ("a", 0, 2), (None, 0, 2)).row_reads(dst_offset=0)
+            seq_rows_of(R3, ("a", 0, 2), (None, 0, 2)).range_reads([(0, 4)], dst_offset=0)
         mixed = RoutedExpertsSegments(
             (
                 Seg(ref("a", seq_rows=2), 0, 2),
@@ -413,7 +428,7 @@ class TestRowReads:
             )
         )
         with pytest.raises(StorePlanError, match="2 formats"):
-            mixed.row_reads(dst_offset=0)
+            mixed.range_reads([(0, 4)], dst_offset=0)
 
 
 class TestMaterializeMask:
