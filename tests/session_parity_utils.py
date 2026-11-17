@@ -136,7 +136,7 @@ async def _run_and_collect(
                     }
                 )
                 generate_input = GenerateFnInput(
-                    state=SimpleNamespace(args=args),
+                    state=SimpleNamespace(args=args, aborted=False),
                     sample=input_sample,
                     sampling_params={
                         "model": hf_checkpoint,
@@ -253,6 +253,8 @@ def _serve_session(*, backend_url: str, hf_checkpoint: str, version: str) -> Ite
         rollout_temperature=1.0,
         pause_generation_mode="retract",
         session_server_ip="127.0.0.1",
+        sglang_router_ip="127.0.0.1",
+        sglang_router_port=port,
         session_server_instances=[SessionServerInstance(addr=session_addr, instance_id=instance_id)],
         save_debug_trajectory_data=None,
         custom_agent_function_path="miles.utils.test_utils.session_verify_agent.run_agent",
