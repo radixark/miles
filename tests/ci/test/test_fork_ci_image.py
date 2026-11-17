@@ -6,6 +6,8 @@ import os
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 import zipfile
 from pathlib import Path
 
@@ -105,6 +107,36 @@ def archive_request(request, filename="request.json"):
     return data.getvalue()
 
 
+def test_api_paginates_without_forwarding_the_token(monkeypatch):
+    monkeypatch.setenv("GH_TOKEN", "secret")
+    first = f"{HANDLER.API_URL}/repos/{REPOSITORY}/actions/runs?per_page=1"
+    pages = {
+        first: (
+            b'{"workflow_runs": [1]}',
+            '<https://api.github.com/page2>; rel="next", <https://api.github.com/page2>; rel="last"',
+        ),
+        "https://api.github.com/page2": (b'{"workflow_runs": [2]}', ""),
+    }
+    requests = []
+
+    def urlopen(request, timeout):
+        requests.append(request)
+        body, link = pages[request.full_url]
+        response = io.BytesIO(body)
+        response.headers = {"Link": link}
+        return response
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    assert HANDLER.api(f"repos/{REPOSITORY}/actions/runs?per_page=1", collection="workflow_runs") == [1, 2]
+    assert [request.full_url for request in requests] == [first, "https://api.github.com/page2"]
+    assert all(request.unredirected_hdrs == {"Authorization": "Bearer secret"} for request in requests)
+    # Artifact downloads redirect to blob storage; the redirected request must not carry the token.
+    redirected = urllib.request.HTTPRedirectHandler().redirect_request(
+        requests[0], None, 302, "Found", {}, "https://blob.example/artifact.zip"
+    )
+    assert not redirected.has_header("Authorization")
+
+
 def test_request_is_bounded_data(identity):
     request, _, _ = identity
     assert HANDLER.parse_request(archive_request(request)) == request
@@ -137,12 +169,14 @@ def test_request_archive_cannot_select_another_run(monkeypatch, identity):
         "api",
         lambda *args, **kwargs: [dict(name="fork-ci-image-123-2", expired=False, size_in_bytes=1000, id=55)],
     )
-    monkeypatch.setattr(subprocess, "check_output", lambda *args, **kwargs: archive_request(dict(request, run_id=124)))
+    monkeypatch.setattr(
+        HANDLER, "open_api", lambda *args, **kwargs: io.BytesIO(archive_request(dict(request, run_id=124)))
+    )
     with pytest.raises(ValueError, match="another attempt"):
         HANDLER.resolve_request(dict(workflow_run=run), REPOSITORY)
 
 
-def stub_api(monkeypatch, identity, *, cpu="success", latest=123):
+def stub_api(monkeypatch, identity, *, cpu="success", newer=None):
     request, run, pr = identity
     calls = []
 
@@ -155,7 +189,7 @@ def stub_api(monkeypatch, identity, *, cpu="success", latest=123):
         if path.endswith("/actions/workflows/pr-test.yml"):
             return dict(id=99)
         if "/runs?" in path:
-            return [dict(run, id=latest)]
+            return [run] + ([dict(run, id=124, **newer)] if newer is not None else [])
         if "/jobs?filter=all" in path:
             return [dict(name=name, conclusion=cpu, run_attempt=1) for name in HANDLER.CPU_JOBS]
         raise AssertionError(path)
@@ -190,10 +224,17 @@ def test_partial_rerun_failure_overrides_old_cpu_success(monkeypatch, identity):
         HANDLER.current_request(identity[0], REPOSITORY)
 
 
-def test_rejects_superseded_runs(monkeypatch, identity):
-    stub_api(monkeypatch, identity, latest=124)
+@pytest.mark.parametrize("newer", [dict(status="queued"), dict(status="completed", conclusion="action_required")])
+def test_rejects_superseded_runs(monkeypatch, identity, newer):
+    stub_api(monkeypatch, identity, newer=newer)
     with pytest.raises(ValueError, match="superseded"):
         HANDLER.current_request(identity[0], REPOSITORY)
+
+
+def test_cancelled_newer_run_does_not_supersede(monkeypatch, identity):
+    # Two label events at once: the higher-numbered run entered the concurrency group first and was cancelled.
+    stub_api(monkeypatch, identity, newer=dict(status="completed", conclusion="cancelled"))
+    assert HANDLER.current_request(identity[0], REPOSITORY) == identity[2]
 
 
 @pytest.fixture
@@ -338,7 +379,7 @@ def test_publication_only_consumes_the_original_force_request(source, monkeypatc
     def api(path, *, method):
         mutations.append((path, method))
         if remove_fails:
-            raise subprocess.CalledProcessError(1, ["gh", "api"])
+            raise urllib.error.HTTPError(path, 404, "Not Found", None, None)
 
     monkeypatch.setattr(HANDLER, "api", api)
     HANDLER.main()
