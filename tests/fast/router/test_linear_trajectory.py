@@ -558,9 +558,12 @@ class TestContinuationRoles:
         registry = _make_registry_for(_NARROW_CONTINUATIONS)
         session = registry.get_session(registry.create_session())
 
-        _prepare_token_ids(
+        token_ids = _prepare_token_ids(
             session, [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, _FOLLOWUP_USER_MSG], tito_tokenizer=registry.tito_tokenizer
         )
+
+        assert token_ids == _MOCK_FIRST_TURN_TOKENS
+        assert session.messages == []
 
     def test_refused_retry_does_not_roll_back(self):
         """A retry whose new suffix is refused keeps the checkpoint it would have discarded."""

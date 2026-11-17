@@ -235,6 +235,41 @@ def test_spec_rollout_resamples_a_turn_that_must_call_a_tool(monkeypatch):
     assert seeds == [7, 1_000_007]
 
 
+def test_spec_rollout_settles_a_model_that_keeps_calling_the_tool(monkeypatch):
+    """The last answered tool round asks for a reply without a call, so the rollout goes on."""
+    session = _FakeSession("qwen3")
+    settle_requests = []
+
+    async def chat(client, base_url, messages, request_kwargs, *, label):
+        if label == "Tool result" or label.startswith("tool round"):
+            settle_requests.append((label, request_kwargs.get("tool_choice")))
+            if request_kwargs.get("tool_choice") != "none":
+                call = {"id": f"again_{len(settle_requests)}", "type": "function", "function": {"name": "get_weather"}}
+                message = {"role": "assistant", "content": "", "tool_calls": [call]}
+                return {"choices": [{"message": message, "finish_reason": "stop"}]}
+        return await _FakeSession.chat(session, client, base_url, messages, request_kwargs, label=label)
+
+    monkeypatch.setattr(session_verify_agent.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr(session_verify_agent, "_chat", chat)
+    monkeypatch.setattr(session_verify_agent, "_chat_status", session.chat_status)
+    result = asyncio.run(
+        run_agent(
+            "http://session",
+            prompt=None,
+            request_kwargs={},
+            metadata={"tito_model": "qwen3", SESSION_VERIFY_KIND_KEY: "spec"},
+        )
+    )
+
+    assert settle_requests == [
+        ("Tool result", None),
+        ("tool round 1", None),
+        ("tool round 2", None),
+        ("tool round 3", "none"),
+    ]
+    assert result["driver_events"][-2:] == ["append_system", "append_assistant"]
+
+
 def test_spec_rollout_needs_user_after_an_answer():
     fixed = session_verify_agent.FixedTemplate(
         allowed_append_roles=frozenset({"tool", "user"}), roles_after_no_tool_call=frozenset({"tool"})
@@ -295,10 +330,12 @@ def _verified_sample(mismatches, *, expectations=()):
     )
 
 
-def _generate_input(kind: SessionVerifyKind, tito_model="qwen3", *, group_index=0):
+def _generate_input(kind: SessionVerifyKind, tito_model="qwen3", *, group_index=0, num_rollout=2):
     return SimpleNamespace(
         sample=Sample(group_index=group_index, metadata={SESSION_VERIFY_KIND_KEY: str(kind)}),
-        args=SimpleNamespace(tito_model=tito_model, session_verify_cycles=3, rollout_batch_size=16, num_rollout=2),
+        args=SimpleNamespace(
+            tito_model=tito_model, session_verify_cycles=3, rollout_batch_size=16, num_rollout=num_rollout
+        ),
     )
 
 
@@ -390,9 +427,16 @@ def test_generate_journals_a_spec_sample_missing_probes(monkeypatch, tmp_path):
     assert "recorded probes" in error_record["verification_error"]["message"]
 
 
-@pytest.mark.parametrize(("group_index", "refilled"), [(31, False), (32, True)])
-def test_generate_journals_a_prompt_past_the_planned_ones(monkeypatch, tmp_path, group_index, refilled):
-    """Two steps of 16 prompt groups plan groups 0..31; a later group means a failed group was refilled."""
+@pytest.mark.parametrize(
+    ("num_rollout", "group_index", "refilled"),
+    [(2, 31, False), (2, 32, True), (1, 16, False)],
+    ids=["last-planned-group", "first-refill-group", "single-step-refill"],
+)
+def test_generate_journals_a_prompt_past_the_planned_ones(monkeypatch, tmp_path, num_rollout, group_index, refilled):
+    """Two steps of 16 prompt groups plan groups 0..31; a later group means a failed group was refilled.
+
+    A single step runs one kind, so its refill is not an error.
+    """
     metrics_path = tmp_path / "metrics.jsonl"
     monkeypatch.setenv("MILES_SESSION_VERIFY_METRICS_PATH", str(metrics_path))
 
@@ -401,7 +445,8 @@ def test_generate_journals_a_prompt_past_the_planned_ones(monkeypatch, tmp_path,
 
     monkeypatch.setattr(session_verify_agent, "_base_generate", fake_base_generate)
 
-    asyncio.run(session_verify_agent.generate(_generate_input(SessionVerifyKind.NORMAL, group_index=group_index)))
+    input = _generate_input(SessionVerifyKind.NORMAL, group_index=group_index, num_rollout=num_rollout)
+    asyncio.run(session_verify_agent.generate(input))
 
     errors = [
         record["verification_error"]["message"]

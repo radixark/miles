@@ -70,7 +70,9 @@ class FixedTemplate:
     the runtime accepts directly after an assistant message with and without
     ``tool_calls``.  Both default to ``allowed_append_roles``; a family whose
     renderer refuses a continuation narrows them.  They state what the session
-    server accepts, which can be wider than what the model was trained on.
+    server accepts when a request appends to a stored history, which can be
+    wider than what the model was trained on; a from-scratch render is left to
+    the renderer.
     """
 
     template: str | None = None

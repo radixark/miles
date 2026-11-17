@@ -401,7 +401,10 @@ class TestContinuationRoles:
         registry = SessionRegistryV2(tokenizer=None, tito_tokenizer=tito)
         session = registry.get_session(registry.create_session())
 
-        _prepare(session, [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, _FOLLOWUP_USER_MSG], tito_tokenizer=tito)
+        token_ids = _prepare(session, [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, _FOLLOWUP_USER_MSG], tito_tokenizer=tito)
+
+        assert token_ids == _MOCK_FIRST_TURN_TOKENS
+        assert len(session.tree.nodes) == 0
 
 
 # ---------------------------------------------------------------------------

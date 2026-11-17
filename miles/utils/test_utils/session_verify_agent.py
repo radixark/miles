@@ -329,13 +329,21 @@ class _Driver:
         return USER_FOLLOWUP_TEXTS[self.counters["user_count"] % len(USER_FOLLOWUP_TEXTS)]
 
     async def settle(self, messages: list[dict], reply: dict) -> dict:
-        """Answer *reply*'s tool calls until the model answers without one."""
+        """Answer *reply*'s tool calls until the model answers without one.
+
+        The last round sends ``tool_choice: "none"``, so a model that keeps calling the tool still settles.
+        """
         for round_index in range(_MAX_TOOL_ROUNDS):
             if not reply.get("tool_calls"):
                 return reply
             self.append_tool_results(messages, reply)
-            reply = await self.chat(messages, label=f"tool round {round_index + 1}")
-        assert not reply.get("tool_calls"), f"the model still calls a tool after {_MAX_TOOL_ROUNDS} answered rounds"
+            last_round = round_index == _MAX_TOOL_ROUNDS - 1
+            reply = await self.chat(
+                messages,
+                label=f"tool round {round_index + 1}",
+                extra_kwargs=NO_TOOL_CALL_REQUEST_ARGS if last_round else None,
+            )
+        assert not reply.get("tool_calls"), f"tool_choice='none' still returned tool_calls={reply['tool_calls']}"
         return reply
 
 
@@ -555,10 +563,11 @@ def _journal_unplanned_prompt(input: GenerateFnInput) -> None:
     past the planned ones, and the step that reads it cannot finish without it.
 
     Journal only: raising would drop this group too, and the loop would refill
-    again. Without a metrics sidecar there is no run gate to tell.
+    again. Without a metrics sidecar there is no run gate to tell. A run of one
+    step has one kind, so a refill there mixes nothing.
     """
     group_index, num_rollout = input.sample.group_index, input.args.num_rollout
-    if group_index is None or num_rollout is None:
+    if group_index is None or num_rollout is None or num_rollout < 2:
         return
     planned = input.args.rollout_batch_size * num_rollout
     if group_index >= planned:

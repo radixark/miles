@@ -246,10 +246,10 @@ stored history, the session server refuses any other continuation with HTTP
 different turn. DeepSeek-V4, for example, accepts only `tool` messages after a
 tool call and no `tool` message after a reply without one.
 
-A request rendered from scratch (a session's first request, or a v2 request
-that extends no stored node) is not checked this way: only the renderer decides
-its history, because a family can render a turn from scratch that it cannot
-append.
+A request rendered from scratch (a session's first request or a retry of it,
+or a v2 request that extends no stored node) is not checked this way: only the
+renderer decides its history, because a family can render a turn from scratch
+that it cannot append.
 
 These sets state what the runtime accepts, which can be wider than what the
 model was trained on: GLM accepts a `user` turn after a tool call because TITO
