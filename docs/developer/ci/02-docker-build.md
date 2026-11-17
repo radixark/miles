@@ -73,9 +73,9 @@ The `tpu` variant builds from sglang-torchtpu's release image (`SGLANG_TPU_IMAGE
 
 ## PR build check (in `pr-test.yml`)
 
-A PR that changes the image inputs and selects CUDA tests builds its image before those tests run; a CPU-only PR builds none. PR CI runs only on amd64, so the PR image is one tag per architecture (`PR_IMAGE_ARCHES` in `docker/image_inputs.py`): the amd64 `pr-<num>` gates the GPU stages, and `pr-<num>-arm64` proves the image still builds for arm64 while those stages run. A failed arm64 build fails the run without holding back GPU tests.
+A PR that changes the image inputs and selects CUDA tests builds its image before those tests run; a CPU-only PR builds none. The PR image is one tag per architecture (`PR_IMAGE_ARCHES` in `docker/image_inputs.py`): `pr-<num>` for amd64 and `pr-<num>-arm64`, each built by its own job. A GPU stage's image prerequisite is the architecture it runs on; see [stage dependencies](/developer/ci/00-stage).
 
-`pr-test.yml` calls `_build-pr-ci-image.yml` once per architecture (`docker-build-amd64`, `docker-build-arm64`) after `stage-a-cpu` satisfies its success/bypass gate, when the final stage selection contains CUDA tests (`needs_cuda_image`). Each call is a hosted-runner no-op when the inputs match the base. Only `resolve-ci-image` waits on the amd64 call. Both CPU stages run without waiting for images. An eligible PR keeps each architecture's tag for its whole life, and rebuilds it only when the content that feeds it changes:
+`pr-test.yml` calls `_build-pr-ci-image.yml` once per architecture (`docker-build-amd64`, `docker-build-arm64`) after `stage-a-cpu` satisfies its success/bypass gate, when the final stage selection contains CUDA tests (`needs_cuda_image`). Each call is a hosted-runner no-op when the inputs match the base. `resolve-ci-image` resolves the amd64 image and requires `docker-build-amd64`. Both CPU stages run without waiting for images. An eligible PR keeps each architecture's tag for its whole life, and rebuilds it only when the content that feeds it changes:
 
 | Job | What it does |
 | --- | --- |
@@ -92,7 +92,7 @@ To rebuild an eligible PR image when its inputs did not change — a moved base 
 
 ### Fork PR publication
 
-Fork `pull_request` runs do not receive Docker Hub secrets. Their image job uses the same CPU A success/bypass gate, hash decision, and output contract as same-repository PRs. When a rebuild is needed, the amd64 job submits one attempt-bound request for both architectures, and each job waits for its own architecture's trusted publication, so amd64 is not held back by arm64. An arm64 tag that is stale while the amd64 tag is current gets no request; `rebuild-ci-image` rebuilds both. Success continues to any selected CUDA tests in the same CI attempt; a publication failure fails the image job. CPU tests are not rerun.
+Fork `pull_request` runs do not receive Docker Hub secrets. Their image job uses the same CPU A success/bypass gate, hash decision, and output contract as same-repository PRs. When a rebuild is needed, the amd64 job submits one attempt-bound request for both architectures, and each job waits for its own architecture's trusted publication. An arm64 tag that is stale while the amd64 tag is current gets no request; `rebuild-ci-image` rebuilds both. Success continues to any selected CUDA tests in the same CI attempt; a publication failure fails the image job. CPU tests are not rerun.
 
 `build-fork-ci-image.yml` starts on `PR Test`'s `workflow_run.in_progress` event and waits for the request artifact, which is readable before the source run finishes; it then builds each architecture in its own `build (<arch>)` job. GitHub can fire that event several times for one attempt; only the earliest triggered run publishes, and later ones exit without a request. Only a request allocates a builder. The caller waits for that earliest publisher run's `build (<arch>)` job to succeed, so an existing tag cannot satisfy a forced rebuild prematurely. The hosted handoff has a 360-minute limit covering queue and build time; the builder retains its 180-minute limit.
 

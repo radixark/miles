@@ -209,7 +209,7 @@ def require_active_source(request, repository):
 
 
 def wait_build(request, repository, arch):
-    # Wait for this architecture's job only: amd64 gates the GPU suites, arm64 must not delay them.
+    # Each PR-side build job waits for its own architecture's publication.
     job_name = f"build ({arch})"
     publisher = None
     while True:
