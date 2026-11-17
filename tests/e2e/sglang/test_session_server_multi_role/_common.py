@@ -70,9 +70,6 @@ class ModelConfig:
     # Run the spec rollout (every continuation the family's continuation roles
     # accept or refuse) before the normal one on the OpenAI runs.
     spec_trajectory: bool = True
-    # False keeps the lane running and its metrics recorded, but no mismatch
-    # rate fails it; pair it with a tracked (constraint=None) history gate.
-    gate: bool = True
 
 
 def run_one(
@@ -107,10 +104,6 @@ def run_one(
     assistant_text_threshold = cfg.assistant_text_threshold
     if endpoint == "anthropic" and cfg.anthropic_assistant_text_threshold is not None:
         assistant_text_threshold = cfg.anthropic_assistant_text_threshold
-    # An ungated lane must not stop on the in-run strict check either.  This waives
-    # special_token_count, the hard type a dropped tool block causes; special_token_type
-    # and non_assistant_text still stop the run.
-    special_token_count_threshold = cfg.special_token_count_threshold if cfg.gate else 1.0
     args = argparse.Namespace(
         hf_checkpoint=cfg.model_name,
         tito_model=cfg.tito_model,
@@ -123,9 +116,8 @@ def run_one(
         session_verify_cycles=cfg.cycles,
         # The Anthropic agent runs only the normal rollout.
         session_verify_spec_trajectory=cfg.spec_trajectory and endpoint == "openai",
-        session_verify_gate=cfg.gate,
         assistant_text_threshold=assistant_text_threshold,
-        ci_tito_special_token_count_threshold=special_token_count_threshold,
+        ci_tito_special_token_count_threshold=cfg.special_token_count_threshold,
         anthropic_intermediate_system_expectation=(
             cfg.anthropic_intermediate_system_expectation if endpoint == "anthropic" else None
         ),

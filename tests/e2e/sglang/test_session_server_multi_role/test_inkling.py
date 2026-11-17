@@ -3,12 +3,15 @@ from tests.ci.metric_history import register_ci_gate
 from tests.e2e.sglang.test_session_server_multi_role._common import ModelConfig, run_both_versions
 
 register_cuda_ci(
-    est_time=1800, suite="stage-c-2-gpu-h200", labels=["sglang"], hardware=["hopper", "blackwell"], num_gpus=2
+    est_time=1800,
+    suite="stage-c-2-gpu-h200",
+    labels=["sglang"],
+    hardware=["hopper", "blackwell"],
+    disabled="Inkling replies with several tool calls never match the template render (special-token mismatches); re-enable once they do (#4747)",
+    num_gpus=2,
 )
-# Tracked, not judged: the normal rollout reports special-token mismatches, so this
-# lane records its rates without failing on them until their cause is fixed.
-register_ci_gate(metric_key="rollout/tito_session_mismatch_rate/v1/assistant_text", constraint=None)
-register_ci_gate(metric_key="rollout/tito_session_mismatch_rate/v2/assistant_text", constraint=None)
+register_ci_gate(metric_key="rollout/tito_session_mismatch_rate/v1/assistant_text")
+register_ci_gate(metric_key="rollout/tito_session_mismatch_rate/v2/assistant_text")
 
 
 CONFIG = ModelConfig(
@@ -29,7 +32,6 @@ CONFIG = ModelConfig(
     # rollout's reply without a tool call has no guard.  Parse failures are covered by
     # tests/fast/utils/chat_template_utils/test_inkling_response.py.
     spec_trajectory=False,
-    gate=False,
     anthropic_intermediate_system_expectation="required",
 )
 

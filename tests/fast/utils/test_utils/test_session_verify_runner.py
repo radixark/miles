@@ -232,7 +232,6 @@ def test_run_one_aligns_global_batch_size_with_sample_count(
     assert captured["args"].sglang_mamba_full_memory_ratio == 4.59
     assert captured["args"].sglang_cuda_graph_backend_prefill == "disabled"
     assert captured["args"].session_verify_spec_trajectory is True
-    assert captured["args"].session_verify_gate is True
     assert captured["wire_format"] == "openai"
 
 
@@ -250,23 +249,6 @@ def test_run_one_without_spec_trajectory_runs_the_normal_rollout_only(monkeypatc
     _common.run_one(config)
 
     assert captured["args"].session_verify_spec_trajectory is False
-
-
-def test_ungated_run_waives_the_in_run_special_token_count_check(monkeypatch):
-    captured = {}
-    monkeypatch.setattr(_common, "run_session_verify", lambda args, *, wire_format: captured.update(args=args))
-    config = _common.ModelConfig(
-        model_name="test-model",
-        reasoning_parser="inkling",
-        tool_call_parser="inkling",
-        tito_model="inkling",
-        gate=False,
-    )
-
-    _common.run_one(config)
-
-    assert captured["args"].session_verify_gate is False
-    assert captured["args"].ci_tito_special_token_count_threshold == 1.0
 
 
 @pytest.mark.parametrize("version", ["v1", "v2"])
@@ -537,7 +519,7 @@ def test_session_verify_metrics_rejects_verifier_error(
     _write_metrics(metrics_path, entries)
 
     with pytest.raises(AssertionError, match=f"completed_samples={completed_samples}.*{message}"):
-        assert_session_verify_metrics(str(metrics_path), kinds=_NORMAL, assistant_text_threshold=1.0, gate=False)
+        assert_session_verify_metrics(str(metrics_path), kinds=_NORMAL, assistant_text_threshold=1.0)
 
 
 def test_session_verify_metrics_keeps_assistant_text_soft(tmp_path):
@@ -574,9 +556,7 @@ def test_session_verify_metrics_rejects_an_unmet_spec_expectation(tmp_path):
     _write_metrics(metrics_path, [_spec(_MET, _UNMET), _normal(driver_events=["append_tool"])])
 
     with pytest.raises(AssertionError, match="spec probes got another status.*tool after no tool call"):
-        assert_session_verify_metrics(
-            str(metrics_path), kinds=_SPEC_THEN_NORMAL, assistant_text_threshold=1.0, gate=False
-        )
+        assert_session_verify_metrics(str(metrics_path), kinds=_SPEC_THEN_NORMAL, assistant_text_threshold=1.0)
 
 
 def test_session_verify_metrics_gates_hard_mismatches_in_the_spec_rollout(tmp_path):
@@ -603,14 +583,6 @@ def test_session_verify_metrics_rejects_a_rollout_the_run_did_not_ask_for(tmp_pa
 
     with pytest.raises(AssertionError, match=r"samples of kinds \['spec'\]"):
         assert_session_verify_metrics(str(metrics_path), kinds=_NORMAL, assistant_text_threshold=1.0)
-
-
-def test_ungated_session_verify_metrics_logs_mismatch_rates_only(tmp_path):
-    metrics_path = tmp_path / "metrics.jsonl"
-    hard = {"hard_mismatch_count": 1, "hard_mismatch_types": ["special_token_type"]}
-    _write_metrics(metrics_path, [_normal(driver_events=["append_tool"], had_assistant_mismatch=True, **hard)])
-
-    assert_session_verify_metrics(str(metrics_path), kinds=_NORMAL, assistant_text_threshold=0.0, gate=False)
 
 
 @pytest.mark.parametrize("failure_phase", ["execute_train", "post_gate"])
@@ -650,7 +622,6 @@ def test_run_session_verify_preserves_sidecar_on_failure(monkeypatch, tmp_path, 
         actor_num_gpus_per_node=8,
         rollout_batch_size=16,
         session_verify_spec_trajectory=False,
-        session_verify_gate=True,
         assistant_text_threshold=0.2,
         ci_tito_special_token_count_threshold=0.0,
     )
@@ -711,7 +682,6 @@ def test_cli_parser_adapts_typed_config_to_mutable_runner_namespace(
     assert args.rollout_batch_size == 2
     assert args.session_verify_cycles == 2
     assert args.session_verify_spec_trajectory is False
-    assert args.session_verify_gate is True
     args.hf_checkpoint = "/root/models/local"
     args.sglang_reasoning_parser = "qwen3"
     train_args = namespace_to_train_args(args)

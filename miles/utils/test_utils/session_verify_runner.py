@@ -278,8 +278,7 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
 
     ``args`` MUST be a fully-shaped Namespace carrying miles-canonical field
     names plus the session-verify-specific fields (``session_verify_cycles``,
-    ``session_verify_spec_trajectory``, ``session_verify_gate``,
-    ``assistant_text_threshold``).  Build it via
+    ``session_verify_spec_trajectory``, ``assistant_text_threshold``).  Build it via
     the CLI entrypoint's ``_parse_session_verify_args()`` adapter for the CLI
     path or by spreading ``SESSION_VERIFY_INVARIANT_ARGS`` into
     ``argparse.Namespace(...)`` for tests.
@@ -328,7 +327,6 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
             assistant_text_threshold=args.assistant_text_threshold,
             special_token_count_threshold=args.ci_tito_special_token_count_threshold,
             require_append_tool=wire_format == "openai",
-            gate=args.session_verify_gate,
         )
     except Exception:
         preserved_metrics_path = metrics_path + ".failed"
@@ -353,18 +351,16 @@ def assert_session_verify_metrics(
     assistant_text_threshold: float,
     special_token_count_threshold: float = 0.0,
     require_append_tool: bool = True,
-    gate: bool = True,
 ) -> None:
     """Read per-sample JSONL metrics and apply the cross-sample gates per rollout kind.
 
     A journaled verifier assertion, a rollout of *kinds* with no recorded
     sample, a spec sample whose probe got another status than the spec
     decides, and a normal rollout that never answered a tool call (when
-    ``require_append_tool``) always fail.  With ``gate``, both rollouts also
-    fail on hard mismatches (samples whose only hard type is
-    special_token_count are tolerated up to ``special_token_count_threshold``),
-    and the normal rollout on an assistant_text ratio above
-    ``assistant_text_threshold``; without it those are logged only.  The spec
+    ``require_append_tool``) fail.  Both rollouts also fail on hard mismatches
+    (samples whose only hard type is special_token_count are tolerated up to
+    ``special_token_count_threshold``), and the normal rollout on an
+    assistant_text ratio above ``assistant_text_threshold``.  The spec
     rollout's assistant_text is not gated.
     """
     entries = _read_sample_records(metrics_path)
@@ -389,8 +385,7 @@ def assert_session_verify_metrics(
                 f"roles decide in {len(summary['unmet_expectations'])} cases "
                 f"(first={summary['unmet_expectations'][:3]})."
             )
-        if gate:
-            _assert_hard_mismatches(kind, summary, special_token_count_threshold=special_token_count_threshold)
+        _assert_hard_mismatches(kind, summary, special_token_count_threshold=special_token_count_threshold)
 
     if SessionVerifyKind.NORMAL not in summaries:
         return
@@ -402,7 +397,7 @@ def assert_session_verify_metrics(
             "the tool spec, or parser configuration."
         )
     ratio = normal["with_assistant_mismatch"] / normal["samples"]
-    if gate and ratio > assistant_text_threshold:
+    if ratio > assistant_text_threshold:
         raise AssertionError(
             f"Session multi-role e2e: assistant_text mismatch ratio "
             f"{normal['with_assistant_mismatch']}/{normal['samples']}={ratio:.3f} exceeds "

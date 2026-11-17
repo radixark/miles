@@ -135,7 +135,6 @@ def _runner_namespace(
         custom_agent_function_path=agent.path,
         session_verify_cycles=generate_values["session_verify_cycles"],
         session_verify_spec_trajectory=session_verify_spec_trajectory,
-        session_verify_gate=True,
         tito_model=config.tito_model,
         session_message_matcher=config.session_message_matcher,
         rollout_num_gpus_per_engine=config.rollout_num_gpus_per_engine,
