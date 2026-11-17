@@ -92,6 +92,7 @@ async def post_generate(args, url: str, payload: dict, *, headers=None) -> dict:
     headers = dict(headers or {})
     if args.sglang_api_key:
         headers["Authorization"] = f"Bearer {args.sglang_api_key}"
+    # Native response assembly requires streaming even when the rollout caller requests a complete result.
     return await post(
         url,
         {**payload, "stream": True},
