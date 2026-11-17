@@ -25,6 +25,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -84,6 +85,7 @@ def make_app(
     low_mfu: float = DEFAULT_LOW_MFU,
 ) -> FastAPI:
     app = FastAPI(title="miles dashboard", docs_url=None, redoc_url=None)
+    app.add_middleware(GZipMiddleware, compresslevel=5)
 
     @app.get("/api/meta")
     def meta():
