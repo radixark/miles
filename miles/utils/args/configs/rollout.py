@@ -575,6 +575,17 @@ class RolloutRelatedRolloutOnlyConfig(BaseConfig):
             )
         ),
     ] = 2.0
+    async_data_buffer_selection: A[
+        str,
+        Arg(
+            choices=["fifo", "random"],
+            help=(
+                "Which buffered groups a training step takes in fully async mode: fifo (default) takes the "
+                "earliest finished; random takes a uniformly random subset, seeded by --rollout-seed. Either "
+                "way the groups taken, and those left, keep their completion order."
+            ),
+        ),
+    ] = "fifo"
     custom_async_data_buffer_path: A[
         str | None,
         Arg(
