@@ -113,10 +113,13 @@ def current_request(request, repository):
     head = pr["head"]
     query = urlencode({"event": "pull_request", "head_sha": head["sha"], "per_page": 100})
     runs = api(f"repos/{repository}/actions/workflows/pr-test.yml/runs?{query}", collection="workflow_runs")
+    # Simultaneous label events start several runs; the concurrency group may cancel a higher-numbered one.
     matching = [
         item["id"]
         for item in runs
-        if item["head_repository"]["id"] == head["repo"]["id"] and item["head_branch"] == head["ref"]
+        if item["head_repository"]["id"] == head["repo"]["id"]
+        and item["head_branch"] == head["ref"]
+        and item["conclusion"] != "cancelled"
     ]
     require(matching and max(matching) == run["id"], "A newer PR Test run superseded this request")
     # Match the caller's event snapshot, including on reruns and after label removal.
