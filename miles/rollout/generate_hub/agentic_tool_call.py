@@ -24,7 +24,9 @@ Agent function contract:
   reward models (--custom-rm-path) can read whatever the agent left there.
   Raising miles.rollout.agentic.agent_function.InfraAbort discards the sample
   (ABORTED, with metadata["exit_status"] naming the cause); any other exception
-  keeps whatever the session recorded, scored by the reward model.
+  keeps whatever the session recorded, scored by the reward model. A session
+  whose last model call failed at the engine is discarded as ModelCallFailed,
+  whatever the agent function did.
 
   Under ``subproc`` (the default) each call runs in a child process of its own:
   its arguments and return value must be picklable, and module-level state lasts
@@ -144,7 +146,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
                 f"{log_prefix} collect_samples done: {len(result.samples)} samples, "
                 f"total_time={time.monotonic()-t_start:.1f}s"
             )
-            if cancelled or infra_abort is not None:
+            if cancelled or infra_abort is not None or result.session_metadata.get("last_model_call_failed"):
                 # The session handed these samples' output store objects to us; nobody will train them.
                 record_dropped_samples(result.samples)
 
@@ -152,6 +154,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         return _aborted_output(input.sample, infra_abort.exit_status, use_v2)
     if collect_failed:
         return _aborted_output(input.sample, "CollectFailed", use_v2)
+    if result.session_metadata.get("last_model_call_failed"):
+        logger.warning(f"{log_prefix} The last model call failed at the engine; discarding the sample")
+        return _aborted_output(input.sample, "ModelCallFailed", use_v2)
     if not result.samples:
         if result.empty_reason == "all_truncated":
             logger.warning("All samples truncated (prompt already exceeds max_seq_len)")

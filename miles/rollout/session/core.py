@@ -201,6 +201,20 @@ def extract_completion(result: dict) -> tuple:
     return response, choice, assistant_message, completion_token_ids
 
 
+def extract_flagged_completion(session, result: dict) -> tuple | None:
+    try:
+        completion = extract_completion(result) if result["status_code"] == 200 else None
+    except Exception:
+        _record_model_call(session, failed=True)
+        raise
+    _record_model_call(session, failed=result["status_code"] >= 500)
+    return completion
+
+
+def _record_model_call(session, *, failed: bool) -> None:
+    session.last_model_call_failed = failed
+
+
 class SessionCore:
     """HTTP session operations over one ``SessionRegistry``."""
 
@@ -295,6 +309,11 @@ class SessionCore:
         )
         return Response(content=_render_json({"session_id": session_id}), status_code=200, media_type=JSON_MEDIA_TYPE)
 
+    def record_rejected_call(self, session_id: str) -> None:
+        session = self.registry.sessions.get(session_id)
+        if session is not None:
+            _record_model_call(session, failed=False)
+
     def _session_metadata(self, session_id: str, session) -> dict:
         """The per-session assembly/inspection metadata dict, shared by
         `get_session` (records debug dump) and `collect_samples` (samples op)
@@ -310,6 +329,7 @@ class SessionCore:
         metadata["accumulated_token_ids"] = session.token_ids
         metadata["max_trim_tokens"] = self.registry.tito_tokenizer.max_trim_tokens
         metadata["turn_args"] = filter_turn_args(session.turn_args)
+        metadata["last_model_call_failed"] = session.last_model_call_failed
         return metadata
 
     async def get_session(self, session_id: str) -> Response:
@@ -441,12 +461,13 @@ class SessionCore:
         )
         await self._take_store_ref(session, request_body, result)
 
+        completion = extract_flagged_completion(session, result)
         # Non-200 (e.g. 400 context too long) passes through unrecorded so the
         # agent can retry or handle the error.
-        if result["status_code"] != 200:
+        if completion is None:
             return proxy_result_to_response(result)
 
-        response, choice, assistant_message, completion_token_ids = extract_completion(result)
+        response, choice, assistant_message, completion_token_ids = completion
         assistant_message = tito_tokenizer.postprocess_completion(
             choice=choice,
             assistant_message=assistant_message,

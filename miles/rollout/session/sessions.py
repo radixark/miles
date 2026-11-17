@@ -163,13 +163,18 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
     @app.post("/sessions/{session_id}/v1/chat/completions")
     async def chat_completions(request: Request, session_id: str):
         body = await request.body()
-        return await core.chat_completions(
-            session_id,
-            method=request.method,
-            query=request.url.query,
-            headers=dict(request.headers),
-            body=body,
-        )
+        try:
+            return await core.chat_completions(
+                session_id,
+                method=request.method,
+                query=request.url.query,
+                headers=dict(request.headers),
+                body=body,
+            )
+        except SessionError as exc:
+            if exc.status_code < 500:
+                core.record_rejected_call(session_id)
+            raise
 
     # Keep before session_proxy: Starlette's first match must not bypass session/TITO.
     @app.post("/sessions/{session_id}/v1/messages")
@@ -217,6 +222,7 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
             openai_body = _render_json(openai_body_dict)
         except ValueError as exc:
             # Parsing and JSON encoding failures are invalid Anthropic requests.
+            core.record_rejected_call(session_id)
             return _anthropic_error_response(400, _render_json({"error": str(exc)}))
 
         anthropic_stream = bool(anthropic_request.stream)
@@ -230,6 +236,8 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
                 body=openai_body,
             )
         except SessionError as exc:
+            if exc.status_code < 500:
+                core.record_rejected_call(session_id)
             return _anthropic_error_response(exc.status_code, _render_json({"error": str(exc)}))
         except Exception:
             # Preserve Anthropic error framing; cancellation still propagates.
