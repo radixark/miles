@@ -20,8 +20,8 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.build
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import SECTION_OF_CATEGORY, LaunchPlan
 from miles.utils.function_registry import load_function
 from miles.utils.misc import NodeProbeMixin
-from miles.utils.workers.ray_worker_manager import bootstrapped_worker_class
 from miles.utils.workers.serving.utils import parse_serve_worker_config
+from miles.utils.workers.worker_manager.core import bootstrapped_worker_class
 from miles.utils.workers.worker_spec import WorkerCtorContext
 
 

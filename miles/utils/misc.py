@@ -163,8 +163,17 @@ def get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
         return [None] * len(gpu_ids)
 
 
-def _to_local_gpu_id(physical_gpu_id: int) -> int:
-    cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")
+# What selects or hides the gpus of a process, for CUDA and for ROCm
+VISIBLE_DEVICES_ENV_VARS = ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES")
+
+
+def visible_devices() -> str | None:
+    """This process's list of visible gpus, as the first of VISIBLE_DEVICES_ENV_VARS that names any."""
+    return next((value for name in VISIBLE_DEVICES_ENV_VARS if (value := os.environ.get(name))), None)
+
+
+def to_local_gpu_id(physical_gpu_id: int) -> int:
+    cvd = visible_devices()
     if not cvd:
         return physical_gpu_id  # no remapping
     # CUDA_VISIBLE_DEVICES can be like "4,5,6,7"
@@ -201,7 +210,7 @@ class NodeProbeMixin:
 
     @staticmethod
     def _to_local_gpu_ids(*, gpu_ids: list[int]) -> list[int]:
-        return [_to_local_gpu_id(gpu_id) for gpu_id in gpu_ids]
+        return [to_local_gpu_id(gpu_id) for gpu_id in gpu_ids]
 
     @staticmethod
     def _is_port_available(*, port: int) -> bool:

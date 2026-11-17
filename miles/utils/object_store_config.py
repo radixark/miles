@@ -6,6 +6,7 @@ from typing import Any
 
 MOONCAKE_MASTER_PORT = 50051
 MOONCAKE_MASTER_ADDRESS_KEY = "master_server_address"
+MOONCAKE_MASTER_ENV_VAR = "MOONCAKE_MASTER"
 
 _GLOBAL_SEGMENT_SIZE_KEY = "global_segment_size"
 _MISSING = object()
@@ -121,7 +122,7 @@ _MOONCAKE_STORE_FIELDS: tuple[_MooncakeStoreField, ...] = (
     _MooncakeStoreField(
         init_kwarg=MOONCAKE_MASTER_ADDRESS_KEY,
         config_key="master_server_addr",
-        env_var="MOONCAKE_MASTER",
+        env_var=MOONCAKE_MASTER_ENV_VAR,
         parse=str,
         default="",
     ),

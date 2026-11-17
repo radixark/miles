@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -38,6 +39,12 @@ class ConformanceWorker:
     async def add_async(self, *, a: int, b: int) -> int:
         return a + b
 
+    async def sleep_async(self, *, seconds: float) -> None:
+        await asyncio.sleep(seconds)
+
+    async def raise_cancelled(self) -> None:
+        raise asyncio.CancelledError("cancelled inside the worker")
+
     def report_tag(self) -> str:
         return self._tag
 
@@ -51,6 +58,14 @@ class ConformanceWorker:
 
     def boom(self, *, message: str) -> None:
         raise RuntimeError(message)
+
+    async def boom_after(self, *, message: str | None, seconds: float) -> None:
+        await asyncio.sleep(seconds)
+        if message is not None:
+            raise RuntimeError(message)
+
+    def exit_process(self) -> None:
+        os._exit(1)
 
 
 class ConformanceWorkerConfig(BaseLeafConfig):

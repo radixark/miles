@@ -36,7 +36,7 @@ from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger, rebind_env_reporting
 from miles.utils.memory_utils import clear_memory, print_memory
-from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port
+from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port, to_local_gpu_id
 from miles.utils.object_store import StoreObjectRef
 from miles.utils.output_store.config import trainer_output_store
 from miles.utils.port_range import service_port_range
@@ -44,7 +44,7 @@ from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, fault_hook_controller
 from miles.utils.test_utils.fault_injector.models import FaultHookRecord
-from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR
+from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR, WORKER_GPU_IDS_ENV_VAR
 from miles.utils.workers.rpc.common.metadata import rpc
 from miles.utils.workers.rpc.common.wire_types import Pickled
 from miles.utils.workers.serving.utils import override_env
@@ -80,6 +80,9 @@ class WeightUpdateOutput:
 def get_local_gpu_id():
     if CELL_INDEX_ENV_VAR in os.environ:
         return read_worker_in_pod_index(os.environ)
+
+    if gpu_ids := os.environ.get(WORKER_GPU_IDS_ENV_VAR):
+        return to_local_gpu_id(int(gpu_ids.split(",")[0]))
 
     cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")
     if not cvd:

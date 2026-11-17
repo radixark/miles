@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-import miles.utils.workers.cell_operations.ray as cell_operations_ray_mod
+import miles.utils.workers.worker_manager.client as worker_manager_client_mod
 from miles.utils.test_utils.fault_injector.actions.process import (
     ExitProcessAction,
     KillProcessAction,
@@ -18,7 +18,8 @@ from miles.utils.test_utils.fault_injector.actions.union import FaultAction
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
 from miles.utils.test_utils.fault_injector.models import FaultHookRequest, ObservedFaultHookTarget
 from miles.utils.workers.cell_operations.base import BaseCellOperations
-from miles.utils.workers.cell_operations.ray import RayCellOperations
+from miles.utils.workers.worker_manager.client import ManagerCellOperations
+from miles.utils.workers.worker_provider.ray import RayWorkerManagerClient
 
 _TRAINER_CELL_ID = "trainer-engine-actor-00001"
 
@@ -50,14 +51,14 @@ class _RecordingWorkerManagerHandle:
 @dataclass(frozen=True)
 class _Fixture:
     worker_manager: _RecordingWorkerManagerHandle
-    operations: RayCellOperations
+    operations: ManagerCellOperations
 
 
 def _make_fixture() -> _Fixture:
     worker_manager = _RecordingWorkerManagerHandle()
     return _Fixture(
         worker_manager=worker_manager,
-        operations=RayCellOperations(worker_manager_handle=worker_manager),
+        operations=ManagerCellOperations(RayWorkerManagerClient(worker_manager)),
     )
 
 
@@ -72,7 +73,7 @@ def _command(*, cell_id: str, rank: int = 0, action: FaultAction | None = None) 
     )
 
 
-class TestRayCellOperationsDisruptiveOperations:
+class TestManagerCellOperationsDisruptiveOperations:
     """Every cell kind is stopped and crashed through the worker manager, with no controller in the path."""
 
     async def test_a_rollout_cells_suspend_reaches_the_worker_manager(self) -> None:
@@ -122,7 +123,7 @@ class TestRayCellOperationsDisruptiveOperations:
         assert fixture.worker_manager.calls == [("control_fault_hook", (), {"command": command})]
 
 
-class TestRayCellOperationsProtocol:
+class TestManagerCellOperationsProtocol:
     async def test_cell_infos_forwards_pool_ids_and_category_and_returns_the_actor_result(self) -> None:
         """Cell info reads forward every pool ID and the category by keyword and preserve the actor result."""
         fixture = _make_fixture()
@@ -146,19 +147,18 @@ class TestRayCellOperationsProtocol:
         assert fixture.worker_manager.calls == [("start_cells", (["engine-0-2"],), {})]
 
 
-class TestRayCellOperationsHasNoInferenceControllerPath:
-    def test_the_constructor_takes_the_worker_manager_handle_alone(self) -> None:
+class TestManagerCellOperationsHasNoInferenceControllerPath:
+    def test_the_constructor_takes_the_worker_manager_client_alone(self) -> None:
         """A second constructor argument is how the controller detour came back the last time."""
-        parameters = inspect.signature(RayCellOperations.__init__).parameters
+        parameters = inspect.signature(ManagerCellOperations.__init__).parameters
 
-        assert list(parameters) == ["self", "worker_manager_handle"]
-        assert parameters["worker_manager_handle"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert list(parameters) == ["self", "client"]
 
     def test_constructing_with_a_resolve_inference_controller_argument_is_rejected(self) -> None:
         """The removed keyword must fail loudly rather than be accepted and quietly ignored."""
         with pytest.raises(TypeError):
-            RayCellOperations(
-                worker_manager_handle=_RecordingWorkerManagerHandle(),
+            ManagerCellOperations(
+                RayWorkerManagerClient(_RecordingWorkerManagerHandle()),
                 resolve_inference_controller=lambda: None,
             )
 
@@ -166,29 +166,29 @@ class TestRayCellOperationsHasNoInferenceControllerPath:
         """A cached controller handle on the instance is the state the M27 guard needed."""
         fixture = _make_fixture()
 
-        assert list(vars(fixture.operations)) == ["_worker_manager_handle"]
-        assert fixture.operations._worker_manager_handle is fixture.worker_manager
+        assert list(vars(fixture.operations)) == ["_client"]
+        assert fixture.operations._client._handle is fixture.worker_manager
 
     def test_the_removed_trainer_cell_id_prefix_helper_is_gone(self) -> None:
         """Routing by cell-id prefix only existed to keep trainer cells away from the controller."""
-        assert not hasattr(cell_operations_ray_mod, "_is_trainer_cell_id")
+        assert not hasattr(worker_manager_client_mod, "_is_trainer_cell_id")
 
     def test_no_removed_controller_entry_point_survives_on_the_class(self) -> None:
         """Either name back on this class would mean a suspend can block on the weight-update lock."""
         for name in ("_controller", "_resolve_inference_controller", "stop_cell_between_weight_updates"):
-            assert not hasattr(RayCellOperations, name), name
+            assert not hasattr(ManagerCellOperations, name), name
 
     def test_the_module_does_not_reach_into_the_ray_application_layer(self) -> None:
         """This layer sat below miles.ray, and the guard was the only reason it imported upwards."""
-        assert "miles.ray" not in inspect.getsource(cell_operations_ray_mod)
+        assert "miles.ray" not in inspect.getsource(worker_manager_client_mod)
 
     def test_every_base_operation_is_implemented_here(self) -> None:
         """A dropped override would silently fall back to an abstract method at heal time."""
         for name in ("cell_infos", "suspend", "resume", "observe_fault_target", "control_fault_hook"):
-            assert getattr(RayCellOperations, name) is not getattr(BaseCellOperations, name), name
+            assert getattr(ManagerCellOperations, name) is not getattr(BaseCellOperations, name), name
 
 
-class TestRayCellOperationsSuspendReachesTheWorkerManagerUnconditionally:
+class TestManagerCellOperationsSuspendReachesTheWorkerManagerUnconditionally:
     async def test_a_cell_the_controller_never_listed_is_still_suspended(self) -> None:
         """A cell mid-replacement is exactly the one a heal loop must be able to stop."""
         fixture = _make_fixture()
@@ -218,7 +218,7 @@ class TestRayCellOperationsSuspendReachesTheWorkerManagerUnconditionally:
         assert [name for name, _, _ in fixture.worker_manager.calls] == ["stop_cells", "control_fault_hook"]
 
 
-class TestRayCellOperationsFaultHookPayload:
+class TestManagerCellOperationsFaultHookPayload:
     @pytest.mark.parametrize("action", [KillProcessAction(), ExitProcessAction(), SegfaultProcessAction()])
     async def test_the_action_reaches_the_worker_manager_unchanged(self, action: FaultAction) -> None:
         """The worker manager receives the requested action and observed identity together."""
@@ -243,7 +243,7 @@ class TestRayCellOperationsFaultHookPayload:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A silent worker manager must surface as a bounded timeout, not hang the fault caller."""
-        monkeypatch.setattr(cell_operations_ray_mod, "CONTROL_FAULT_HOOK_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr(worker_manager_client_mod, "CONTROL_FAULT_HOOK_TIMEOUT_SECONDS", 0.01)
         fixture = _make_fixture()
         fixture.worker_manager.control_fault_hook.gate = asyncio.Event()
         command = _command(cell_id="engine-0-2")

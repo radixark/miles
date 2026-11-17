@@ -1,6 +1,7 @@
 import asyncio
 from collections import defaultdict
 from collections.abc import Callable
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 
@@ -12,6 +13,8 @@ from miles.utils.object_store import (
     ValueSpec,
     _MooncakeStoreObjectRef,
 )
+from miles.utils.workers.backend_capability.factory import LaunchedWorkerManager
+from miles.utils.workers.ray_worker_manager import shutdown_ray_worker_manager
 
 TAKE_OVER_GATE_EVENTS = ["rollout_components", "training_models", "inference_take_over"]
 
@@ -36,6 +39,11 @@ class FakeWorkerManager:
     def kill(self, handle: object) -> None:
         self.killed.append(handle)
         self.events.append("manager_kill")
+
+    @property
+    def launched(self) -> LaunchedWorkerManager:
+        """This manager as a driver holds it once launched on ray."""
+        return LaunchedWorkerManager(shutdown=partial(shutdown_ray_worker_manager, self))
 
 
 class FakeRolloutExecutor:

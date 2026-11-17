@@ -52,7 +52,7 @@ UPPER_LAYER_NAMES = (
 
 UPPER_LAYER_EXEMPTIONS = {
     "miles/utils/workers/k8s_client.py": "the shared Kubernetes client boundary used by worker infrastructure",
-    "miles/ray/wiring.py": "the glue layer holding the driver process's single fork between the backends",
+    "miles/ray/wiring.py": "the glue layer that asks the backend fork for the driver's worker manager and capability",
     "miles/utils/orchestration_utils.py": (
         "the shared driver composition root that launches the selected worker manager"
     ),
@@ -70,6 +70,7 @@ UPPER_LAYER_EXEMPTIONS = {
     "miles/utils/workers/reconcile/k8s_api.py": "the kubernetes client the observing provider is written against",
     "miles/utils/arguments.py": "validates the other flags against the --cluster-backend the composition roots read",
     "miles/utils/args/configs/cluster.py": "declares the --cluster-backend flag the composition roots read",
+    "miles/utils/workers/monarch/slurm.py": "the entrypoint that submits a run, which it starts as --cluster-backend monarch",
     "miles/utils/tracking_utils/base.py": "the prometheus collector is a ray actor and has no kubernetes form",
 }
 
