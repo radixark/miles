@@ -7,6 +7,20 @@ class ClusterBackend(Enum):
     RAY = "ray"
     KUBERNETES = "kubernetes"
 
+    def provides_ray_cluster(self) -> bool:
+        """Whether a Ray cluster backs the run, which the Ray-only features (dashboard, prometheus collector,
+        distributed post, the ray object store) need."""
+        return self is ClusterBackend.RAY
+
+    def launches_workers_from_driver(self) -> bool:
+        """Whether the driver launches its workers through a worker manager it owns, rather than the platform
+        creating them before the driver starts."""
+        return self is ClusterBackend.RAY
+
+    def auto_resumes_cells(self) -> bool:
+        """Whether the platform recreates a suspended cell by itself, so nobody has to resume it."""
+        return self is ClusterBackend.KUBERNETES
+
 
 class WorkerCommBackend(Enum):
     RAY = "ray"

@@ -153,7 +153,7 @@ class TestServedWorkerLogging:
         [
             ("miles.ray.rollout.inference_controller", "inference_controller"),
             ("miles.ray.rollout.rollout_executor", "rollout_executor"),
-            ("miles.utils.workers.ray_worker_manager", "worker_manager"),
+            ("miles.utils.workers.worker_manager.core", "worker_manager"),
         ],
     )
     def test_each_process_names_itself_as_the_component_it_is(self, module_path: str, component: str) -> None:

@@ -20,8 +20,9 @@ from miles.utils.workers.naming import compute_cell_id
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.types import DeploymentIdentity
 from miles.utils.workers.worker_handle import BaseWorkerHandle
+from miles.utils.workers.worker_manager.client import ManagerWorkerProvider
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
-from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+from miles.utils.workers.worker_provider.ray import RayWorkerManagerClient
 from miles.utils.workers.worker_spec import MASTER_PORT_NAME, HostAndPort
 
 fake_worker_manager: FakeWorkerManager | None = None
@@ -104,7 +105,9 @@ class RecordingHealthChecker(BaseHealthChecker):
 
 
 def make_provider(trainer_id: str = "actor") -> BaseWorkerProvider:
-    return RayWorkerProvider(worker_manager_handle=fake_worker_manager, pool_ids=[compute_trainer_pool_id(trainer_id)])
+    return ManagerWorkerProvider(
+        RayWorkerManagerClient(fake_worker_manager), pool_ids=[compute_trainer_pool_id(trainer_id)]
+    )
 
 
 def get_raw_actor_handles(cell: TrainerCell) -> list[ray.actor.ActorHandle]:
