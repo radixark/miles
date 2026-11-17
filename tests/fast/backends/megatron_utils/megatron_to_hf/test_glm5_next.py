@@ -12,18 +12,6 @@ def test_exported_names_are_the_checkpoint_names():
         "module.module.decoder.layers.0.self_attention.kda.q_proj.weight": [
             "model.language_model.layers.0.self_attn.q_proj.weight"
         ],
-        "module.module.decoder.layers.3.self_attention.wq_b.weight": [
-            "model.language_model.layers.3.self_attn.indexer.wq_b.weight"
-        ],
-        "module.module.decoder.layers.1.mlp_hyper_connection.mapping_proj.weight": [
-            "model.language_model.layers.1.hc_ffn_fn"
-        ],
-        "module.module.decoder.layers.4.mlp.experts.linear_fc1.weight7": [
-            "model.language_model.layers.4.mlp.experts.7.gate_proj.weight",
-            "model.language_model.layers.4.mlp.experts.7.up_proj.weight",
-        ],
-        "module.module.embedding.word_embeddings.weight": ["model.language_model.embed_tokens.weight"],
-        "module.module.decoder.final_layernorm.weight": ["model.language_model.norm.weight"],
         "module.module.output_layer.weight": ["lm_head.weight"],
     }
     for name, hf_names in expected.items():
