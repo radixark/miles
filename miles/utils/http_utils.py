@@ -225,6 +225,9 @@ async def _post(
             if response_decoder is not None:
                 async with asyncio.timeout(response_timeout):
                     async with client.stream(action.upper(), url, json=payload or {}, headers=headers) as response:
+                        if response.is_error:
+                            # Buffer error bodies within the attempt deadline for the existing HTTP diagnostics.
+                            await response.aread()
                         response.raise_for_status()
                         return await response_decoder(response)
             if action in ("delete", "get"):
