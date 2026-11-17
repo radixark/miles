@@ -246,16 +246,6 @@ jobs:
           read -r VARIANT TAG < <(python3 docker/image_inputs.py --pr "$PR_NUMBER" --arch "$ARCH")
           python3 docker/build.py --variant "$VARIANT" --image-tag custom --custom-tag "$TAG" --push
           echo "built=true" >> "$GITHUB_OUTPUT"
-      # The label is a one-shot request: leaving it on would rebuild on every later run.
-      # The amd64 call owns it, so the two architectures do not race to remove it.
-      - name: Consume rebuild-ci-image label
-        if: inputs.arch == 'amd64' && steps.build.outputs.built == 'true' && needs.docker-decide.outputs.force_rebuild == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api -X DELETE \
-            "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels/rebuild-ci-image" \
-            || echo "::warning::Could not remove the rebuild-ci-image label; remove it by hand or every run will rebuild."
       - name: Nothing to build
         if: env.BUILD != 'true' && env.REQUEST_BUILD != 'true'
         run: echo "No rebuild needed; suites use the PR image if it exists, else the released one."

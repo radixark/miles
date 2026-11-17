@@ -141,12 +141,10 @@ jobs:
          contains(github.event.pull_request.labels.*.name, 'rebuild-ci-image')) &&
       (needs.stage-a-cpu.result == 'success' ||
          needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
-    # Scoped to this call: a build consumes the one-shot rebuild-ci-image label by
-    # removing it. Every other job keeps the workflow-level read-only token.
     permissions:
       contents: read
       actions: read
-      pull-requests: write
+      pull-requests: read
     uses: ./.github/workflows/_build-pr-ci-image.yml
     with:
       arch: amd64

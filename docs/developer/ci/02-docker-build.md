@@ -88,7 +88,7 @@ So a rerun, or a push that touches only source files, reuses the image the PR al
 
 `docker/image_inputs.py` is the single source of truth for what counts as an input (`docker/Dockerfile`, `docker/Dockerfile.rubin`, `docker/build.py`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, `docker/patch/**`, `requirements.txt`). `Dockerfile.rocm` is deliberately excluded — it feeds the `rocm/sgl-dev` images, not the `cu13` image built here.
 
-To rebuild an eligible PR image when its inputs did not change — a moved base image, a floating dependency, a corrupt push — add the **`rebuild-ci-image`** label. It rebuilds every architecture, and it is also how a PR that selects no CUDA tests build-tests its image. The label does not select tests or make a PR whose build inputs match the base eligible. Once consumed by the amd64 build, it is removed so later runs can reuse the images.
+To rebuild an eligible PR image when its inputs did not change — a moved base image, a floating dependency, a corrupt push — add the **`rebuild-ci-image`** label. It rebuilds every architecture, and it is also how a PR that selects no CUDA tests build-tests its image. The label does not select tests or make a PR whose build inputs match the base eligible. Every run rebuilds while the PR carries the label; remove it so later runs reuse the images.
 
 ### Fork PR publication
 

@@ -478,7 +478,7 @@ class TestWorkflowScopeSeam:
         assert compare < login < inspect
         assert "if: steps.prepare.outputs.inspect_tag == 'true'" in decide_job
 
-    def test_docker_force_rebuild_uses_live_label_for_decision_and_consumption(self):
+    def test_docker_force_rebuild_reads_the_live_label_and_leaves_it(self):
         reusable = self._reusable_workflow("_build-pr-ci-image.yml")
         decide_job = reusable.split("  docker-decide:", 1)[1].split("  docker-build:", 1)[0]
 
@@ -488,7 +488,7 @@ class TestWorkflowScopeSeam:
         assert "LABELS=$(gh api --paginate" in decide_job
         assert 'grep -Fxq "rebuild-ci-image" <<< "$LABELS"' in decide_job
         assert "github.event.pull_request.labels.*.name" not in decide_job
-        assert "needs.docker-decide.outputs.force_rebuild == 'true'" in reusable
+        assert "labels/rebuild-ci-image" not in reusable
 
     def test_policy_job_is_a_thin_python_adapter(self):
         workflow = self._workflow()
