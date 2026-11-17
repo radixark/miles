@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -86,14 +87,25 @@ def test_spec_rollout_runs_before_the_normal_rollout_the_history_gate_judges():
 
 
 def test_prompt_data_lays_out_one_rollout_step_per_kind(monkeypatch, tmp_path):
-    path = tmp_path / "prompts.jsonl"
-    monkeypatch.setattr(session_verify_runner, "PROMPT_DATA_PATH", str(path))
+    monkeypatch.setattr(session_verify_runner.tempfile, "tempdir", str(tmp_path))
 
-    session_verify_runner._ensure_prompt_data(_SPEC_THEN_NORMAL, rollout_batch_size=2)
+    path = Path(session_verify_runner._ensure_prompt_data(_SPEC_THEN_NORMAL, rollout_batch_size=2))
 
     records = [json.loads(line) for line in path.read_text().splitlines()]
     assert [record["metadata"][SESSION_VERIFY_KIND_KEY] for record in records] == ["spec", "spec", "normal", "normal"]
     assert all(record["messages"][-1]["role"] == "user" for record in records)
+
+
+def test_prompt_data_is_a_file_of_its_own_per_run(monkeypatch, tmp_path):
+    """Runners of one CI host share /root/datasets; a fixed path let a concurrent run replace the prompts."""
+    monkeypatch.setattr(session_verify_runner.tempfile, "tempdir", str(tmp_path))
+
+    spec_then_normal = Path(session_verify_runner._ensure_prompt_data(_SPEC_THEN_NORMAL, rollout_batch_size=1))
+    normal_only = Path(session_verify_runner._ensure_prompt_data(_NORMAL, rollout_batch_size=1))
+
+    assert spec_then_normal != normal_only
+    assert len(spec_then_normal.read_text().splitlines()) == 2
+    assert len(normal_only.read_text().splitlines()) == 1
 
 
 def test_namespace_to_train_args_keeps_ci_test_enabled_for_fsdp_debug_rollout():
@@ -596,7 +608,8 @@ def test_run_session_verify_preserves_sidecar_on_failure(monkeypatch, tmp_path, 
         "resolve_reasoning_and_tool_call_parser",
         lambda tito_model, reasoning_parser, tool_call_parser: (reasoning_parser, tool_call_parser),
     )
-    monkeypatch.setattr(session_verify_runner, "_ensure_prompt_data", lambda kinds, *, rollout_batch_size: None)
+    prompt_path = str(tmp_path / "prompts.jsonl")
+    monkeypatch.setattr(session_verify_runner, "_ensure_prompt_data", lambda kinds, *, rollout_batch_size: prompt_path)
     monkeypatch.setattr(session_verify_runner, "_clear_proxy_env", lambda: None)
     monkeypatch.setattr(session_verify_runner, "_ensure_model_downloaded", lambda checkpoint, *, backend: checkpoint)
     monkeypatch.setattr(session_verify_runner, "namespace_to_train_args", lambda args: "train args")

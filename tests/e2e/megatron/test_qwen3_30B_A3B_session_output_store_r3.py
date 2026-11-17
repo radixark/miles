@@ -17,7 +17,7 @@ from tests.e2e.megatron.output_store_r3 import assert_same_trainer_r3, save_debu
 
 from miles.utils.external_utils import command_utils
 from miles.utils.test_utils.session_verify_agent import SessionVerifyKind
-from miles.utils.test_utils.session_verify_runner import PROMPT_DATA_PATH, _ensure_prompt_data
+from miles.utils.test_utils.session_verify_runner import _ensure_prompt_data
 
 register_cuda_ci(
     est_time=1200, suite="stage-c-4-gpu-h200", labels=["mooncake", "replay"], hardware=["hopper"], num_gpus=4
@@ -36,16 +36,16 @@ def prepare() -> None:
     U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
-    # The agent synthesizes its own conversation; the rollout still needs a prompt file.
-    _ensure_prompt_data((SessionVerifyKind.SPEC,), rollout_batch_size=1)
 
 
 def execute(mode: str) -> None:
     U = command_utils.default_config().create_backend()
+    # The agent synthesizes its own conversation; the rollout still needs a prompt file.
+    prompt_data = _ensure_prompt_data((SessionVerifyKind.SPEC,), rollout_batch_size=1)
     train_args = (
         f"--hf-checkpoint /root/models/{MODEL_NAME}/ --ref-load /root/models/{MODEL_NAME}/ "
         "--megatron-to-hf-mode bridge "
-        f"--prompt-data {PROMPT_DATA_PATH} --input-key messages --rm-type random "
+        f"--prompt-data {prompt_data} --input-key messages --rm-type random "
         f"--num-rollout {NUM_ROLLOUT} --rollout-batch-size 1 --n-samples-per-prompt {SESSIONS_PER_ROLLOUT} "
         f"--global-batch-size {SESSIONS_PER_ROLLOUT} "
         "--rollout-max-response-len 1024 --rollout-temperature 0.7 "

@@ -78,7 +78,6 @@ def session_threshold_inputs(
     monkeypatch.setattr(
         session_verify_runner.command_utils, "default_config", lambda: SimpleNamespace(create_backend=lambda: backend)
     )
-    monkeypatch.setattr(session_verify_runner, "PROMPT_DATA_PATH", str(tmp_path / "prompt.jsonl"))
     monkeypatch.setattr(session_verify_runner.tempfile, "tempdir", str(tmp_path))
     for key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         monkeypatch.setenv(key, "http://proxy.invalid")

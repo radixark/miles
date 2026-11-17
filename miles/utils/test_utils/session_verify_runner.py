@@ -49,6 +49,7 @@ ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD = 0.2
 # log shows what drifted without the preserved sidecar file.
 _ASSISTANT_MISMATCH_EXAMPLES = 3
 
+# Parser default only: every run writes and reads a prompt file of its own (``_ensure_prompt_data``).
 PROMPT_DATA_PATH = "/root/datasets/session_multi_role_verify.jsonl"
 LOCAL_MODELS_ROOT = "/root/models"
 
@@ -130,18 +131,22 @@ def session_verify_extras(parser: argparse.ArgumentParser) -> argparse.ArgumentP
 
 
 def _ensure_prompt_data(kinds: tuple[SessionVerifyKind, ...], *, rollout_batch_size: int) -> str:
-    """Write one rollout step's prompts per kind, in step order.
+    """Write one rollout step's prompts per kind, in step order, to a new file and return its path.
 
     The agent reads its rollout from each record's metadata; with
     ``--no-rollout-shuffle`` the data source hands the records out in file
     order, ``rollout_batch_size`` per step.
+
+    The file belongs to one run: its records depend on *kinds*, and the runners
+    of one CI host share ``/root/datasets``, so a fixed path lets a concurrent
+    run replace the prompts between this run's write and its read.
     """
-    os.makedirs(os.path.dirname(PROMPT_DATA_PATH), exist_ok=True)
-    with open(PROMPT_DATA_PATH, "w") as f:
+    fd, path = tempfile.mkstemp(prefix="session_verify_prompts_", suffix=".jsonl")
+    with os.fdopen(fd, "w") as f:
         for kind in kinds:
             record = {"messages": _PLACEHOLDER_MESSAGES, "metadata": {SESSION_VERIFY_KIND_KEY: str(kind)}}
             f.writelines(json.dumps(record) + "\n" for _ in range(rollout_batch_size))
-    return PROMPT_DATA_PATH
+    return path
 
 
 def _ensure_model_downloaded(hf_checkpoint: str, *, backend: BaseCommandBackend) -> str:
@@ -301,7 +306,7 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
     args.sglang_reasoning_parser, args.sglang_tool_call_parser = resolve_reasoning_and_tool_call_parser(
         args.tito_model, args.sglang_reasoning_parser, args.sglang_tool_call_parser
     )
-    _ensure_prompt_data(kinds, rollout_batch_size=args.rollout_batch_size)
+    args.prompt_data = _ensure_prompt_data(kinds, rollout_batch_size=args.rollout_batch_size)
     _clear_proxy_env()
     args.hf_checkpoint = _ensure_model_downloaded(args.hf_checkpoint, backend=backend)
 
@@ -337,10 +342,11 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
             logger.error("Preserved per-sample mismatch payloads at %s for post-mortem", preserved_metrics_path)
         raise
     finally:
-        try:
-            os.unlink(metrics_path)
-        except OSError:
-            pass
+        for path in (metrics_path, args.prompt_data):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
 
 def assert_session_verify_metrics(
