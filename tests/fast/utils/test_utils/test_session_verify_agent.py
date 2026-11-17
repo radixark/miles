@@ -267,6 +267,20 @@ def test_chat_retries_length_with_distinct_seed(monkeypatch):
     assert [kwargs["seed"] for kwargs in attempts] == [7, 1_000_007]
 
 
+def test_chat_reports_every_rejected_reply_when_resamples_run_out(monkeypatch):
+    async def fake_chat(client, base_url, messages, request_kwargs, *, label):
+        return {"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "It is sunny."}}]}
+
+    monkeypatch.setattr(session_verify_agent, "_chat", fake_chat)
+    driver = session_verify_agent._Driver(client=None, base_url="http://session", request_kwargs={})
+
+    with pytest.raises(AssertionError, match="Tool call after system exhausted") as raised:
+        asyncio.run(driver.chat([], label="Tool call after system", need_tool_call=True))
+
+    attempts = session_verify_agent._MAX_RESAMPLES + 1
+    assert str(raised.value).count("stop: 'It is sunny.'") == attempts
+
+
 def _verified_sample(mismatches, *, expectations=()):
     return Sample(
         metadata={
@@ -363,10 +377,25 @@ def test_generate_journals_a_spec_sample_missing_probes(monkeypatch, tmp_path):
 
     monkeypatch.setattr(session_verify_agent, "_base_generate", fake_base_generate)
 
-    with pytest.raises(AssertionError, match="recorded probes"):
-        asyncio.run(session_verify_agent.generate(_generate_input(SessionVerifyKind.SPEC)))
+    # No raise: a dropped group makes the rollout loop refill the step with the next rollout's prompts.
+    output = asyncio.run(session_verify_agent.generate(_generate_input(SessionVerifyKind.SPEC)))
+
+    assert output.samples == [sample]
     _, error_record = [json.loads(line) for line in metrics_path.read_text().splitlines()]
     assert error_record["verification_error"]["stage"] == "session_verify_agent.generate"
+    assert "recorded probes" in error_record["verification_error"]["message"]
+
+
+def test_generate_raises_for_a_spec_sample_missing_probes_without_metrics_sidecar(monkeypatch):
+    monkeypatch.delenv("MILES_SESSION_VERIFY_METRICS_PATH", raising=False)
+
+    async def fake_base_generate(input):
+        return GenerateFnOutput(samples=[_verified_sample([])])
+
+    monkeypatch.setattr(session_verify_agent, "_base_generate", fake_base_generate)
+
+    with pytest.raises(AssertionError, match="recorded probes"):
+        asyncio.run(session_verify_agent.generate(_generate_input(SessionVerifyKind.SPEC)))
 
 
 @pytest.mark.parametrize(

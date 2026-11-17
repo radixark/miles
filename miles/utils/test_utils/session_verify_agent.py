@@ -63,6 +63,13 @@ def _append_session_verify_record(entry: dict) -> bool:
     return True
 
 
+def _journal_verification_error(stage: str, exc: AssertionError) -> bool:
+    """Record a failure the run-level gate must see; False without a metrics sidecar."""
+    return _append_session_verify_record(
+        {"verification_error": {"stage": stage, "type": type(exc).__name__, "message": str(exc)[:1000]}}
+    )
+
+
 def _journal_verifier_assertions(stage: str):
     def decorate(func):
         @wraps(func)
@@ -70,15 +77,7 @@ def _journal_verifier_assertions(stage: str):
             try:
                 return await func(*args, **kwargs)
             except AssertionError as exc:
-                _append_session_verify_record(
-                    {
-                        "verification_error": {
-                            "stage": stage,
-                            "type": type(exc).__name__,
-                            "message": str(exc)[:1000],
-                        }
-                    }
-                )
+                _journal_verification_error(stage, exc)
                 raise
 
         return wrapped
@@ -110,7 +109,7 @@ _FORBIDDEN_MISMATCH_TYPES: frozenset[str] = frozenset(
 # response budget should drop to 2 to avoid context overflow.
 DEFAULT_CYCLES = 3
 # Resamples of a turn cut by finish_reason='length', or of a turn that must call a tool and did not.
-_MAX_RESAMPLES = 2
+_MAX_RESAMPLES = 4
 _RETRY_SEED_STRIDE = 1_000_000
 # Tool rounds the agent answers before it needs a reply without tool calls.
 _MAX_TOOL_ROUNDS = 3
@@ -131,11 +130,13 @@ def fixed_template_append_roles(tito_model: TITOTokenizerType | str) -> tuple[st
 
 # English-only on purpose: matches the production agentic flows tokenization
 # and tool-call parsing are tuned against.
-USER_FOLLOWUP_TEXT = "Now check the weather in Shanghai."
+# Each question names the tool: the spec rollout needs a tool call back after a probe, and a
+# model that has just answered without one keeps doing so when the question leaves it open.
+USER_FOLLOWUP_TEXT = "Now check the weather in Shanghai with the get_weather tool."
 USER_FOLLOWUP_TEXTS = (
     USER_FOLLOWUP_TEXT,
-    "Now check the weather in Hangzhou.",
-    "Now check the weather in London.",
+    "Now check the weather in Hangzhou with the get_weather tool.",
+    "Now check the weather in London with the get_weather tool.",
 )
 # A prompt that asks for an answer without a tool, so the reply carries no tool call.
 NO_TOOL_CALL_USER_TEXT = "Without using any tool, tell me one sentence about Beijing."
@@ -144,7 +145,8 @@ NO_TOOL_CALL_USER_TEXT = "Without using any tool, tell me one sentence about Bei
 NO_TOOL_CALL_REQUEST_ARGS = {"tool_choice": "none", "skip_special_tokens": False}
 # A neutral result for a tool message that answers no call; a retry instruction makes some models loop.
 SENTINEL_TOOL_RESULT = '{"result": "unavailable"}'
-SYSTEM_REMINDER_TEXT = "Note: from now on, answer in a single sentence; skip all pleasantries."
+# Keeps the tool in play: the spec rollout sends it right after a tool call and then needs another call.
+SYSTEM_REMINDER_TEXT = "Reminder: keep calling the get_weather tool for every weather question; skip all pleasantries."
 ASSISTANT_INPUT_TEXTS = (
     "The earlier Beijing weather result was 22 degrees Celsius and sunny.",
     "The earlier Shanghai weather result was 30 degrees Celsius and rainy.",
@@ -238,6 +240,11 @@ async def _chat_status(client, base_url, messages, request_kwargs, *, label) -> 
     return _REFUSED, None
 
 
+def _reply_head(message: dict) -> str:
+    """The start of a reply's text, for the error that reports a rejected resample."""
+    return (message.get("content") or message.get("reasoning_content") or "")[:100]
+
+
 def _with_retry_seed(request_kwargs: dict, retry: int) -> dict:
     if not retry or request_kwargs.get("seed") is None:
         return request_kwargs
@@ -273,16 +280,17 @@ class _Driver:
     async def chat(self, messages, *, label, extra_kwargs=None, need_tool_call=False) -> dict:
         """Generate the next assistant message, resampling a length cut or, if asked, a reply without calls."""
         kwargs = {**self.request_kwargs, **(extra_kwargs or {})}
+        rejected = []
         for retry in range(_MAX_RESAMPLES + 1):
             response = await _chat(self.client, self.base_url, messages, _with_retry_seed(kwargs, retry), label=label)
             choice = response["choices"][0]
-            if choice.get("finish_reason") == "length":
-                continue
-            if need_tool_call and not choice["message"].get("tool_calls"):
-                continue
-            return self._accept(choice["message"])
+            message = choice["message"]
+            if choice.get("finish_reason") != "length" and (message.get("tool_calls") or not need_tool_call):
+                return self._accept(message)
+            rejected.append(f"{choice.get('finish_reason')}: {_reply_head(message)!r}")
         raise AssertionError(
-            f"{label} exhausted {_MAX_RESAMPLES} resamples (finish_reason='length' or no tool call when one is needed)"
+            f"{label} exhausted {_MAX_RESAMPLES} resamples (finish_reason='length' or no tool call when one is "
+            f"needed); replies: {rejected}"
         )
 
     async def probe(self, messages, *, label, expected_status) -> dict | None:
@@ -523,7 +531,8 @@ def _sample_record(index, sample, kind, mismatches, forbidden, expectations) -> 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     """Custom-generate wrapper that records each sample and checks rollout coverage.
 
-    - Spec samples must carry one expectation per probe of the family, in order.
+    - Spec samples must carry one expectation per probe of the family, in order
+      (with a metrics sidecar a sample that does not is journaled, not raised).
     - Without a metrics sidecar, at least one normal sample must have answered
       a tool call (with one, the runner checks this across the run).
     """
@@ -548,9 +557,13 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         for i, sample in enumerate(samples):
             recorded = [e["step"] for e in sample.metadata.get(EXPECTATIONS_KEY) or []]
             if recorded != steps:
-                raise AssertionError(
+                error = AssertionError(
                     f"Session multi-role e2e: spec sample {i} recorded probes {recorded}, expected {steps}"
                 )
+                # Raising drops the group, and the rollout loop refills the step with prompts of
+                # the next rollout's kind; the journaled error fails the run at the runner's gate.
+                if not _journal_verification_error("session_verify_agent.generate", error):
+                    raise error
     elif not os.environ.get("MILES_SESSION_VERIFY_METRICS_PATH") and not any(
         "append_tool" in sample.metadata.get("driver_events", []) for sample in samples
     ):
