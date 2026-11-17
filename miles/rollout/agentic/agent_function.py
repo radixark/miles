@@ -1,4 +1,4 @@
-"""Call a custom agent function on the rollout loop or in a child process of its own.
+"""Call a custom agent function on the rollout loop, in a child process of its own, or in one on an agent worker.
 
 Every sample's agent function runs concurrently in the rollout process. On one
 event loop, a synchronous step in one episode (a large response to parse, a slow
@@ -22,12 +22,28 @@ import traceback
 from collections.abc import Awaitable, Callable
 from typing import Any, BinaryIO, NoReturn
 
+import httpx
+
 from miles.rollout.agentic import rollout_limits
+from miles.rollout.agentic.errors import InfraAbort, RemoteTraceback
+from miles.rollout.agentic.remote import SECRET_ENV_VAR, SECRET_FILE_ENV_VAR, call_on_worker
 from miles.utils.logging_utils import configure_logger_raw
+from miles.utils.retry_utils import NonRetryableError
+
+__all__ = [
+    "AGENT_FUNCTION_MODES",
+    "InfraAbort",
+    "call_agent_function",
+    "cancel_calls",
+    "has_calls",
+    "report_to_caller",
+    "resolve_worker",
+    "rollout_abort_scope",
+]
 
 logger = logging.getLogger(__name__)
 
-AGENT_FUNCTION_MODES = ("subproc", "inline")
+AGENT_FUNCTION_MODES = ("subproc", "inline", "worker")
 
 # A cancelled agent gets this long to run its own cleanup (closing its sandbox) before its process exits.
 _CANCEL_GRACE_S = 120.0
@@ -46,12 +62,6 @@ _PR_SET_PDEATHSIG = 1
 # frames on the child's result pipe: a report sent while the call runs, or the call's outcome
 _REPORT_FRAME, _OUTCOME_FRAME = b"r", b"o"
 _FRAME_HEADER_BYTES = 9  # frame kind + 8-byte payload length
-
-
-class InfraAbort(Exception):
-    def __init__(self, exit_status: str, message: str | None = None):
-        super().__init__(message or exit_status)
-        self.exit_status = exit_status
 
 
 class _ResultPipe:
@@ -79,17 +89,6 @@ _result_pipe: _ResultPipe | None = None
 _calls: dict[asyncio.Task, dict[str, Any]] = {}
 
 
-class _RemoteTraceback(Exception):
-    """The agent process's traceback, chained under the error it raised, as concurrent.futures does."""
-
-    def __init__(self, tb: str):
-        super().__init__(tb)
-        self.tb = tb
-
-    def __str__(self) -> str:
-        return self.tb
-
-
 def report_to_caller(item: Any) -> bool:
     """Send a picklable ``item`` to the process that made this ``subproc`` agent call.
 
@@ -106,15 +105,19 @@ async def call_agent_function(
     *,
     mode: str,
     on_child_reports: Callable[[list[Any]], None] | None = None,
+    worker: str | None = None,
+    extra_env: dict[str, str] | None = None,
     abort_scope: str | None = None,
     **kwargs: Any,
 ) -> Any:
-    """Await ``fn(**kwargs)`` on this loop (``inline``) or in a child process of its own (``subproc``).
+    """Await ``fn(**kwargs)`` on this loop (``inline``), in a child process of its own (``subproc``), or in one on
+    the agent worker at the URL ``worker`` (``worker``, see ``miles.rollout.agentic.worker``).
 
-    Under ``subproc``, ``on_child_reports`` receives each item the agent sends with ``report_to_caller``. In every
-    mode, a ``cancel_calls`` that reaches ``abort_scope`` cancels the call, which then raises
-    ``InfraAbort("Cancelled")`` however the agent ended."""
-    task = asyncio.ensure_future(_place(fn, mode, on_child_reports, kwargs))
+    Under ``subproc`` and ``worker``, ``on_child_reports`` receives each item the agent sends with
+    ``report_to_caller``, and ``extra_env`` is added to the agent process's environment. In every mode, a
+    ``cancel_calls`` that reaches ``abort_scope`` cancels the call, which then raises ``InfraAbort("Cancelled")``
+    however the agent ended."""
+    task = asyncio.ensure_future(_place(fn, mode, worker, on_child_reports, extra_env, kwargs))
     call = _calls[task] = {"scope": abort_scope, "aborted": False}
     try:
         result = await task
@@ -158,14 +161,37 @@ def rollout_abort_scope(args) -> str:
     return f"{args.sglang_router_ip}:{args.sglang_router_port}"
 
 
+def resolve_worker(worker: str | None) -> str:
+    if not worker:
+        raise NonRetryableError("--custom-agent-function-mode worker needs --custom-agent-function-worker")
+    try:
+        url = httpx.URL(worker)
+    except httpx.InvalidURL:
+        url = None
+    if (
+        url is None
+        or url.scheme not in ("http", "https")
+        or not url.host
+        or (url.port is not None and not 0 < url.port < 65536)
+    ):
+        raise NonRetryableError(f"--custom-agent-function-worker must be an http(s) URL with a host, got {worker!r}")
+    return worker
+
+
 async def _place(
     fn: Callable[..., Awaitable[Any]],
     mode: str,
+    worker: str | None,
     on_child_reports: Callable[[list[Any]], None] | None,
+    extra_env: dict[str, str] | None,
     kwargs: dict[str, Any],
 ) -> Any:
     if mode == "inline":
         return await fn(**kwargs)
+    if mode == "worker":
+        return await call_on_worker(
+            resolve_worker(worker), fn, kwargs, env=extra_env or {}, on_child_reports=on_child_reports
+        )
     # pickled before the process starts, so an unpicklable argument fails here
     call = pickle.dumps(sys.path) + pickle.dumps((fn, kwargs, _CANCEL_GRACE_S, _LEFTOVER_CLEANUP_S))
     proc = await asyncio.create_subprocess_exec(
@@ -175,7 +201,15 @@ async def _place(
         str(os.getpid()),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
-        env={**os.environ, rollout_limits.SCOPE_ENV_VAR: rollout_limits.current_scope()},
+        env={
+            name: value
+            for name, value in {
+                **os.environ,
+                rollout_limits.SCOPE_ENV_VAR: rollout_limits.current_scope(),
+                **(extra_env or {}),
+            }.items()
+            if name not in (SECRET_ENV_VAR, SECRET_FILE_ENV_VAR)
+        },
     )
     try:
         await _send_call(proc, call)
@@ -238,7 +272,7 @@ def _unpack_outcome(output: bytes) -> Any:
     if outcome[0] == "ok":
         return outcome[1]
     _, error, child_traceback = outcome
-    raise error from _RemoteTraceback(f'\n"""\n{child_traceback}"""')
+    raise error from RemoteTraceback(f'\n"""\n{child_traceback}"""')
 
 
 def _child_main(parent_pid: int) -> None:
