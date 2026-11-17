@@ -6,6 +6,8 @@ import os
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 import zipfile
 from pathlib import Path
 
@@ -105,6 +107,36 @@ def archive_request(request, filename="request.json"):
     return data.getvalue()
 
 
+def test_api_paginates_without_forwarding_the_token(monkeypatch):
+    monkeypatch.setenv("GH_TOKEN", "secret")
+    first = f"{HANDLER.API_URL}/repos/{REPOSITORY}/actions/runs?per_page=1"
+    pages = {
+        first: (
+            b'{"workflow_runs": [1]}',
+            '<https://api.github.com/page2>; rel="next", <https://api.github.com/page2>; rel="last"',
+        ),
+        "https://api.github.com/page2": (b'{"workflow_runs": [2]}', ""),
+    }
+    requests = []
+
+    def urlopen(request, timeout):
+        requests.append(request)
+        body, link = pages[request.full_url]
+        response = io.BytesIO(body)
+        response.headers = {"Link": link}
+        return response
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    assert HANDLER.api(f"repos/{REPOSITORY}/actions/runs?per_page=1", collection="workflow_runs") == [1, 2]
+    assert [request.full_url for request in requests] == [first, "https://api.github.com/page2"]
+    assert all(request.unredirected_hdrs == {"Authorization": "Bearer secret"} for request in requests)
+    # Artifact downloads redirect to blob storage; the redirected request must not carry the token.
+    redirected = urllib.request.HTTPRedirectHandler().redirect_request(
+        requests[0], None, 302, "Found", {}, "https://blob.example/artifact.zip"
+    )
+    assert not redirected.has_header("Authorization")
+
+
 def test_request_is_bounded_data(identity):
     request, _, _ = identity
     assert HANDLER.parse_request(archive_request(request)) == request
@@ -137,7 +169,9 @@ def test_request_archive_cannot_select_another_run(monkeypatch, identity):
         "api",
         lambda *args, **kwargs: [dict(name="fork-ci-image-123-2", expired=False, size_in_bytes=1000, id=55)],
     )
-    monkeypatch.setattr(subprocess, "check_output", lambda *args, **kwargs: archive_request(dict(request, run_id=124)))
+    monkeypatch.setattr(
+        HANDLER, "open_api", lambda *args, **kwargs: io.BytesIO(archive_request(dict(request, run_id=124)))
+    )
     with pytest.raises(ValueError, match="another attempt"):
         HANDLER.resolve_request(dict(workflow_run=run), REPOSITORY)
 
@@ -338,7 +372,7 @@ def test_publication_only_consumes_the_original_force_request(source, monkeypatc
     def api(path, *, method):
         mutations.append((path, method))
         if remove_fails:
-            raise subprocess.CalledProcessError(1, ["gh", "api"])
+            raise urllib.error.HTTPError(path, 404, "Not Found", None, None)
 
     monkeypatch.setattr(HANDLER, "api", api)
     HANDLER.main()
