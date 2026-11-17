@@ -176,7 +176,7 @@ def test_request_archive_cannot_select_another_run(monkeypatch, identity):
         HANDLER.resolve_request(dict(workflow_run=run), REPOSITORY)
 
 
-def stub_api(monkeypatch, identity, *, cpu="success", latest=123):
+def stub_api(monkeypatch, identity, *, cpu="success", newer=None):
     request, run, pr = identity
     calls = []
 
@@ -189,7 +189,7 @@ def stub_api(monkeypatch, identity, *, cpu="success", latest=123):
         if path.endswith("/actions/workflows/pr-test.yml"):
             return dict(id=99)
         if "/runs?" in path:
-            return [dict(run, id=latest)]
+            return [run] + ([dict(run, id=124, **newer)] if newer is not None else [])
         if "/jobs?filter=all" in path:
             return [dict(name=name, conclusion=cpu, run_attempt=1) for name in HANDLER.CPU_JOBS]
         raise AssertionError(path)
@@ -224,10 +224,17 @@ def test_partial_rerun_failure_overrides_old_cpu_success(monkeypatch, identity):
         HANDLER.current_request(identity[0], REPOSITORY)
 
 
-def test_rejects_superseded_runs(monkeypatch, identity):
-    stub_api(monkeypatch, identity, latest=124)
+@pytest.mark.parametrize("newer", [dict(status="queued"), dict(status="completed", conclusion="action_required")])
+def test_rejects_superseded_runs(monkeypatch, identity, newer):
+    stub_api(monkeypatch, identity, newer=newer)
     with pytest.raises(ValueError, match="superseded"):
         HANDLER.current_request(identity[0], REPOSITORY)
+
+
+def test_cancelled_newer_run_does_not_supersede(monkeypatch, identity):
+    # Two label events at once: the higher-numbered run entered the concurrency group first and was cancelled.
+    stub_api(monkeypatch, identity, newer=dict(status="completed", conclusion="cancelled"))
+    assert HANDLER.current_request(identity[0], REPOSITORY) == identity[2]
 
 
 @pytest.fixture
