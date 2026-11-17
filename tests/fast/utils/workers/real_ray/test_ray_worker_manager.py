@@ -22,7 +22,8 @@ from miles.utils.http_utils import wait_tcp_ready_async
 from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_handle import WorkerUnreachableError
-from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+from miles.utils.workers.worker_manager.client import ManagerWorkerProvider
+from miles.utils.workers.worker_provider.ray import RayWorkerManagerClient
 from miles.utils.workers.worker_spec import HostAndPort, PortInfo
 
 register_cpu_ci(est_time=70, suite="stage-b-cpu", labels=["rpc-comm"])
@@ -161,7 +162,7 @@ class TestNamedManagerActor:
         manager_factory([make_command_spec("router", launch_command=probe.launch_command)])
         records = probe.wait_for_records(1)
 
-        provider = RayWorkerProvider(worker_manager_handle=RayWorkerManager.get_handle())
+        provider = ManagerWorkerProvider(RayWorkerManagerClient(RayWorkerManager.get_handle()))
         addr = (await provider.get_addrs(worker_name="router-00000-00000"))["primary"]
 
         assert isinstance(addr, HostAndPort)
@@ -388,7 +389,7 @@ class TestStopCellOnRealRay:
             [make_command_spec("engine", num_cells=2, num_workers_per_cell=1, launch_command=probe.launch_command)]
         )
         probe.wait_for_records(2)
-        provider = RayWorkerProvider(worker_manager_handle=RayWorkerManager.get_handle())
+        provider = ManagerWorkerProvider(RayWorkerManagerClient(RayWorkerManager.get_handle()))
         (before,) = provider.get_worker_infos(cell_ids=["engine-00001"])
         stopped_pid = probe.read_records()["1-0"]["pid"]
         survivor_pid = probe.read_records()["0-0"]["pid"]
@@ -419,7 +420,7 @@ class TestWorkerInfosOnRealRay:
         )
         records = probe.wait_for_records(4)
 
-        provider = RayWorkerProvider(worker_manager_handle=RayWorkerManager.get_handle())
+        provider = ManagerWorkerProvider(RayWorkerManagerClient(RayWorkerManager.get_handle()))
         (infos,) = provider.get_worker_infos(cell_ids=["engine-00001"])
         handles = provider.get_handles_of_worker_infos(infos)
 
@@ -439,7 +440,7 @@ class TestWorkerDeathOnRealRay:
         probe = worker_probe_factory()
         manager_factory([make_command_spec("engine", num_workers_per_cell=2, launch_command=probe.launch_command)])
         probe.wait_for_records(2)
-        provider = RayWorkerProvider(worker_manager_handle=RayWorkerManager.get_handle())
+        provider = ManagerWorkerProvider(RayWorkerManagerClient(RayWorkerManager.get_handle()))
         (infos,) = provider.get_worker_infos(cell_ids=["engine-00000"])
         handles = [provider.get_handle(info.name) for info in infos]
 

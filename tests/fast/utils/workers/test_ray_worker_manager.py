@@ -18,8 +18,10 @@ from miles.utils.workers import ray_worker_manager
 from miles.utils.workers.cell_operations.base import StaleFaultTargetError
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
-from miles.utils.workers.ray_worker_manager import RayWorkerManager, _BaseActorManager, _CommandActorManager
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.types import WorkerCommBackend
+from miles.utils.workers.worker_manager import core as worker_manager_core
+from miles.utils.workers.worker_manager.core import _BaseActorManager, _CommandActorManager
 from miles.utils.workers.worker_spec import BaseCommandSpec, LaunchCommandContext, PortInfo, SchedulingSpec, StaticMeta
 
 
@@ -204,7 +206,7 @@ class TestInitLaunchesWorkers:
         manager = RayWorkerManager()
         with pytest.raises(RuntimeError, match="no ports"):
             with pytest.MonkeyPatch.context() as patched:
-                patched.setattr(ray_worker_manager._CommandActorManager, "alloc_ports", failing_alloc)
+                patched.setattr(worker_manager_core._CommandActorManager, "alloc_ports", failing_alloc)
                 await manager.init(worker_manager_args(), [spec], {}, comm_backend=WorkerCommBackend.RAY)
 
         assert len(fake_ray_cluster.handles) == 2
@@ -559,14 +561,13 @@ class TestActorResources:
 class TestFailureModes:
     async def test_a_failed_worker_launch_stops_before_any_port_is_allocated(self, fake_ray_cluster: FakeRayCluster):
         """Nothing downstream may run when the pool could not even be created."""
-        from miles.utils.workers.ray_worker_manager import _CommandActorManager
 
-        async def failing_launch(self) -> None:
+        async def failing_launch(self, *, cell_id, launches):
             raise RuntimeError("no capacity")
 
         with pytest.raises(RuntimeError, match="no capacity"):
             with pytest.MonkeyPatch.context() as patched:
-                patched.setattr(_CommandActorManager, "launch_actor", failing_launch)
+                patched.setattr(ray_worker_manager.RayWorkerRuntime, "launch_cell", failing_launch)
                 await _launch([_make_spec("engine", num_cells=2)])
 
         assert fake_ray_cluster.calls_of("_get_free_port_block") == []
@@ -615,7 +616,7 @@ class TestGetWorkerAddrs:
                 PortInfo(name="rpc", static_port=9000, allow_dynamic=False),
             ],
         )
-        with patch.object(ray_worker_manager._BaseActorManager, "_assert_static_port_is_free", observe):
+        with patch.object(worker_manager_core._BaseActorManager, "_assert_static_port_is_free", observe):
             manager = await _launch([spec])
 
         assert observed == [None, None]
@@ -825,7 +826,7 @@ class TestMasterPorts:
 class TestConcurrentPhases:
     async def test_all_cells_of_a_phase_run_concurrently(self, fake_ray_cluster: FakeRayCluster):
         """Cells are configured concurrently, so a large pool does not start up one cell at a time."""
-        from miles.utils.workers.ray_worker_manager import _CommandActorManager
+        from miles.utils.workers.worker_manager.core import _CommandActorManager
 
         original_alloc_ports = _CommandActorManager.alloc_ports
         entered: list[int] = []
@@ -855,7 +856,7 @@ class TestConcurrentPhases:
 
     async def test_workers_within_one_cell_run_each_phase_concurrently(self, fake_ray_cluster: FakeRayCluster):
         """The ranks of one engine configure together; serialising them adds a full setup per rank."""
-        from miles.utils.workers.ray_worker_manager import _CommandActorManager
+        from miles.utils.workers.worker_manager.core import _CommandActorManager
 
         original_alloc_ports = _CommandActorManager.alloc_ports
         entered: list[int] = []
@@ -1344,7 +1345,7 @@ class TestStopDetails:
         manager = await _launch([_make_spec("engine")])
         fake_ray_cluster.handles[0].hanging_methods["shutdown"] = 3600
 
-        with patch.object(ray_worker_manager, "_SHUTDOWN_TIMEOUT", 0.01):
+        with patch.object(worker_manager_core, "_SHUTDOWN_TIMEOUT", 0.01):
             await manager._pools["engine"].cells[0].stop()
 
         assert fake_ray_cluster.events.count(EVENT_KILL) == 1
@@ -1376,7 +1377,7 @@ class TestStopDetails:
         manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
         fake_ray_cluster.handles[0].hanging_methods["shutdown"] = 3600
 
-        with patch.object(ray_worker_manager, "_SHUTDOWN_TIMEOUT", 0.5):
+        with patch.object(worker_manager_core, "_SHUTDOWN_TIMEOUT", 0.5):
             stop_task = asyncio.create_task(manager._pools["engine"].cells[0].stop())
             await asyncio.sleep(0.05)
             assert fake_ray_cluster.handles[1].killed
@@ -1754,6 +1755,37 @@ class TestStartAndStopCells:
 
 
 class TestStartCellsRollback:
+    async def test_a_worker_that_cannot_be_created_stops_the_launch_of_its_cell(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """The workers after it are never created, and the ones before it are killed with no graceful shutdown."""
+        original_create_actor = ray_worker_manager.RayWorkerRuntime._create_actor
+        attempts = []
+
+        def fail_the_second(self, launch):
+            attempts.append(launch.name)
+            if len(attempts) == 2:
+                raise RuntimeError("gcs unavailable")
+            return original_create_actor(self, launch)
+
+        manager = RayWorkerManager()
+        with pytest.raises(RuntimeError, match="gcs unavailable"):
+            with pytest.MonkeyPatch.context() as patched:
+                patched.setattr(ray_worker_manager.RayWorkerRuntime, "_create_actor", fail_the_second)
+                await manager.init(
+                    worker_manager_args(),
+                    [_make_spec("engine", num_workers_per_cell=3)],
+                    {},
+                    comm_backend=WorkerCommBackend.RAY,
+                )
+
+        assert attempts == [
+            compute_worker_name(pool_id="engine", cell_index=0, worker_in_cell_index=i) for i in (0, 1)
+        ]
+        assert len(fake_ray_cluster.handles) == 1
+        assert fake_ray_cluster.handles[0].killed
+        assert fake_ray_cluster.calls_of("shutdown") == []
+
     async def test_a_resume_that_fails_midway_leaves_the_cell_suspended(self, fake_ray_cluster: FakeRayCluster):
         """A half-started cell that still looked alive would never be retried by the heal loop."""
         manager = await _launch([_make_spec("engine")])
@@ -1764,7 +1796,7 @@ class TestStartCellsRollback:
 
         with pytest.raises(RuntimeError, match="no ports"):
             with pytest.MonkeyPatch.context() as patched:
-                patched.setattr(ray_worker_manager._CommandActorManager, "alloc_ports", failing_alloc)
+                patched.setattr(worker_manager_core._CommandActorManager, "alloc_ports", failing_alloc)
                 await manager.start_cells(["engine-00000"])
 
         assert not manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].alive
@@ -1779,7 +1811,7 @@ class TestStartCellsRollback:
 
         with pytest.raises(RuntimeError, match="cannot render"):
             with pytest.MonkeyPatch.context() as patched:
-                patched.setattr(ray_worker_manager._CommandActorManager, "post_setup", failing_post_setup)
+                patched.setattr(worker_manager_core._CommandActorManager, "post_setup", failing_post_setup)
                 await manager.start_cells(["engine-00000"])
 
         assert [handle.killed for handle in fake_ray_cluster.handles] == [True, True]
@@ -1794,7 +1826,7 @@ class TestStartCellsRollback:
 
         with pytest.raises(RuntimeError, match="no ports"):
             with pytest.MonkeyPatch.context() as patched:
-                patched.setattr(ray_worker_manager._CommandActorManager, "alloc_ports", failing_alloc)
+                patched.setattr(worker_manager_core._CommandActorManager, "alloc_ports", failing_alloc)
                 await manager.start_cells(["engine-00000"])
 
         await manager.start_cells(["engine-00000"])
@@ -1804,23 +1836,21 @@ class TestStartCellsRollback:
 
     async def test_a_failed_start_leaves_no_late_sibling_actor_alive(self, fake_ray_cluster: FakeRayCluster):
         """A sibling still launching when the request failed must not survive the rollback holding its gpus."""
-        from miles.utils.workers.ray_worker_manager import _CommandActorManager
-
-        original_launch_actor = _CommandActorManager.launch_actor
+        original_launch_cell = ray_worker_manager.RayWorkerRuntime.launch_cell
         first_failed = asyncio.Event()
 
-        async def staggered_launch(self) -> None:
-            if self.parent.cell_index == 0:
+        async def staggered_launch(self, *, cell_id, launches):
+            if cell_id == "engine-00000":
                 first_failed.set()
                 raise RuntimeError("no capacity")
             await first_failed.wait()
             await asyncio.sleep(0.05)
-            await original_launch_actor(self)
+            return await original_launch_cell(self, cell_id=cell_id, launches=launches)
 
         manager = RayWorkerManager()
         with pytest.raises(RuntimeError, match="no capacity"):
             with pytest.MonkeyPatch.context() as patched:
-                patched.setattr(_CommandActorManager, "launch_actor", staggered_launch)
+                patched.setattr(ray_worker_manager.RayWorkerRuntime, "launch_cell", staggered_launch)
                 await manager.init(
                     worker_manager_args(), [_make_spec("engine", num_cells=2)], {}, comm_backend=WorkerCommBackend.RAY
                 )
@@ -1839,7 +1869,7 @@ class TestStartCellsRollback:
         manager = RayWorkerManager()
         with pytest.raises(RuntimeError, match="cannot render"):
             with pytest.MonkeyPatch.context() as patched:
-                patched.setattr(ray_worker_manager._CommandActorManager, "post_setup", failing_post_setup)
+                patched.setattr(worker_manager_core._CommandActorManager, "post_setup", failing_post_setup)
                 await manager.init(worker_manager_args(), [spec], {}, comm_backend=WorkerCommBackend.RAY)
 
         assert not any(info.alive for info in manager.get_cell_infos(pool_ids=["engine"]).values())

@@ -20,11 +20,12 @@ from tests.fast.utils.workers.fake_specs import FakeServeSpec
 from miles.ray.placement_group import PlacementGroupInfo
 from miles.utils.workers import ray_worker_manager as rwm
 from miles.utils.workers.backend_capability.base import BackendCapability
-from miles.utils.workers.ray_worker_manager import RayWorkerManager, _build_serve_worker, bootstrapped_worker_class
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs, rpc
 from miles.utils.workers.serving.serve_actor import ServeActor
 from miles.utils.workers.types import WorkerCommBackend
+from miles.utils.workers.worker_manager.core import _build_serve_worker, bootstrapped_worker_class
 from miles.utils.workers.worker_provider.utils import build_rpc_handle_of_worker_info
 from miles.utils.workers.worker_spec import (
     DEFAULT_RPC_PORT_INFO,
@@ -90,8 +91,8 @@ from ray import cloudpickle
 
 from tests.fast.utils.workers.test_ray_worker_manager_serve import DemoServeWorker
 
-actor_class, ctor_kwargs, context = cloudpickle.loads(sys.stdin.buffer.read())
-worker = actor_class(ctor_kwargs=ctor_kwargs, context=context)
+actor_class, ctor_kwargs, context, capability_factory = cloudpickle.loads(sys.stdin.buffer.read())
+worker = actor_class(ctor_kwargs=ctor_kwargs, context=context, capability_factory=capability_factory)
 print(json.dumps(dict(**worker.kwargs, rebuilt=actor_class is not DemoServeWorker, name=actor_class.__name__)))
 """
 
@@ -221,7 +222,9 @@ class TestServeWorkersAreLaunched:
         spec = _make_spec(num_workers_per_cell=3, ctor_kwargs=probe)
         await _launch([spec])
 
-        assert [list(kwargs) for kwargs in fake_ray_cluster.ctor_kwargs] == [["ctor_kwargs", "context"]] * 3
+        assert [list(kwargs) for kwargs in fake_ray_cluster.ctor_kwargs] == [
+            ["ctor_kwargs", "context", "capability_factory"]
+        ] * 3
         assert all(kwargs["ctor_kwargs"] == spec.ctor_kwargs for kwargs in fake_ray_cluster.ctor_kwargs)
         assert probe.contexts == []
         assert [kwargs["context"].worker_in_cell_index for kwargs in fake_ray_cluster.ctor_kwargs] == [0, 1, 2]
@@ -332,7 +335,9 @@ class TestServeConcurrencyGroupRouting:
         """A wrapper that swallowed the arguments or the return value would break every isolated rpc."""
         await _launch([_make_spec(worker_class=_GROUPED_WORKER_CLASS_PATH, concurrency_groups=_GROUPED_WORKER_GROUPS)])
 
-        worker = _actor_classes(fake_ray_cluster)[0](ctor_kwargs=lambda _ctx: {}, context=_launch_context())
+        worker = _actor_classes(fake_ray_cluster)[0](
+            ctor_kwargs=lambda _ctx: {}, context=_launch_context(), capability_factory=_ray_capability_factory
+        )
         assert worker.isolated_echo("ab", times=2) == "abab"
 
 
@@ -433,7 +438,11 @@ class TestTheBootstrappedClass:
         probe = _CtorKwargsProbe()
         actor_class = bootstrapped_worker_class(_WORKER_CLASS_PATH)
 
-        actor_class(ctor_kwargs=probe, context=_launch_context(worker_in_cell_index=2))
+        actor_class(
+            ctor_kwargs=probe,
+            context=_launch_context(worker_in_cell_index=2),
+            capability_factory=_ray_capability_factory,
+        )
 
         assert probe.contexts[0].worker_in_cell_index == 2
 
@@ -444,7 +453,7 @@ class TestTheBootstrappedClass:
         probe = _CtorKwargsProbe()
         actor_class = bootstrapped_worker_class(_WORKER_CLASS_PATH)
 
-        actor_class(ctor_kwargs=probe, context=_launch_context())
+        actor_class(ctor_kwargs=probe, context=_launch_context(), capability_factory=_ray_capability_factory)
 
         assert probe.contexts[0].capability.cell_operations() is built.operations
 
@@ -460,7 +469,7 @@ class TestTheBootstrappedClass:
         probe = _CtorKwargsProbe()
         actor_class = bootstrapped_worker_class(_WORKER_CLASS_PATH)
 
-        actor_class(ctor_kwargs=probe, context=_launch_context())
+        actor_class(ctor_kwargs=probe, context=_launch_context(), capability_factory=_ray_capability_factory)
         assert creations == []
 
         capability = probe.contexts[0].capability
@@ -476,7 +485,7 @@ class TestTheBootstrappedClass:
         probe = _CtorKwargsProbe()
         actor_class = bootstrapped_worker_class(_WORKER_CLASS_PATH)
 
-        actor_class(ctor_kwargs=probe, context=_launch_context())
+        actor_class(ctor_kwargs=probe, context=_launch_context(), capability_factory=_ray_capability_factory)
         capability = probe.contexts[0].capability
         capability.dynamic_worker_provider(pool_ids=["trainer-engine-actor"])
         capability.dynamic_worker_provider(pool_ids=None, category="inference-engine")
@@ -490,7 +499,11 @@ class TestTheBootstrappedClass:
         """The worker class is keyword-only, exactly as it is when a pod builds it in serve_inner."""
         actor_class = bootstrapped_worker_class(_WORKER_CLASS_PATH)
 
-        worker = actor_class(ctor_kwargs=_CtorKwargsProbe(), context=_launch_context(worker_in_cell_index=2))
+        worker = actor_class(
+            ctor_kwargs=_CtorKwargsProbe(),
+            context=_launch_context(worker_in_cell_index=2),
+            capability_factory=_ray_capability_factory,
+        )
 
         assert worker.kwargs == dict(rank=2, role="actor")
 
@@ -504,7 +517,11 @@ class TestTheBootstrappedClass:
         actor_class = bootstrapped_worker_class(_WORKER_CLASS_PATH)
 
         rebuilt_class, rebuilt_probe = cloudpickle.loads(cloudpickle.dumps((actor_class, _CtorKwargsProbe())))
-        worker = rebuilt_class(ctor_kwargs=rebuilt_probe, context=_launch_context(worker_in_cell_index=1))
+        worker = rebuilt_class(
+            ctor_kwargs=rebuilt_probe,
+            context=_launch_context(worker_in_cell_index=1),
+            capability_factory=_ray_capability_factory,
+        )
 
         assert worker.kwargs == dict(rank=1, role="actor")
 
@@ -515,6 +532,7 @@ class TestTheBootstrappedClass:
                 bootstrapped_worker_class(_WORKER_CLASS_PATH),
                 _CtorKwargsProbe(),
                 _launch_context(worker_in_cell_index=1),
+                _ray_capability_factory,
             )
         )
 
@@ -575,6 +593,7 @@ class TestServeWorkersUnderRpcComm:
                     worker_class_path=_WORKER_CLASS_PATH,
                     ctor_kwargs=probe,
                     context=_launch_context(worker_in_cell_index=1),
+                    capability_factory=_ray_capability_factory,
                 )
             )
         )()
@@ -657,3 +676,8 @@ class TestTheHandleAWorkerIsCalledThrough:
 
         (info,) = manager.get_worker_infos("trainer-00000")
         assert info.worker_class is None
+
+
+def _ray_capability_factory():
+    """What the ray runtime hands a launched worker, looked up at call time so a test can patch it."""
+    return rwm._create_ray_backend_capability()

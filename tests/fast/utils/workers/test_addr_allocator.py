@@ -37,8 +37,8 @@ class TestPortAllocator:
         """Two allocations on the same node must hand out non-overlapping ports."""
         cursors = PortAllocator()
         engine = fake_engine(host="10.0.0.1", port_seed=0)
-        first = await cursors.alloc(engine, node_ip="10.0.0.1")
-        second = await cursors.alloc(engine, node_ip="10.0.0.1")
+        first = await cursors.alloc(engine._get_free_port_block.remote, node_ip="10.0.0.1")
+        second = await cursors.alloc(engine._get_free_port_block.remote, node_ip="10.0.0.1")
         assert second > first
         assert cursors._next_port_of_ip["10.0.0.1"] == second + 1
 
@@ -46,21 +46,21 @@ class TestPortAllocator:
         """Only the node knows its service port range, so a node with no cursor yet starts wherever that range starts."""
         cursors = PortAllocator()
         engine = fake_engine(host="10.0.0.1", port_seed=0)
-        assert await cursors.alloc(engine, node_ip="10.0.0.1") == FAKE_SERVICE_PORT_START
+        assert await cursors.alloc(engine._get_free_port_block.remote, node_ip="10.0.0.1") == FAKE_SERVICE_PORT_START
         engine._get_free_port_block.remote.assert_called_once_with(start_port=None, count=1)
 
     async def test_alloc_consecutive_reserves_a_whole_block(self):
         """A consecutive=N allocation must move this node's cursor past the entire block."""
         cursors = PortAllocator()
         engine = fake_engine(host="10.0.0.1", port_seed=0)
-        first = await cursors.alloc(engine, node_ip="10.0.0.1", consecutive=5)
+        first = await cursors.alloc(engine._get_free_port_block.remote, node_ip="10.0.0.1", consecutive=5)
         assert cursors._next_port_of_ip["10.0.0.1"] == first + 5
 
     async def test_a_skipped_candidate_range_advances_from_the_returned_block(self):
         """When the actor skips occupied candidates, the cursor must advance from the returned port plus the block size."""
         cursors = PortAllocator()
         engine = fake_engine(host="10.0.0.1", port_seed=25000)
-        first = await cursors.alloc(engine, node_ip="10.0.0.1", consecutive=4)
+        first = await cursors.alloc(engine._get_free_port_block.remote, node_ip="10.0.0.1", consecutive=4)
         assert first == 25000
         assert cursors._next_port_of_ip["10.0.0.1"] == 25004
 
@@ -71,7 +71,7 @@ class TestPortAllocator:
         engine = fake_engine(host="10.0.0.1", port_seed=0)
         _make_probe_fail(engine)
         with pytest.raises(RuntimeError, match="free port probe failed"):
-            await cursors.alloc(engine, node_ip="10.0.0.1", consecutive=3)
+            await cursors.alloc(engine._get_free_port_block.remote, node_ip="10.0.0.1", consecutive=3)
         assert cursors._next_port_of_ip == {"10.0.0.1": 20005}
 
     async def test_a_failed_probe_does_not_create_a_cursor_for_an_unseen_node(self):
@@ -80,7 +80,7 @@ class TestPortAllocator:
         engine = fake_engine(host="10.0.0.1", port_seed=0)
         _make_probe_fail(engine)
         with pytest.raises(RuntimeError, match="free port probe failed"):
-            await cursors.alloc(engine, node_ip="10.0.0.1", consecutive=3)
+            await cursors.alloc(engine._get_free_port_block.remote, node_ip="10.0.0.1", consecutive=3)
         assert cursors._next_port_of_ip == {}
 
     async def test_a_failed_probe_releases_the_lock_for_the_next_allocation(self):
@@ -89,11 +89,12 @@ class TestPortAllocator:
         engine = fake_engine(host="10.0.0.1", port_seed=0)
         _make_probe_fail(engine)
         with pytest.raises(RuntimeError, match="free port probe failed"):
-            await cursors.alloc(engine, node_ip="10.0.0.1")
+            await cursors.alloc(engine._get_free_port_block.remote, node_ip="10.0.0.1")
 
         healthy = fake_engine(host="10.0.0.1", port_seed=0)
         assert (
-            await asyncio.wait_for(cursors.alloc(healthy, node_ip="10.0.0.1"), timeout=1.0) == FAKE_SERVICE_PORT_START
+            await asyncio.wait_for(cursors.alloc(healthy._get_free_port_block.remote, node_ip="10.0.0.1"), timeout=1.0)
+            == FAKE_SERVICE_PORT_START
         )
 
     async def test_alloc_tracks_nodes_independently(self):
@@ -101,8 +102,8 @@ class TestPortAllocator:
         cursors = PortAllocator()
         engine_a = fake_engine(host="10.0.0.1", port_seed=0)
         engine_b = fake_engine(host="10.0.0.2", port_seed=0)
-        await cursors.alloc(engine_a, node_ip="10.0.0.1")
-        await cursors.alloc(engine_b, node_ip="10.0.0.2")
+        await cursors.alloc(engine_a._get_free_port_block.remote, node_ip="10.0.0.1")
+        await cursors.alloc(engine_b._get_free_port_block.remote, node_ip="10.0.0.2")
         assert set(cursors._next_port_of_ip.keys()) == {"10.0.0.1", "10.0.0.2"}
 
     async def test_a_known_node_is_probed_from_its_cursor_as_is(self):
@@ -111,7 +112,7 @@ class TestPortAllocator:
         engine = fake_engine(host="10.0.0.1", port_seed=0)
         cursors._next_port_of_ip["10.0.0.1"] = 65535
 
-        await cursors.alloc(engine, node_ip="10.0.0.1", consecutive=4)
+        await cursors.alloc(engine._get_free_port_block.remote, node_ip="10.0.0.1", consecutive=4)
 
         engine._get_free_port_block.remote.assert_called_once_with(start_port=65535, count=4)
 
@@ -121,7 +122,9 @@ class TestPortAllocator:
         engine = fake_engine(host="10.0.0.1", port_seed=0)
         _make_probe_slow(engine, delay_seconds=0.01)
 
-        ports = await asyncio.gather(*[cursors.alloc(engine, node_ip="10.0.0.1", consecutive=2) for _ in range(5)])
+        ports = await asyncio.gather(
+            *[cursors.alloc(engine._get_free_port_block.remote, node_ip="10.0.0.1", consecutive=2) for _ in range(5)]
+        )
 
         assert sorted(ports) == [FAKE_SERVICE_PORT_START + offset for offset in range(0, 10, 2)]
         assert cursors._next_port_of_ip["10.0.0.1"] == FAKE_SERVICE_PORT_START + 10
@@ -138,6 +141,6 @@ class TestPortAllocator:
                 ticks.append(i)
                 await asyncio.sleep(0.01)
 
-        await asyncio.gather(cursors.alloc(engine, node_ip="10.0.0.1"), _tick())
+        await asyncio.gather(cursors.alloc(engine._get_free_port_block.remote, node_ip="10.0.0.1"), _tick())
 
         assert ticks == [0, 1, 2]
