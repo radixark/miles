@@ -47,8 +47,8 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
-      # As pr-test.yml does for the CUDA image: the released dev-tpu, unless the PR changes the files docker-build.yml
-      # rebuilds dev-tpu for. The merge commit is compared with its base (HEAD^1), which base.sha can lag.
+      # Compare the merge with its actual base (HEAD^1), which base.sha can lag.
+      # The shared hash reader owns the TPU inputs, as for CUDA and ROCm.
       - id: image
         env:
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
@@ -56,10 +56,13 @@ jobs:
           set -euo pipefail
           image=radixark/miles:dev-tpu
           build=false
-          if [ -n "$PR_NUMBER" ] && ! git diff --quiet HEAD^1 HEAD -- \
-              docker/Dockerfile.tpu docker/tpu_patch docker/install-kube-tools.sh requirements.txt; then
-            image="radixark/miles:pr-${PR_NUMBER}-tpu"
-            build=true
+          if [ -n "$PR_NUMBER" ]; then
+            current=$(python3 docker/image_inputs.py --variant tpu --rev HEAD)
+            base=$(python3 docker/image_inputs.py --variant tpu --rev HEAD^1)
+            if [ "$current" != "$base" ]; then
+              image="radixark/miles:pr-${PR_NUMBER}-tpu"
+              build=true
+            fi
           fi
           echo "TPU image: ${image}"
           echo "image=${image}" >> "$GITHUB_OUTPUT"

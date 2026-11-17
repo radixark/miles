@@ -1,3 +1,4 @@
+import ast
 import copy
 import importlib.util
 import io
@@ -254,7 +255,13 @@ def source(tmp_path, identity):
     git("commit", "-qm", "base")
     base = git("rev-parse", "HEAD")
     (root / "docker/Dockerfile").write_text("FROM scratch\nLABEL pin=fixed\n")
-    git("add", "docker/Dockerfile")
+    (root / "tests/ci").mkdir(parents=True)
+    (root / "tests/ci/labels.py").write_text(
+        "raise RuntimeError('PR imports must not execute')\n"
+        "KNOWN_LABELS: dict[str, str] = {'megatron': 'Megatron tests'}\n"
+    )
+    (root / "tests/e2e").mkdir(parents=True)
+    git("add", "docker/Dockerfile", "tests")
     git("commit", "-qm", "fork")
     head = git("rev-parse", "HEAD")
     merge = git("commit-tree", "HEAD^{tree}", "-p", base, "-p", head, "-m", "merge")
@@ -601,22 +608,30 @@ def test_workflow_preserves_gate_and_build_publish_boundary():
     assert "head.repo.full_name == github.repository" in image_job["runs-on"]
     assert "steps.wait.outputs.built" in image_job["outputs"]["built"]
     assert "steps.wait.outputs.built == 'true'" in image_job["outputs"]["tag_available"]
-    # One call per PR image architecture; only the amd64 one sends the fork request.
+    # One call per PR image architecture; arm64 rides on the amd64 fork request.
+    rocm_parent = yaml.safe_load((ROOT / ".github/workflows/pr-test-rocm.yml").read_text())
+    callers = {**parent["jobs"], **rocm_parent["jobs"]}
     for arch in HANDLER.image_inputs.PR_IMAGE_ARCHES:
-        call = parent["jobs"][f"docker-build-{arch}"]
+        call = callers[f"docker-build-{arch}"]
         assert call["with"] == dict(arch=arch) and call["permissions"]["actions"] == "read"
     assert parent["jobs"]["resolve-ci-image-amd64"]["needs"] == ["resolve-ci-policy", "docker-build-amd64"]
     request_steps = [step for step in image_job["steps"] if "REQUEST_BUILD == 'true' &&" in step.get("if", "")]
-    assert len(request_steps) == 2 and all("inputs.arch == 'amd64'" in step["if"] for step in request_steps)
+    assert len(request_steps) == 2 and all("inputs.arch != 'arm64'" in step["if"] for step in request_steps)
+    # Every architecture shares builders: same-repository PRs build in place, forks hand off.
+    assert "arch" not in image_job["env"]["BUILD"] + image_job["env"]["REQUEST_BUILD"]
     wait = next(step for step in image_job["steps"] if step.get("id") == "wait")
     assert 'wait-build --arch "$ARCH"' in wait["run"] and 'echo "built=true"' in wait["run"]
     workflow = yaml.safe_load((ROOT / ".github/workflows/build-fork-ci-image.yml").read_text())
     assert workflow[True]["workflow_run"]["types"] == ["in_progress"]
     assert workflow["jobs"]["build"]["permissions"]["actions"] == "read"
+    assert workflow["jobs"]["build"]["runs-on"] == ["docker-build"]
     assert workflow["jobs"]["build"]["concurrency"]["cancel-in-progress"] is True
     # The PR-side waiter looks the job up by this name.
     assert workflow["jobs"]["build"]["name"] == "build (${{ matrix.arch }})"
-    assert workflow["jobs"]["build"]["strategy"]["matrix"]["arch"] == list(HANDLER.image_inputs.PR_IMAGE_ARCHES)
+    assert workflow["jobs"]["build"]["strategy"]["matrix"]["arch"] == "${{ fromJSON(needs.request.outputs.arches) }}"
+    # Every PR image architecture is covered by exactly one request source.
+    covered = [arch for _, arches in HANDLER.REQUEST_SOURCES.values() for arch in arches]
+    assert sorted(covered) == sorted(HANDLER.image_inputs.PR_IMAGE_ARCHES)
     assert workflow["jobs"]["build"]["concurrency"]["group"].endswith("-${{ matrix.arch }}")
     cleanup_tags = (ROOT / ".github/workflows/docker-pr-tag-cleanup.yml").read_text()
     assert all(f'number }}}}{suffix}"' in cleanup_tags for _, suffix in HANDLER.image_inputs.PR_IMAGE_ARCHES.values())
@@ -643,3 +658,278 @@ def test_workflow_preserves_gate_and_build_publish_boundary():
         for step in steps
         if step.get("uses", "").startswith("actions/checkout")
     )
+
+
+def test_rocm_request_is_bound_to_the_rocm_workflow(identity):
+    request, run, pr = identity
+    request["arch"] = "rocm10-mi35x"
+    assert HANDLER.parse_request(archive_request(request)) == request
+    with pytest.raises(ValueError, match="Wrong source workflow"):
+        HANDLER.validate_identity(request, run, pr, REPOSITORY, 99)
+    run["path"] = ".github/workflows/pr-test-rocm.yml"
+    HANDLER.validate_identity(request, run, pr, REPOSITORY, 99)
+    # arm64 rides on the amd64 request and never sends its own.
+    for arch in ("arm64", "arbitrary-build-recipe"):
+        request["arch"] = arch
+        with pytest.raises(ValueError, match="Invalid arch"):
+            HANDLER.parse_request(archive_request(request))
+    # Same-repository ROCm PRs build in _build-pr-ci-image.yml, as CUDA does.
+    request["arch"] = "rocm10-mi35x"
+    run["head_repository"] = pr["head"]["repo"] = pr["base"]["repo"]
+    with pytest.raises(ValueError, match="Expected a fork PR"):
+        HANDLER.validate_identity(request, run, pr, REPOSITORY, 99)
+
+
+@pytest.mark.parametrize("labels", [[], ["run-ci"], ["run-ci-amd"]])
+def test_rocm_source_requires_changed_inputs_without_test_selection(source, labels):
+    root, request, pr = source
+    request["arch"] = "rocm10-mi35x"
+    request["labels"] = labels
+    with pytest.raises(ValueError, match="Requested inputs hash"):
+        HANDLER.validate_source(request, pr, root)
+    request["inputs_hash"] = HANDLER.image_inputs.compute("HEAD", root=root, variant="rocm10-mi35x-pr")
+    with pytest.raises(ValueError, match="Build inputs match the base"):
+        HANDLER.validate_source(request, pr, root)
+    (root / "docker/Dockerfile.rocm").write_text("FROM scratch\n")
+    subprocess.run(["git", "add", "docker/Dockerfile.rocm"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "--amend", "--no-edit", "-q"], cwd=root, check=True)
+    request["merge_sha"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    request["inputs_hash"] = HANDLER.image_inputs.compute("HEAD", root=root, variant="rocm10-mi35x-pr")
+    HANDLER.validate_source(request, pr, root)
+    (root / "docker/Dockerfile.rocm").unlink()
+    (root / "docker/Dockerfile.rocm").symlink_to("/etc/hostname")
+    with pytest.raises(ValueError, match="symlink"):
+        HANDLER.validate_source(request, pr, root)
+
+
+def test_rocm_current_request_checks_latest_rocm_run_without_a_cuda_cpu_gate(monkeypatch, identity):
+    request, run, _ = identity
+    request["arch"] = "rocm10-mi35x"
+    run["path"] = ".github/workflows/pr-test-rocm.yml"
+    calls = stub_api(monkeypatch, identity, cpu="failure")
+    original = HANDLER.api
+
+    def api(path, **kwargs):
+        calls.append(path)
+        return original(path.replace("pr-test-rocm.yml", "pr-test.yml"), **kwargs)
+
+    monkeypatch.setattr(HANDLER, "api", api)
+    HANDLER.current_request(request, REPOSITORY)
+    assert any("pr-test-rocm.yml/runs?" in path for path in calls)
+    assert not any("/jobs?filter=all" in path for path in calls)
+
+
+@pytest.mark.parametrize("indexed", [False, True])
+def test_rocm_publication_checks_the_fixed_tag(identity, monkeypatch, indexed):
+    request, _, _ = identity
+    request["arch"] = "rocm10-mi35x"
+    config = dict(architecture="amd64", os="linux", config=dict(Labels={"miles.image-inputs": request["inputs_hash"]}))
+    manifest = {"linux/amd64": config} if indexed else config
+    commands = []
+
+    def inspect(command, **kwargs):
+        commands.append(command)
+        return json.dumps(manifest)
+
+    monkeypatch.setattr(subprocess, "check_output", inspect)
+    HANDLER.verify_published(request, "rocm10-mi35x")
+    assert "radixark/miles:pr-3192-rocm10-mi35x" in commands[0]
+    config["config"]["Labels"]["miles.image-inputs"] = "old"
+    with pytest.raises(ValueError, match="pr-3192-rocm10-mi35x inputs do not match"):
+        HANDLER.verify_published(request, "rocm10-mi35x")
+
+
+def test_rocm_pr_build_uses_the_existing_recipe_and_rocm_hash(source, monkeypatch):
+    root, _, _ = source
+    (root / "docker/Dockerfile.rocm").write_text("FROM scratch\n")
+    subprocess.run(["git", "add", "docker/Dockerfile.rocm"], cwd=root, check=True)
+    spec = importlib.util.spec_from_file_location("build", ROOT / "docker/build.py")
+    build = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(build)
+    commands = []
+    monkeypatch.setattr(build, "run", lambda command, dry_run: commands.append(command))
+    variant, tag = HANDLER.image_inputs.pr_image("rocm10-mi35x", 3192)
+    build.build_and_push(variant, "custom", True, "docker/Dockerfile", custom_tag=tag, context=root)
+    command = commands[0]
+    assert command[command.index("-t") + 1] == "radixark/miles:pr-3192-rocm10-mi35x"
+    assert command[command.index("--platform") + 1] == "linux/amd64"
+    assert command[command.index("-f") + 1] == str(root / "docker/Dockerfile.rocm")
+    assert build.VARIANTS["rocm10-mi35x-pr"]["build_args"] == build.VARIANTS["rocm10-mi35x"]["build_args"]
+    expected = HANDLER.image_inputs.compute(root=root, variant="rocm10-mi35x-pr")
+    assert command[command.index("--label") + 1] == f"miles.image-inputs={expected}"
+
+
+@pytest.fixture
+def rocm_upgrade_source(source, tmp_path, request):
+    root, image_request, pr = source
+    sentinel = tmp_path / "fork-python-executed"
+    driver = (
+        f"from pathlib import Path\nPath({str(sentinel)!r}).write_text('unsafe')\n"
+        "raise RuntimeError('fork driver must not execute')\n" + (ROOT / "docker/build.py").read_text()
+    )
+    (root / "docker/build.py").write_text(driver)
+    (root / "docker/Dockerfile.rocm").write_text("ARG SGLANG_IMAGE_TAG\nFROM ${SGLANG_IMAGE_TAG}\n")
+    (root / "tests/e2e/test_new.py").write_text(
+        "register_rocm_ci(est_time=1, suite='stage-c-4-gpu-mi350', labels=['megatron'])\n"
+    )
+
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+
+    git("add", ".")
+    git("commit", "-qm", "ROCm base")
+    base = git("rev-parse", "HEAD")
+    original_arguments = HANDLER.rocm_build_args(ROOT)
+    new_base = original_arguments["SGLANG_IMAGE_TAG"] + "-fork-upgrade"
+    new_wheels = original_arguments["WHEELS_TAG_ROCM"] + "-fork-upgrade"
+    upgraded = driver.replace(json.dumps(original_arguments["SGLANG_IMAGE_TAG"]), json.dumps(new_base), 1).replace(
+        json.dumps(original_arguments["WHEELS_TAG_ROCM"]), json.dumps(new_wheels), 1
+    )
+    if getattr(request, "param", False):
+        # ROCm upgrades commonly change all three variants in one fork PR.
+        tree = ast.parse(upgraded)
+        variants = next(
+            node.value
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "VARIANTS" for target in node.targets)
+        )
+        configs = ast.literal_eval(variants)
+        for name in ("rocm724-mi35x", "rocm10-mi30x"):
+            for key in ("SGLANG_IMAGE_TAG", "WHEELS_TAG_ROCM"):
+                value = configs[name]["build_args"][key]
+                upgraded = upgraded.replace(json.dumps(value), json.dumps(value + "-fork-upgrade"), 1)
+    (root / "docker/build.py").write_text(upgraded)
+    git("commit", "-qam", "upgrade ROCm base and wheels")
+    head = git("rev-parse", "HEAD")
+    merge = git("commit-tree", "HEAD^{tree}", "-p", base, "-p", head, "-m", "merge")
+    git("checkout", "--detach", "-q", merge)
+    image_request.update(arch="rocm10-mi35x", merge_sha=merge)
+    image_request["inputs_hash"] = HANDLER.image_inputs.compute("HEAD", root=root, variant="rocm10-mi35x-pr")
+    pr["head"]["sha"] = head
+    assert git("diff", "--name-only", "HEAD^1", "HEAD") == "docker/build.py"
+    assert image_request["inputs_hash"] != HANDLER.image_inputs.compute("HEAD^1", root=root, variant="rocm10-mi35x-pr")
+    return root, image_request, pr, sentinel, new_base, new_wheels, base
+
+
+@pytest.mark.parametrize("rocm_upgrade_source", [False, True], indirect=True, ids=["single-variant", "three-variants"])
+def test_fork_rocm_upgrade_builds_the_pr_arguments_with_the_pr_hash(rocm_upgrade_source, monkeypatch, tmp_path):
+    root, request, pr, sentinel, new_base, new_wheels, _ = rocm_upgrade_source
+    HANDLER.validate_source(request, pr, root)
+
+    # Execute the real trusted driver and its CLI, intercepting only Docker.
+    binary = tmp_path / "docker"
+    output = tmp_path / "docker-argv.json"
+    binary.write_text(
+        f"#!{sys.executable}\nimport json,sys\nfrom pathlib import Path\nPath({str(output)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+    )
+    binary.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setenv("OCI_OUTPUT", str(tmp_path / "oci"))
+    monkeypatch.setattr(HANDLER, "require_active_source", lambda *args: None)
+    subprocess.run(HANDLER.build_command(request, root, "rocm10-mi35x"), check=True)
+    command = json.loads(output.read_text())
+    arguments = dict(command[i + 1].split("=", 1) for i, word in enumerate(command) if word == "--build-arg")
+    assert command[command.index("--label") + 1] == f"miles.image-inputs={request['inputs_hash']}"
+    assert command[command.index("-t") + 1] == "radixark/miles:pr-3192-rocm10-mi35x"
+    assert not sentinel.exists()
+    assert arguments["SGLANG_IMAGE_TAG"] == new_base
+    assert arguments["WHEELS_TAG_ROCM"] == new_wheels
+
+
+@pytest.mark.parametrize("edit", ["assignment", "update", "derived", "cuda", "format"])
+def test_fork_rocm_only_allows_literal_argument_edits_and_formatting(rocm_upgrade_source, monkeypatch, edit):
+    root, request, pr, sentinel, _, _, base = rocm_upgrade_source
+
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+
+    git("checkout", "--detach", "-q", pr["head"]["sha"])
+    path = root / "docker/build.py"
+    text = path.read_text()
+    if edit == "assignment":
+        text += '\nVARIANTS["rocm10-mi35x"]["build_args"]["SGLANG_IMAGE_TAG"] = "v9.9.9"\n'
+    elif edit == "update":
+        text += '\nVARIANTS["rocm10-mi35x"]["build_args"].update(SGLANG_IMAGE_TAG="v9.9.9")\n'
+    elif edit == "derived":
+        text = text.replace(
+            '    **VARIANTS["rocm10-mi35x"],\n',
+            '    **VARIANTS["rocm10-mi35x"],\n    "build_args": {"SGLANG_IMAGE_TAG": "v9.9.9"},\n',
+        )
+    elif edit == "cuda":
+        text = text.replace('"platforms": ["linux/amd64", "linux/arm64"]', '"platforms": ["linux/amd64"]', 1)
+    else:
+        text = "# Formatting-only driver edit\n\n" + text.replace("VARIANTS = {", "VARIANTS  =  {", 1) + "\n"
+    path.write_text(text)
+    git("commit", "-qam", f"fork driver {edit}")
+    head = git("rev-parse", "HEAD")
+    merge = git("commit-tree", "HEAD^{tree}", "-p", base, "-p", head, "-m", "merge")
+    git("checkout", "--detach", "-q", merge)
+    request.update(
+        merge_sha=merge, inputs_hash=HANDLER.image_inputs.compute("HEAD", root=root, variant="rocm10-mi35x-pr")
+    )
+    pr["head"]["sha"] = head
+    if edit == "format":
+        HANDLER.validate_source(request, pr, root)
+    else:
+        monkeypatch.setenv("GITHUB_REPOSITORY", REPOSITORY)
+        monkeypatch.setenv("REQUEST_JSON", json.dumps(request))
+        monkeypatch.setattr(sys, "argv", ["fork_ci_image.py", "build", "--source", str(root)])
+        monkeypatch.setattr(HANDLER, "current_request", lambda *args: pr)
+        monkeypatch.setattr(
+            HANDLER, "build_image", lambda *args: pytest.fail("Unsupported driver edit reached the build")
+        )
+        with pytest.raises(ValueError, match="only honor literal build_args edits"):
+            HANDLER.main()
+    assert not sentinel.exists()
+
+
+@pytest.mark.parametrize("recipe", ["{}", "dict()", "{'build_args': {'TAG': 123}}", "{'build_args': []}"])
+def test_fork_rocm_rejects_nonliteral_or_nonstring_arguments(tmp_path, recipe):
+    (tmp_path / "docker").mkdir()
+    (tmp_path / "docker/build.py").write_text("VARIANTS = {'rocm10-mi35x': " + recipe + "}\n")
+    with pytest.raises(ValueError, match="Fork ROCm"):
+        HANDLER.rocm_build_args(tmp_path)
+
+
+def test_fork_rocm_cannot_silently_keep_removed_driver_defaults(identity, monkeypatch, tmp_path):
+    (tmp_path / "docker").mkdir()
+    (tmp_path / "docker/build.py").write_text("VARIANTS = {'rocm10-mi35x': {'build_args': {}}}\n")
+    request, _, _ = identity
+    request["arch"] = "rocm10-mi35x"
+    monkeypatch.setenv("OCI_OUTPUT", str(tmp_path / "oci"))
+    monkeypatch.setattr(HANDLER, "require_active_source", lambda *args: None)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: pytest.fail("Docker build must not start"))
+    with pytest.raises(ValueError, match="cannot remove driver defaults"):
+        HANDLER.build_image(request, REPOSITORY, tmp_path, "rocm10-mi35x")
+
+
+def test_cuda_request_artifact_still_parses_with_the_legacy_publisher(tmp_path):
+    workflow = yaml.safe_load((ROOT / ".github/workflows/_build-pr-ci-image.yml").read_text())
+    step = next(
+        step
+        for step in workflow["jobs"]["docker-build"]["steps"]
+        if step.get("name") == "Request a trusted fork image build"
+    )
+    subprocess.run(
+        ["bash", "-c", step["run"]],
+        check=True,
+        env={
+            **os.environ,
+            "RUNNER_TEMP": str(tmp_path),
+            "PR_NUMBER": "3192",
+            "INPUTS_HASH": "b" * 64,
+            "GITHUB_SHA": "a" * 40,
+            "GITHUB_RUN_ID": "123",
+            "GITHUB_RUN_ATTEMPT": "2",
+            "FORCE_REBUILD": "false",
+            "PR_LABELS_JSON": '["run-ci-image"]',
+            "ARCH": "amd64",
+        },
+    )
+    request = json.loads((tmp_path / "fork-ci-image-request/request.json").read_text())
+    assert "arch" not in request
+    # Freeze the old strict field set: adding arch to CUDA requests would
+    # break forks while the new publisher has not reached the default branch.
+    assert request.keys() == {"pr", "merge_sha", "inputs_hash", "run_id", "run_attempt", "force_rebuild", "labels"}
+    assert HANDLER.parse_request(archive_request(request)) == request

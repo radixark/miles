@@ -330,8 +330,14 @@ def test_image_builds_and_resolvers_need_cuda():
     assert "needs.resolve-ci-policy.outputs.needs_cuda_image == 'true'" in resolver
 
     rocm = WORKFLOW.with_name("pr-test-rocm.yml").read_text()
-    resolver = rocm.split("\n  resolve-ci-image:\n", 1)[1].split("\n  stage-c-2-gpu-mi350:\n", 1)[0]
-    assert "needs: [resolve-ci-policy]" in resolver
+    build = rocm.split("\n  docker-build-rocm10-mi35x:\n", 1)[1].split("\n  resolve-ci-image:\n", 1)[0]
+    resolver = rocm.split("\n  resolve-ci-image:\n", 1)[1].split("    runs-on:", 1)[0]
+    assert "needs: [resolve-ci-policy]" in build
+    assert "arch: rocm10-mi35x" in build
+    assert "skipped_stages" not in build
+    assert "rocm_file_jobs" not in build
+    assert "needs: [resolve-ci-policy, docker-build-rocm10-mi35x]" in resolver
+    assert "needs.docker-build-rocm10-mi35x.result == 'success'" in resolver
     for stage in ("stage-c-2-gpu-mi350", "stage-c-4-gpu-mi350", "stage-c-8-gpu-mi350"):
         assert f"contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), '{stage}')" in resolver
 
