@@ -66,6 +66,11 @@ def _read_secret_file(path: str) -> str | None:
         return None
 
 
+def auth_headers() -> dict[str, str]:
+    secret = worker_secret()
+    return {"Authorization": f"Bearer {secret}"} if secret else {}
+
+
 def function_path(fn: Callable) -> str:
     return f"{fn.__module__}:{fn.__qualname__}"
 
@@ -194,10 +199,9 @@ def _client(worker_url: str) -> httpx.AsyncClient:
         (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPINTVL", 5), 30),
         (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPCNT", 6), 5),
     ]  # config-access-exempt: TCP keepalive constant names vary across supported host platforms
-    secret = worker_secret()
     return httpx.AsyncClient(
         base_url=worker_url.rstrip("/"),
-        headers={"Authorization": f"Bearer {secret}"} if secret else None,
+        headers=auth_headers(),
         transport=httpx.AsyncHTTPTransport(socket_options=socket_options),
         timeout=httpx.Timeout(MAX_POLL_WAIT_S + 30.0),
     )
