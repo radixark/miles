@@ -292,18 +292,6 @@ def padded_token_count(num_tokens: int, pad_size: int) -> int:
     return -(-num_tokens // pad_size) * pad_size
 
 
-_MIN_FIXED_SHAPE_BUCKET = 1024
-
-
-def fixed_shape_length_bucket(n_tokens: int, seq_len: int) -> int:
-    """The length a fixed-shape (TPU) microbatch of `n_tokens` is padded to: one compiled program per bucket."""
-    return min(max(_MIN_FIXED_SHAPE_BUCKET, 1 << (n_tokens - 1).bit_length()), seq_len)
-
-
-def fixed_shape_length_buckets(seq_len: int) -> set[int]:
-    return {fixed_shape_length_bucket(1 << k, seq_len) for k in range(seq_len.bit_length() + 1)}
-
-
 def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
     # use first fit to get the number of micro batches
     batches = []
