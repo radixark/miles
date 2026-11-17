@@ -21,6 +21,7 @@ _ARGS_TO_CONFIG_FIELD = {
     "use_rollout_routing_replay": "use_rollout_routing_replay",
     "use_rollout_indexer_replay": "use_rollout_indexer_replay",
     "rollout_indexer_topk_num_streams": "rollout_indexer_topk_num_streams",
+    "replay_layer_splits": "replay_layer_splits",
     "use_sampling_support_replay": "use_sampling_support_replay",
     "sglang_speculative_algorithm": "sglang_speculative_algorithm",
     "num_layers": "num_layers",
@@ -54,6 +55,7 @@ _DISTINCT_ARGS_VALUES = dict(
     use_rollout_routing_replay=True,
     use_rollout_indexer_replay=True,
     rollout_indexer_topk_num_streams=11,
+    replay_layer_splits=[12, 24, 36],
     use_sampling_support_replay=True,
     sglang_speculative_algorithm="EAGLE",
     num_layers=61,
@@ -209,6 +211,7 @@ _COMPLETE_CONFIG_KWARGS = dict(
     rollout_sampling_logprobs_mode="selected",
     rollout_temperature=1.0,
     output_store_backend_config=None,
+    replay_layer_splits=[],
 )
 
 
