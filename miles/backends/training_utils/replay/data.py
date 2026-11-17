@@ -11,7 +11,7 @@ from miles.utils.output_store.plan import ForwardSegments, RowRead, StorePlanErr
 from miles.utils.replay_base import BaseReplayManager
 
 if TYPE_CHECKING:
-    from radix_transfer_plugins import OutputStore, ReadBuffer
+    from radix_transfer_plugins import ReadBuffer, ReadSlot
 
 
 def register_replay_list_sequential(replay_list, replay_data, *, blocks, **_kwargs):
@@ -44,32 +44,6 @@ def stream_blocks(replays) -> list[tuple[int, int]]:
         else:
             blocks.append((stream, stream + 1))
     return blocks
-
-
-class ReadSlots:
-    """The ReadBuffers a replay manager reads output store rows into.
-
-    Kept across steps, so each is registered once; a slot too small for a micro batch is replaced
-    by one that fits. Registering per read would take about half of each read, and over 80% below
-    4 GiB; measurements: https://github.com/radixark/miles/pull/4573#issuecomment-6593240538
-    """
-
-    def __init__(self, store: "OutputStore", *, count: int):
-        self.store = store
-        self._buffers: list[ReadBuffer | None] = [None] * count
-
-    def get(self, index: int, nbytes: int) -> "ReadBuffer":
-        buffer = self._buffers[index]
-        if buffer is None or buffer.nbytes < nbytes:
-            if buffer is not None:
-                buffer.close()
-            buffer = self._buffers[index] = self.store.read_buffer(nbytes)
-        return buffer
-
-    def close(self) -> None:
-        for buffer in self._buffers:
-            if buffer is not None:
-                buffer.close()
 
 
 def attach_replay_data(
@@ -114,10 +88,10 @@ def attach_replay_data(
     if from_store:
         if output_store is None:
             raise StorePlanError(f"{data_key} is in the output store, but this trainer has no output store client")
-        if manager.read_slots is None or manager.read_slots.store is not output_store:
-            if manager.read_slots is not None:
-                manager.read_slots.close()
-            manager.read_slots = ReadSlots(output_store, count=1)
+        if manager.read_slot is None or manager.read_slot.store is not output_store:
+            if manager.read_slot is not None:
+                manager.read_slot.close()
+            manager.read_slot = output_store.read_slot()
     if blocks is None:
         blocks = (column[0].parts() if from_store else [(0, column[0].shape[1])]) if column else []
     # A train-data dump, written after training, replaces the column with each sample's local rows
@@ -165,7 +139,7 @@ def attach_replay_data(
         if from_store:
             # A rank that replays nothing, e.g. a pipeline stage of dense layers only, may read all-zero rows.
             rows = _read_local_rows(
-                manager.read_slots, samples, local_ranges, blocks=blocks, check=bool(manager.replays)
+                manager.read_slot, samples, local_ranges, blocks=blocks, check=bool(manager.replays)
             )
         else:
             rows = [
@@ -224,7 +198,7 @@ def attach_replay_data(
 
 
 def _read_local_rows(
-    slots: ReadSlots,
+    slot: "ReadSlot",
     samples: Sequence[ForwardSegments],
     local_ranges: Sequence[Sequence[tuple[int, int]]],
     *,
@@ -256,8 +230,8 @@ def _read_local_rows(
         regions.append(region)
         reads += [(part, r) for r in region.reads]
         offset += sum(counts) * region.row_bytes
-    buffer = slots.get(0, offset)
-    slots.store.read_ranges(
+    buffer = slot.reserve(offset)
+    slot.store.read_ranges(
         [
             RangeRead(
                 ref=r.ref,
