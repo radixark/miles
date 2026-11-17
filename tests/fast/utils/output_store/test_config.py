@@ -258,3 +258,11 @@ class TestRunEndSweep:
             sweep_output_store(make_args(run_uuid="0123456789abcdef"))
 
         assert calls[-1] == ("close",)
+
+
+@pytest.mark.parametrize("has_read_slot", [False, True])
+def test_trainer_reads_need_a_plugin_with_read_slots(monkeypatch, has_read_slot):
+    plugin = types.ModuleType("radix_transfer_plugins")
+    plugin.OutputStore = type("OutputStore", (), {"read_slot": None} if has_read_slot else {"read_buffer": None})
+    monkeypatch.setitem(sys.modules, "radix_transfer_plugins", plugin)
+    assert output_store_config._output_store_reads_ranges() is has_read_slot
