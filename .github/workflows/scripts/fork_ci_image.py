@@ -33,21 +33,21 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def open_api(url, method="GET"):
+def open_api(url):
     # Self-hosted builders have no gh CLI. Artifact downloads redirect to blob storage, which must not get the token.
-    request = urllib.request.Request(url, method=method, headers={"Accept": "application/vnd.github+json"})
+    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
     request.add_unredirected_header("Authorization", f"Bearer {os.environ['GH_TOKEN']}")
     return urllib.request.urlopen(request, timeout=60)
 
 
-def api(path, *, method="GET", collection=None):
+def api(path, *, collection=None):
     url = f"{API_URL}/{path}"
     items = []
     while True:
-        with open_api(url, method) as response:
+        with open_api(url) as response:
             data = response.read()
             next_page = re.search(r'<([^>]+)>;\s*rel="next"', response.headers.get("Link", ""))
-        result = json.loads(data) if data.strip() else None
+        result = json.loads(data)
         if not collection:
             return result
         items += result[collection]
@@ -344,14 +344,6 @@ def main():
         build_image(request, repository, args.source.resolve(), args.arch)
     elif args.mode == "finish":
         verify_published(request, args.arch)
-        # The amd64 build owns the one-shot label, as on the same-repository path.
-        if request["force_rebuild"] and args.arch == "amd64":
-            try:
-                api(f"repos/{repository}/issues/{request['pr']}/labels/rebuild-ci-image", method="DELETE")
-            except OSError:
-                print(
-                    "::warning::Could not remove the rebuild-ci-image label; remove it by hand or every run will rebuild."
-                )
 
 
 if __name__ == "__main__":

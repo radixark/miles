@@ -6,7 +6,6 @@ import os
 import subprocess
 import sys
 import time
-import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -376,32 +375,20 @@ def test_publication_requires_matching_hash_on_its_tag(identity, monkeypatch, ar
         HANDLER.verify_published(request, arch)
 
 
-@pytest.mark.parametrize(
-    "arch,force,remove_fails",
-    [("amd64", False, False), ("amd64", True, False), ("amd64", True, True), ("arm64", True, False)],
-)
-def test_publication_only_consumes_the_original_force_request(source, monkeypatch, capsys, arch, force, remove_fails):
+@pytest.mark.parametrize("arch", ["amd64", "arm64"])
+def test_publication_leaves_the_rebuild_label_on_the_pr(source, monkeypatch, arch):
     root, request, pr = source
-    request["force_rebuild"] = force
+    request["force_rebuild"] = True
     pr["labels"].append(dict(name="rebuild-ci-image"))
     monkeypatch.setenv("GITHUB_REPOSITORY", REPOSITORY)
     monkeypatch.setenv("REQUEST_JSON", json.dumps(request))
     monkeypatch.setattr(sys, "argv", ["fork_ci_image.py", "finish", "--source", str(root), "--arch", arch])
     monkeypatch.setattr(HANDLER, "current_request", lambda *args: pr)
-    monkeypatch.setattr(HANDLER, "verify_published", lambda request, arch: None)
-    mutations = []
-
-    def api(path, *, method):
-        mutations.append((path, method))
-        if remove_fails:
-            raise urllib.error.HTTPError(path, 404, "Not Found", None, None)
-
-    monkeypatch.setattr(HANDLER, "api", api)
+    verified = []
+    monkeypatch.setattr(HANDLER, "verify_published", lambda request, arch: verified.append(arch))
+    monkeypatch.setattr(HANDLER, "api", lambda *args, **kwargs: pytest.fail("finish must not call the API"))
     HANDLER.main()
-    # The amd64 build owns the one-shot label.
-    consumes = force and arch == "amd64"
-    assert mutations == ([(f"repos/{REPOSITORY}/issues/3192/labels/rebuild-ci-image", "DELETE")] if consumes else [])
-    assert ("::warning::" in capsys.readouterr().out) == remove_fails
+    assert verified == [arch]
 
 
 def test_observer_waits_past_an_old_attempt_job(monkeypatch, identity):

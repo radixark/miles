@@ -54,7 +54,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-      pull-requests: write
+      pull-requests: read
     env:
       REQUEST_JSON: ${{ needs.request.outputs.request }}
       PR_NUMBER: ${{ needs.request.outputs.pr }}
@@ -132,7 +132,7 @@ jobs:
             quay.io/skopeo/stable:v1.22.3-immutable@sha256:c0ee1f4edca5c01cb8d5611124f92f3cc47196ecab68aee5d0f90834e00574d5 \
             copy --all --retry-times 3 --authfile /auth.json \
             oci:/oci "docker://radixark/miles:${IMAGE_TAG}"
-      - name: Verify the published inputs and consume the rebuild label
+      - name: Verify the published inputs
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 trusted/.github/workflows/scripts/fork_ci_image.py finish --source source --arch "$ARCH"
