@@ -55,11 +55,11 @@ Env vars (read on the rollout worker):
 Failure semantics: a verdict is returned as-is; every episode that ends
 without one scores 0 with a named ``exit_status`` (``TimeLimitExceeded``,
 ``SequenceLengthLimitExceeded``, ``AgentError``), matching the agent-server
-path. Configuration errors (missing task dir, bad env vars) raise instead:
-they would fail every sample, and a loud stop beats training on silent
-all-zero rewards. Nothing is discarded here yet; see the tracking issue for
-wiring the platform-side Harbor exceptions to ``InfraAbort`` once that
-contract lands.
+path. Setup errors raise instead, which aborts only this sample: ``preflight``
+has already checked, before the first rollout, what every trial on this host
+needs, so an error here belongs to this sample, such as a row whose task dir
+is missing. Platform-side Harbor exceptions still score 0; see the tracking
+issue for wiring them to ``InfraAbort`` once that contract lands.
 """
 
 import asyncio
@@ -68,10 +68,12 @@ import logging
 import math
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from aenv_cli import preflight_aenv
 
 from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, resolve_provider, resolve_provider_api_key
 from miles.rollout.agentic.session import openai_session_url
@@ -272,6 +274,12 @@ _DEFAULT_BINDING = HarnessBinding(kwargs=_no_kwargs, env=_openai_env)
 # --- trial config ----------------------------------------------------------
 
 
+def _tasks_dir() -> Path:
+    if not (raw := os.getenv("HARBOR_TASKS_DIR", "").strip()):
+        raise ValueError("set HARBOR_TASKS_DIR to the directory holding one Harbor task dir per instance_id")
+    return Path(raw)
+
+
 def _task_path(tasks_dir: Path, instance_id: str) -> Path:
     if not instance_id or not _SAFE_INSTANCE_ID.match(instance_id):
         raise ValueError(f"invalid instance_id {instance_id!r}")
@@ -283,11 +291,26 @@ def _task_path(tasks_dir: Path, instance_id: str) -> Path:
     return path
 
 
+def task_dir_errors(tasks_dir: Path, instance_ids: Iterable[str]) -> list[str]:
+    """The error a trial would raise for each of ``instance_ids`` that has no usable task dir."""
+    errors = []
+    for instance_id in instance_ids:
+        try:
+            _task_path(tasks_dir, instance_id)
+        except (ValueError, FileNotFoundError) as e:
+            errors.append(str(e))
+    return errors
+
+
+def _harbor_env_type() -> str:
+    return os.getenv("HARBOR_ENV_TYPE", "").strip().lower()
+
+
 def _ensure_provider_key() -> None:
     """Resolve the key file the launcher forwarded (by PATH) into the env var the
     provider's SDK reads. Modal needs nothing here: its SDK reads the config file
     MODAL_CONFIG_PATH names."""
-    spec = PROVIDER_CREDENTIALS.get(resolve_provider(os.getenv("HARBOR_ENV_TYPE", "").strip().lower()))
+    spec = PROVIDER_CREDENTIALS.get(resolve_provider(_harbor_env_type()))
     if not spec or len(spec["key_env_vars"]) != 1:
         return
     key_env = spec["key_env_vars"][0]
@@ -302,7 +325,7 @@ def _environment_config():
     from harbor.models.environment_type import EnvironmentType
     from harbor.models.trial.config import EnvironmentConfig
 
-    raw = os.getenv("HARBOR_ENV_TYPE", "").strip().lower()
+    raw = _harbor_env_type()
     if not raw:
         raise ValueError("set HARBOR_ENV_TYPE to the Harbor environment type to run trials on (e.g. e2b, daytona)")
     env_type = EnvironmentType(raw)  # raises on an unknown backend instead of guessing
@@ -352,7 +375,7 @@ def _environment_config():
 def build_trial_config(metadata: dict[str, Any], session_url: str, request_kwargs: dict[str, Any]):
     from harbor.models.trial.config import AgentConfig, TaskConfig, TrialConfig, VerifierConfig
 
-    tasks_dir = Path(os.environ["HARBOR_TASKS_DIR"])
+    tasks_dir = _tasks_dir()
     agent_name = str(metadata.get("agent_name") or "mini-swe-agent")
     model = f"openai/{os.getenv('AGENT_MODEL_NAME', 'model')}"
     api_key = "dummy"
@@ -483,6 +506,35 @@ def _failed(exit_status: str) -> dict[str, Any]:
 # --- entry -----------------------------------------------------------------
 
 
+async def preflight(args) -> None:
+    """Fail the run before its first rollout if no trial could start on this host."""
+    await asyncio.to_thread(_check_trial_setup)  # `aenv --version` would block the rollout loop
+
+
+def _check_trial_setup() -> None:
+    import harbor.trial.trial  # noqa: F401  # every trial imports it
+
+    preflight_aenv(_harbor_env_type())
+    _trial_timeout_s()
+    _ensure_provider_key()
+    # every sample builds its trial config from the same environment, so a stand-in sample per harness checks it
+    stand_in_metadata = {"instance_id": _stand_in_task_id(_tasks_dir())}
+    for agent_name in HARNESS_BINDINGS:
+        build_trial_config({**stand_in_metadata, "agent_name": agent_name}, "http://preflight.invalid/v1", {})
+
+
+def _stand_in_task_id(tasks_dir: Path) -> str:
+    if not tasks_dir.is_dir():
+        raise FileNotFoundError(
+            f"HARBOR_TASKS_DIR {tasks_dir} is not a directory on this host; "
+            "put the task dirs on a filesystem every worker can read"
+        )
+    for entry in sorted(tasks_dir.iterdir()):
+        if entry.is_dir() and _SAFE_INSTANCE_ID.match(entry.name):
+            return entry.name
+    raise FileNotFoundError(f"no Harbor task dir under HARBOR_TASKS_DIR {tasks_dir}")
+
+
 async def run(
     base_url: str,
     prompt: Any,
@@ -499,9 +551,7 @@ async def run(
     instance_id = metadata.get("instance_id")
     trial_timeout_s = _trial_timeout_s()
 
-    # Config errors (missing task dir, bad env vars, unresolvable provider key)
-    # fail every sample the same way; raising beats training on silent all-zero
-    # rewards.
+    # not the policy's doing: raising drops the sample instead of scoring it 0
     _ensure_provider_key()
     config = build_trial_config(metadata, session_url, request_kwargs)
 

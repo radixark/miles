@@ -54,6 +54,7 @@ from miles.utils.http_utils import init_http_client
 from miles.utils.init_once import InitOnce, InitState, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
+from miles.utils.misc import call_agent_preflight_hook
 from miles.utils.output_store.config import connect_output_store, output_store_backend_config, sweep_output_store
 from miles.utils.output_store.dropped import store_refs_of, take_dropped_refs
 from miles.utils.output_store.plan import StorePlanError
@@ -115,6 +116,9 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
     async def init(self) -> None:
         args = self.args
         observers.start_process("rollout_manager")
+        if args.load_debug_rollout_data is None:  # replayed rollouts call no agent function
+            # before the engine waits, so a broken agent setup fails the run at once
+            await call_agent_preflight_hook(args)
         if args.starts_inference_engines:
             await resolve_router_addrs(args, router_providers=self._router_providers)
             await wait_session_server_ready(args, provider=self._session_server_provider)
