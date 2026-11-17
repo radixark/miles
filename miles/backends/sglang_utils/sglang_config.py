@@ -306,6 +306,22 @@ class SglangConfig(FrozenStrictBaseModel):
         ]
         return _list_of_dicts_get(values or [self.base_args], name)
 
+    def actor_value(self, name: str) -> Any:
+        """The actor engines' value of ``name``; raises when their groups disagree.
+
+        Actor engines belong to a model with ``update_weights``: they receive the trainer's weights and produce
+        its samples. A frozen reference, reward or eval model may set ``name`` differently. With no actor engine
+        (``--debug-train-only``) the base args stand in.
+        """
+        values = [
+            self.base_args | group.overrides
+            for model in self.models
+            if model.update_weights
+            for group in model.server_groups
+            if group.worker_type != WorkerType.PLACEHOLDER
+        ]
+        return _list_of_dicts_get(values or [self.base_args], name)
+
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
         SglangClientConfig.add_arguments(parser=parser)
@@ -357,7 +373,12 @@ def _extract_base_args(args: Namespace) -> dict[str, Any]:
     parser = argparse.ArgumentParser(add_help=False)
     _add_prefixed_primary_server_args(parser)
     values = vars(args)
-    return {action.dest.removeprefix("sglang_"): values[action.dest] for action in parser._actions}
+    return {
+        action.dest.removeprefix("sglang_"): values[action.dest]
+        for action in parser._actions
+        # sglang's deprecated choice aliases default to SUPPRESS: no dest unless given
+        if action.default is not argparse.SUPPRESS or action.dest in values
+    }
 
 
 def _add_prefixed_primary_server_args(parser: argparse.ArgumentParser) -> None:

@@ -58,17 +58,21 @@ async def _execute_tool_call(
 
 
 def update_sample_with_tool_responses(sample: Sample, tool_messages: list[dict[str, Any]], tokenizer):
-    next_obs_tokens_ids: list[int] = tokenize_tool_responses(tool_messages, tokenizer=tokenizer)
+    append_observation_tokens(sample, tokenize_tool_responses(tool_messages, tokenizer=tokenizer), tokenizer=tokenizer)
+
+
+def append_observation_tokens(sample: Sample, token_ids: list[int], *, tokenizer) -> None:
+    """Append tokens the engine did not sample, keeping every per-token rollout field aligned."""
     if sample.rollout_sampling_mask is not None:
-        append_forced_sampling_tokens(sample, next_obs_tokens_ids)
+        append_forced_sampling_tokens(sample, token_ids)
     if sample.rollout_store_plan is not None:
-        sample.rollout_store_plan = sample.rollout_store_plan.insert_tokens(len(next_obs_tokens_ids))
-    pad_rollout_topk_logprobs(sample, len(next_obs_tokens_ids))
-    sample.response += tokenizer.decode(next_obs_tokens_ids)
-    sample.response_length += len(next_obs_tokens_ids)
-    sample.tokens += next_obs_tokens_ids
-    sample.loss_mask += [0] * len(next_obs_tokens_ids)
-    sample.rollout_log_probs += [0.0] * len(next_obs_tokens_ids)
+        sample.rollout_store_plan = sample.rollout_store_plan.insert_tokens(len(token_ids))
+    pad_rollout_topk_logprobs(sample, len(token_ids))
+    sample.response += tokenizer.decode(token_ids)
+    sample.response_length += len(token_ids)
+    sample.tokens += token_ids
+    sample.loss_mask += [0] * len(token_ids)
+    sample.rollout_log_probs += [0.0] * len(token_ids)
 
 
 # TODO: very naive implementation, need the to-be-implemented e2e test to validate.

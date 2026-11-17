@@ -68,7 +68,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         if sink is not None:
             tokens = output.get("meta_info", {}).get("completion_tokens", "")
             sink.gen_span(sample, gen_t0, time.time(), turn=_turn + 1, detail=str(tokens))
-        await update_sample_from_response(args, sample, payload=payload, output=output, update_loss_mask=True)
+        await update_sample_from_response(
+            args, sample, payload=payload, output=output, update_loss_mask=True, tokenizer=tokenizer
+        )
         if record_trajectory:
             trajectory.append({"role": "assistant", "content": output["text"]})
             sample.metadata["messages"] = list(trajectory)  # snapshot: trajectory keeps growing in later turns

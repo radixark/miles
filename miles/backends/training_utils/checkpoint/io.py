@@ -2,7 +2,6 @@
 
 # TODO: isolate checkpoint IO failures in Tinker; they still terminate the trainer cell.
 
-import json
 import logging
 import shutil
 from collections.abc import Callable
@@ -18,7 +17,6 @@ logger = logging.getLogger(__name__)
 def write_checkpoint_dir(
     path: str | Path,
     write_shards: Callable[[Path], None],
-    metadata: dict | None = None,
     *,
     overwrite: bool = True,
     completion_marker: str | None = None,
@@ -68,8 +66,6 @@ def write_checkpoint_dir(
                 + "; ".join(f"rank {rank}: {error}" for rank, error in enumerate(errors) if error is not None)
             )
         if is_rank0:
-            if metadata is not None:
-                (checkpoint_dir / "META.json").write_text(json.dumps(metadata, indent=2))
             if completion_marker is not None:
                 (checkpoint_dir / completion_marker).touch()
     except Exception:

@@ -40,11 +40,19 @@ def _gloo_subgroup(my_ranks: list[int]):
     return my_group
 
 
-def _group_info(parallelism: "ParallelismContext", mesh_name: str, *, with_gloo: bool = False) -> GroupInfo:
+def _singleton_group() -> dist.ProcessGroup:
+    # every rank must create every subgroup, in the same order (tpu_dist enforces it), so build all and keep ours
+    mine, _ = dist.new_subgroups_by_enumeration([[rank] for rank in range(dist.get_world_size())])
+    return mine
+
+
+def _group_info(
+    parallelism: "ParallelismContext", mesh_name: str, *, alone: GroupInfo, with_gloo: bool = False
+) -> GroupInfo:
     mesh = parallelism.get_optional_mesh(mesh_name)
     if mesh is None:
         ranks = [dist.get_rank()]
-        group = dist.new_group(ranks)
+        group = alone.group
     else:
         group = mesh.get_group()
         ranks = dist.get_process_group_ranks(group)
@@ -57,15 +65,15 @@ def _group_info(parallelism: "ParallelismContext", mesh_name: str, *, with_gloo:
 
 
 def create_titan_parallel_state(parallelism: "ParallelismContext", *, is_pp_last_stage: bool = True) -> ParallelState:
-    alone = GroupInfo(rank=0, size=1, group=dist.new_group([dist.get_rank()]))
-    dp = _group_info(parallelism, "dp", with_gloo=True)
+    alone = GroupInfo(rank=0, size=1, group=_singleton_group())
+    dp = _group_info(parallelism, "dp", alone=alone, with_gloo=True)
     state = ParallelState(
         intra_dp=dp,
         intra_dp_cp=dp,
         cp=alone,
-        tp=_group_info(parallelism, "tp"),
-        pp=_group_info(parallelism, "pp"),
-        ep=_group_info(parallelism, "ep"),
+        tp=_group_info(parallelism, "tp", alone=alone),
+        pp=_group_info(parallelism, "pp", alone=alone),
+        ep=_group_info(parallelism, "ep", alone=alone),
         etp=alone,
         indep_dp=alone,
         meshes={},

@@ -225,6 +225,9 @@ async def _post(
             if response_decoder is not None:
                 async with asyncio.timeout(response_timeout):
                     async with client.stream(action.upper(), url, json=payload or {}, headers=headers) as response:
+                        if response.is_error:
+                            # Buffer error bodies within the attempt deadline for the existing HTTP diagnostics.
+                            await response.aread()
                         response.raise_for_status()
                         return await response_decoder(response)
             if action in ("delete", "get"):
@@ -247,7 +250,11 @@ async def _post(
             if isinstance(e, httpx.HTTPStatusError):
                 response_text = e.response.text if e.response.is_stream_consumed else None
                 if 400 <= e.response.status_code < 500 and e.response.status_code not in (408, 429):
-                    raise
+                    # The server's reply says what was wrong with the request (e.g. an expanded multimodal prompt
+                    # past the engine's context length); the status line alone does not.
+                    raise httpx.HTTPStatusError(
+                        f"{e}: {response_text[:2000]}", request=e.request, response=e.response
+                    ) from None
             else:
                 response_text = None
 

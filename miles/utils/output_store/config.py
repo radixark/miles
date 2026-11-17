@@ -13,9 +13,7 @@ of the run, ``sweep_output_store`` removes what is left under the run's key pref
 from __future__ import annotations
 
 import argparse
-import functools
 import json
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from sglang.srt.server_args import ServerArgs
@@ -76,6 +74,12 @@ def check_output_store_args(args: argparse.Namespace, *, sglang: SglangConfig, m
                 "and Miles drops server args SGLang does not know",
             ),
             (
+                not _output_store_reads_ranges(),
+                "the installed radix_transfer_plugins cannot read byte ranges into a ReadBuffer it keeps "
+                "(OutputStore.read_slot), which trainer ranks need to read only their own replay rows; "
+                "rebuild the image",
+            ),
+            (
                 use_legacy_rollout_v1(),
                 "the legacy rollout (MILES_USE_LEGACY_ROLLOUT_V1) never asks SGLang for the output store",
             ),
@@ -113,8 +117,8 @@ def check_output_store_args(args: argparse.Namespace, *, sglang: SglangConfig, m
             (
                 indexer_topk_bytes is not None and indexer_topk_bytes > buffer_bytes,
                 f"--output-store-local-buffer-size {args.output_store_local_buffer_size} cannot hold the "
-                f"{indexer_topk_bytes} bytes of indexer top-k that the longest sequence the --rollout-max-*-len "
-                "flags allow stores",
+                f"{indexer_topk_bytes} bytes of indexer top-k of the longest sequence known at launch from "
+                "--max-seq-len or the --rollout-max-*-len flags",
             ),
             *(
                 (value is not None, f"{flag} is not supported: saved output store refs do not outlive their run")
@@ -201,20 +205,21 @@ def connect_output_store(config: dict[str, Any]) -> OutputStore:
     return OutputStore(backend=create_backend(_BACKEND, json.dumps(config)))
 
 
-def output_store_reader(args: argparse.Namespace) -> Callable | None:
-    """This train worker's ``read`` for ``materialize_store_columns``, or None without the switch."""
+def trainer_output_store(args: argparse.Namespace) -> OutputStore | None:
+    """This train worker's client of the run's output store, or None without the switch."""
     if not args.use_output_store:
         return None
-    from radix_transfer_plugins.stashes.token_output import TokenOutputStash
-
-    store = connect_output_store(output_store_backend_config(args))
-    return functools.partial(store.read_many, stash_type=TokenOutputStash)
+    return connect_output_store(output_store_backend_config(args))
 
 
 def _max_indexer_topk_bytes(args: argparse.Namespace) -> int | None:
-    """Bytes of the indexer top-k of the longest sequence the length flags allow, or None if unknown.
+    """Bytes of the indexer top-k of the longest sequence known at launch, or None if unknown.
 
-    Without --rollout-max-context-len, a response cut at --rollout-max-response-len after a prompt of
+    /generate caps every request at --max-seq-len. Under the session server the agent decides when to stop; one
+    that stops once its prompt fills --max-seq-len sends at most a prompt one token short of it plus a full
+    --rollout-max-response-len response, or a prompt of --max-seq-len when that is unset; an agent that ignores the
+    limit can send more, which no launch check sees.
+    Without --max-seq-len, a response cut at --rollout-max-response-len after a prompt of
     --rollout-max-prompt-len tokens, or of one when that is unset, is the longest sequence known at launch.
     Only this field is sized at launch: on DeepSeek-V3.2 it takes about 0.5 MB per token, routed experts take
     about 2 KB, and a sampling mask row holds the sampled support, which only sampling knows.
@@ -224,8 +229,10 @@ def _max_indexer_topk_bytes(args: argparse.Namespace) -> int | None:
     streams, width = args.rollout_indexer_topk_num_streams, args.rollout_indexer_topk_width
     if not (streams and width):
         return None
-    if args.rollout_max_context_len is not None:
-        num_tokens = args.rollout_max_context_len
+    if args.max_seq_len is not None:
+        num_tokens = args.max_seq_len
+        if args.use_session_server and args.rollout_max_response_len is not None:
+            num_tokens += args.rollout_max_response_len - 1
     elif args.rollout_max_response_len is not None:
         num_tokens = (args.rollout_max_prompt_len or 1) + args.rollout_max_response_len
     else:
@@ -240,3 +247,11 @@ def _run_key_prefix(args: argparse.Namespace) -> str:
 
 def _sglang_has_output_store() -> bool:
     return set(SGLANG_OUTPUT_STORE_FIELDS) <= set(_record_field_names(ServerArgs))
+
+
+def _output_store_reads_ranges() -> bool:
+    try:
+        from radix_transfer_plugins import OutputStore
+    except ImportError:
+        return False
+    return hasattr(OutputStore, "read_slot")  # config-access-exempt: probes the plugin version an image ships

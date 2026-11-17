@@ -58,36 +58,55 @@ def _find_free_port() -> int:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
-async def test_post_does_not_retry_permanent_client_errors(status):
+async def test_post_does_not_retry_permanent_client_errors(status, streaming):
     calls = []
 
     def respond(request):
         calls.append(request)
-        return httpx.Response(status, text="invalid request")
+        return httpx.Response(status, stream=_ResponseStream(b"invalid request"))
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-        with pytest.raises(httpx.HTTPStatusError, match=str(status)):
-            await http_utils._post(client, "http://engine/generate", {})
+        with pytest.raises(httpx.HTTPStatusError, match=rf"{status}.*invalid request"):
+            await http_utils._post(
+                client, "http://engine/generate", {}, response_decoder=_decode_json if streaming else None
+            )
     assert len(calls) == 1
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("status", [408, 429, 503])
-async def test_post_still_retries_transient_responses(status, monkeypatch):
+async def test_post_still_retries_transient_responses(status, streaming, monkeypatch):
     calls = []
 
     def respond(request):
         calls.append(request)
-        return httpx.Response(status if len(calls) == 1 else 200, json={"ok": True})
+        return httpx.Response(status if len(calls) == 1 else 200, stream=_ResponseStream(b'{"ok": true}'))
 
     async def no_wait(_):
         pass
 
     monkeypatch.setattr(http_utils.asyncio, "sleep", no_wait)
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-        assert await http_utils._post(client, "http://engine/generate", {}) == {"ok": True}
+        assert await http_utils._post(
+            client, "http://engine/generate", {}, response_decoder=_decode_json if streaming else None
+        ) == {"ok": True}
     assert len(calls) == 2
+
+
+class _ResponseStream(httpx.AsyncByteStream):
+    def __init__(self, body: bytes):
+        self.body = body
+
+    async def __aiter__(self):
+        yield self.body
+
+
+async def _decode_json(response):
+    await response.aread()
+    return response.json()
 
 
 def _listen_after_delay(host: str, port: int, delay: float, stop_event: threading.Event):
@@ -760,6 +779,37 @@ def _run_init_ray_distributed_post(
     http_utils._init_ray_distributed_post(SimpleNamespace(num_gpus_per_node=num_gpus_per_node))
 
     return _PosterActorInit(actor_class=captured["actor_class"], calls=remote_actor_class.calls)
+
+
+@pytest.mark.asyncio
+async def test_distributed_post_decodes_stream_in_poster_actor(monkeypatch):
+    actor = _run_init_ray_distributed_post(monkeypatch).actor_class(concurrency=1)
+    await actor._client.aclose()
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, stream=_ResponseStream(b'{"ok": true}'))
+
+    def refuse_local_fallback():
+        pytest.fail("distributed decoding unexpectedly fell back to the local client")
+
+    monkeypatch.setattr(http_utils, "_distributed_post_enabled", True)
+    monkeypatch.setattr(http_utils, "_post_actors", [SimpleNamespace(do_post=SimpleNamespace(remote=actor.do_post))])
+    monkeypatch.setattr(http_utils, "_rollout_client", refuse_local_fallback)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        actor._client = client
+        assert await http_utils.post(
+            "http://engine/generate",
+            {"prompt": "hello"},
+            headers={"Authorization": "Bearer test-key"},
+            response_decoder=_decode_json,
+            response_timeout=1,
+        ) == {"ok": True}
+    assert len(requests) == 1
+    assert requests[0].headers["Authorization"] == "Bearer test-key"
+    assert requests[0].content == b'{"prompt":"hello"}'
 
 
 class TestPosterActorKeywordOnlyConstruction:

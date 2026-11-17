@@ -1,0 +1,164 @@
+### 0
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 1
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 2
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 3
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "1", "TORCHINDUCTOR_COMPILE_THREADS": "1", "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --custom-model-provider-path miles_plugins.models.muse_spark.muse_spark_1x_model_provider
+  --megatron-to-hf-mode raw
+  --num-layers 62
+  --hidden-size 8192
+  --ffn-hidden-size 16384
+  --num-attention-heads 128
+  --num-query-groups 16
+  --kv-channels 64
+  --group-query-attention
+  --qk-layernorm
+  --attention-output-gate
+  --normalization RMSNorm
+  --norm-epsilon 1e-5
+  --disable-bias-linear
+  --swiglu
+  --vocab-size 202048
+  --make-vocab-size-divisible-by 1
+  --untie-embeddings-and-output-weights
+  --position-embedding-type rope
+  --rotary-base 500000
+  --rotary-percent 1.0
+  --rotary-interleaved
+  --no-rope-freq '[0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1]'
+  --window-size 2047,0
+  --window-attn-skip-freq '[1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0]'
+  --post-self-attn-layernorm
+  --post-mlp-layernorm
+  --num-experts 256
+  --moe-router-topk 8
+  --moe-ffn-hidden-size 4096
+  --moe-latent-size 4096
+  --moe-layer-freq '[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]'
+  --moe-grouped-gemm
+  --moe-token-dispatcher-type alltoall
+  --moe-router-score-function sigmoid
+  --moe-router-dtype fp32
+  --moe-router-use-torch-mm
+  --moe-router-enable-expert-bias
+  --freeze-e-score-correction-bias
+  --moe-router-topk-scaling-factor 1
+  --moe-combine-in-fp32
+  --expert-tensor-parallel-size 1
+  --microbatch-group-size-per-virtual-pipeline-stage 1
+  --moe-router-load-balancing-type none
+  --moe-aux-loss-coeff 0
+  --fp32-residual-connection
+  --accumulate-allreduce-grads-in-fp32
+  --attention-dropout 0
+  --hidden-dropout 0
+  --attention-softmax-in-fp32
+  --no-gradient-accumulation-fusion
+  --no-bias-swiglu-fusion
+  --no-bias-dropout-fusion
+  --no-masked-softmax-fusion
+  --hf-checkpoint /root/models/Muse-Spark-Open-816B-A42B
+  --ref-load /root/models/Muse-Spark-Open-816B-A42B_torch_dist
+  --load /root/shared_data/260101-000000-000/checkpoints 
+  --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
+  --input-key prompt
+  --label-key label
+  --apply-chat-template
+  --chat-template-path /root/models/Muse-Spark-Open-816B-A42B/chat_template.jinja
+  --rollout-shuffle
+  --rm-type math
+  --rollout-temperature 1
+  --num-rollout 30
+  --rollout-batch-size 32
+  --n-samples-per-prompt 16
+  --global-batch-size 512
+  --num-steps-per-rollout 1
+  --balance-data
+  --save-debug-rollout-data '/root/shared_data/260101-000000-000/rollout_data/{rollout_id}.pt'
+  --rollout-max-response-len 4096
+  --max-seq-len 8192
+  --rollout-max-prompt-len 4096
+  --apply-chat-template-kwargs '{"reasoning_effort": "xhigh"}' 
+  --tensor-model-parallel-size 8
+  --pipeline-model-parallel-size 8
+  --decoder-first-pipeline-num-layers 7
+  --decoder-last-pipeline-num-layers 7
+  --context-parallel-size 1
+  --expert-model-parallel-size 8
+  --expert-tensor-parallel-size 1
+  --sequence-parallel
+  --qkv-format thd
+  --seq-length 8192
+  --attention-backend flash
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --log-probs-chunk-size 4096
+  --use-dynamic-batch-size
+  --max-tokens-per-gpu 4096 
+  --loss-type policy_loss
+  --advantage-estimator grpo
+  --kl-coef 0
+  --kl-loss-coef 0
+  --entropy-coef 0
+  --eps-clip 0.2
+  --eps-clip-high 0.28
+  --calculate-per-token-loss
+  --skip-actor-forward-only
+  --use-rollout-routing-replay 
+  --optimizer adam
+  --lr 1e-06
+  --min-lr 1e-06
+  --lr-decay-style constant
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.95
+  --adam-eps 1e-8
+  --clip-grad 0
+  --use-distributed-optimizer
+  --ckpt-format torch_dist
+  --no-load-optim
+  --no-save-optim
+  --stream-optimizer-state-to-disk
+  --stream-optimizer-state-moment-dtype fp32
+  --offload-train-disk-chunk-mb 256 
+  --colocate
+  --offload-train
+  --offload-rollout
+  --offload-train-target disk
+  --rollout-num-gpus-per-engine 16
+  --sglang-ep-size 16
+  --sglang-pp-size 1
+  --sglang-dtype bfloat16
+  --sglang-mem-fraction-static 0.8
+  --sglang-kv-cache-dtype bfloat16
+  --sglang-chunked-prefill-size 1024
+  --sglang-context-length 8192
+  --sglang-router-policy round_robin
+  --sglang-cuda-graph-bs-decode 1 2 4 8 16 32 64
+  --sglang-cuda-graph-backend-prefill disabled
+  --sglang-max-running-requests 64 
+  --actor-num-nodes 8
+  --actor-num-gpus-per-node 8
+  --num-gpus-per-node 8
+  --update-weight-buffer-size 2147483648 
+  --use-wandb
+  --wandb-project miles-run_muse_spark_64xh200
+  --wandb-group 260101-000000-000
+  --wandb-key 'frozen-wandb-api-key'
+  --disable-wandb-random-suffix   
+  --deploy-component all

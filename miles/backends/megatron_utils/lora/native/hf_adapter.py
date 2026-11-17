@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import time
 from collections.abc import Iterable
 
 import torch
@@ -18,7 +17,9 @@ from miles.backends.megatron_utils.lora.native.spec.base import ShardLayout
 logger = logging.getLogger(__name__)
 
 
-def export_lora_hf_named(adapters: Iterable[NativeLoRAAdapter]) -> list[tuple[str, torch.Tensor]]:
+def export_lora_hf_named(
+    adapters: Iterable[NativeLoRAAdapter], dtype: torch.dtype = torch.bfloat16
+) -> list[tuple[str, torch.Tensor]]:
     """Materialize full HF/PEFT adapter tensors of ``adapters`` on every TP rank.
 
     Collective: every TP/EP rank must pass the same adapters in the same order.
@@ -26,7 +27,6 @@ def export_lora_hf_named(adapters: Iterable[NativeLoRAAdapter]) -> list[tuple[st
     This representation preserves the exact target set; the serving exporter adds the
     zero siblings SGLang's fused buffers need. The weight iterator gathers across PP.
     """
-    started = time.perf_counter()
     gather = ParallelGather()
     plan: list[tuple[str, object]] = []
 
@@ -46,22 +46,9 @@ def export_lora_hf_named(adapters: Iterable[NativeLoRAAdapter]) -> list[tuple[st
             plan.append((f"{export.hf_name}.lora_B.weight", b))
 
     gather.flush()
-    exported = [
-        (name, (source() if callable(source) else source).detach().to(torch.bfloat16).contiguous())
-        for name, source in plan
+    return [
+        (name, (source() if callable(source) else source).detach().to(dtype).contiguous()) for name, source in plan
     ]
-    if not dist.is_initialized() or dist.get_rank() == 0:
-        peak_b = max(
-            (tensor.abs().max().item() for name, tensor in exported if name.endswith("lora_B.weight")),
-            default=0.0,
-        )
-        logger.info(
-            "[lora-native] exported %d adapter tensors in %.1f ms (max|lora_B|=%.3e)",
-            len(exported),
-            (time.perf_counter() - started) * 1e3,
-            peak_b,
-        )
-    return exported
 
 
 def load_lora_adapter_hf(model_chunks, adapter_path: str) -> int:
@@ -75,10 +62,9 @@ def load_lora_adapter_hf(model_chunks, adapter_path: str) -> int:
     from safetensors import safe_open
 
     path = os.path.join(adapter_path, "adapter_model.safetensors")
-    assert os.path.exists(path), (
-        f"[lora-native] no adapter_model.safetensors under {adapter_path}; "
-        "checkpoints written by save_lora_checkpoint use that name"
-    )
+    assert os.path.exists(
+        path
+    ), f"[lora-native] no adapter_model.safetensors under {adapter_path}; PEFT exports use that name"
     with safe_open(path, framework="pt") as adapter_file:
         keys = {re.sub(r"^base_model\.model\.", "", key): key for key in adapter_file.keys()}
         taken: set[str] = set()

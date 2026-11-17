@@ -318,6 +318,16 @@ def _environment_config():
                 f"auto_stop_interval_mins={kwargs['auto_stop_interval_mins']} would stop a Daytona sandbox "
                 f"mid-trial: AGENT_TRIAL_TIMEOUT allows {trial_min} minutes"
             )
+    elif env_type == EnvironmentType.E2B:
+        # renewals keep a sandbox alive as long as Harbor runs; servers that read this end it soon after
+        # the trial cap (the 30 minutes of slack is an estimate)
+        trial_s = _trial_timeout_s()
+        kwargs.setdefault("max_lifetime_secs", trial_s + 30 * 60)
+        if int(kwargs["max_lifetime_secs"]) <= trial_s:
+            raise ValueError(
+                f"max_lifetime_secs={kwargs['max_lifetime_secs']} would end an E2B sandbox mid-trial: "
+                f"AGENT_TRIAL_TIMEOUT allows {trial_s} seconds"
+            )
     overrides = {}
     for field, var in (
         ("override_cpus", "HARBOR_OVERRIDE_CPUS"),

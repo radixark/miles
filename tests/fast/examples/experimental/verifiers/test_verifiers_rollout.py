@@ -46,7 +46,7 @@ def _args(**overrides) -> Namespace:
         "length_penalty_min_tokens": 1,
         "num_rollout": None,
         "router": "sglang",
-        "rollout_max_context_len": 64,
+        "max_seq_len": 64,
         "rollout_max_prompt_len": None,
         "rollout_max_response_len": 8,
         "rollout_skip_special_tokens": True,
@@ -581,7 +581,6 @@ def test_sampling_config_accepts_runtime_args_without_train_minimum_tokens(min_t
 
 def test_eval_args_clear_training_prompt_cap_and_preserve_other_fallbacks():
     args = _args(
-        eval_max_context_len=128,
         eval_max_prompt_len=None,
         eval_max_response_len=None,
         eval_min_new_tokens=None,
@@ -590,14 +589,14 @@ def test_eval_args_clear_training_prompt_cap_and_preserve_other_fallbacks():
         eval_top_k=None,
         eval_top_p=None,
         reward_key="score",
-        rollout_max_context_len=64,
+        max_seq_len=64,
         rollout_max_prompt_len=32,
         rollout_max_response_len=8,
     )
 
     eval_args = _make_eval_args(ImmutableNamespace.model_validate(vars(args)))
 
-    assert eval_args.rollout_max_context_len == 128
+    assert eval_args.max_seq_len == 64
     assert eval_args.rollout_max_prompt_len is None
     assert eval_args.rollout_max_response_len == 8
     assert eval_args.reward_key == "score"
