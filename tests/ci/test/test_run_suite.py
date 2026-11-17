@@ -794,6 +794,19 @@ class TestRunSuiteCLI:
         assert "Unknown suite stage-c-unknown" in result.stderr
         assert "No tests to run. Exiting with success." not in result.stdout
 
+    def test_legacy_rocm_nightly_suite_name_runs_the_renamed_stage(self):
+        result = self._run(
+            "--hw",
+            "rocm",
+            "--suite",
+            "nightly-stage-c-4-gpu-mi350",
+            "--cadence",
+            "nightly",
+            "--list-only",
+        )
+        assert result.returncode == 0, result.stderr
+        assert "Suite: stage-c-4-gpu-mi350" in result.stdout
+
 
 # --- run_a_suite: resolved policy reaches cadence and runner behavior --------
 

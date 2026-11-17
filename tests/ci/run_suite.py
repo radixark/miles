@@ -22,7 +22,7 @@ from tests.ci.ci_utils import (
 )
 from tests.ci.hardware import CUDA_STAGES, dispatch_targets
 from tests.ci.labels import KNOWN_LABELS, PERF_LABEL
-from tests.ci.rocm import ROCM_STAGES
+from tests.ci.rocm import LEGACY_NIGHTLY_SUITES, ROCM_STAGES
 
 from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 
@@ -68,10 +68,14 @@ def runs_in_stage(
     """Whether `registration` executes in `suite`, ignoring label selection.
 
     CPU and ROCm registrations have no arch, so their home suite is the only
-    answer. A CUDA registration's home stage is where AUTO sends it; an explicit
-    `run-on-*` can send it to another arch's stage instead. Shared with
-    `stage_selection` so runner allocation and test collection cannot disagree.
+    answer, except that `run-ci-blackwell-only` (an arch restriction without
+    `run-on-*`) selects no ROCm test. A CUDA registration's home stage is where
+    AUTO sends it; an explicit `run-on-*` can send it to another arch's stage
+    instead. Shared with `stage_selection` so runner allocation and test
+    collection cannot disagree.
     """
+    if registration.backend is HWBackend.ROCM:
+        return registration.suite == suite and (absorb or not dispatch_arches)
     if registration.backend is not HWBackend.CUDA:
         return registration.suite == suite
     return suite in dispatch_targets(
@@ -434,6 +438,8 @@ def main():
 
     if args.github_output and not args.list_only:
         parser.error("--github-output requires --list-only.")
+    if args.hw == "rocm":
+        args.suite = LEGACY_NIGHTLY_SUITES.get(args.suite, args.suite)
 
     # Validate auto-partition arguments
     if (args.auto_partition_id is not None) != (args.auto_partition_size is not None):

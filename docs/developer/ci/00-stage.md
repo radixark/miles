@@ -130,7 +130,7 @@ The [shared CUDA/ROCm rules](#shared-by-cuda-and-rocm) apply. This section conta
 - **Secrets.** ROCm explicitly passes `AMD_WANDB_API_KEY` and `AMD_NEON_DATABASE_URL`. The workflow maps the former to `WANDB_API_KEY` for W&B, and Spur forwards both into the container.
 - **Test registration.** Tests opt in through `register_rocm_ci`; CUDA registrations do not select ROCm tests. Hardware-specific layouts belong in separate `test_amd_<name>.py` files.
 - **Changed-file jobs.** PRs with `run-ci-amd`, `run-ci-all`, or `nightly` also run eligible changed ROCm files not covered by the selected suites, using the [single-file plan](01-label.md#manage-ci-from-pr-comments). `long` and `ft-long` require explicit `run-ci-long` and `run-ci-ft-long` labels. The planner reports skips and, if more than four files are eligible, lists them without launching file jobs. They resolve their image as the suites do and share the ROCm `/rerun-test` queue. Without a usable diff, only suite selection applies.
-- **External nightly.** SGLang's [ROCm 10 nightly](https://github.com/sgl-project/sglang/blob/main/.github/workflows/nightly-test-amd-miles-rocm10.yml) runs the same MI350 suites with `--cadence nightly` on its own MI35X runners and the newest Miles image.
+- **External nightly.** SGLang's [ROCm 10 nightly](https://github.com/sgl-project/sglang/blob/main/.github/workflows/nightly-test-amd-miles-rocm10.yml) runs the same MI350 suites with `--cadence nightly`, still under their former `nightly-` names, which `run_suite.py` maps to them until that workflow moves, on its own MI35X runners and the newest Miles image.
 
 ## TPU contract job
 

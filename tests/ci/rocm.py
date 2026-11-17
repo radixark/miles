@@ -22,6 +22,9 @@ ROCM_STAGES = {
     "stage-c-4-gpu-mi350": RocmStage(4),
     "stage-c-8-gpu-mi350": RocmStage(8),
 }
+# Suite names the external SGLang MI350 and MI30x Miles nightlies still pass
+# with --cadence nightly. Remove once both request ROCM_STAGES directly.
+LEGACY_NIGHTLY_SUITES = {f"nightly-{suite}": suite for suite in ROCM_STAGES}
 DEFAULT_IMAGE_TAG = "miles-rocm10-mi35x"
 ROCM_CHANGED_FILE_LIMIT = 4
 # Spur's default TIME_LIMIT leaves 15 minutes for the image pull and setup.

@@ -157,12 +157,22 @@ def test_blackwell_only_scope_keeps_b200_for_non_blackwell_changes(changed_path)
         _registration("tests/e2e/test_hopper.py", "stage-c-8-gpu-h200", hardware=["hopper"]),
         _registration("tests/e2e/test_blackwell_8.py", "stage-c-8-gpu-b200", hardware=["blackwell"]),
         _registration("tests/e2e/test_blackwell_4.py", "stage-c-4-gpu-b200", hardware=["blackwell"]),
+        _registration("tests/e2e/test_rocm.py", "stage-c-4-gpu-mi350"),
     ]
     changed_files = (ChangedFile("M", (changed_path,)),)
 
     skipped = set(_select(changed_files, registrations, raw_labels=("run-ci-blackwell-only",)))
 
     assert skipped == PR_GPU_STAGES - {"stage-c-8-gpu-b200", "stage-c-4-gpu-b200"}
+
+
+def test_run_on_dispatch_keeps_a_selected_rocm_stage():
+    registrations = [_registration("tests/e2e/test_rocm.py", "stage-c-4-gpu-mi350")]
+    changed_files = (ChangedFile("M", ("miles/trainer.py",)),)
+
+    skipped = set(_select(changed_files, registrations, raw_labels=("run-ci-precision", "run-on-blackwell")))
+
+    assert "stage-c-4-gpu-mi350" not in skipped
 
 
 def test_bypass_fastfail_does_not_make_a_docs_change_affect_gpu_stages():
