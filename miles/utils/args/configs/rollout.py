@@ -502,6 +502,25 @@ class RolloutRelatedRolloutOnlyConfig(BaseConfig):
             )
         ),
     ] = None
+    use_partial_groups_on_abort: A[
+        bool,
+        Arg(
+            help=(
+                "Train the completed trajectories of a prompt group in which some aborted, instead of discarding "
+                "the whole group, when at least --partial-groups-on-abort-min-ratio of it completed. "
+                "Requires --use-dynamic-global-batch-size."
+            )
+        ),
+    ] = False
+    partial_groups_on_abort_min_ratio: A[
+        float,
+        Arg(
+            help=(
+                "With --use-partial-groups-on-abort, the share of a prompt group that must complete for it to "
+                "train, in (0, 1]."
+            )
+        ),
+    ] = 0.75
     rollout_submission_granularity: A[
         str | None,
         Arg(

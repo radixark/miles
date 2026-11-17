@@ -93,6 +93,21 @@ def apply_aborted_filter(args: Namespace, samples: Group, **kwargs) -> FilterOut
     return FilterOutput(keep=True)
 
 
+def drop_aborted_trajectories(args: Namespace, group: Group) -> tuple[Group, Group]:
+    """Split off the aborted trajectories if enough completed; else the group stays whole for the aborted filter."""
+    if not args.use_partial_groups_on_abort:
+        return group, []
+    completed, aborted = [], []
+    for trajectory in group:
+        if apply_aborted_filter(args, [trajectory]).keep:
+            completed.append(trajectory)
+        else:
+            aborted.append(trajectory)
+    if len(completed) / len(group) < args.partial_groups_on_abort_min_ratio:
+        return group, []
+    return completed, aborted
+
+
 def apply_missing_reward_filter(args: Namespace, samples: Group, **kwargs) -> FilterOutput:
     if any(sample.reward is None or sample.get_reward_value(args) is None for sample in iter_samples(samples)):
         return FilterOutput(keep=False, reason="group_has_missing_reward")

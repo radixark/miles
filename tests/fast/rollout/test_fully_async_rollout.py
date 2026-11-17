@@ -117,6 +117,7 @@ def make_args(**overrides) -> Namespace:
         megatron_config=None,
         rollout_submission_granularity=None,
         dynamic_sampling_filter_path=None,
+        use_partial_groups_on_abort=False,
         reward_key=None,
         rollout_sample_filter_path=None,
         buffer_filter_path=None,
@@ -770,6 +771,31 @@ async def test_missing_reward_records_the_prompt_as_explicitly_dropped(sample_fl
     assert isinstance(event, ExplicitlyDroppedSamplesEvent)
     assert event.source_sample_indices == [10, 11]
     assert event.reason == "missing_reward"
+
+
+async def test_a_partial_group_resolves_its_aborted_sample_once_consumed(sample_flow_event_dir: Path) -> None:
+    """Until consumption a stale group still retries whole, so the left-out sample resolves only then."""
+    args = make_args(
+        enable_sample_ownership_checker=True,
+        rollout_batch_size=1,
+        use_partial_groups_on_abort=True,
+        partial_groups_on_abort_min_ratio=0.5,
+    )
+    buffer = data_buffer.DefaultDataBuffer(
+        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=lambda group, reason: None)
+    )
+    group = make_group(1)
+    group[1].status = Sample.Status.ABORTED
+
+    await put_group(buffer, group)
+    assert read_events(sample_flow_event_dir) == []
+
+    assert (await get_one(buffer)).group == [group[0]]
+    [event] = read_events(sample_flow_event_dir)
+    assert isinstance(event, ExplicitlyDroppedSamplesEvent)
+    assert event.source_sample_indices == [11]
+    assert event.reason == "aborted"
+    assert buffer.get_metrics()["rollout/aborted_trajectories_dropped"] == 1
 
 
 async def test_stale_group_reports_the_reason_to_the_unused_policy() -> None:

@@ -43,6 +43,7 @@ class MetricGatherer:
         self._dynamic_filter_drop_reason_count = defaultdict(lambda: 0)
         self._unfiltered_reward_sum = 0.0
         self._unfiltered_reward_count = 0
+        self._aborted_trajectory_drop_count = 0
 
     def on_group_before_dynamic_filter(self, args: argparse.Namespace, group: list) -> None:
         for sample in _iter_group_samples(group):
@@ -60,6 +61,9 @@ class MetricGatherer:
             return
         self._dynamic_filter_drop_reason_count[reason] += 1
 
+    def on_aborted_trajectories_drop(self, trajectories: list):
+        self._aborted_trajectory_drop_count += len(trajectories)
+
     def collect(self):
         metrics = {
             f"rollout/dynamic_filter/drop_{reason}": count
@@ -67,6 +71,8 @@ class MetricGatherer:
         }
         if self._unfiltered_reward_count:
             metrics["rollout/raw_reward"] = self._unfiltered_reward_sum / self._unfiltered_reward_count
+        if self._aborted_trajectory_drop_count:
+            metrics["rollout/aborted_trajectories_dropped"] = self._aborted_trajectory_drop_count
         return metrics
 
 
