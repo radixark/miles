@@ -43,7 +43,7 @@ from linear_attn_reference import ReplicatedGDN, build_layer, packed, rel_err, s
 register_cuda_ci(
     est_time=120, suite="stage-b-2-gpu-h200", labels=["lora"], hardware=["hopper", "blackwell"], num_gpus=2
 )
-register_rocm_ci(est_time=300, suite="nightly-stage-c-2-gpu-mi350", labels=["lora"])
+register_rocm_ci(est_time=300, suite="stage-c-2-gpu-mi350", labels=["lora"], nightly=True)
 
 HIDDEN = 256
 HEADS = LinearAttnHeads(num_k_heads=4, num_v_heads=8, head_k_dim=64, head_v_dim=64)

@@ -39,7 +39,7 @@ from miles.utils.distributed_utils import init_gloo_group
 register_cuda_ci(
     est_time=240, suite="stage-b-2-gpu-h200", labels=["lora", "multi-lora"], hardware=["hopper"], num_gpus=2
 )
-register_rocm_ci(est_time=120, suite="nightly-stage-c-2-gpu-mi350", labels=["lora", "multi-lora"])
+register_rocm_ci(est_time=120, suite="stage-c-2-gpu-mi350", labels=["lora", "multi-lora"], nightly=True)
 
 logger = logging.getLogger(__name__)
 
