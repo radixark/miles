@@ -28,7 +28,11 @@ from typing import Any
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError, TokenizationError, TruncatedGenerationError
 from miles.rollout.session.linear_trajectory import SessionRegistry, assert_pretokenized_prefix
-from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request
+from miles.rollout.session.request_args import (
+    PreparedChatRequest,
+    chat_template_errors_as_validation_errors,
+    prepare_chat_request,
+)
 from miles.rollout.session.store_refs import SessionStoreRefs
 from miles.rollout.session.types import SessionRecord
 from miles.rollout.session.v2.tree_trajectory import AttachPoint, SessionTree, TrajectoryNode
@@ -75,6 +79,7 @@ def attach_point_for_request(
     """Where *request_messages* attaches: the deepest node whose path is a
     prefix of the request, ``node=None`` for a new root. Pure; raises 409 when
     that node is a truncated generation."""
+    state.tree.check_node_cap()
     attach = state.tree.find_attach_point(request_messages, message_matcher=message_matcher)
 
     if attach.node is not None and attach.node.truncated:
@@ -117,9 +122,10 @@ def prepare_token_ids_and_request_args(
         sampling_defaults=state.sampling_defaults,
         sampling_support_replay=state.sampling_support_replay,
     )
-    prepared.body["input_ids"] = _render_token_ids(
-        parent, request_messages, template_args=prepared.template_args, tito_tokenizer=tito_tokenizer
-    )
+    with chat_template_errors_as_validation_errors():
+        prepared.body["input_ids"] = _render_token_ids(
+            parent, request_messages, template_args=prepared.template_args, tito_tokenizer=tito_tokenizer
+        )
     return prepared, parent
 
 
