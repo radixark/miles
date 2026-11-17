@@ -142,7 +142,6 @@ def test_fill_replay_bshd_token_alignment(
             _attach(
                 _manager(replays, if_sp_region=sequence_first),
                 args=args,
-                models=None,
                 data_iterator=[DataIterator(rollout_data, micro_batch_size=len(tokens))],
                 num_microbatches=[1],
                 rollout_data=rollout_data,
@@ -201,7 +200,6 @@ def test_fill_replay_thd_preserves_packed_order(
         _attach(
             _manager([replay], kept_in_train_dump=kept_in_train_dump),
             args=args,
-            models=None,
             data_iterator=[DataIterator(rollout_data, micro_batch_size=2)],
             num_microbatches=[1],
             rollout_data=rollout_data,
@@ -233,7 +231,6 @@ def test_a_dump_keeps_none_for_a_sample_no_micro_batch_holds(monkeypatch):
     _attach(
         _manager([_Replay()], kept_in_train_dump=True),
         args=args,
-        models=None,
         data_iterator=[DataIterator(rollout_data, micro_batch_size=2)],
         num_microbatches=[1],
         rollout_data=rollout_data,
@@ -262,7 +259,6 @@ def _fill_thd_cp2(monkeypatch, *, cp_rank, allgather_cp, lengths, data_pad_size_
     _attach(
         _manager([replay], indexer=indexer),
         args=args,
-        models=None,
         data_iterator=[DataIterator(rollout_data, micro_batch_size=len(lengths))],
         num_microbatches=[1],
         rollout_data=rollout_data,
@@ -342,7 +338,6 @@ def test_attach_fills_micro_batches_in_the_iterator_order(monkeypatch, schedule,
     _attach(
         _manager([replay]),
         args=args,
-        models=None,
         data_iterator=[iterator],
         num_microbatches=num_microbatches,
         rollout_data=rollout_data,
@@ -377,7 +372,6 @@ def test_attach_aligns_each_recorded_entry_once(monkeypatch):
     _attach(
         _manager(replays),
         args=args,
-        models=None,
         data_iterator=[DataIterator(rollout_data, micro_batch_size=1)],
         num_microbatches=[2],
         rollout_data=rollout_data,
@@ -412,7 +406,6 @@ class TestNativeReplayOwnership:
         _attach(
             _manager([replay]),
             args=args,
-            models=None,
             data_iterator=[DataIterator(batch, micro_batch_size=1)],
             num_microbatches=[1],
             rollout_data=batch,
@@ -528,7 +521,6 @@ def _attach_both(
     _attach(
         manager,
         args=args,
-        models=None,
         data_iterator=[DataIterator(rollout_data, micro_batch_size=2)],
         num_microbatches=[(len(lengths) + 1) // 2],
         rollout_data=rollout_data,
@@ -614,7 +606,6 @@ def test_store_rows_need_an_output_store_client(monkeypatch, fake_plugin):
         _attach(
             _manager([_Replay()]),
             args=args,
-            models=None,
             data_iterator=[DataIterator(rollout_data, micro_batch_size=1)],
             num_microbatches=[1],
             rollout_data=rollout_data,
@@ -778,7 +769,6 @@ def test_all_zero_routed_experts_fail_the_rank_that_reads_them(monkeypatch, fake
         _attach(
             _manager(replays),
             args=args,
-            models=None,
             data_iterator=[DataIterator(rollout_data, micro_batch_size=1)],
             num_microbatches=[1],
             rollout_data=rollout_data,

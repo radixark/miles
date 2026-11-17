@@ -46,5 +46,5 @@ def test_a_stage_of_dense_layers_has_no_routing_replay_stream(monkeypatch):
 def test_routers_that_do_not_match_the_moe_layers_fail(monkeypatch):
     models = _models(monkeypatch, [0, 1, 1], num_layers=3, stages=[(0, 3)])
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"1 routers registered .* layers \[1, 2\]"):
         assign_routed_experts_streams([Replay()], models)

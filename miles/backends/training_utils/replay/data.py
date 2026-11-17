@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from radix_transfer_plugins import ReadBuffer, ReadSlot
 
 
-def register_replay_list_sequential(replay_list, replay_data, *, blocks, **_kwargs):
+def register_replay_list_sequential(replay_list, replay_data, *, blocks):
     """Map replay streams to registered modules.
 
     `replay_data[b]` holds streams `blocks[b]`. Each replay records stream `replay.stream_idx` if
@@ -50,7 +50,6 @@ def attach_replay_data(
     manager: BaseReplayManager,
     *,
     args,
-    models,
     data_iterator,
     num_microbatches,
     rollout_data,
@@ -148,7 +147,7 @@ def attach_replay_data(
             kept_rows.update((j, torch.cat(r, dim=1)) for j, r in zip(order[index], rows, strict=True) if r)
 
         replay_data = [pack([r[i] for r in rows], layout, pad_size) for i in range(len(blocks))]
-        manager.register_replay_list_func(manager.replays, replay_data, models=models, blocks=blocks)
+        manager.register_replay_list_func(manager.replays, replay_data, blocks=blocks)
 
     def pack(replay_data, layout, pad_size):
         """One block's rows of the micro batch's samples, in the token layout its forward consumes."""

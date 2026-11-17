@@ -788,7 +788,6 @@ class MegatronTrainRayActor(TrainRayActor):
                 attach_replay_data(
                     m,
                     args=self.args,
-                    models=self.model,
                     data_iterator=data_iterator,
                     num_microbatches=num_microbatches,
                     rollout_data=rollout_data,
