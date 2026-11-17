@@ -95,7 +95,7 @@ def install_expert_slot_routing(mlp: nn.Module, adapters: list[NativeMultiLoRAEx
 
     dispatcher = mlp.token_dispatcher
     assert isinstance(dispatcher, MoEAlltoAllTokenDispatcher), "native multi-LoRA experts require alltoall dispatch"
-    assert not mlp.config.moe_permute_fusion, "native multi-LoRA experts require --no-moe-permute-fusion"
+    assert not mlp.config.moe_permute_fusion, "native multi-LoRA experts require moe_permute_fusion=False"
     assert dispatcher.tp_size == 1, "native multi-LoRA experts require expert tensor parallel size 1"
     assert not mlp.config.moe_expert_capacity_factor, "native multi-LoRA experts do not support capacity padding"
 

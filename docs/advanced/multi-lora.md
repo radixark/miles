@@ -112,7 +112,7 @@ The trainer rejects a multi-LoRA launch that breaks any of these constraints:
 
 - On native LoRA (`--megatron-to-hf-mode raw`): grouped routed experts use
   `--experts-shared-outer-loras`, BF16, all-to-all dispatch, expert tensor parallel size 1,
-  `--no-moe-permute-fusion`, and no capacity padding. GDN `in_proj` / GLM-5.3 KDA slots require context parallel size 1.
+  `moe_permute_fusion=False`, and no capacity padding. GDN `in_proj` / GLM-5.3 KDA slots require context parallel size 1.
 - Separate training and sampling GPUs: no `--colocate` and no `--offload-train`,
   because each adapter's gradients stay in GPU buffers between calls.
 - `--pipeline-model-parallel-size 1` and `--qkv-format thd`.
