@@ -55,7 +55,7 @@ def _answer(text: str, version: str) -> ProcessResult:
 _AGENT_RESPONSES = {
     INITIAL_USER_PROMPT: _call("Beijing", "w0"),
     USER_FOLLOWUP_TEXTS[0]: _call("Shanghai", "w1"),
-    SYSTEM_REMINDER_TEXT: _answer("I will keep using the weather tool.", "w2"),
+    SYSTEM_REMINDER_TEXT: _answer("Understood.", "w2"),
     ASSISTANT_INPUT_TEXTS[0]: _answer("Noted.", "w3"),
     USER_FOLLOWUP_TEXTS[1]: _call("Hangzhou", "w4"),
     USER_FOLLOWUP_TEXTS[2]: _call("London", "w9"),

@@ -287,7 +287,7 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
     path or by spreading ``SESSION_VERIFY_INVARIANT_ARGS`` into
     ``argparse.Namespace(...)`` for tests.
 
-    Mutates ``args`` in two places before composing train_args:
+    Mutates ``args`` in three places before composing train_args:
     - ``args.sglang_reasoning_parser`` / ``args.sglang_tool_call_parser`` are
       resolved against the TITO subclass's bound values via
       ``resolve_reasoning_and_tool_call_parser`` — caller-passed values that
@@ -295,6 +295,8 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
       GPU work starts.
     - ``args.hf_checkpoint`` is replaced with the local download path so the
       composed train_args points at the downloaded model, not the HF id.
+    - ``args.prompt_data`` is replaced with this run's own prompt file, whose
+      records name each sample's rollout; a caller's prompt data has none.
     """
     if wire_format not in ("openai", "anthropic"):
         raise ValueError(f"unsupported session verification wire format: {wire_format}")
@@ -306,9 +308,9 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
     args.sglang_reasoning_parser, args.sglang_tool_call_parser = resolve_reasoning_and_tool_call_parser(
         args.tito_model, args.sglang_reasoning_parser, args.sglang_tool_call_parser
     )
-    args.prompt_data = _ensure_prompt_data(kinds, rollout_batch_size=args.rollout_batch_size)
     _clear_proxy_env()
     args.hf_checkpoint = _ensure_model_downloaded(args.hf_checkpoint, backend=backend)
+    args.prompt_data = _ensure_prompt_data(kinds, rollout_batch_size=args.rollout_batch_size)
 
     train_args = namespace_to_train_args(args)
 

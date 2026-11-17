@@ -147,8 +147,9 @@ NO_TOOL_CALL_USER_TEXT = "Without using any tool, tell me one sentence about Bei
 NO_TOOL_CALL_REQUEST_ARGS = {"tool_choice": "none", "skip_special_tokens": False}
 # A neutral result for a tool message that answers no call; a retry instruction makes some models loop.
 SENTINEL_TOOL_RESULT = '{"result": "unavailable"}'
-# Keeps the tool in play: the spec rollout sends it right after a tool call and then needs another call.
-SYSTEM_REMINDER_TEXT = "Reminder: keep calling the get_weather tool for every weather question; skip all pleasantries."
+# Neutral about tools and answer length: the spec rollout needs a tool call after one use of it
+# and a reply without a call after the other.
+SYSTEM_REMINDER_TEXT = "Note: from now on, skip all pleasantries."
 ASSISTANT_INPUT_TEXTS = (
     "The earlier Beijing weather result was 22 degrees Celsius and sunny.",
     "The earlier Shanghai weather result was 30 degrees Celsius and rainy.",
@@ -329,21 +330,13 @@ class _Driver:
         return USER_FOLLOWUP_TEXTS[self.counters["user_count"] % len(USER_FOLLOWUP_TEXTS)]
 
     async def settle(self, messages: list[dict], reply: dict) -> dict:
-        """Answer *reply*'s tool calls until the model answers without one.
-
-        The last round sends ``tool_choice: "none"``, so a model that keeps calling the tool still settles.
-        """
+        """Answer *reply*'s tool calls until the model answers without one."""
         for round_index in range(_MAX_TOOL_ROUNDS):
             if not reply.get("tool_calls"):
                 return reply
             self.append_tool_results(messages, reply)
-            last_round = round_index == _MAX_TOOL_ROUNDS - 1
-            reply = await self.chat(
-                messages,
-                label=f"tool round {round_index + 1}",
-                extra_kwargs=NO_TOOL_CALL_REQUEST_ARGS if last_round else None,
-            )
-        assert not reply.get("tool_calls"), f"tool_choice='none' still returned tool_calls={reply['tool_calls']}"
+            reply = await self.chat(messages, label=f"tool round {round_index + 1}")
+        assert not reply.get("tool_calls"), f"the model still calls a tool after {_MAX_TOOL_ROUNDS} answered rounds"
         return reply
 
 

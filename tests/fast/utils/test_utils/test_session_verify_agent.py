@@ -235,41 +235,6 @@ def test_spec_rollout_resamples_a_turn_that_must_call_a_tool(monkeypatch):
     assert seeds == [7, 1_000_007]
 
 
-def test_spec_rollout_settles_a_model_that_keeps_calling_the_tool(monkeypatch):
-    """The last answered tool round asks for a reply without a call, so the rollout goes on."""
-    session = _FakeSession("qwen3")
-    settle_requests = []
-
-    async def chat(client, base_url, messages, request_kwargs, *, label):
-        if label == "Tool result" or label.startswith("tool round"):
-            settle_requests.append((label, request_kwargs.get("tool_choice")))
-            if request_kwargs.get("tool_choice") != "none":
-                call = {"id": f"again_{len(settle_requests)}", "type": "function", "function": {"name": "get_weather"}}
-                message = {"role": "assistant", "content": "", "tool_calls": [call]}
-                return {"choices": [{"message": message, "finish_reason": "stop"}]}
-        return await _FakeSession.chat(session, client, base_url, messages, request_kwargs, label=label)
-
-    monkeypatch.setattr(session_verify_agent.httpx, "AsyncClient", _FakeAsyncClient)
-    monkeypatch.setattr(session_verify_agent, "_chat", chat)
-    monkeypatch.setattr(session_verify_agent, "_chat_status", session.chat_status)
-    result = asyncio.run(
-        run_agent(
-            "http://session",
-            prompt=None,
-            request_kwargs={},
-            metadata={"tito_model": "qwen3", SESSION_VERIFY_KIND_KEY: "spec"},
-        )
-    )
-
-    assert settle_requests == [
-        ("Tool result", None),
-        ("tool round 1", None),
-        ("tool round 2", None),
-        ("tool round 3", "none"),
-    ]
-    assert result["driver_events"][-2:] == ["append_system", "append_assistant"]
-
-
 def test_spec_rollout_needs_user_after_an_answer():
     fixed = session_verify_agent.FixedTemplate(
         allowed_append_roles=frozenset({"tool", "user"}), roles_after_no_tool_call=frozenset({"tool"})
