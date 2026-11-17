@@ -1,8 +1,17 @@
+import math
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
+
+import numpy as np
 import torch
 
 from miles.backends.training_utils.data.context_parallel import CPLayout, take_ranges
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.output_store.plan import ForwardSegments, StorePlanError, is_segments_column
 from miles.utils.replay_base import BaseReplayManager
+
+if TYPE_CHECKING:
+    from radix_transfer_plugins import ReadSlot
 
 
 def register_replay_list_sequential(replay_list, replay_data, **_kwargs):
@@ -30,16 +39,18 @@ def attach_replay_data(
     data_iterator,
     num_microbatches,
     rollout_data,
+    output_store=None,
     sequence_first=False,
     align=None,
 ):
     """Load rollout replay tensors into `manager`'s replay queues, one micro batch per `fill(index)`.
 
     `rollout_data[manager.data_key]` contains one tensor per sample with shape
-    `[num_tokens - 1, num_streams, topk]`. Micro batch `index` holds the samples
-    the log-prob and train forwards see as their `index`-th micro batch; their
-    tensors are padded/sliced to match the local CP/SP token layout, and
-    stream-to-module mapping is delegated to `manager.register_replay_list_func`.
+    `[num_tokens - 1, num_streams, topk]`, or, from the output store, each sample's
+    `ForwardSegments`, whose rows this rank reads per micro batch from `output_store`.
+    Micro batch `index` holds the samples the log-prob and train forwards see as their
+    `index`-th micro batch; their rows are padded/sliced to match the local CP/SP token
+    layout, and stream-to-module mapping is delegated to `manager.register_replay_list_func`.
     Every micro batch is filled before this returns.
 
     For `bshd`, `sequence_first` selects Megatron MoE's `[S, B]` token order;
@@ -51,8 +62,19 @@ def attach_replay_data(
         raise ValueError(f"{data_key} is required in rollout_data for replay.")
 
     order = data_iterator[0].microbatch_indices(sum(num_microbatches))
-    # A train-data dump, written after training, keeps the column so it holds what replay consumed.
+    column = rollout_data[data_key]
+    from_store = is_segments_column(column)
+    if from_store:
+        if output_store is None:
+            raise StorePlanError(f"{data_key} is in the output store, but this trainer has no output store client")
+        if manager.read_slot is None or manager.read_slot.store is not output_store:
+            if manager.read_slot is not None:
+                manager.read_slot.close()
+            manager.read_slot = output_store.read_slot()
+    # A train-data dump, written after training, keeps the column so it holds what replay consumed:
+    # of a store column, each sample's rows as read, or None for a sample no micro batch holds.
     keep_column = manager.kept_in_train_dump and args.save_debug_train_data is not None
+    kept_rows = {}
 
     parallel_state = get_parallel_state()
     tp_rank = parallel_state.tp.rank
@@ -70,8 +92,13 @@ def attach_replay_data(
         return torch.cat([data, pad_tensor], dim=0)
 
     def fill(index):
-        replay_data = [rollout_data[data_key][j] for j in order[index]]
+        replay_data = [column[j] for j in order[index]]
         tokens = [rollout_data["tokens"][j] for j in order[index]]
+        if from_store:
+            replay_data = _read_rows(manager.read_slot, replay_data)
+            if keep_column:
+                # Store rows are views of a slot the next micro batch overwrites.
+                kept_rows.update((j, r.clone()) for j, r in zip(order[index], replay_data, strict=True))
         for a, b in zip(replay_data, tokens, strict=False):
             assert a.shape[0] == b.shape[0] - 1, f"{a.shape}, {b.shape}"
 
@@ -121,8 +148,41 @@ def attach_replay_data(
         if align is not None:
             replay_data = align(replay_data, -1)
         manager.register_replay_list_func(manager.replays, replay_data, models=models)
-        if index == len(order) - 1 and not keep_column:
-            del rollout_data[data_key]
+        if index == len(order) - 1:
+            if not keep_column:
+                del rollout_data[data_key]
+            elif from_store:
+                rollout_data[data_key] = [kept_rows.get(j) for j in range(len(column))]
 
     manager.attach(fill)
     manager.fill_through(len(order) - 1)
+
+
+def _read_rows(slot: "ReadSlot", samples: Sequence[ForwardSegments]) -> list[torch.Tensor]:
+    """Each sample's rows, read in one call into a reused slot."""
+    # radix_transfer_plugins ships with SGLang and is not a Miles dependency.
+    from radix_transfer_plugins import RangeRead
+
+    formats = {segments.row_format() for segments in samples}
+    if len(formats) != 1:
+        raise StorePlanError(f"a micro batch's {samples[0].name} rows come in {len(formats)} formats: {formats}")
+    ((dtype, row_shape),) = formats
+    row_bytes = dtype.itemsize * math.prod(row_shape)
+    reads, counts = [], []
+    for segments in samples:
+        reads += segments.row_reads(dst_offset=sum(counts) * row_bytes)
+        counts.append(segments.num_rows())
+    buffer = slot.reserve(sum(counts) * row_bytes)
+    (name,) = samples[0].stored
+    slot.store.read_ranges(
+        [
+            RangeRead(ref=r.ref, field=name, src_offset=r.src_offset, nbytes=r.nbytes, dst_offset=r.dst_offset)
+            for r in reads
+        ],
+        into=buffer,
+    )
+    rows = np.frombuffer(buffer.view, dtype=dtype, count=sum(counts) * math.prod(row_shape))
+    rows = rows.reshape(sum(counts), *row_shape)
+    for r in reads:
+        samples[0].check_rows(rows[r.dst_offset // row_bytes : (r.dst_offset + r.nbytes) // row_bytes])
+    return list(torch.from_numpy(rows).split(counts))
