@@ -127,7 +127,7 @@ def _flat_sampling_mask(supports: list[list[int]], logprobs: list) -> dict:
     fields = {"output_token_sampling_mask_length": len(supports)}
     for key, values, dtype in (
         ("output_token_sampling_mask_flat", [token for row in supports for token in row], "<i4"),
-        ("output_token_sampling_mask_lengths", [len(row) for row in supports], "<i4"),
+        ("output_token_sampling_mask_row_lengths", [len(row) for row in supports], "<i4"),
         ("output_token_sampling_logprobs_flat", flat_logprobs, "<f4"),
     ):
         fields[f"{key}_b64"] = pybase64.b64encode(np.asarray(values, dtype=dtype).tobytes()).decode("ascii")

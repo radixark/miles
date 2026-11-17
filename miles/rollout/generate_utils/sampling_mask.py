@@ -107,7 +107,7 @@ def decode_flat_sampling_mask(
         return np.frombuffer(raw, dtype=wire_dtype).astype(dtype)
 
     ids = decode("output_token_sampling_mask_flat", np.int32)
-    lengths = decode("output_token_sampling_mask_lengths", np.int32)
+    lengths = decode("output_token_sampling_mask_row_lengths", np.int32)
     log_probs = decode("output_token_sampling_logprobs_flat", np.float32)
     if len(log_probs) != (len(ids) if sampling_logprobs_mode == "support" else len(lengths)):
         raise ValueError(f"SGLang {sampling_logprobs_mode}-mode sampling log-probs do not align with the support")
