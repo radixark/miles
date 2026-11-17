@@ -87,6 +87,8 @@ def compute_advantages(
             total_lengths=total_lengths,
             kl_coef=args.kl_coef,
             gamma=args.gamma,
+            qkv_format=args.qkv_format,
+            max_seq_lens=max_seq_lens,
         )
         advantages = [r for r in returns]
 

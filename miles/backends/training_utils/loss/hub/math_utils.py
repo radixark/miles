@@ -531,6 +531,8 @@ def get_reinforce_plus_plus_returns(
     total_lengths: list[int],
     kl_coef: float,
     gamma: float,
+    qkv_format: str,
+    max_seq_lens: list[int] | None,
 ) -> list[torch.Tensor]:
     """
     Calculates discounted returns for REINFORCE++ (https://arxiv.org/pdf/2501.03262)
@@ -543,6 +545,8 @@ def get_reinforce_plus_plus_returns(
         total_lengths (List[int]): The full length of each sequence (prompt + response).
         kl_coef (float): Coefficient for the KL penalty.
         gamma (float): The discount factor.
+        qkv_format (str): The CP layout of the local chunks, "thd" or "bshd".
+        max_seq_lens (List[int] | None): Padded length of each sequence; required for bshd with CP.
 
     Returns:
         List[torch.Tensor]: A list of return (G_t) tensors for the
@@ -550,15 +554,20 @@ def get_reinforce_plus_plus_returns(
     """
 
     cp_size = get_parallel_state().cp.size
+    if cp_size > 1 and qkv_format == "bshd":
+        assert max_seq_lens is not None, "max_seq_lens is required for BSHD with CP"
 
     final_returns_chunks = []
     for i in range(len(rewards)):
         local_kl_chunk = kl[i]
         total_len, response_len = total_lengths[i], response_lengths[i]
+        max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
 
         if cp_size > 1:
             # Step 1,2:Gather all chunks and token_offsets from all ranks and reconstruct the full response tensor by splitting and placing each part
-            full_kl_response = all_gather_with_cp(local_kl_chunk, total_len, response_len)
+            full_kl_response = all_gather_with_cp(
+                local_kl_chunk, total_len, response_len, qkv_format=qkv_format, max_seq_len=max_seq_len
+            )
         else:
             full_kl_response = local_kl_chunk
 
@@ -578,7 +587,9 @@ def get_reinforce_plus_plus_returns(
 
         # Step 4: Pick up the results corresponding to our local chunk's parts.
         if cp_size > 1:
-            local_returns_chunk = slice_log_prob_with_cp(returns_for_seq, total_len, response_len)
+            local_returns_chunk = slice_log_prob_with_cp(
+                returns_for_seq, total_len, response_len, qkv_format, max_seq_len
+            )
         else:
             local_returns_chunk = returns_for_seq
 
