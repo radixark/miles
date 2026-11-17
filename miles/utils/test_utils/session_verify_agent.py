@@ -90,6 +90,8 @@ class SessionVerifyKind(StrEnum):
     SPEC = "spec"
 
 
+# Stage name of ``generate`` in a journaled verification error.
+_GENERATE_STAGE = "session_verify_agent.generate"
 # Prompt-record metadata key that names a sample's rollout.
 SESSION_VERIFY_KIND_KEY = "session_verify_kind"
 # Agent metadata key carrying a spec rollout's expected and actual statuses.
@@ -539,14 +541,41 @@ def _fail_sample(message: str) -> None:
     runner's gate instead.
     """
     error = AssertionError(message)
-    if not _journal_verification_error("session_verify_agent.generate", error):
+    if not _journal_verification_error(_GENERATE_STAGE, error):
         raise error
 
 
-@_journal_verifier_assertions("session_verify_agent.generate")
+def _journal_unplanned_prompt(input: GenerateFnInput) -> None:
+    """Fail the run when the rollout loop reads past the prompts planned for it.
+
+    The rollout kind comes from prompt records read in file order,
+    ``rollout_batch_size`` per step. When a sample group fails, the loop refills
+    the step from the next records, which belong to the next kind, and the last
+    step wraps around to the first kind. Every such run reads a prompt group
+    past the planned ones, and the step that reads it cannot finish without it.
+
+    Journal only: raising would drop this group too, and the loop would refill
+    again. Without a metrics sidecar there is no run gate to tell.
+    """
+    group_index, num_rollout = input.sample.group_index, input.args.num_rollout
+    if group_index is None or num_rollout is None:
+        return
+    planned = input.args.rollout_batch_size * num_rollout
+    if group_index >= planned:
+        error = AssertionError(
+            f"Session multi-role e2e: prompt group {group_index} lies past the {planned} planned ones.  A sample "
+            "group failed and the rollout loop read more prompts to refill its step, so the steps no longer run "
+            "one rollout each.  Check rollout logs for 'Task raised exception'."
+        )
+        logger.error("%s", error)
+        _journal_verification_error(_GENERATE_STAGE, error)
+
+
+@_journal_verifier_assertions(_GENERATE_STAGE)
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     """Custom-generate wrapper that records each sample and checks rollout coverage.
 
+    - The sample's prompt must be one of the planned ones (``_journal_unplanned_prompt``).
     - Every sample must carry the agent's metadata: the agent returns it only
       after its whole trajectory, and the base generate still collects the
       samples of an agent that raised.
@@ -556,6 +585,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     """
     tito_model = input.args.tito_model
     kind = _session_verify_kind(input.sample.metadata)
+    _journal_unplanned_prompt(input)
     cycles = getattr(
         input.args, "session_verify_cycles", DEFAULT_CYCLES
     )  # config-access-exempt: optional custom session-verification hook argument

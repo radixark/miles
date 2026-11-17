@@ -295,10 +295,10 @@ def _verified_sample(mismatches, *, expectations=()):
     )
 
 
-def _generate_input(kind: SessionVerifyKind, tito_model="qwen3"):
+def _generate_input(kind: SessionVerifyKind, tito_model="qwen3", *, group_index=0):
     return SimpleNamespace(
-        sample=Sample(metadata={SESSION_VERIFY_KIND_KEY: str(kind)}),
-        args=SimpleNamespace(tito_model=tito_model, session_verify_cycles=3),
+        sample=Sample(group_index=group_index, metadata={SESSION_VERIFY_KIND_KEY: str(kind)}),
+        args=SimpleNamespace(tito_model=tito_model, session_verify_cycles=3, rollout_batch_size=16, num_rollout=2),
     )
 
 
@@ -388,6 +388,42 @@ def test_generate_journals_a_spec_sample_missing_probes(monkeypatch, tmp_path):
     _, error_record = [json.loads(line) for line in metrics_path.read_text().splitlines()]
     assert error_record["verification_error"]["stage"] == "session_verify_agent.generate"
     assert "recorded probes" in error_record["verification_error"]["message"]
+
+
+@pytest.mark.parametrize(("group_index", "refilled"), [(31, False), (32, True)])
+def test_generate_journals_a_prompt_past_the_planned_ones(monkeypatch, tmp_path, group_index, refilled):
+    """Two steps of 16 prompt groups plan groups 0..31; a later group means a failed group was refilled."""
+    metrics_path = tmp_path / "metrics.jsonl"
+    monkeypatch.setenv("MILES_SESSION_VERIFY_METRICS_PATH", str(metrics_path))
+
+    async def fake_base_generate(input):
+        return GenerateFnOutput(samples=[_verified_sample([])])
+
+    monkeypatch.setattr(session_verify_agent, "_base_generate", fake_base_generate)
+
+    asyncio.run(session_verify_agent.generate(_generate_input(SessionVerifyKind.NORMAL, group_index=group_index)))
+
+    errors = [
+        record["verification_error"]["message"]
+        for record in map(json.loads, metrics_path.read_text().splitlines())
+        if "verification_error" in record
+    ]
+    assert [("lies past the 32 planned ones" in message) for message in errors] == [True] * refilled
+
+
+def test_generate_keeps_a_prompt_past_the_planned_ones_without_metrics_sidecar(monkeypatch):
+    """No raise: a raise drops the group, the loop refills again, and every refill lies past the plan."""
+    monkeypatch.delenv("MILES_SESSION_VERIFY_METRICS_PATH", raising=False)
+    sample = _verified_sample([])
+
+    async def fake_base_generate(input):
+        return GenerateFnOutput(samples=[sample])
+
+    monkeypatch.setattr(session_verify_agent, "_base_generate", fake_base_generate)
+
+    output = asyncio.run(session_verify_agent.generate(_generate_input(SessionVerifyKind.NORMAL, group_index=32)))
+
+    assert output.samples == [sample]
 
 
 @pytest.mark.parametrize("kind", [SessionVerifyKind.NORMAL, SessionVerifyKind.SPEC])

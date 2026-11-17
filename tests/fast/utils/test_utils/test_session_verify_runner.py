@@ -577,24 +577,6 @@ def test_session_verify_metrics_requires_samples_of_every_rollout(tmp_path, entr
         assert_session_verify_metrics(str(metrics_path), kinds=_SPEC_THEN_NORMAL, assistant_text_threshold=1.0)
 
 
-@pytest.mark.parametrize(
-    "entries",
-    [
-        # A spec group failed: the spec step took a normal prompt and the last step wrapped to spec.
-        [_spec(_MET), _normal(driver_events=["append_tool"]), _spec(_MET)],
-        # A normal group failed: the last step wrapped to a spec prompt.
-        [_spec(_MET), _normal(driver_events=["append_tool"]), _spec(_MET), _normal()],
-    ],
-    ids=["spec-step-refilled", "normal-step-refilled"],
-)
-def test_session_verify_metrics_rejects_a_step_refilled_with_another_rollout(tmp_path, entries):
-    metrics_path = tmp_path / "metrics.jsonl"
-    _write_metrics(metrics_path, entries)
-
-    with pytest.raises(AssertionError, match=r"recorded out of the step order \['spec', 'normal'\]"):
-        assert_session_verify_metrics(str(metrics_path), kinds=_SPEC_THEN_NORMAL, assistant_text_threshold=1.0)
-
-
 def test_session_verify_metrics_rejects_a_rollout_the_run_did_not_ask_for(tmp_path):
     metrics_path = tmp_path / "metrics.jsonl"
     _write_metrics(metrics_path, [_spec(_MET), _normal(driver_events=["append_tool"])])
