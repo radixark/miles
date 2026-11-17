@@ -291,7 +291,6 @@ def test_save_model_does_not_manage_lifecycle(actor_module, monkeypatch):
     worker.opt_param_scheduler = object()
     worker.adapter_slots = None
     worker._schedule_first_rollout = 0
-    worker.snapshot_publisher = object()
     worker.weight_updater = None
     worker.wake_up = Mock()
     worker.sleep = Mock()

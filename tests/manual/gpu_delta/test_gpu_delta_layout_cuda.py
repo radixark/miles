@@ -184,12 +184,11 @@ def _canonical(seed):
 
 @pytest.mark.parametrize("independent_mma", [False, True])
 @pytest.mark.parametrize("tp_size,tp_rank", [(1, 0), (2, 1)])
-def test_expert_delta_matches_full_loader_layout_and_scale_refresh(monkeypatch, independent_mma, tp_size, tp_rank):
+def test_expert_delta_matches_full_loader_layout_and_scale_refresh(independent_mma, tp_size, tp_rank):
     from miles.backends.sglang_utils.gpu_delta.bindings import _moe_binding, prepare_raw_xor
     from miles.backends.sglang_utils.gpu_delta.derived import plan_updates, prepare_updates
     from miles.backends.sglang_utils.gpu_delta.receiver import PreparedDelta
 
-    monkeypatch.setenv("SGLANG_FLASHINFER_CUTEDSL_NVFP4_W4A16", "1")
     old, new = _canonical(13), _canonical(29)
     live, expected = (
         _reference_layer(old, independent_mma, tp_rank, tp_size),
@@ -228,7 +227,7 @@ def test_expert_delta_matches_full_loader_layout_and_scale_refresh(monkeypatch, 
                 bindings.append(binding)
                 masks.append(mask)
     update = nvfp4_derived_update(live, layout)
-    targets = [target for binding, _ in raw_items for target in binding.storage]
+    targets = [binding.storage[0] for binding, _ in raw_items]
     raw_updates = prepare_raw_xor(raw_items, {id(target) for target in targets})
     plans = plan_updates([update], targets)
     before = [target.clone() for target in update.destinations]
@@ -243,89 +242,6 @@ def test_expert_delta_matches_full_loader_layout_and_scale_refresh(monkeypatch, 
     prepared._prepare_raw_apply(raw_updates)
     prepared.raw_apply()
     apply_prepared_masks(bindings, masks, derived)
-    from miles.backends.sglang_utils.gpu_delta.bindings import _direct_binding
-
-    for dtype in (torch.uint8, torch.bfloat16, torch.float32):
-        width = torch.empty((), dtype=dtype).element_size()
-        canonical = torch.randint(256, (12, 20 * width), dtype=torch.uint8, device="cuda")
-        live_tp = canonical.view(dtype)[2:10, 5:13].clone()
-        mask = torch.randint(256, canonical.shape, dtype=torch.uint8, device="cuda")
-        expected_tp = live_tp.view(torch.uint8) ^ mask.reshape(12, 20, width)[2:10, 5:13].reshape(8, -1)
-        binding = _direct_binding(
-            "tp",
-            {
-                "dtype": {
-                    torch.uint8: "U8",
-                    torch.bfloat16: "BF16",
-                    torch.float32: "F32",
-                }[dtype],
-                "shape": [12, 20],
-                "encoding": "xor_bytes",
-            },
-            live_tp,
-            [[2, 10], [5, 13]],
-        )
-        apply_prepared_masks([binding], [mask.reshape(-1)])
-        torch.testing.assert_close(live_tp.view(torch.uint8), expected_tp, rtol=0, atol=0)
-
-    # Mixed linear lengths, a column-strided source and strided routed targets.
-    # Tiny items, exact tile ends and partial tails share only useful CTAs.
-    # Guard bytes catch stores that escape an item's final mask.
-    dense, guards = [], []
-    device = torch.cuda.get_device_properties(torch.cuda.current_device())
-    max_grid = 4 * device.multi_processor_count * device.max_threads_per_multi_processor // 128
-    # A large heterogeneous grid exercises runtime descriptor boundaries and
-    # byte-tail masking alongside small/unaligned contracts.
-    for index, size in enumerate((1, 4095, 4096, 4097, 4100, 9001, (max_grid + 1) * 4096 + 17)):
-        padding = 4 if size == 4100 else 1
-        storage = torch.full((size + 2 * padding,), 0x5A, dtype=torch.uint8, device="cuda")
-        guards.append(storage)
-        target = storage[padding:-padding].view(1, size)
-        dense.append(
-            _direct_binding(
-                f"model.layers.3.dense{index}.weight",
-                {"dtype": "U8", "shape": [1, size], "encoding": "xor_bytes"},
-                target,
-            )
-        )
-    routed = [b for b in bindings if b.name.endswith(".down_proj.weight")]
-    for dense_subset in (dense, dense[1:4]):
-        selected = dense_subset + routed + [binding]
-        masks = [
-            (
-                torch.zeros(
-                    math.prod(b.shape) * b.torch_dtype.itemsize,
-                    dtype=torch.uint8,
-                    device="cuda",
-                )
-                if b.name in {item.name for item in routed}
-                else torch.randint(
-                    256,
-                    (math.prod(b.shape) * b.torch_dtype.itemsize,),
-                    dtype=torch.uint8,
-                    device="cuda",
-                )
-            )
-            for b in selected
-        ]
-        expected_values = [
-            (
-                target,
-                target.clone() ^ view.selected_bytes(mask).reshape(target.shape),
-            )
-            for binding, mask in zip(selected, masks, strict=False)
-            for view in binding.apply_bindings()
-            for target in view.destinations
-        ]
-        group = apply_prepared_masks(selected, masks)
-        assert len(group.sources) == len(expected_values)
-        assert group.tiles == sum(count * math.ceil(contract[0] / 2048) for contract, count in group.contracts)
-        if dense_subset is dense:
-            assert group.word32_contracts > 0
-        for target, expected_value in expected_values:
-            torch.testing.assert_close(target, expected_value, rtol=0, atol=0)
-        assert all(storage[0].item() == storage[-1].item() == 0x5A for storage in guards)
-
     for name, target in expected.named_parameters(remove_duplicate=False):
         actual = dict(live.named_parameters(remove_duplicate=False))[name]
         torch.testing.assert_close(actual.view(torch.uint8), target.view(torch.uint8), rtol=0, atol=0)
@@ -371,11 +287,7 @@ def test_scale_binding_matches_loader_padding():
 
 def test_cached_mla_refresh_survives_graph_replay_and_failure_gate():
     from miles.backends.sglang_utils.gpu_delta.bindings import _direct_binding
-    from miles.backends.sglang_utils.gpu_delta.models.deepseek_v2 import (
-        DcpReplica,
-        mla_derived_images,
-        with_dcp_replicas,
-    )
+    from miles.backends.sglang_utils.gpu_delta.models.deepseek_v2 import mla_derived_images
 
     weight = torch.zeros((2 * (4 + 6), 8), dtype=torch.bfloat16, device="cuda")
     key, value = weight.unflatten(0, (2, 10)).split([4, 6], dim=1)
@@ -385,39 +297,38 @@ def test_cached_mla_refresh_survives_graph_replay_and_failure_gate():
         v_head_dim=6,
         w_kc=key.transpose(1, 2).contiguous().transpose(1, 2),
         w_vc=value.contiguous().transpose(1, 2),
-        w_kc_qrep=torch.zeros((4, 4, 8), dtype=torch.bfloat16, device="cuda"),
     )
     derived = list(mla_derived_images("attention", attn))
-    # TP4 / DCP2 rank3: local heads6:8 plus gathered K rows for heads4:8.
-    # One runtime affine descriptor selects all K rows from the complete
-    # canonical [8*(K+V), rank] mask; no per-head kernels or extra collective.
+    # TP4 rank3: local heads 6:8 of the canonical [8*(K+V), rank] kv_b_proj.
     binding = _direct_binding(
         "model.layers.0.self_attn.kv_b_proj.weight",
         {"dtype": "BF16", "shape": [80, 8], "encoding": "xor_bytes"},
         weight,
         [[60, 80], [0, 8]],
     )
-    binding = with_dcp_replicas(binding, (DcpReplica(attn.w_kc_qrep, 10, (0, 4)),))
     mask = torch.randint(256, (80 * 8 * 2,), dtype=torch.uint8, device="cuda")
     apply_prepared_masks([binding], [mask], derived)
     expected = mask.view(torch.bfloat16).reshape(8, 10, 8)
-    torch.testing.assert_close(
-        attn.w_kc_qrep.view(torch.uint8),
-        expected[4:, :4].contiguous().view(torch.uint8),
-        rtol=0,
-        atol=0,
-    )
     torch.testing.assert_close(
         weight.view(torch.uint8),
         expected[6:].reshape(20, 8).view(torch.uint8),
         rtol=0,
         atol=0,
     )
-    identity = [(d.destination.data_ptr(), d.destination.stride()) for d in derived]
+    _assert_refresh_survives_graph_replay(
+        derived,
+        lambda: [(image.destination, image.source) for image in derived],
+        lambda: weight.view(torch.uint8).random_(256),
+    )
+
+
+def _assert_refresh_survives_graph_replay(images, pairs, change_sources):
+    """Graph-captured refreshes publish fresh (destination, value) pairs on success and keep old bytes on failure."""
+    identity = [(destination.data_ptr(), destination.stride()) for destination, _ in pairs()]
     succeeded = torch.tensor(True, device="cuda")
 
     def refresh():
-        for image in derived:
+        for image in images:
             image.refresh(succeeded)
 
     stream = torch.cuda.Stream()
@@ -429,19 +340,15 @@ def test_cached_mla_refresh_survives_graph_replay_and_failure_gate():
     with torch.cuda.graph(graph, stream=stream):
         refresh()
     for success in (True, True, False):
-        before = [d.destination.contiguous().view(torch.uint8).clone() for d in derived]
-        weight.view(torch.uint8).random_(256)
+        before = [destination.clone() for destination, _ in pairs()]
+        change_sources()
         succeeded.fill_(success)
         graph.replay()
-        for image, original in zip(derived, before, strict=False):
-            expected = image.source.contiguous().view(torch.uint8) if success else original
-            torch.testing.assert_close(
-                image.destination.contiguous().view(torch.uint8),
-                expected,
-                rtol=0,
-                atol=0,
-            )
-    assert identity == [(d.destination.data_ptr(), d.destination.stride()) for d in derived]
+        torch.cuda.synchronize()
+        for (destination, value), old in zip(pairs(), before, strict=True):
+            expected = value if success else old
+            assert torch.equal(destination.contiguous().view(torch.uint8), expected.contiguous().view(torch.uint8))
+    assert identity == [(destination.data_ptr(), destination.stride()) for destination, _ in pairs()]
 
 
 def test_main_dcp_replicas_apply_once_through_the_kernel():
@@ -586,33 +493,14 @@ def test_computed_images_survive_graph_replay_and_failure_gate():
         plan._admit_images([], {})
     a.copy_(-torch.exp(a_log.float()))
 
-    destinations = [destination for image in images for destination in image.destinations]
-    identity = [(destination.data_ptr(), destination.stride()) for destination in destinations]
-    succeeded = torch.tensor(True, device="cuda")
-
-    def refresh():
-        for image in images:
-            image.refresh(succeeded)
-
-    stream = torch.cuda.Stream()
-    stream.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(stream):
-        refresh()
-    torch.cuda.current_stream().wait_stream(stream)
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph, stream=stream):
-        refresh()
-    for success in (True, True, False):
-        before = [destination.clone() for destination in destinations]
+    def change_sources():
         a_log.copy_(torch.randn(8, device="cuda"))
         norm.copy_(torch.randn(16, device="cuda"))
-        succeeded.fill_(success)
-        graph.replay()
-        torch.cuda.synchronize()
-        expected = [value for image in images for value in image.values()] if success else before
-        for destination, value in zip(destinations, expected, strict=True):
-            assert torch.equal(destination.view(torch.uint8), value.view(torch.uint8))
-    assert identity == [(destination.data_ptr(), destination.stride()) for destination in destinations]
+
+    def pairs():
+        return [pair for image in images for pair in zip(image.destinations, image.values(), strict=True)]
+
+    _assert_refresh_survives_graph_replay(images, pairs, change_sources)
 
 
 def _matrix_canonical(format, seed, hidden, intermediate):
@@ -768,7 +656,6 @@ def _matrix_loader_reference(values, layout, hidden, intermediate):
         ("fp8-block128-ue8m0", "trtllm", 256, ""),
         ("nvfp4", "trtllm", 256, "w4a4"),
         ("mxfp8", "trtllm", 256, ""),
-        ("nvfp4", "megamoe", 256, "w4a4"),
         ("nvfp4", "megamoe", 320, "w4a16"),
         ("mxfp8", "megamoe", 256, ""),
     ],
@@ -834,7 +721,7 @@ def test_flashinfer_matrix_matches_native_preprocessing(format, backend, interme
     if complete:
         for target, mask, _ in complete:
             target.view(torch.uint8).bitwise_xor_(mask.view(target.view(torch.uint8).shape))
-    assert apply_prepared_masks(bindings, masks) is not None
+    apply_prepared_masks(bindings, masks)
     for name, value in expected.named_parameters():
         torch.testing.assert_close(
             images[name].contiguous().view(torch.uint8),

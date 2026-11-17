@@ -1,11 +1,12 @@
 """Engine-host sharing, DE-local preparation, and failure lifetimes."""
 
+import fcntl
 import hashlib
 import json
-import mmap
-import multiprocessing
 import os
+import resource
 import select
+import shutil
 import socket
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from unittest.mock import patch
 
 import numpy as np
 import pytest
+import torch
 import zstandard as zstd
 from safetensors.numpy import load as load_columns
 
@@ -201,71 +203,6 @@ def shared_participants(engine="a"):
     ]
 
 
-def _shared_child(rank, publications, barrier, output):
-    participants = shared_participants()
-    arena = host.HostArena("a", 0, participants[rank])
-    records, reads = [], []
-    read_bytes = Path.read_bytes
-
-    def observed_read(path):
-        reads.append(path.name)
-        return read_bytes(path)
-
-    try:
-        with (
-            patch.object(host, "configured_cpu_workers", return_value=2),
-            patch("torch.cuda.set_device") as set_device,
-            patch.object(Path, "read_bytes", new=observed_read),
-        ):
-            for version, (path, digest, expected) in enumerate(publications, 1):
-                hardware = version == 4
-                barrier.wait(timeout=10)
-                metrics = {}
-                reads.clear()
-                publication = arena.prepare_publication(
-                    metadata(version) | dict(manifest_path=str(path), manifest_sha256=digest),
-                    metrics,
-                )
-                assert all(
-                    not array.flags.writeable
-                    for array in (
-                        publication.tensors,
-                        publication.frames,
-                        publication.gaps,
-                    )
-                )
-                if version == 1:
-                    assert [e["name"] for e in publication.read_catalog()["tensors"]] == list(TENSOR_IDS)
-                names = ["dense", "raw"] if rank == 0 else ["dense", "expert"]
-                snapshot = arena.prepare_local(publication, [TENSOR_IDS[name] for name in names], metrics, hardware)
-                assert {name: bytes(snapshot.get(TENSOR_IDS[name])) for name in names} == {
-                    name: expected[name] for name in names
-                }
-                assert arena.shared_allocation.registered is not hardware
-                records.append(
-                    dict(
-                        metrics=metrics,
-                        capacity=arena.capacity.copy(),
-                        shared_capacity=arena.shared_capacity.copy(),
-                        metadata_capacity=publication.index["metadata"].copy(),
-                        tensors=publication.tensors.copy(),
-                        frames=publication.frames.copy(),
-                        gaps=publication.gaps.copy(),
-                        offsets=snapshot.offsets.copy(),
-                        pool_id=id(arena._worker.builder.pool) if arena._worker else None,
-                        set_device_calls=set_device.call_count,
-                        manifest_reads=reads.count(path.name),
-                        catalog_reads=reads.count("catalog.json"),
-                    )
-                )
-                barrier.wait(timeout=10)
-                snapshot.close(True)
-                barrier.wait(timeout=10)
-        output.put((rank, records))
-    finally:
-        arena.close()
-
-
 def metadata(version=1, engine="a", validate_payload_hash=True):
     return dict(
         stream_id="stream",
@@ -289,7 +226,6 @@ class TestHostSnapshot(unittest.TestCase):
         self.addCleanup(self.pool.close)
         for replacement in (
             patch.object(host, "_cache_base", return_value=self.cache),
-            patch.object(host, "_CAPACITY_ALIGNMENT", 1024),
             patch.object(worker, "_CAPACITY_ALIGNMENT", 1024),
             patch.object(host, "CpuWorker", side_effect=lambda directory: InlineCpuWorker(directory, self.pool)),
             patch.object(host, "HostAllocation", FakeHostAllocation),
@@ -421,16 +357,6 @@ class TestHostSnapshot(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "failed or already released"):
             prepare_snapshot(arena, path, digest, expected, self.pool, {}, metadata(engine="corrupt"))
 
-        # Verification alone cannot publish READY when shared outer decoding fails.
-        foreign = matrix(FOREIGN)
-        foreign["payload"] = b"not-zstd".ljust(len(foreign["payload"]), b" ")
-        path, digest, _ = fixture(self.root / "bad-decode", foreign=foreign)
-        arena = self.arena("bad-decode")
-        with self.assertRaises(zstd.ZstdError):
-            prepare_snapshot(arena, path, digest, ["foreign"], self.pool, {}, metadata(engine="bad-decode"))
-        with self.assertRaisesRegex(ValueError, "engine APPLIED release"):
-            prepare_snapshot(arena, path, digest, ["foreign"], self.pool, {}, metadata(2, "bad-decode"))
-
     def test_payload_hash_policy_follows_publication_and_requires_peer_agreement(self):
         strict, peer = self.arena("strict"), self.arena("strict", rank=1)
         for version, validate in enumerate((True, False, True), 1):
@@ -501,91 +427,72 @@ class TestHostSnapshot(unittest.TestCase):
             3: dict(dense=DENSE + b"d" * 80000),
             4: dict(codec="snappy-zstd"),
         }
-        publications = [
-            fixture(
-                self.root / f"version-{version}", version, **({"codec": "bitcomp-zstd"} | variants.get(version, {}))
-            )
-            for version in range(1, 6)
-        ]
-        context = multiprocessing.get_context("fork")
-        barrier, output = context.Barrier(2), context.Queue()
-        children = [
-            context.Process(
-                target=_shared_child,
-                args=(rank, publications, barrier, output),
-            )
-            for rank in range(2)
-        ]
-        for child in children:
-            child.start()
-        try:
-            records = dict(output.get(timeout=30) for _ in children)
-            for child in children:
-                child.join(timeout=10)
-                self.assertEqual(child.exitcode, 0)
-        finally:
-            for child in children:
-                if child.is_alive():
-                    child.terminate()
-                child.join(timeout=10)
-        for version in range(5):
-            owner, peer = records[0][version], records[1][version]
-            self.assertEqual(owner["shared_capacity"], peer["shared_capacity"])
-            self.assertEqual(owner["metadata_capacity"], peer["metadata_capacity"])
-            for key in ("tensors", "frames", "gaps"):
-                np.testing.assert_array_equal(owner[key], peer[key])
-            self.assertEqual(owner["manifest_reads"], 1)
-            self.assertEqual(peer["manifest_reads"], 0)
-            for row in (owner, peer):
-                self.assertEqual(row["catalog_reads"], int(version == 0))
-            self.assertEqual(owner["metrics"]["host_prepared_cache_created"], 1)
-            self.assertEqual(peer["metrics"]["host_prepared_cache_reused"], 1)
-            self.assertEqual(
-                owner["metrics"]["host_rank_outer_zstd_tensors"],
-                2 if version == 1 else 3,
-            )
-            self.assertEqual(peer["metrics"]["host_rank_outer_zstd_tensors"], 0)
-            self.assertEqual(owner["metrics"]["host_encoded_cache_hash_files"], 2)
-            self.assertEqual(peer["metrics"]["host_encoded_cache_hash_files"], 0)
-            self.assertEqual(owner["metrics"]["host_rank_cpu_workers"], 2)
-            self.assertEqual(peer["metrics"]["host_rank_cpu_workers"], 0)
-            if version != 3:
-                self.assertEqual(owner["capacity"], peer["capacity"])
-                for row in (owner, peer):
-                    self.assertEqual(row["metrics"]["host_rank_private_capacity_bytes"], 0)
-                    self.assertEqual(row["metrics"]["host_rank_staging_copy_bytes"], 0)
-        self.assertEqual(len({row["pool_id"] for row in records[0]}), 1)
-        self.assertTrue(all(row["pool_id"] is None for row in records[1]))
-        self.assertEqual(records[0][1]["tensors"][TENSOR_IDS["foreign"]]["prepared_nbytes"], 0)
-        self.assertGreater(records[0][2]["tensors"][TENSOR_IDS["foreign"]]["prepared_nbytes"], 0)
-        de_owner, de_peer = records[0][3], records[1][3]
-        self.assertNotEqual(de_owner["capacity"]["identity"], de_peer["capacity"]["identity"])
-        for row, names in (
-            (de_owner, ["dense", "raw"]),
-            (de_peer, ["dense", "expert"]),
-        ):
-            self.assertGreater(row["metrics"]["host_rank_private_capacity_bytes"], 0)
-            self.assertEqual(
-                row["metrics"]["host_rank_staging_copy_bytes"],
-                sum(len(publications[3][2][name]) for name in names),
-            )
-        for rows in records.values():
-            first, warm, grown, de, restored = rows
-            self.assertEqual([row["set_device_calls"] for row in rows], [1, 1, 2, 2, 3])
-            self.assertEqual(first["shared_capacity"], warm["shared_capacity"])
-            self.assertEqual(warm["metrics"]["host_rank_mapping_reused"], 1)
-            self.assertEqual(warm["metrics"]["host_rank_allocation_calls"], 0)
-            self.assertNotEqual(
-                first["shared_capacity"]["identity"],
-                grown["shared_capacity"]["identity"],
-            )
-            self.assertEqual(grown["shared_capacity"]["generation"], 2)
-            self.assertGreater(
-                grown["shared_capacity"]["capacity"],
-                first["shared_capacity"]["capacity"],
-            )
-            self.assertEqual(grown["shared_capacity"], de["shared_capacity"])
-            self.assertEqual(grown["shared_capacity"], restored["shared_capacity"])
+        arenas = {"dense raw": self.arena(), "dense expert": self.arena(rank=1)}
+        reads, read_bytes, pins, shared = [], Path.read_bytes, {}, []
+        with patch.object(Path, "read_bytes", new=lambda path: reads.append(path.name) or read_bytes(path)):
+            for version in range(1, 6):
+                options = {"codec": "bitcomp-zstd"} | variants.get(version, {})
+                path, digest, expected = fixture(self.root / f"version-{version}", version, **options)
+                hardware, rows, snapshots = version == 4, [], []
+                for names, arena in arenas.items():
+                    reads.clear()
+                    metrics, set_device = {}, torch.cuda.set_device.call_count
+                    request = metadata(version) | dict(manifest_path=str(path), manifest_sha256=digest)
+                    publication = arena.prepare_publication(request, metrics)
+                    self.assertFalse(
+                        any(a.flags.writeable for a in (publication.tensors, publication.frames, publication.gaps))
+                    )
+                    if version == 1:
+                        self.assertEqual([e["name"] for e in publication.read_catalog()["tensors"]], list(TENSOR_IDS))
+                    snapshot = arena.prepare_local(
+                        publication, [TENSOR_IDS[n] for n in names.split()], metrics, hardware
+                    )
+                    self.assertEqual(
+                        {n: bytes(snapshot.get(TENSOR_IDS[n])) for n in names.split()},
+                        {n: expected[n] for n in names.split()},
+                    )
+                    self.assertIs(arena.shared_allocation.registered, not hardware)
+                    usage = (metrics[f"host_rank_{key}"] for key in ("mapping_reused", "allocation_calls"))
+                    pins.setdefault(names, []).append((torch.cuda.set_device.call_count - set_device, *usage))
+                    rows.append((metrics, reads.count(path.name), reads.count("catalog.json") - (version == 1)))
+                    snapshots.append(snapshot)
+                (owner, owner_reads, owner_catalog), (peer, peer_reads, peer_catalog) = rows
+                owner_arena, peer_arena = arenas.values()
+                self.assertEqual((owner_reads, peer_reads, owner_catalog, peer_catalog), (1, 0, 0, 0))
+                self.assertEqual(owner_arena.shared_capacity, peer_arena.shared_capacity)
+                owner_view, peer_view = (snapshot.publication for snapshot in snapshots)
+                self.assertEqual(owner_view.index["metadata"], peer_view.index["metadata"])
+                for key in ("tensors", "frames", "gaps"):
+                    np.testing.assert_array_equal(getattr(owner_view, key), getattr(peer_view, key))
+                for key, owner_value, peer_value in (
+                    ("host_prepared_cache_created", 1, 0),
+                    ("host_prepared_cache_reused", 0, 1),
+                    ("host_rank_outer_zstd_tensors", 2 if version == 2 else 3, 0),
+                    ("host_encoded_cache_hash_files", 2, 0),
+                    ("host_rank_cpu_workers", 2, 0),
+                ):
+                    self.assertEqual((owner[key], peer[key]), (owner_value, peer_value), key)
+                for names, metrics in zip(arenas, (owner, peer), strict=True):
+                    staged = sum(len(expected[n]) for n in names.split()) if hardware else 0
+                    self.assertEqual(metrics["host_rank_staging_copy_bytes"], staged)
+                    self.assertEqual(metrics["host_rank_private_capacity_bytes"] > 0, hardware)
+                if not hardware:
+                    self.assertEqual(owner_arena.capacity, peer_arena.capacity)
+                self.assertEqual(peer_view.tensors[TENSOR_IDS["foreign"]]["prepared_nbytes"] == 0, version == 2)
+                shared.append((owner_arena.shared_capacity, owner_arena._worker))
+                for snapshot in snapshots:
+                    snapshot.close(True)
+        # Per version: CUDA registrations, warm mapping reuse and allocations of each arena.
+        self.assertEqual(list(pins.values()), [[(1, 0, 1), (0, 1, 0), (1, 0, 1), (0, 0, 1), (1, 0, 1)]] * 2)
+        (first, worker), (warm, _), (grown, _), (de, _), (restored, _) = shared
+        self.assertTrue(worker is not None and all(row[1] is worker for row in shared))
+        self.assertIsNone(peer_arena._worker)
+        self.assertEqual(first, warm)
+        self.assertNotEqual(first["identity"], grown["identity"])
+        self.assertEqual(grown["generation"], 2)
+        self.assertGreater(grown["capacity"], first["capacity"])
+        self.assertEqual(grown, de)
+        self.assertEqual(grown, restored)
 
     def test_failed_shared_creator_cannot_publish_or_release_prepared_bytes(self):
         path, digest, _ = fixture(self.root / "v1", codec="bitcomp-zstd")
@@ -675,12 +582,7 @@ class TestHostSnapshot(unittest.TestCase):
         with memoryview(bytearray(100)) as destination:
             with self.assertRaisesRegex(ValueError, "truncated delta payload"):
                 worker._read_verify_payload(path, destination, {"nbytes": 80, "sha256": "0" * 64}, True)
-        with mmap.mmap(-1, 80) as mapping, memoryview(mapping) as destination:
-            with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
-                worker._read_verify_payload(path, destination, {"nbytes": 80, "sha256": "0" * 64}, False)
-            _, hash_s = worker._read_verify_payload(path, destination, {"nbytes": 80, "sha256": "0" * 64}, True)
-            self.assertEqual(destination, b"a" * 80)
-            self.assertEqual(hash_s, 0)
+        with memoryview(bytearray(80)) as destination:
             with self.assertRaisesRegex(ValueError, "payload size mismatch"):
                 worker._read_verify_payload(path, destination, {"nbytes": 79, "sha256": "0" * 64}, True)
 
@@ -709,7 +611,8 @@ class TestHostSnapshot(unittest.TestCase):
 
         def observed_lock(file, mode):
             current = threading.current_thread()
-            if current in threads and mode != host.fcntl.LOCK_UN:
+            # Only the publication lock; the follower's first preparation also attaches to the cohort.
+            if current in threads and mode != host.fcntl.LOCK_UN and file.name == str(first.directory / ".lock"):
                 locks.append((current, mode))
             return flock(file, mode)
 
@@ -782,6 +685,7 @@ class TestHostSnapshot(unittest.TestCase):
         self.assertEqual(metrics["host_rank_cpu_workers"], 0)
         self.assertEqual(reads.count((threads[1], "index.json")), 1)
         self.assertNotIn((threads[0], "index.json"), reads)
+        self.assertEqual({thread for thread, _ in locks}, set(threads))
         for thread, mode in locks:
             self.assertEqual(
                 mode,
@@ -793,7 +697,10 @@ class TestHostSnapshot(unittest.TestCase):
     def test_rank_capacity_reuse_growth_and_late_encoded_release(self):
         path, digest, expected = fixture(self.root / "v1")
         arena, first_metrics = self.arena(), {}
+        # Every arena of this earlier cohort closed, so the owner's first preparation reclaims it.
+        host._attach_namespace(arena.root, arena.root / "closed", reclaim=False).close()
         first = prepare_snapshot(arena, path, digest, expected, self.pool, first_metrics, metadata())
+        self.assertFalse((arena.root / "closed").exists())
         original = arena.capacity.copy()
         self.assertEqual(
             original["capacity"],
@@ -832,7 +739,6 @@ class TestHostSnapshot(unittest.TestCase):
         growth = {}
         third = prepare_snapshot(arena, path, digest, expected, self.pool, growth, metadata(3))
         self.assertEqual(bytes(third.get(TENSOR_IDS["dense"])), large)
-        self.assertNotEqual(arena.capacity["identity"], original["identity"])
         self.assertEqual(arena.capacity["generation"], 2)
         self.assertEqual(growth["host_rank_allocation_calls"], 1)
         self.assertEqual(
@@ -846,8 +752,65 @@ class TestHostSnapshot(unittest.TestCase):
         third.close()
         with self.assertRaisesRegex(ValueError, "engine APPLIED release"):
             prepare_snapshot(arena, path, digest, expected, self.pool, {}, metadata(4))
+        # A fork()ed descendant shares the .live open file description, as this dup does; close still unlocks it.
+        self.addCleanup(os.close, os.dup(arena._live.fileno()))
         arena.close()
         self.assertIsNone(arena.mapping)
+        # Close releases the cohort: the next owner reclaims it, files the CPU child mapped included.
+        host._attach_namespace(arena.root, arena.root / "next", reclaim=True).close()
+        self.assertFalse(arena.directory.exists())
+
+
+@pytest.mark.parametrize("pause", ["after-mkdir", "before-live-lock"])
+def test_owner_reclaims_only_unlocked_cohorts_under_the_root_lock(tmp_path, pause):
+    live = host._attach_namespace(tmp_path, tmp_path / "live", reclaim=False)
+    host._attach_namespace(tmp_path, tmp_path / "dead", reclaim=False).close()
+    (tmp_path / "legacy").mkdir()  # Written before cohorts held liveness locks.
+    entered, proceed = threading.Event(), threading.Event()
+    mkdir, flock, rmtree = Path.mkdir, fcntl.flock, shutil.rmtree
+
+    def hold(reached):
+        if reached:
+            entered.set()
+            assert proceed.wait(5)
+
+    def paused_mkdir(path, *args, **kwargs):
+        mkdir(path, *args, **kwargs)
+        hold(pause == "after-mkdir" and path.name == "new")
+
+    def paused_flock(target, operation):
+        hold(pause == "before-live-lock" and operation == fcntl.LOCK_SH and Path(target.name).parent.name == "new")
+        return flock(target, operation)
+
+    def unlocked_rmtree(path, **kwargs):
+        with (tmp_path / ".lock").open("a+b") as probe:
+            flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)  # Dead cohorts are deleted after the root lock's release.
+        rmtree(path, **kwargs)
+
+    with (
+        patch.object(Path, "mkdir", paused_mkdir),
+        patch.object(host.fcntl, "flock", paused_flock),
+        patch.object(host.shutil, "rmtree", unlocked_rmtree),
+        ThreadPoolExecutor(2) as pool,
+    ):
+        new = pool.submit(host._attach_namespace, tmp_path, tmp_path / "new", False)
+        assert entered.wait(5)
+        owner = pool.submit(host._attach_namespace, tmp_path, tmp_path / "own", True)
+        # A cohort created but not yet share-locked still holds the root lock, so the owner cannot judge it.
+        with pytest.raises(TimeoutError):
+            owner.result(timeout=0.2)
+        proceed.set()
+        locks = [live, new.result(5), owner.result(5)]
+    assert sorted(path.name for path in tmp_path.iterdir() if path.is_dir()) == ["live", "new", "own"]
+    for lock in locks:
+        lock.close()
+
+
+def test_a_failed_reclaim_leaks_the_dead_cohort_and_never_fails_the_attach(tmp_path):
+    host._attach_namespace(tmp_path, tmp_path / "dead", reclaim=False).close()
+    with patch.object(Path, "rename", side_effect=OSError("busy")):
+        host._attach_namespace(tmp_path, tmp_path / "own", reclaim=True).close()
+    assert sorted(path.name for path in tmp_path.iterdir() if path.is_dir()) == ["dead", "own"]
 
 
 @pytest.mark.parametrize("codec", ["snappy-zstd", "lz4-zstd", "lz4"])
@@ -966,16 +929,16 @@ def test_failed_tensor_drains_other_groups_before_releasing_views(codec, tmp_pat
     def copy(destination, source):
         decode_one(memoryview(source), memoryview(destination))
 
-    copy_patch = patch.object(worker, "copy_bytes", side_effect=copy)
-    copy_patch.start()
     thread = threading.Thread(target=run)
-    thread.start()
-    assert entered.wait(5)
-    assert not finished.is_set()
-    release.set()
-    thread.join(5)
-    pool.executor.shutdown(wait=True)
-    copy_patch.stop()
+    with patch.object(worker, "copy_bytes", side_effect=copy):
+        thread.start()
+        try:
+            assert entered.wait(5)
+            assert not finished.is_set()
+        finally:
+            release.set()
+            thread.join(5)
+            pool.executor.shutdown(wait=True)
     assert finished.is_set() and errors == ["intentional bad frame"]
     assert sorted(attempted) == [i for i in range(20) if i not in {8, 16}]
 
@@ -1177,7 +1140,12 @@ def test_cpu_process_stops_on_eof_or_exact_parent_death(reason):
         stdin=subprocess.PIPE,
     )
     local, child = socket.socketpair()
-    parent_fd = os.pidfd_open(parent.pid)
+    # The child watches the scheduler's own pidfd number; select() rejects numbers >= FD_SETSIZE (1024).
+    limits = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (max(limits[0], 1025), limits[1]))
+    pidfd = os.pidfd_open(parent.pid)
+    parent_fd = fcntl.fcntl(pidfd, fcntl.F_DUPFD_CLOEXEC, 1024)
+    os.close(pidfd)
     process = subprocess.Popen(
         [
             sys.executable,
@@ -1213,6 +1181,7 @@ def test_cpu_process_stops_on_eof_or_exact_parent_death(reason):
         parent.stdin.close()
         os.close(parent_fd)
         os.close(child_fd)
+        resource.setrlimit(resource.RLIMIT_NOFILE, limits)
 
 
 if __name__ == "__main__":

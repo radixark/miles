@@ -3,10 +3,6 @@
 SGLANG_ENABLE_NVTX_OPERATIONS enables all preparation, scheduler, worker and
 enqueue ranges. Disabled decorators return the original callable, including hot
 batch and worker paths. The benchmark owns the separate capture-trigger range.
-
-The asynchronous gpu_delta.pause range ends only after a successful unpause.
-Poisoned, failed-resume and keep_pause=True sessions intentionally leave it open;
-this diagnostic span is not a completed duration and may outlive that session.
 Synchronous call/phase ranges are always balanced on exceptions.
 """
 

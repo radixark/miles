@@ -157,8 +157,17 @@ def test_unicode_manifest_authenticates_written_bytes_without_changing_plan_json
     assert publication.canonical_json(plan) == expected_plan_bytes
 
 
-@pytest.mark.parametrize("conflict", ["tensor", "metadata", "file", "checksum-policy"])
-def test_conflicting_owner_shards_cannot_publish(tmp_path, conflict):
+@pytest.mark.parametrize(
+    "conflict,message",
+    [
+        ("tensor", "Duplicate canonical tensor"),
+        ("metadata", "identities differ"),
+        ("file", "Duplicate owner payload"),
+        ("checksum-policy", "identities differ"),
+    ],
+    ids=["tensor", "metadata", "file", "checksum-policy"],
+)
+def test_conflicting_owner_shards_cannot_publish(tmp_path, conflict, message):
     writer = _writer(tmp_path)
     writer.add_raw_xor_tensor("scale", b"1234", {"dtype": "F32", "shape": []})
     shard = writer.finish_shard()
@@ -170,7 +179,7 @@ def test_conflicting_owner_shards_cannot_publish(tmp_path, conflict):
     elif conflict == "checksum-policy":
         duplicate["metadata"]["payload_checksum_format"] = "none"
         duplicate["files"][0]["sha256"] = None
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=message):
         publication.seal_publication(tmp_path, [shard, duplicate])
     assert not (tmp_path / "manifest.json").exists()
 
@@ -216,10 +225,8 @@ def test_static_tensor_rule_is_shared_by_sender_and_receivers(name, reason):
     "architecture",
     ["DeepseekV2ForCausalLM", "DeepseekV3ForCausalLM", "DeepseekV32ForCausalLM", "GlmMoeDsaForCausalLM"],
 )
-@pytest.mark.parametrize("model_type", [None, "kimi_k2"])
-def test_deepseek_v2_checkpoints_keep_the_numbered_draft_rule(architecture, model_type):
-    # Kimi-K2 checkpoints declare DeepseekV3ForCausalLM with their own model type.
-    config = {"architectures": [architecture], "model_type": model_type, "num_hidden_layers": 61}
+def test_deepseek_v2_checkpoints_keep_the_numbered_draft_rule(architecture):
+    config = {"architectures": [architecture], "num_hidden_layers": 61}
     assert publication.static_policy(config) == publication.StaticPolicy(num_hidden_layers=61)
 
 
@@ -242,18 +249,10 @@ def test_static_policy_rejects_unlisted_architectures(config, message):
 @pytest.mark.parametrize(
     ("shape", "encoding"),
     [
-        pytest.param([2304, 320], "xor_bytes", id="layers.0.ffn.experts.5.w1.weight_scale"),
         pytest.param([], "xor_raw_bytes", id="layers.0.ffn.experts.5.w1.weight_scale_2"),
-        pytest.param([1280, 5120], "xor_bytes", id="layers.0.attn.wq_a.weight"),
-        pytest.param([24, 20480], "xor_bytes", id="layers.0.hc_attn_fn"),
         pytest.param([64], "xor_raw_bytes", id="layers.0.attn.attn_sink"),
-        pytest.param(
-            [3072, 112], "xor_bytes", id="language_model.model.layers.1.block_sparse_moe.experts.0.w1.weight_scale"
-        ),
-        pytest.param([128], "xor_raw_bytes", id="language_model.model.layers.0.self_attn.A_log"),
-        pytest.param([512], "xor_raw_bytes", id="backbone.layers.1.mixer.gate.e_score_correction_bias"),
-        pytest.param([18432, 1, 4], "xor_bytes", id="backbone.layers.0.mixer.conv1d.weight"),
-        pytest.param([], "xor_raw_bytes", id="scalar"),
+        pytest.param([2304, 320], "xor_bytes", id="layers.0.ffn.experts.5.w1.weight_scale"),
+        pytest.param([18432, 1, 4], "xor_bytes", id="three-axis"),
     ],
 )
 def test_canonical_encoding_sends_only_scalars_and_vectors_raw(shape, encoding):

@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Optional
 from unittest.mock import patch
 
-import numpy as np
 import torch
 from safetensors.torch import save_file
 
@@ -164,67 +163,19 @@ class TestCanonicalCheckpointHeaders(unittest.TestCase):
     def test_backend_names_the_rank_that_rejects_its_checkpoint(self):
         # Describe reports a checkpoint its static policy rejects like any layout rejection: prefixed by the rank.
         self.save("model.safetensors", {"model.layers.0.mlp.weight": torch.zeros(2, 2, dtype=torch.bfloat16)})
-        # A served architecture with no model mapping (Kimi-K3's text-only entry class) beside an admitted checkpoint.
-        served = types.SimpleNamespace(architectures=["KimiK3LinearForCausalLM"])
-        self.runner.model = types.SimpleNamespace(config=served)
-        identity = {"engine_id": "engine", "tp_rank": 1, "dp_rank": 2}
+        self.config({"architectures": ["Qwen3MoeForCausalLM"], "num_hidden_layers": 1})
         admitted = re.escape(
             "admitted checkpoint architectures: ['DeepseekV2ForCausalLM', 'DeepseekV32ForCausalLM', "
             "'DeepseekV3ForCausalLM', 'DeepseekV41ForCausalLM', 'GlmMoeDsaForCausalLM', "
             "'KimiK3ForConditionalGeneration']"
         )
-        for config, message in (
-            (
-                {"architectures": ["Qwen3MoeForCausalLM"], "num_hidden_layers": 1},
-                f"GPU delta has no static-tensor policy for checkpoint architecture 'Qwen3MoeForCausalLM'; {admitted}$",
-            ),
-            (
-                {"architectures": ["DeepseekV4ForCausalLM"], "model_type": "deepseek_v4"},
-                "GPU delta does not admit DeepSeek-V4 checkpoints",
-            ),
-            # An admitted checkpoint whose served architecture has no model mapping.
-            (
-                {"architectures": ["KimiK3ForConditionalGeneration"], "text_config": {"num_hidden_layers": 1}},
-                "unsupported GPU delta model mapping: KimiK3LinearForCausalLM; supported: ",
-            ),
-        ):
-            self.config(config)
-            with (
-                self.subTest(architecture=config["architectures"][0]),
-                self.assertRaisesRegex(ValueError, f"^tp_rank=1 dp_rank=2: {message}"),
-            ):
-                receiver.GpuDeltaBackend(self.runner, identity, CanonicalShadows({}, create=True))
-
-    def test_read_rows_returns_exact_canonical_row_bytes(self):
-        values = {
-            "model.layers.0.mixer.A_log": torch.randn(8).bfloat16(),
-            "layers.0.attn.wo_a.weight": torch.randint(256, (6, 4), dtype=torch.uint8).view(torch.float8_e4m3fn),
-        }
-        path = self.save("model.safetensors", values)
-        read = checkpoint.read_canonical_checkpoint(self.runner)
-        for name, start, stop in (
-            ("model.layers.0.mixer.A_log", 2, 6),
-            ("layers.0.attn.wo_a.weight", 3, 6),
-            ("layers.0.attn.wo_a.weight", 0, 1),
-        ):
-            expected = values[name][start:stop].contiguous().view(torch.uint8).reshape(-1).numpy()
-            self.assertTrue(np.array_equal(read.read_rows(name, start, stop), expected), (name, start, stop))
-        for name, start, stop in (
-            ("model.layers.0.mixer.A_log", 6, 6),
-            ("model.layers.0.mixer.A_log", 4, 9),
-            ("model.layers.0.mixer.A_log", -1, 2),
-        ):
-            with self.assertRaisesRegex(ValueError, "are outside"):
-                read.read_rows(name, start, stop)
-        scalar = checkpoint.CanonicalCheckpoint({}, read.policy, {"scalar": (str(path), 8, 4, "F32", [])})
-        with self.assertRaisesRegex(ValueError, r"rows \[0, 1\) are outside scalar\[\]"):
-            scalar.read_rows("scalar", 0, 1)
-        # A shard truncated after admission never yields short rows.
-        last = max(read.locations, key=lambda name: read.locations[name][1])
-        with open(path, "r+b") as source:
-            source.truncate(path.stat().st_size - 1)
-        with self.assertRaisesRegex(ValueError, f"canonical checkpoint tensor is truncated: {last}"):
-            read.read_rows(last, 0, read.locations[last][4][0])
+        message = (
+            f"GPU delta has no static-tensor policy for checkpoint architecture 'Qwen3MoeForCausalLM'; {admitted}$"
+        )
+        with self.assertRaisesRegex(ValueError, f"^tp_rank=1 dp_rank=2: {message}"):
+            receiver.GpuDeltaBackend(
+                self.runner, {"engine_id": "engine", "tp_rank": 1, "dp_rank": 2}, CanonicalShadows({}, create=True)
+            )
 
     def test_index_selects_shards_and_excludes_duplicate_consolidated_file(self):
         self.save("shard.safetensors", {"weight": torch.zeros(2, 3)})

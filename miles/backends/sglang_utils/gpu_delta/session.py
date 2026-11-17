@@ -2,29 +2,30 @@
 
 The tokenizer sends ordered controls for a Miles-owned update.
 Failed controls are not retried; Miles replaces the affected engine.
-Preparation owns immutable buffers; update pauses, fences readers, retracts, then mutates on the
-scheduler thread. Failed or ambiguous updates require restart, never XOR retry.
+Preparation owns immutable buffers; update sets the pause flag, fences readers, pauses generation in the
+requested mode (retracting by default), then mutates on the scheduler thread. Failed or ambiguous updates
+require restart, never XOR retry.
 """
 
 from __future__ import annotations
 
-import os
+import contextlib
 import shutil
-import socket
 import threading
 import time
-import uuid
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
-from miles.backends.sglang_utils.gpu_delta import io as delta_io
 from miles.utils.gpu_delta import profiling
+
+# Request fields every transaction receipt repeats as provenance.
+_PROVENANCE = ("session_id", "manifest_sha256", "stream_id", "base_version", "target_version", "plan_digest")
 
 
 @dataclass
-class _Update:
+class _Transaction:
     request: dict
     release_future: Future | None = None
     cancelled: threading.Event = field(default_factory=threading.Event)
@@ -50,58 +51,41 @@ class DeltaSession:
     admission finds the committed version.
     """
 
-    def __init__(self, identity: dict, backend: Any, shadow_store: dict, initial_version: int = 0):
+    def __init__(self, identity: dict, backend: Any, shadow_store: dict):
         self.identity = identity
         self.backend = backend
         self.shadow_store = shadow_store
-        self.version = initial_version
-        self._update: _Update | None = None
+        self.version = 0
+        self._update: _Transaction | None = None
+        # The closed backend's shared cache directory, and whether its arena owns the removal.
         self._closed_cache = None
+        self._cache_owner = False
         self._lock = threading.RLock()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-delta")
 
     def status(self) -> dict:
         with self._lock:
-            session = self._update
-            if session is None:
-                return {
-                    "identity": self.identity,
-                    "state": "CLEARED" if self.backend is None else "IDLE",
-                    "version": self.version,
-                }
-            return {
-                "identity": self.identity,
-                "state": (
-                    ("IDLE" if self.backend is not None else "CLEARED")
-                    if session.state == "CLEARED"
-                    else session.state
-                ),
-                "message": session.message,
-                **({"version": self.version} if session.state == "CLEARED" else {}),
-                **{
-                    key: session.request[key]
-                    for key in (
-                        "session_id",
-                        "manifest_sha256",
-                        "stream_id",
-                        "base_version",
-                        "target_version",
-                        "plan_digest",
-                    )
-                },
-                "result": session.result,
+            transaction = self._update
+            receipt = {"identity": self.identity}
+            if transaction is None or transaction.state == "CLEARED":
+                receipt.update(state="IDLE" if self.backend is not None else "CLEARED", version=self.version)
+            else:
+                receipt["state"] = transaction.state
+            if transaction is None:
+                return receipt
+            started, resumed = transaction.pause_started_ns, transaction.resumed_ns
+            return receipt | {
+                "message": transaction.message,
+                **{key: transaction.request[key] for key in _PROVENANCE},
+                "result": transaction.result,
                 # One original process's clock, never subtract across ranks.
                 # Open/failed pauses have no qualified completed duration.
                 "scheduler_timing": {
                     "clock": "monotonic_ns",
-                    "pause_started_ns": session.pause_started_ns,
-                    "reader_fence_completed_ns": session.reader_fence_completed_ns,
-                    "resumed_ns": session.resumed_ns,
-                    "blocked_s": (
-                        (session.resumed_ns - session.pause_started_ns) / 1e9
-                        if session.resumed_ns is not None and session.pause_started_ns is not None
-                        else None
-                    ),
+                    "pause_started_ns": started,
+                    "reader_fence_completed_ns": transaction.reader_fence_completed_ns,
+                    "resumed_ns": resumed,
+                    "blocked_s": (resumed - started) / 1e9 if resumed is not None and started is not None else None,
                 },
             }
 
@@ -115,47 +99,53 @@ class DeltaSession:
                     raise ValueError("completed delta session must not be replayed")
                 if request["stream_id"] != previous.request["stream_id"]:
                     raise ValueError("receiver incarnation belongs to another delta stream")
+            if self.backend is None:
+                raise ValueError("cleared delta receiver must be described before its next update")
             # Miles owns mask ordering, including explicit cancellation of a
             # successfully applied mask. Descriptor versions are provenance.
-            session = self._update = _Update(request=request)
+            transaction = _Transaction(request=request)
             released = previous.release_future if previous is not None else None
-            return self._executor.submit(self._prepare, session, released)
+            # Submit first: a rejected submission must not replace the settled record. The lock keeps
+            # the worker from publishing this transaction's state before it becomes current.
+            completion = self._executor.submit(self._prepare, transaction, released)
+            self._update = transaction
+            return completion
 
-    def _transaction(self, session_id: str) -> _Update:
-        session = self._update
-        if session is None or session.request["session_id"] != session_id:
+    def _transaction(self, session_id: str) -> _Transaction:
+        transaction = self._update
+        if transaction is None or transaction.request["session_id"] != session_id:
             raise ValueError("delta operation belongs to a different session")
-        return session
+        return transaction
 
     @profiling.annotate("gpu_delta.prepare")
-    def _prepare(self, session: _Update, released: Future | None) -> dict:
+    def _prepare(self, transaction: _Transaction, released: Future | None) -> dict:
         prepared = None
         try:
             # The FIFO worker has finished the previous update. Propagate any
             # failed release before reusing its persistent backend resources.
             if released is not None:
                 released.result()
-            prepared = self.backend.prepare(session.request, session.cancelled)
+            prepared = self.backend.prepare(transaction.request, transaction.cancelled)
             with self._lock:
-                if session.state == "PREPARING":
-                    session.prepared = prepared
-                    session.state = "PREPARED"
+                if transaction.state == "PREPARING":
+                    transaction.prepared = prepared
+                    transaction.state = "PREPARED"
                     prepared = None
-                elif session.state == "ABORTED":
+                elif transaction.state == "ABORTED":
                     # abort() settled this update; finally discards the late preparation.
                     pass
                 else:
-                    raise ValueError(f"unexpected delta preparation state: {session.state}")
+                    raise ValueError(f"unexpected delta preparation state: {transaction.state}")
         except Exception as exc:
             with self._lock:
-                if session.state == "PREPARING":
-                    session.state = "FAILED"
-                    session.message = f"preparation failed: {exc}"
-                elif session.state == "ABORTED":
+                if transaction.state == "PREPARING":
+                    transaction.state = "FAILED"
+                    transaction.message = f"preparation failed: {type(exc).__name__}: {exc}"
+                elif transaction.state == "ABORTED":
                     # abort() settled this update; a late failure must not replace ABORTED.
                     pass
                 else:
-                    raise ValueError(f"unexpected delta preparation state: {session.state}") from exc
+                    raise ValueError(f"unexpected delta preparation state: {transaction.state}") from exc
         finally:
             if prepared is not None:
                 self.backend.discard(prepared)
@@ -166,45 +156,51 @@ class DeltaSession:
         self,
         session_id: str,
         fence: Callable[[], None],
-        retract: Callable[[], None],
+        pause_generation: Callable[[], None],
         flush: Callable[[], bool] | None,
+        pause_mode: str = "retract",
     ) -> dict:
+        """Fence readers, pause generation, optionally flush, then mutate; ``pause_mode`` names the pause's range."""
         with self._lock:
-            session = self._transaction(session_id)
-            if session.state != "PREPARED":
+            transaction = self._transaction(session_id)
+            if transaction.state != "PREPARED":
                 raise ValueError("delta apply requires a prepared session")
             # The scheduler has stopped new work. From this point a peer may
             # already be mutating. The tokenizer does not abort after apply dispatch.
-            session.state = "APPLYING"
-            session.pause_started_ns = time.monotonic_ns()
+            transaction.state = "APPLYING"
+            transaction.pause_started_ns = time.monotonic_ns()
             if profiling.ENABLED:
                 # A process range spans separate apply/resume RPCs. Thread-local
-                # push/pop ranges must not be left open across those calls.
-                session.nvtx_pause_id = profiling.nvtx.range_start("gpu_delta.pause")
+                # push/pop ranges must not be left open across those calls. It ends
+                # only after a successful unpause: poisoned, failed-resume and
+                # keep_pause=True sessions leave it open, so it is not a completed
+                # duration and may outlive this session.
+                transaction.nvtx_pause_id = profiling.nvtx.range_start("gpu_delta.pause")
         if profiling.ENABLED:
             fence = profiling.annotate("gpu_delta.pause.reader_fence")(fence)
-            retract = profiling.annotate("gpu_delta.pause.retract")(retract)
+            # One stable range per mode, gpu_delta.pause.retract or gpu_delta.pause.in_place.
+            pause_generation = profiling.annotate(f"gpu_delta.pause.{pause_mode}")(pause_generation)
             if flush is not None:
                 flush = profiling.annotate("gpu_delta.pause.flush_cache")(flush)
         try:
             fence()
-            session.reader_fence_completed_ns = time.monotonic_ns()
+            transaction.reader_fence_completed_ns = time.monotonic_ns()
             # Never reclaim KV after a failed reader fence.
-            retract()
+            pause_generation()
             if flush is not None and not flush():
                 raise ValueError("cache flush failed before delta mutation")
-            result = session.prepared.apply()
+            result = transaction.prepared.apply()
         except Exception as exc:
             with self._lock:
-                session.state = "POISONED"
-                session.message = f"update failed after pause: {exc}; restart required"
+                transaction.state = "POISONED"
+                transaction.message = f"update failed after pause: {type(exc).__name__}: {exc}; restart required"
                 if profiling.ENABLED:
                     # The scheduler is still paused: do not fabricate an end.
                     profiling.nvtx.mark("gpu_delta.pause.poisoned")
             raise
         with self._lock:
-            session.result = result
-            session.state = "APPLIED"
+            transaction.result = result
+            transaction.state = "APPLIED"
             receipt = self.status()
             # Keep the paused IPC acknowledgement small; resume/status retain
             # the full result, including preparation and application metrics.
@@ -217,58 +213,51 @@ class DeltaSession:
     @profiling.annotate("gpu_delta.scheduler.resume")
     def resume(self, session_id: str, resume: Callable[[int], None], keep_pause: bool = False) -> dict:
         with self._lock:
-            session = self._transaction(session_id)
-            if session.state != "APPLIED":
+            transaction = self._transaction(session_id)
+            if transaction.state != "APPLIED":
                 raise ValueError("delta resume requires an applied session")
-            session.state = "RESUMING"
+            transaction.state = "RESUMING"
             try:
-                resume(session.request["target_version"])
+                resume(transaction.request["target_version"])
             except Exception as exc:
-                session.state = "POISONED"
-                session.message = f"resume failed: {exc}; restart required"
+                transaction.state = "POISONED"
+                transaction.message = f"resume failed: {type(exc).__name__}: {exc}; restart required"
                 raise
-            self.version = session.request["target_version"]
+            self.version = transaction.request["target_version"]
             # Version commit does not end a pause retained by the caller.
             if not keep_pause:
-                session.resumed_ns = time.monotonic_ns()
+                transaction.resumed_ns = time.monotonic_ns()
                 if profiling.ENABLED:
-                    profiling.nvtx.range_end(session.nvtx_pause_id)
-                    session.nvtx_pause_id = None
+                    profiling.nvtx.range_end(transaction.nvtx_pause_id)
+                    transaction.nvtx_pause_id = None
             elif profiling.ENABLED:
                 profiling.nvtx.mark("gpu_delta.pause.retained")
-            session.state = "RESUMED"
-            prepared, session.prepared = session.prepared, None
+            transaction.state = "RESUMED"
+            prepared, transaction.prepared = transaction.prepared, None
             # Keep host release I/O off the scheduler; this FIFO executor runs
             # it before the next prepare. Resume follows the all-rank apply barrier.
-            session.release_future = self._executor.submit(prepared.close, True)
+            transaction.release_future = self._executor.submit(prepared.close, True)
             return self.status()
 
     def abort(self, session_id: str) -> dict:
         with self._lock:
             if self._update is None:
-                return {
-                    "identity": self.identity,
-                    "state": "ABORTED",
-                    "session_id": session_id,
-                }
-            session = self._transaction(session_id)
-            if session.state not in {"PREPARING", "PREPARED", "FAILED", "ABORTED"}:
+                return self.status()
+            transaction = self._transaction(session_id)
+            if transaction.state not in {"PREPARING", "PREPARED", "FAILED", "ABORTED"}:
                 raise ValueError("cannot abort a delta after apply dispatch")
-            session.state = "ABORTED"
+            transaction.state = "ABORTED"
             # Wake ranks waiting for their shared preparation owner, including
             # when that owner failed before reaching host-cache construction.
-            session.cancelled.set()
-            if session.prepared is not None:
-                prepared, session.prepared = session.prepared, None
-                session.release_future = self._executor.submit(self.backend.discard, prepared)
+            transaction.cancelled.set()
+            if transaction.prepared is not None:
+                prepared, transaction.prepared = transaction.prepared, None
+                transaction.release_future = self._executor.submit(self.backend.discard, prepared)
             return self.status()
 
     def clear(self) -> dict:
         with self._lock:
-            if self._update is not None and self._update.state not in {
-                "RESUMED",
-                "CLEARED",
-            }:
+            if self._update is not None and self._update.state not in {"RESUMED", "CLEARED"}:
                 raise ValueError("delta state can only be cleared when idle or resumed")
         # Do not hold the session lock while joining its background worker. The
         # queued resume release must finish before closing the arena or unlinking
@@ -277,7 +266,8 @@ class DeltaSession:
         if self._update is not None and self._update.release_future is not None:
             self._update.release_future.result()
         if self.backend is not None:
-            self._closed_cache = self.backend.host_arena.directory
+            arena = self.backend.host_arena
+            self._closed_cache, self._cache_owner = arena.directory, arena.owner
             self.backend.close()
             self.backend = None
         with self._lock:
@@ -287,284 +277,26 @@ class DeltaSession:
                 self._update.release_future = None
             return self.status()
 
-    def release_cache(self, owner: bool) -> dict:
-        # The tokenizer sends this only after the all-rank clear barrier. One
-        # process per engine-host removes the shared cohort directory, never the
-        # source publication or another engine's cache.
+    def release_cache(self) -> dict:
+        # The tokenizer sends this only after the all-rank clear barrier. The host arena's
+        # preparation owner, one per engine-host, removes the shared cohort directory, never
+        # the source publication or another engine's cache.
         if self.backend is not None:
             raise ValueError("delta resources must be closed before cache removal")
-        if owner and self._closed_cache is not None:
-            shutil.rmtree(self._closed_cache)
-        self._closed_cache = None
+        if self._cache_owner:
+            # Once its arena closed, another cohort's owner may already have reclaimed this cohort.
+            with contextlib.suppress(FileNotFoundError):
+                shutil.rmtree(self._closed_cache)
+        self._closed_cache, self._cache_owner = None, False
         return self.status()
 
-    def attach_backend(self, backend) -> None:
-        self.backend = backend
+    def reattach(self, make_backend: Callable[[dict, dict, bool], Any]) -> None:
+        """Attach ``make_backend(identity, shadow_store, create)`` once a cleared backend's cache is removed.
+
+        Only a version-0 receiver may create canonical shadows: after an update, only the retained
+        shadows hold the committed version.
+        """
+        if self._closed_cache is not None:
+            raise ValueError("delta cache removal has not completed")
+        self.backend = make_backend(self.identity, self.shadow_store, self.version == 0)
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-delta")
-
-
-def _dspark_lm_head_dtype():
-    """SGLang main's ``--speculative-dspark-lm-head-dtype``, read only where the spec namespace declares it.
-
-    Main quantizes the target lm_head once into a cache that the DSPARK draft projects through
-    (``models/dspark.py``), which a weight update would leave stale. The companion SGLang tree declares
-    no such field; its only quantized DSPARK head is ``SGLANG_ROCM_OPT_DSPARK_FP8_LM_HEAD``, gated to
-    ROCm gfx95, which a CUDA receiver never serves. There this returns None and describe is unchanged.
-    """
-    from sglang.srt.arg_groups.fields.spec import Spec
-    from sglang.srt.runtime_context import get_spec
-
-    if "speculative_dspark_lm_head_dtype" in Spec.__struct_fields__:
-        return get_spec().speculative_dspark_lm_head_dtype
-    else:
-        return None
-
-
-def with_gpu_delta_controls(scheduler, dispatcher):
-    """Register only delta requests; ordinary handlers remain unchanged."""
-    from sglang.srt.runtime_context import get_parallel
-    from sglang.utils import TypeBasedDispatcher
-
-    parallel = get_parallel()
-    reply_groups = []
-    if parallel.attn_cp_size > 1:
-        reply_groups.append(parallel.attn_cp_group)
-    if parallel.attn_tp_size > 1:
-        reply_groups.append(parallel.attn_tp_group)
-    control = GpuDeltaSchedulerControl(scheduler, tuple(reply_groups))
-    dispatcher += TypeBasedDispatcher(
-        [
-            (delta_io.GetGpuDeltaInfoReqInput, control.handle),
-            (delta_io.ClearGpuDeltaStateReqInput, control.handle),
-            (delta_io.ReleaseGpuDeltaCacheReqInput, control.handle),
-            (delta_io.PrepareGpuDeltaReqInput, control.handle),
-            (delta_io.ApplyGpuDeltaReqInput, control.handle),
-            (delta_io.AbortGpuDeltaReqInput, control.handle),
-            (delta_io.ResumeGpuDeltaReqInput, control.handle),
-        ]
-    )
-    return dispatcher
-
-
-class GpuDeltaSchedulerControl:
-    """Small scheduler adapter; dependencies are lazy for ordinary disk users."""
-
-    def __init__(self, scheduler, reply_groups=()):
-        self.scheduler = scheduler
-        self.reply_groups = reply_groups
-        self.session: DeltaSession | None = None
-
-    def _prepare_completed(self, request, future):
-        try:
-            receipt = future.result()
-        except Exception as exc:
-            self._reply_prepare(request, self.session.status(), False, str(exc))
-        else:
-            self._reply_prepare(request, receipt, receipt["state"] == "PREPARED")
-
-    def _reply_prepare(self, request, receipt, success, message=""):
-        # Each rank replies from its preparation worker without entering any
-        # inference collective or sharing the scheduler's thread-owned socket.
-        import zmq
-        from sglang.srt.managers.scheduler_components.output_sender import SenderWrapper
-        from sglang.srt.utils.network import get_zmq_socket
-
-        receipt["generation_paused"] = self.scheduler._engine_paused
-        with get_zmq_socket(zmq.Context.instance(), zmq.PUSH, request.http_worker_ipc, False) as socket:
-            SenderWrapper(socket).send_output(
-                delta_io.GpuDeltaReqOutput(
-                    rid=request.rid,
-                    success=success,
-                    message=message or receipt.get("message", ""),
-                    participants=[receipt],
-                ),
-                request,
-            )
-
-    def _describe(self, engine_id: str) -> dict:
-        from sglang.srt.runtime_context import get_exec, get_parallel, get_spec
-
-        scheduler = self.scheduler
-        parallel = get_parallel()
-        # DWDP serves routed experts from per-step copies of peer ranks' weights. Its launch also forces the
-        # local control broadcast rejected next, so reject it first under its own name.
-        if parallel.dwdp_size > 1:
-            raise ValueError("GPU delta does not support DWDP expert weight prefetch")
-        if parallel.enable_dp_attention_local_control_broadcast or get_exec().moe.is_ep_scale_joiner:
-            raise ValueError("GPU delta requires the global control broadcast without EP scale joiners")
-        # PP relays controls only after this handler returns and retains several
-        # in-flight microbatches; it needs a separate pause/drain protocol.
-        if parallel.pp_size != 1:
-            raise ValueError("GPU delta currently requires PP1")
-        if parallel.attn_cp_size > 1 and parallel.enable_cp_decode_attn_tp:
-            raise ValueError("GPU delta does not support CP decode attention TP caches")
-        if parallel.attn_tp_size % parallel.attn_dcp_size:
-            raise ValueError("GPU delta requires DCP groups inside attention TP groups")
-        if scheduler.enable_lora or str(scheduler.disaggregation_mode.value) != "null":
-            raise ValueError("GPU delta currently requires no LoRA and no disaggregation")
-        if scheduler.rust_server is not None:
-            raise ValueError("GPU delta endpoints currently require the Python server")
-        if _dspark_lm_head_dtype() is not None:
-            raise ValueError(
-                "GPU delta cannot refresh DSPARK's quantized lm_head cache; unset --speculative-dspark-lm-head-dtype"
-            )
-        # With a token map, the EAGLE worker gives the draft a gathered copy of the target lm_head's hot rows.
-        if get_spec().speculative_token_map is not None:
-            raise ValueError(
-                "GPU delta cannot refresh the draft's hot-token lm_head copy; unset --speculative-token-map"
-            )
-        from sglang.srt.model_executor.model_runner_components.weight_updater import (
-            _unsupported_derived_weight_cache_error,
-        )
-
-        runner = scheduler.tp_worker.model_runner
-        # Reuse the ordinary updater's exclusions: shared IPC weights may belong
-        # to other engines, and untracked derived caches would retain old values.
-        runner.weight_updater._assert_weight_cache_inactive("apply_gpu_delta")
-        error = _unsupported_derived_weight_cache_error(runner.model)
-        if error is not None:
-            raise ValueError(error)
-        if self.session is None:
-            from miles.backends.sglang_utils.gpu_delta.bindings import CanonicalShadows
-            from miles.backends.sglang_utils.gpu_delta.receiver import GpuDeltaBackend
-            from miles.utils.gpu_delta.host import host_cache_id
-            from miles.utils.gpu_delta.host_worker import process_start_ticks
-
-            identity = {
-                "engine_id": engine_id,
-                "rank_id": uuid.uuid4().hex,
-                "hostname": socket.gethostname(),
-                "host_cache_id": host_cache_id(engine_id),
-                "pid": os.getpid(),
-                "start_ticks": process_start_ticks(),
-                "tp_rank": parallel.tp_rank,
-                "dp_rank": 0 if parallel.dp_rank is None else parallel.dp_rank,
-                "pp_rank": parallel.pp_rank,
-            }
-            # A fresh receiver serves the immutable checkpoint, so it may create shadows from it.
-            shadow_store = {}
-            backend = GpuDeltaBackend(runner, identity, CanonicalShadows(shadow_store, create=True))
-            self.session = DeltaSession(identity, backend, shadow_store)
-        elif self.session.identity["engine_id"] != engine_id:
-            raise ValueError("receiver incarnation belongs to another engine")
-        elif self.session.backend is None:
-            from miles.backends.sglang_utils.gpu_delta.bindings import CanonicalShadows
-            from miles.backends.sglang_utils.gpu_delta.receiver import GpuDeltaBackend
-
-            if self.session._closed_cache is not None:
-                raise ValueError("delta cache removal has not completed")
-            # After an update only the retained shadows hold the committed version.
-            shadows = CanonicalShadows(self.session.shadow_store, create=self.session.version == 0)
-            self.session.attach_backend(GpuDeltaBackend(runner, self.session.identity, shadows))
-        return {
-            "identity": self.session.identity,
-            "state": self.session.status()["state"],
-            "version": self.session.version,
-        }
-
-    def handle(self, request):
-        from sglang.srt.managers import io_struct as io
-
-        try:
-            if isinstance(request, delta_io.GetGpuDeltaInfoReqInput):
-                receipt = self._describe(request.engine_id)
-            elif isinstance(request, delta_io.ClearGpuDeltaStateReqInput):
-                receipt = self.session.clear() if self.session is not None else {"identity": None, "state": "CLEARED"}
-            elif isinstance(request, delta_io.ReleaseGpuDeltaCacheReqInput):
-                receipt = (
-                    self.session.release_cache(self.session.identity["rank_id"] in request.owner_rank_ids)
-                    if self.session is not None
-                    else {"identity": None, "state": "CLEARED"}
-                )
-            elif isinstance(request, delta_io.PrepareGpuDeltaReqInput):
-                completion = self.session.prepare(
-                    {
-                        "session_id": request.session_id,
-                        "manifest_path": request.manifest_path,
-                        "manifest_sha256": request.manifest_sha256,
-                        "stream_id": request.stream_id,
-                        "base_version": request.base_version,
-                        "target_version": request.target_version,
-                        "plan_digest": request.plan_digest,
-                        "participants": request.participants,
-                        "validate_payload_hash": request.validate_payload_hash,
-                    }
-                )
-                completion.add_done_callback(lambda future: self._prepare_completed(request, future))
-                return None
-            elif isinstance(request, delta_io.ApplyGpuDeltaReqInput):
-                session = self.session._transaction(request.session_id)
-                if session.state != "PREPARED":
-                    raise ValueError("delta apply requires a prepared session")
-                self.scheduler._engine_paused = True
-                receipt = self.session.apply(
-                    request.session_id,
-                    self.scheduler.device_module.synchronize,
-                    lambda: self.scheduler.pause_generation(io.PauseGenerationReqInput(mode="retract")),
-                    (lambda: self.scheduler.flush_cache(empty_cache=False)) if request.flush_cache else None,
-                )
-            elif isinstance(request, delta_io.ResumeGpuDeltaReqInput):
-
-                def resume(version):
-                    # Serving model identity can differ from the delta stream sequence.
-                    self.scheduler.record_weight_version_change(
-                        str(version) if request.weight_version is None else request.weight_version
-                    )
-                    if not request.keep_pause:
-                        self.scheduler.continue_generation(io.ContinueGenerationReqInput(torch_empty_cache=False))
-
-                receipt = self.session.resume(request.session_id, resume, keep_pause=request.keep_pause)
-            elif isinstance(request, delta_io.AbortGpuDeltaReqInput):
-                receipt = self.session.abort(request.session_id)
-            else:
-                raise ValueError("unknown delta operation")
-            state = receipt["state"]
-            if state in {"FAILED", "POISONED"}:
-                success = False
-            elif state in {
-                "IDLE",
-                "CLEARED",
-                "PREPARING",
-                "PREPARED",
-                "ABORTED",
-                "APPLYING",
-                "APPLIED",
-                "RESUMING",
-                "RESUMED",
-            }:
-                success = True
-            else:
-                raise ValueError(f"unknown delta receipt state: {state}")
-            message = receipt.get("message", "")
-        except Exception as exc:
-            receipt = self.session.status() if self.session is not None else {"identity": None, "state": "REJECTED"}
-            if receipt["state"] == "POISONED":
-                self.scheduler._engine_paused = True
-            success, message = False, str(exc)
-        receipt["generation_paused"] = self.scheduler._engine_paused
-        if isinstance(request, delta_io.PrepareGpuDeltaReqInput):
-            self._reply_prepare(request, receipt, success, message)
-            return None
-        replies = [(success, message, receipt)]
-        for group in self.reply_groups:
-            from torch.distributed import gather_object
-
-            gathered = [None] * group.world_size if group.rank_in_group == 0 else None
-            # CP leaders gather along TP. Carry every accumulated receipt,
-            # including failures, to the sole CP0/TP0 tokenizer socket per DP
-            # route before advancing prepare/apply/resume to the next phase.
-            gather_object(
-                replies,
-                gathered,
-                dst=group.ranks[0],
-                group=group.cpu_group,
-            )
-            if gathered is None:
-                return None
-            replies = [reply for participants in gathered for reply in participants]
-        return delta_io.GpuDeltaReqOutput(
-            rid=request.rid,
-            success=all(reply[0] for reply in replies),
-            message=" | ".join(reply[1] for reply in replies if reply[1]),
-            participants=[reply[2] for reply in replies],
-        )

@@ -19,6 +19,7 @@ from miles.backends.sglang_utils.gpu_delta.derived import plan_updates
 from miles.backends.sglang_utils.gpu_delta.kernel_backends import admits_moe_dispatcher
 from miles.backends.sglang_utils.gpu_delta.models import model_mapping
 from miles.utils.gpu_delta import profiling
+from miles.utils.gpu_delta.host_worker import natural_key
 from miles.utils.gpu_delta.publication import canonical_encoding, static_tensor_reason
 
 
@@ -31,8 +32,6 @@ class GpuDeltaLayout:
         ``shadows`` is the session's ``CanonicalShadows`` for tensors the loader serves only through
         arithmetic.
         """
-        from miles.utils.gpu_delta.host_worker import _natural_key
-
         if not checkpoint.inventory:
             raise ValueError("canonical checkpoint metadata is unavailable")
         policy = checkpoint.policy
@@ -77,7 +76,7 @@ class GpuDeltaLayout:
                 f"Found {len(errors)} mismatched tensors while planning the full checkpoint "
                 "(including unchanged tensors); no delta has been applied:\n" + "\n".join(errors)
             )
-        self.bindings.sort(key=lambda b: _natural_key(b.name))
+        self.bindings.sort(key=lambda b: natural_key(b.name))
         self._parameter_roots = [
             (module, name, tensor, _tensor_identity(tensor))
             for module in mapping.parameters.modules.values()
@@ -112,17 +111,8 @@ class GpuDeltaLayout:
         updates = []
         for layer, layout in mapping.parameters.moe_layers.values():
             updates.extend(layout.expert_derived_updates(layer))
-        # Raw segments write typed pieces, so derived sources patch those pieces, not their parameter.
-        self.derived_updates = plan_updates(
-            updates,
-            [
-                target
-                for binding in self.bindings
-                if binding.is_raw
-                for view in binding.raw_bindings()
-                for target in view.storage
-            ],
-        )
+        # A raw mask XORs its one typed target, so derived sources patch those targets.
+        self.derived_updates = plan_updates(updates, [b.storage[0] for b in self.bindings if b.is_raw])
         self.derived_targets = frozenset(
             id(target) for _, sources in self.derived_updates for _, targets in sources for target in targets
         )
@@ -131,7 +121,7 @@ class GpuDeltaLayout:
             raise ValueError("model mappings pin consumers while binding at describe, never in finish()")
         self.derived, self.computed = _split_images(mapping.derived)
         self._admit_images(updates, parameters.shadowed)
-        self._reject_overlaps(mapping.aliases)
+        self._reject_overlaps(parameters.aliases)
         self._mapping = self._checkpoint = None
 
     def _prepare_identity_checks(self):
@@ -203,22 +193,21 @@ class GpuDeltaLayout:
             for image in self.computed:
                 image.verify()
 
-    def _reject_overlaps(self, model_aliases):
-        # Gate/up intentionally share one interleaved weight/scale allocation;
-        # their maps are disjoint. Other shared storage needs an explicit alias
-        # adapter so a tied parameter is never XORed twice.
+    def _reject_overlaps(self, aliases):
+        # Routed experts share their layer's allocations through disjoint byte maps; the served name classifies
+        # them, since a fused shared expert serves from a routed slot. Other shared storage needs a declared alias
+        # group, so a tied parameter is never XORed twice.
         owners = {}
         for binding in self.bindings:
+            served = binding.live_name or binding.name
             for tensor in binding.storage:
                 key = _storage_key(tensor)
                 prior = owners.get(key)
-                if prior and prior != binding.name:
-                    pair = (prior, binding.name)
-                    if not all(".experts." in name for name in pair) and not (
-                        _gate_up_alias(*pair) or model_aliases(*pair)
-                    ):
+                if prior and prior[0] != binding.name:
+                    pair = (prior[0], binding.name)
+                    if not (".experts." in prior[1] and ".experts." in served) and not aliases(*pair):
                         raise ValueError(f"unclassified live weight alias: {pair}")
-                owners[key] = binding.name
+                owners[key] = binding.name, served
 
 
 def _split_images(images):
@@ -263,10 +252,6 @@ def _check_direct_dtype(binding):
     served = list(dict.fromkeys(_dtype_name(target.dtype) for target in binding.storage))
     if any(dtype not in allowed for dtype in served):
         raise _DtypeMismatch(f"served={served}, allowed_served={sorted(allowed)}, shape={list(binding.shape)}")
-
-
-def _gate_up_alias(a, b):
-    return a.replace("gate_proj", "up_proj") == b or b.replace("gate_proj", "up_proj") == a
 
 
 def _require_fixed_moe_topology(moe):

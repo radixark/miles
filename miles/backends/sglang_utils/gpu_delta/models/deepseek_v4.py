@@ -30,7 +30,6 @@ from typing import NamedTuple
 import torch
 
 from miles.backends.sglang_utils.gpu_delta.bindings import (
-    AliasGroups,
     ConsumerSnapshot,
     DerivedImage,
     ParameterBindings,
@@ -103,7 +102,7 @@ def _classes():
     """The SGLang classes the mapping admits, by exact type."""
     from sglang.srt.layers.attention.dsv4.dsv41_sparse import DeepseekV41Compressor, DeepseekV41Indexer
     from sglang.srt.layers.engram import Engram
-    from sglang.srt.layers.linear import MergedColumnParallelLinear, ReplicatedLinear
+    from sglang.srt.layers.linear import ReplicatedLinear
     from sglang.srt.models.deepseek_v2 import DeepseekV2MLP, DeepseekV2MoE
     from sglang.srt.models.deepseek_v4 import DeepseekV4CudaDecoderLayer, DeepseekV4ForCausalLM, MQALayer
 
@@ -118,7 +117,6 @@ def _classes():
             DeepseekV4ForCausalLM,
             Engram,
             MQALayer,
-            MergedColumnParallelLinear,
             ReplicatedLinear,
         )
     }
@@ -254,12 +252,10 @@ class DeepseekV4Mapping:
 
         _require_deepseek_v41(model)
         self._remap = type(model).remap_weight_name_to_dpsk_hf_format
-        # The loader's own gate/up table: shared-expert w1/w3 load as halves of gate_up_proj.
+        # The loader's own gate/up table: shared-expert w1/w3 load as shards of gate_up_proj.
         self.parameters = ParameterBindings(model, DEEPSEEK_V4_STACKED_PARAMS_MAPPING, shadows)
         self.consumers = []
         self.derived = []
-        # Canonical tensors the loader concatenates into one fused buffer; the layout's aliases().
-        self.aliases = AliasGroups()
         self._layers = {}  # layer index -> _Layer
         self._sinks = {}  # layer prefix -> attention whose sink feeds an attention-TP cache
 
@@ -353,7 +349,7 @@ class DeepseekV4Mapping:
             if fused.weight.shape[0] != q_rows + kv_rows or list(view.shape) != list(meta["shape"]):
                 raise ValueError(f"unsupported DeepSeek-V4.1 fused Q/KV-A geometry: {name}")
             binding = self.parameters.bind_view(name, meta, fused, view, _full_slices(meta["shape"]))
-            self.aliases.declare(name, f"{layer.prefix}.self_attn.wqkv_a.weight", binding, fused.weight)
+            self.parameters.aliases.declare(name, f"{layer.prefix}.self_attn.wqkv_a.weight", binding, fused.weight)
             return binding
         elif attn.fuse_wqa_wkv is False:
             return self.parameters.bind(name, meta, live)
@@ -379,7 +375,8 @@ class DeepseekV4Mapping:
             if list(view.shape) != list(meta["shape"]):
                 raise ValueError(f"unsupported DeepSeek-V4.1 compressor geometry: {name}")
             binding = self.parameters.bind_view(name, meta, fused, view, _full_slices(meta["shape"]))
-            self.aliases.declare(name, f"{layer.prefix}.self_attn.compressor.wkv_gate.weight", binding, fused.weight)
+            group = f"{layer.prefix}.self_attn.compressor.wkv_gate.weight"
+            self.parameters.aliases.declare(name, group, binding, fused.weight)
             return binding
         elif compressor.use_fused_gate is False:
             return self.parameters.bind(name, meta, live)
@@ -393,17 +390,8 @@ class DeepseekV4Mapping:
             raise ValueError(f"unclassified DeepSeek-V4.1 shared-expert tensor: {name}")
         _require_type(shared, "DeepseekV2MLP", "shared expert")
         stem = live.rsplit(".", 2)[-2]
-        if stem in ("gate_proj", "up_proj"):
-            fused = shared.gate_up_proj
-            _require_type(fused, "MergedColumnParallelLinear", "shared-expert gate/up projection")
-            sizes = list(fused.output_sizes)
-            if fused.use_presharded_weights or len(sizes) != 2 or sizes[0] != sizes[1]:
-                raise ValueError(f"unsupported DeepSeek-V4.1 shared-expert gate/up geometry: {name}")
-            # ParameterBindings' gate/up fallback narrows each half of the weight.
-            binding = self.parameters.bind(name, meta, live)
-            self.aliases.declare(name, f"{layer.prefix}.mlp.shared_experts.gate_up_proj.weight", binding, fused.weight)
-            return binding
-        elif stem == "down_proj":
+        if stem in ("gate_proj", "up_proj", "down_proj"):
+            # ParameterBindings binds w1/w3 as declared loader shards of the exact MergedColumnParallelLinear.
             return self.parameters.bind(name, meta, live)
         else:
             raise ValueError(f"unclassified DeepSeek-V4.1 shared-expert projection: {stem}")

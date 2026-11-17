@@ -134,23 +134,6 @@ class TestDerivedNvfp4(unittest.TestCase):
         self.trt_patch.start()
         self.addCleanup(self.trt_patch.stop)
 
-    def test_activation_only_update_prepares_complete_values_without_mutation(self):
-        layer = _layer("trtllm")
-        update = _update(layer, "trtllm")
-        before = [(tensor, tensor.clone(), tensor.data_ptr()) for tensor in (*update.sources, *update.destinations)]
-        incoming = torch.tensor([1.0, 2.0, 3.0, 8.0])
-        copies = _prepare_updates((update,), [(layer.w13_input_scale[3:4], incoming[3:4])])
-        torch.testing.assert_close(_value(copies, layer.g1_alphas), torch.tensor([16.0, 32.0]))
-        torch.testing.assert_close(_value(copies, layer.g1_alphas_up), torch.tensor([24.0, 40.0]))
-        torch.testing.assert_close(_value(copies, layer.g2_alphas), torch.tensor([48.0, 56.0]))
-        torch.testing.assert_close(_value(copies, layer.g1_scale_c), torch.tensor([3.0, 5.0]))
-        torch.testing.assert_close(_value(copies, layer.gemm1_beta), torch.tensor([1 / 24, 1 / 40]))
-        for tensor, old, pointer in before:
-            torch.testing.assert_close(tensor, old)
-            self.assertEqual(tensor.data_ptr(), pointer)
-        incoming.fill_(100)
-        torch.testing.assert_close(_value(copies, layer.g1_alphas), torch.tensor([16.0, 32.0]))
-
     def test_trtllm_clamping_rejects_block_scale_requantization(self):
         layer = _layer("trtllm")
         layer.moe_runner_config.gemm1_clamp_limit = 24.0
@@ -194,6 +177,11 @@ class TestDerivedNvfp4(unittest.TestCase):
         torch.testing.assert_close(_value(copies, layer.g2_alphas), torch.tensor([23.0, 29.0]))
         torch.testing.assert_close(_value(copies, layer._cutedsl_scales[2]), torch.tensor([23.0, 29.0]))
         self.assertTrue(all(copy.destination is not layer._cutedsl_input_scale for copy in copies))
+        # Prepared values are snapshots: a later change to the predicted inputs never reaches them.
+        predicted = weight.clone()
+        copies = _prepare(update, {id(layer.w13_weight_scale_2): predicted})
+        predicted.fill_(0)
+        torch.testing.assert_close(_value(copies, layer.g1_alphas), torch.tensor([11.0, 17.0]))
         # MegaMoE W4A16 has the same weight bytes, but no captured input norm.
         layer = _layer("megamoe")
         layer._flashinfer_megamoe_input_norm_const = None
@@ -295,35 +283,17 @@ class TestDerivedNvfp4(unittest.TestCase):
         for layer in layers:
             torch.testing.assert_close(layer.g1_alphas, torch.zeros(2))
 
-    def test_helpers_are_resolved_once_and_per_token_constants_are_reused(self):
-        for backend in ("trtllm", "cutedsl"):
-            with self.subTest(backend=backend):
-                layer = _layer(backend)
-                layer.quant_config.use_per_token_activation = True
-                update = _update(layer, backend)
-                weights = torch.tensor([[11.0, 13.0], [17.0, 19.0]])
-                with (
-                    patch.object(calibration, "_normal_scale_helpers", side_effect=AssertionError),
-                    patch.object(calibration, "_cutedsl_scale_helper", side_effect=AssertionError),
-                    patch.object(calibration, "_trtllm_scale_helper", side_effect=AssertionError),
-                    patch.object(
-                        torch,
-                        "ones_like",
-                        side_effect=AssertionError("neutral tensors already exist"),
-                    ),
-                ):
-                    copies = _prepare(update, {id(layer.w13_weight_scale_2): weights})
-                torch.testing.assert_close(_value(copies, layer.g1_alphas), weights[:, 0])
-                torch.testing.assert_close(_value(copies, layer.g1_alphas_up), weights[:, 1])
-                torch.testing.assert_close(
-                    _value(copies, layer.w13_input_scale_quant),
-                    layer.w13_input_scale_quant,
-                )
-                if backend == "cutedsl":
-                    torch.testing.assert_close(
-                        _value(copies, layer._cutedsl_input_scale),
-                        layer._cutedsl_input_scale,
-                    )
+    def test_per_token_w4a4_reuses_its_captured_neutral_constants(self):
+        # Per-token CuTe DSL W4A4 copies the gate/up global scales and keeps its captured activation constants.
+        layer = _layer("cutedsl")
+        layer.quant_config.use_per_token_activation = True
+        # Values no recomputation or fresh neutral allocation produces: only the captured tensors match.
+        layer.w13_input_scale_quant, layer._cutedsl_input_scale = torch.full((2,), 0.5), torch.tensor([0.25])
+        weights = torch.tensor([[11.0, 13.0], [17.0, 19.0]])
+        copies = _prepare(_update(layer, "cutedsl"), {id(layer.w13_weight_scale_2): weights})
+        torch.testing.assert_close(_value(copies, layer.g1_alphas_up), weights[:, 1])
+        torch.testing.assert_close(_value(copies, layer.w13_input_scale_quant), torch.full((2,), 0.5))
+        torch.testing.assert_close(_value(copies, layer._cutedsl_input_scale), torch.tensor([0.25]))
 
     def test_prepare_updates_overlays_gate_up_scalars(self):
         layer = _layer("trtllm")
@@ -362,18 +332,6 @@ class TestDerivedNvfp4(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "destination geometry changed"):
             _prepare(update, {})
         torch.testing.assert_close(layer.g2_alphas, torch.zeros(2))
-
-        allocation = torch.arange(4, dtype=torch.float32)
-        source = allocation[:2]
-        update = derived.DerivedUpdate((source,), (torch.zeros(2),), lambda values: values)
-        with self.assertRaisesRegex(ValueError, "outside its source"):
-            _prepare_updates((update,), [(allocation[3:4], torch.tensor([9.0]))])
-        with self.assertRaisesRegex(ValueError, "updates overlap"):
-            _prepare_updates(
-                (update,),
-                [(source[:1], torch.tensor([9.0])), (source[:1], torch.tensor([9.0]))],
-            )
-        torch.testing.assert_close(allocation, torch.arange(4, dtype=torch.float32))
 
 
 class TestPatchGeometry(unittest.TestCase):

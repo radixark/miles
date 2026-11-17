@@ -1,4 +1,4 @@
-"""PP-local ordinary ownership and targeted TP export for GPU delta."""
+"""CUDA-only PP-local ordinary ownership and targeted TP export for GPU delta."""
 
 import re
 from collections.abc import Sequence
@@ -133,7 +133,10 @@ def _block_fp8_scales(plan, config):
         ):
             raise ValueError(f"Incomplete canonical block128 UE8M0 plan for {name!r}")
         scales[weight_name] = scale_name
-    if scales and (config.get("quant_method") != "fp8" or config.get("weight_block_size") != [128, 128]):
+    if scales and (
+        config.get("quant_method") != "fp8"  # config-access-exempt: an absent HF quantization field rejects below
+        or config.get("weight_block_size") != [128, 128]
+    ):
         raise ValueError("Canonical block128 UE8M0 export requires FP8 block size [128, 128]")
     return scales
 
@@ -173,6 +176,11 @@ class HfWeightIteratorGpuDelta(HfWeightIteratorDirect):
         # The protocol consumes owner units and export errors and supplies its canonical plan.
         self.local_consumer: UpdateWeightFromGpuDelta | None = None
         self._canonical_plan, self._block_fp8_scales = None, {}
+
+    def iter_hf_weights(self, *args, **kwargs):
+        # An update that encodes an already captured target joins no export collective; captures always export.
+        if self.local_consumer.requires_export:
+            yield from super().iter_hf_weights(*args, **kwargs)
 
     def _hf_atomic_update_groups(self):
         # The complete publication is applied together. Incremental load-call groups

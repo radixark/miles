@@ -26,7 +26,7 @@ def _driver():
 def _check(result, operation):
     code = result[0]
     if code:
-        raise RuntimeError(f"GPU-delta allocation {operation} failed: CUDA {code}")
+        raise RuntimeError(f"GPU-delta CUDA driver {operation} failed: CUDA {code}")
     return result[1] if len(result) > 1 else None
 
 

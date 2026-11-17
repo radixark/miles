@@ -141,17 +141,17 @@ class WeightUpdater:
         return self.protocol.pop_metrics()
 
     @torch.no_grad()
-    def save_checkpoint_delta(self, checkpoint_dir: str, rollout_id: int, weight_version: int) -> None:
+    def prepare_gpu_delta_checkpoint(self, checkpoint_dir: str, rollout_id: int, weight_version: int) -> None:
         if self._uses_gpu_delta:
             self.protocol.initialize_export(self.parallel_state, self._hf_weight_iterator.placement)
             self.protocol.prepare_checkpoint(checkpoint_dir, rollout_id, weight_version, self._iter_base_buckets)
 
     @torch.no_grad()
-    def export_gpu_delta_snapshot(self, path: str, rollout_id: int | None, weight_version: int) -> dict:
+    def export_gpu_delta_snapshot(self, path: str, rollout_id: int, weight_version: int, in_hf_export: bool = False):
         self.protocol.initialize_export(self.parallel_state, self._hf_weight_iterator.placement)
-        return self.protocol.export_snapshot(path, rollout_id, weight_version, self._iter_base_buckets)
+        return self.protocol.export_snapshot(path, rollout_id, weight_version, self._iter_base_buckets, in_hf_export)
 
-    def finish_checkpoint_delta(self) -> None:
+    def finalize_gpu_delta_checkpoint(self) -> None:
         if self._uses_gpu_delta:
             self.protocol.finalize_checkpoint()
 
@@ -159,11 +159,9 @@ class WeightUpdater:
     def update_weights(self, weight_version: int, rollout_id: int | None = None) -> bool:
         """Run one weight sync: session frame + base-bucket stream + adapter pushes for LoRA."""
         protocol = self.protocol
-        if self._uses_gpu_delta:
-            started = protocol.begin_sync(weight_version, self._iter_base_buckets, rollout_id)
-        else:
-            started = protocol.begin_sync(weight_version, self._iter_base_buckets)
-        if not started:
+        # GPU delta alone takes the rollout: its sync reuses a target that a checkpoint of that rollout captured.
+        rollout = (rollout_id,) if self._uses_gpu_delta else ()
+        if not protocol.begin_sync(weight_version, self._iter_base_buckets, *rollout):
             return False
 
         sync_base = not self.is_lora or protocol.needs_base_resync_for_lora
@@ -190,17 +188,12 @@ class WeightUpdater:
         records_checksums = protocol.is_sender and (driver or not self._hf_weight_iterator.placement.gather_pp)
         with timer("update_weights_implementation"):
             pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
-            buckets = (
-                ()
-                if self._uses_gpu_delta and not protocol.requires_export
-                else self._hf_weight_iterator.iter_hf_weights(
-                    self.weights_getter(),
-                    include_base=sync_base,
-                    adapters=adapters,
-                    materialize=protocol.is_sender,
-                )
-            )
-            for bucket in buckets:
+            for bucket in self._hf_weight_iterator.iter_hf_weights(
+                self.weights_getter(),
+                include_base=sync_base,
+                adapters=adapters,
+                materialize=protocol.is_sender,
+            ):
                 if protocol.is_sender:
                     if checksums is not None and records_checksums:
                         record_lora_checksums(bucket, checksums)

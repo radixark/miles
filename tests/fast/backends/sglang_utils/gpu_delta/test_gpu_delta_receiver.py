@@ -124,6 +124,13 @@ class TestCanonicalPlanCache(unittest.TestCase):
             ("missing local tensors", lambda _, catalog: catalog["tensors"].pop(1)),
             ("unadmitted tensor", lambda backend, _: backend.layout.excluded.update(local=STATIC_DRAFT)),
             ("unadmitted tensor: local", lambda backend, _: backend.layout.excluded.update(local=FROZEN_MODULE)),
+            # Not excluded is not bound: a mapping that binds nothing must record why.
+            ("unadmitted tensor: foreign", lambda backend, _: backend.layout.excluded.pop("foreign")),
+            # Static calibration never carries an update; a publication that names it is rejected.
+            (
+                "unadmitted tensor: foreign$",
+                lambda backend, _: backend.layout.excluded.update(foreign=byte_layout.STATIC_CALIBRATION),
+            ),
         ):
             with self.subTest(message):
                 backend, publication = self.publication()
@@ -132,12 +139,21 @@ class TestCanonicalPlanCache(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     receiver._qualify_canonical_plan(backend, publication_view(invalid))
                 self.assertIsNone(backend._canonical_plan_digest)
-                backend.layout.excluded.pop("local", None)
+                backend.layout.excluded = {"foreign": byte_layout.REMOTE_EXPERT}
                 self.assertFalse(receiver._qualify_canonical_plan(backend, publication_view(publication))[1])
 
 
 class TestReceiverPreparation(unittest.TestCase):
-    def test_cuda_pipeline_prefetches_and_fences_two_input_slots(self):
+    def test_matrix_pipelines_fence_each_slot_before_its_apply_and_reuse(self):
+        # Both branches of _apply_matrices, with recording streams.
+        for hardware in (False, True):
+            with self.subTest(hardware=hardware):
+                self._check_matrix_pipeline(hardware)
+
+    def _check_matrix_pipeline(self, hardware):
+        # The io stream copies inputs for CUDA decode on the compute stream, or decodes on the DE engine itself.
+        # It fills each slot; the compute stream waits for that before the batch's status gate, and a refill
+        # waits for the release two batches later.
         events = []
 
         class Stream:
@@ -147,6 +163,9 @@ class TestReceiverPreparation(unittest.TestCase):
             def wait_event(self, event):
                 events.append((self.name, "wait", event.name))
 
+            def wait_stream(self, stream):
+                events.append((self.name, "wait", stream.name))
+
         class Event:
             def __init__(self, name):
                 self.name = name
@@ -155,12 +174,14 @@ class TestReceiverPreparation(unittest.TestCase):
                 events.append((stream.name, "record", self.name))
 
         prepared = receiver.PreparedDelta.__new__(receiver.PreparedDelta)
-        prepared.stream, prepared.io_stream = Stream("compute"), Stream("h2d")
+        prepared.hardware, prepared.timings, prepared.derived, prepared.computed = hardware, {}, (), ()
+        prepared.stream, prepared.io_stream = Stream("compute"), Stream("io")
         prepared.decoded_ready = [Event(f"ready{i}") for i in range(2)]
         prepared.decoded_free = [Event(f"free{i}") for i in range(2)]
         prepared.batches = [
             SimpleNamespace(
                 decoder=SimpleNamespace(
+                    stream=prepared.io_stream,
                     copy_input=lambda stream, i=i: events.append(("copy", i)),
                     enqueue=lambda i=i: events.append(("decode", i)),
                 ),
@@ -171,18 +192,21 @@ class TestReceiverPreparation(unittest.TestCase):
             for i in range(4)
         ]
         with patch.object(torch.cuda, "stream", return_value=nullcontext()):
-            prepared._copy_batch(prepared.batches[0], 0)
-            prepared._apply_cuda_batches()
+            prepared._apply_matrices()
+        self.assertEqual(events[0], ("io", "wait", "compute"))
+        filled, released = ("decode", "apply") if hardware else ("copy", "decode")
         for i in range(4):
-            self.assertLess(events.index(("copy", i)), events.index(("decode", i)))
+            slot, fill = i % 2, events.index((filled, i))
+            ready = events.index(("io", "record", f"ready{slot}"), fill)
+            self.assertLess(events.index(("compute", "wait", f"ready{slot}"), ready), events.index(("status", i)))
             self.assertLess(events.index(("decode", i)), events.index(("status", i)))
             self.assertLess(events.index(("status", i)), events.index(("apply", i)))
-            if i < 3:
-                self.assertLess(events.index(("copy", i + 1)), events.index(("decode", i)))
+            if i < 3:  # The next copy is queued before this decode; the next DE decode after this apply.
+                first, then = (("apply", i), ("decode", i + 1)) if hardware else (("copy", i + 1), ("decode", i))
+                self.assertLess(events.index(first), events.index(then))
             if i >= 2:
-                wait = events.index(("h2d", "wait", f"free{i % 2}"))
-                self.assertLess(events.index(("compute", "record", f"free{i % 2}")), wait)
-                self.assertLess(wait, events.index(("copy", i)))
+                free = events.index(("compute", "record", f"free{slot}"), events.index((released, i - 2)))
+                self.assertLess(events.index(("io", "wait", f"free{slot}"), free), fill)
 
     def test_decode_table_preserves_sparse_rows_and_natural_zero_ranges(self):
         plans = [
@@ -232,7 +256,7 @@ class TestReceiverPreparation(unittest.TestCase):
                     [[0, 16], [24, 8]],
                     [[0, 24]],
                 ),
-                strict=False,
+                strict=True,
             ):
                 np.testing.assert_array_equal(actual, np.asarray(expected, dtype="<i8").reshape(-1, 2))
         np.testing.assert_array_equal(publication.frames, original_frames)
@@ -328,34 +352,6 @@ class TestReceiverPreparation(unittest.TestCase):
                 self.assertIs(receiver._plan_layers(backend, table, rows), grouped)
             self.assertEqual(receiver._plan_layers(backend, table, rows[:0]), [])
 
-    def test_standalone_bindings_batch_by_their_live_module(self):
-        # DeepSeek-V4.1's canonical embed and head bind model.embed_tokens and lm_head: each takes its own batch,
-        # as DeepSeek's canonical names do, while other standalone tensors share one.
-        root = torch.nn.Module()
-        root.model = torch.nn.Module()
-        root.model.embed_tokens = torch.nn.Embedding(4, 2)
-        root.model.norm = torch.nn.LayerNorm(2)
-        root.lm_head = torch.nn.Linear(2, 4, bias=False)
-        parameters = byte_layout.ParameterBindings(root)
-        targets = {
-            "embed.weight": "model.embed_tokens.weight",
-            "head.weight": "lm_head.weight",
-            "norm.weight": "model.norm.weight",
-            "model.norm.bias": "model.norm.bias",
-        }
-        bindings = []
-        for name, target in targets.items():
-            shape = list(parameters.params[target].shape)
-            meta = {"dtype": "F32", "shape": shape, "encoding": "xor_bytes" if len(shape) > 1 else "xor_raw_bytes"}
-            bindings.append(parameters.bind(name, meta, target))
-        self.assertEqual(
-            [binding.live_name for binding in bindings],
-            ["model.embed_tokens.weight", "lm_head.weight", "model.norm.weight", None],
-        )
-        entries = {binding.name: (i, {"nbytes": 8}) for i, binding in enumerate(bindings)}
-        table = receiver._BindingTable(SimpleNamespace(bindings=bindings, derived=[], computed=[]), entries)
-        self.assertEqual([rows.tolist() for rows in table.non_layers], [[0], [1], [2, 3]])
-
     def test_binding_table_selects_active_rows_and_derived_sources(self):
         bindings = [
             byte_layout._direct_binding(
@@ -401,33 +397,6 @@ class TestReceiverPreparation(unittest.TestCase):
         np.testing.assert_array_equal(raw, [2])
         self.assertEqual((derived, computed), ([image], []))
 
-    def test_binding_table_activates_multi_source_computed_images_once(self):
-        bindings = [
-            byte_layout._direct_binding(
-                name, {"dtype": "U8", "shape": [2, 4], "encoding": "xor_bytes"}, torch.zeros(2, 4, dtype=torch.uint8)
-            )
-            for name in ("norm", "proj", "other")
-        ]
-        copy = SimpleNamespace(source_pointers=bindings[2].storage_pointers)
-        image = byte_layout.ComputedImage(
-            "cw", (bindings[0].storage[0], bindings[1].storage[0]), (torch.zeros(2, 4),), lambda a, b: (a.float() * b,)
-        )
-        table = receiver._BindingTable(
-            SimpleNamespace(bindings=bindings, derived=[copy], computed=[image]),
-            {b.name: (ordinal, {"nbytes": 8}) for ordinal, b in enumerate(bindings)},
-        )
-        tensors = np.zeros(3, dtype=TENSOR_DTYPE)
-        for frames, expected in (
-            ([1, 0, 0], ([], [image])),
-            ([0, 1, 0], ([], [image])),
-            ([1, 1, 0], ([], [image])),
-            ([0, 0, 1], ([copy], [])),
-            ([0, 0, 0], ([], [])),
-        ):
-            tensors["frame_count"] = frames
-            *_, derived, computed = table.select(tensors)
-            self.assertEqual((derived, computed), expected, frames)
-
     def test_refresh_runs_copies_prepared_then_computed_behind_the_sticky_error(self):
         prepared = receiver.PreparedDelta.__new__(receiver.PreparedDelta)
         events = []
@@ -457,53 +426,6 @@ class TestReceiverPreparation(unittest.TestCase):
         prepared.derived, prepared.computed, prepared.error = [], [], None
         prepared._refresh_images()
 
-    def test_copy_images_refresh_from_parameters_that_require_grad(self):
-        # Refresh does not depend on grad mode: the receiver refreshes under no_grad, while tests and manual drivers
-        # may refresh with grad enabled from SGLang's plain nn.Parameter weights (DeepSeek-V4's attn_sink).
-        sink = torch.nn.Parameter(torch.linspace(-2, 2, 4))
-        cache = torch.zeros(6)
-        copy = byte_layout.DerivedImage("sink", cache[:2], sink[2:])
-        copy.refresh(torch.tensor(False))
-        self.assertFalse(cache.any())
-        copy.refresh(torch.tensor(True))
-        self.assertTrue(torch.equal(cache[:2], sink[2:].detach()) and not cache[2:].any())
-        self.assertTrue(sink.requires_grad and sink.grad is None)
-
-    def test_computed_images_refresh_and_verify_bit_views_of_any_destination(self):
-        # FP8 has no CPU where kernel; its NaN and negative-zero payloads must survive the selection.
-        codes = torch.tensor([0x00, 0x7F, 0x80, 0xFF, 0x01, 0x38], dtype=torch.uint8)
-        destinations = (
-            torch.zeros(6, dtype=torch.float8_e4m3fn),
-            torch.zeros(6, dtype=torch.uint8),
-            torch.zeros(3, 2, dtype=torch.int32).T,
-        )
-        image = byte_layout.ComputedImage(
-            "codes",
-            (codes,),
-            destinations,
-            lambda value: (value.view(torch.float8_e4m3fn), value ^ 0x5A, value.int().reshape(2, 3) * -3),
-        )
-        expected = [value.clone() for value in image.values()]
-        image.refresh(torch.tensor(False))
-        for destination in destinations:
-            self.assertFalse(
-                destination.view(torch.uint8).any() if destination.element_size() == 1 else destination.any()
-            )
-        with self.assertRaisesRegex(ValueError, "computed image codes does not reproduce its live consumer"):
-            image.verify()
-        image.refresh(torch.tensor(True))
-        self.assertTrue(torch.equal(destinations[0].view(torch.uint8), codes))
-        self.assertTrue(torch.equal(destinations[1], expected[1]))
-        self.assertTrue(torch.equal(destinations[2], expected[2]))
-        self.assertEqual(destinations[2].stride(), (1, 2))
-        image.verify()
-        destinations[1][3] ^= 1
-        with self.assertRaisesRegex(ValueError, "does not reproduce its live consumer"):
-            image.verify()
-        image.compute = lambda value: (value.view(torch.float8_e4m3fn), value.int(), value.int().reshape(2, 3))
-        with self.assertRaisesRegex(ValueError, "computed image geometry changed: codes"):
-            image.values()
-
     def test_backend_reads_inventory_once_and_drains_all_streams_on_failure(self):
         fake_plan = SimpleNamespace(check_identity=lambda: None, finish=Mock(), bindings=[], excluded={})
         fake_model = SimpleNamespace(parameters=lambda: iter([SimpleNamespace(device=torch.device("cpu"))]))
@@ -511,7 +433,7 @@ class TestReceiverPreparation(unittest.TestCase):
         with (
             patch.dict(receiver.os.environ, GPU_DELTA_LAYERS_PER_BATCH="3"),
             patch.object(receiver, "GpuDeltaLayout", return_value=fake_plan) as layout_type,
-            patch("miles.utils.gpu_delta.host.HostArena") as arena_type,
+            patch.object(receiver, "HostArena") as arena_type,
             patch.object(receiver, "read_canonical_checkpoint") as read_checkpoint,
         ):
             shadows = byte_layout.CanonicalShadows({}, create=True)
@@ -527,16 +449,10 @@ class TestReceiverPreparation(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "must be positive"):
                     receiver.GpuDeltaBackend(model_runner, {"engine_id": "invalid"}, shadows)
             read_checkpoint.assert_called_once()
-            # Dtype admission rejects at construction, names the rank and creates no host resources.
+            # A rejected layout names the rank and creates no host resources.
             layout_type.side_effect = ValueError("mismatched dtypes")
-            rejected = {"engine_id": "rejected", "tp_rank": 1, "dp_rank": 2}
             with self.assertRaisesRegex(ValueError, "^tp_rank=1 dp_rank=2: mismatched dtypes$"):
-                receiver.GpuDeltaBackend(model_runner, rejected, shadows)
-            # So does a checkpoint its static policy rejects, before any layout exists.
-            read_checkpoint.side_effect = ValueError("no static-tensor policy")
-            with self.assertRaisesRegex(ValueError, "^tp_rank=1 dp_rank=2: no static-tensor policy$"):
-                receiver.GpuDeltaBackend(model_runner, rejected, shadows)
-            self.assertEqual(layout_type.call_count, 2)
+                receiver.GpuDeltaBackend(model_runner, {"engine_id": "rejected", "tp_rank": 1, "dp_rank": 2}, shadows)
             arena_type.assert_called_once_with("test-engine", 0, {"engine_id": "test-engine"})
             backend.host_arena.prepare_publication.side_effect = ValueError("bad manifest")
             with patch.object(torch.cuda, "device", return_value=nullcontext()):

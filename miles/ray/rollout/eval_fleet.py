@@ -14,6 +14,10 @@ import logging
 from argparse import Namespace
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.training_utils.weight_update.protocols.gpu_delta.eval import (
+    EvalSnapshotUpdater,
+    uses_gpu_delta_eval,
+)
 from miles.ray.specs.inference import inference_controller_worker_name
 from miles.rollout.checkpoint_eval import EvalSkip, retarget_args
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
@@ -97,11 +101,7 @@ class InferenceControllerEvalFleet:
     def __init__(self, args: Namespace, *, srv):
         self.args = args
         self._srv = srv
-        self._gpu_delta = None
-        if args.update_weight_transfer_mode == "gpu-delta":
-            from miles.backends.training_utils.weight_update.protocols.gpu_delta.eval import EvalSnapshotUpdater
-
-            self._gpu_delta = EvalSnapshotUpdater(args.hf_checkpoint, args.run_uuid)
+        self._gpu_delta = EvalSnapshotUpdater(args) if uses_gpu_delta_eval(args) else None
 
     async def info(self) -> EvalFleetInfo:
         async with self._srv.context_lock:

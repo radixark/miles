@@ -1594,8 +1594,6 @@ def miles_validate_args(args):
         args.offload_rollout = False
     # One decision for both the colocated LoRA weight sync and the trainer's host backup.
     args.lora_sync_sends_base = lora_sync_sends_base(args)
-    if args.update_weight_transfer_mode == "gpu-delta":
-        assert not args.offload_rollout, "GPU delta requires resident original rollout weight storage"
 
     if args.offload_train:
         args.disable_grad_buffers_cpu_backup = True

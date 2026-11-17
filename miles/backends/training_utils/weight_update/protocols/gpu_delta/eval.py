@@ -6,12 +6,14 @@ import json
 import uuid
 from pathlib import Path
 
-from miles.backends.training_utils.weight_update.protocols.gpu_delta.session import activate_engine, receiver_pool
+from miles.backends.training_utils.weight_update.protocols.gpu_delta.client import get_gpu_delta_info
+from miles.backends.training_utils.weight_update.protocols.gpu_delta.session import activate_engine, engine_identities
 
 _UNKNOWN = object()
 
 
 def uses_gpu_delta_eval(args):
+    """Dedicated eval engines pin GPU-delta snapshots; trainer and controller configs lack --eval-num-gpus."""
     return args.update_weight_transfer_mode == "gpu-delta" and any(
         model.name == "eval" for model in args.sglang.models
     )
@@ -19,6 +21,7 @@ def uses_gpu_delta_eval(args):
 
 def write_eval_snapshot(updater, path, rollout_id, weight_version):
     """Publish READY, then mark the eval staging directory complete collectively."""
+    # Trainer-only dependencies: the inference controller imports this module for eval pins.
     from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
     from miles.utils.hf_utils.config import HF_EXPORT_COMPLETE_MARKER
 
@@ -29,7 +32,21 @@ def write_eval_snapshot(updater, path, rollout_id, weight_version):
     )
 
 
-def _read_snapshot(checkpoint_dir, hf_checkpoint):
+def _eval_stream_dir(update_weight_disk_dir, run_uuid):
+    return Path(update_weight_disk_dir) / f"eval-stream-{run_uuid}"
+
+
+def record_eval_stream(update_weight_disk_dir, run_uuid, stream_id):
+    """Record the run's current trainer stream, the only one dedicated eval pins; return the record's directory."""
+    directory = _eval_stream_dir(update_weight_disk_dir, run_uuid)
+    directory.mkdir(parents=True, exist_ok=True)
+    staged = directory / f".STREAM.{stream_id}"
+    staged.write_text(stream_id)
+    staged.replace(directory / "STREAM")
+    return directory
+
+
+def _read_snapshot(checkpoint_dir, hf_checkpoint, stream_record):
     directory = (Path(checkpoint_dir) / "gpu_delta").resolve()
     descriptor = json.loads((directory / "READY.json").read_bytes())
     manifest_path = Path(descriptor["manifest_path"]).resolve(strict=True)
@@ -47,6 +64,10 @@ def _read_snapshot(checkpoint_dir, hf_checkpoint):
     # Both sides trust the same immutable HF prior; this checks configuration identity.
     if Path(manifest["base_checkpoint"]).resolve() != Path(hf_checkpoint).resolve():
         raise ValueError("Eval snapshot uses a different configured HF base")
+    # Receivers keep the first stream they apply. A resumed job's first --save-hf point carries an earlier trainer's
+    # stream, so pinning it would leave the fresh eval engines unable to apply this run's later snapshots.
+    if manifest["stream_id"] != stream_record.read_text():
+        raise ValueError("Eval snapshot belongs to an earlier trainer stream")
     return descriptor
 
 
@@ -59,28 +80,35 @@ class EvalSnapshotUpdater:
     immutable publications remain in the sender's shared run storage.
     """
 
-    def __init__(self, hf_checkpoint, run_uuid):
-        self.hf_checkpoint = hf_checkpoint
-        self.run_uuid = run_uuid
+    def __init__(self, args):
+        self.hf_checkpoint = args.hf_checkpoint
+        self.run_uuid = args.run_uuid
+        self._stream_record = _eval_stream_dir(args.update_weight_disk_dir, args.run_uuid) / "STREAM"
         self._engines = {}
 
     async def pin(self, clients, checkpoint_dir, weight_version, timeout):
         initial = Path(checkpoint_dir).resolve() == Path(self.hf_checkpoint).resolve()
-        publication = None if initial else await asyncio.to_thread(_read_snapshot, checkpoint_dir, self.hf_checkpoint)
+        publication = (
+            None
+            if initial
+            else await asyncio.to_thread(_read_snapshot, checkpoint_dir, self.hf_checkpoint, self._stream_record)
+        )
         descriptions = await asyncio.wait_for(
             asyncio.gather(
                 *[
-                    client.get_gpu_delta_info(engine_id=f"{self.run_uuid}:eval:{client.server_url}")
+                    get_gpu_delta_info(client, engine_id=f"{self.run_uuid}:eval:{client.server_url}")
                     for client in clients
                 ]
             ),
             timeout,
         )
-        pool = receiver_pool(descriptions)
+        identities = engine_identities(descriptions)
         results = await asyncio.gather(
             *[
                 self._pin_engine(client, participants, description, publication, weight_version, timeout)
-                for client, participants, description in zip(clients, pool.participants, descriptions, strict=True)
+                for client, participants, description in zip(
+                    clients, identities.participants, descriptions, strict=True
+                )
             ],
             return_exceptions=True,
         )

@@ -18,6 +18,7 @@ from miles.backends.sglang_utils.gpu_delta.bindings import (
     ConsumerSnapshot,
     DerivedImage,
     ParameterBindings,
+    _full_slices,
     _tensor_identity,
 )
 from miles.backends.sglang_utils.gpu_delta.byte_views import (
@@ -121,15 +122,13 @@ def with_dcp_replicas(binding, replicas):
     )
 
 
-def fused_qkv_a_view(fused, stem, shape, q_rows, kv_rows):
+def fused_qkv_a_view(fused, stem, q_rows, kv_rows):
     """The rows of ``fused_qkv_a_proj_with_mqa`` that ``DeepseekV2WeightLoaderMixin`` fills from one tensor.
 
     The loader concatenates the ``q_a_proj`` rows above the ``kv_a_proj_with_mqa`` rows. The caller
-    passes the canonical tensor's ``shape`` and their row counts (the Q LoRA rank, and the KV LoRA
-    rank plus the RoPE head size) from its model's own configuration.
+    passes their row counts (the Q LoRA rank, and the KV LoRA rank plus the RoPE head size) from its
+    model's own configuration.
     """
-    if not shape:
-        raise ValueError("fused scalar projection metadata is not supported")
     if stem == "q_a_proj":
         start, rows = 0, q_rows
     elif stem == "kv_a_proj_with_mqa":
@@ -258,70 +257,66 @@ class DeepseekV2Mapping:
         ("fused_qkv_a_proj_with_mqa", "kv_a_proj_with_mqa", 1),
     )
 
-    def __init__(self, model, shadows=None):
+    def __init__(self, model, shadows):
         # The DeepSeek-V2 loader serves every canonical tensor losslessly, so no binding uses shadows.
-        self.model = model
         self.parameters = ParameterBindings(model, self.stacked_params, shadows)
-        self.mla_layers = {}
+        self._config = model.config
+        # The loader serves a fused shared expert from routed-expert slot n_routed_experts (SGLang fuses one).
+        self._fused_shared_experts = model.num_fused_shared_experts > 0
+        self._mla_layers = {}
         self.derived = []
         self.consumers = []
 
     def bind(self, name, meta):
         target_name = name
-        if self.model.num_fused_shared_experts > 0 and "mlp.shared_experts" in name:
-            target_name = name.replace(
-                "mlp.shared_experts",
-                f"mlp.experts.{self.model.config.n_routed_experts}",
-            )
-        target = self.parameters.params.get(target_name)
-        if target is None and ".experts." not in target_name:
-            for param_stem, source_stem, _ in self.stacked_params:
-                if param_stem != "fused_qkv_a_proj_with_mqa" or source_stem not in target_name:
-                    continue
-                candidate = target_name.replace(source_stem, param_stem)
-                fused = self.parameters.params.get(candidate)
-                if fused is None:
-                    continue
-                config = self.model.config
-                target = fused_qkv_a_view(
-                    fused,
-                    source_stem,
-                    shape=meta["shape"],
-                    q_rows=config.q_lora_rank,
-                    kv_rows=config.kv_lora_rank + config.qk_rope_head_dim,
-                )
-                target_name = candidate
-                break
-        if target is None and ".indexer." in target_name:
-            for source, at_end in (("wk", False), ("weights_proj", True)):
-                marker = f".indexer.{source}.weight"
-                if target_name.endswith(marker):
-                    candidate = target_name[: -len(marker)] + ".indexer.wk_weights_proj.weight"
-                    target = self.parameters.params.get(candidate)
-                    if target is not None:
-                        if meta["dtype"] != "BF16":
-                            # The loader dequantizes other checkpoint dtypes into this BF16 parameter.
-                            raise _DtypeMismatch(
-                                f"fused DSA indexer requires BF16 canonical weights, got {meta['dtype']}"
-                            )
-                        rows = meta["shape"][0]
-                        target = target[-rows:] if at_end else target[:rows]
-                        target_name = candidate
-                    break
-        binding = self.parameters.bind(name, meta, target_name, target)
+        if self._fused_shared_experts and "mlp.shared_experts" in name:
+            target_name = name.replace("mlp.shared_experts", f"mlp.experts.{self._config.n_routed_experts}")
+        fused = self._fused_rows(meta, target_name)
+        if fused is None:
+            binding = self.parameters.bind(name, meta, target_name)
+        else:
+            # A row view of a fused parameter, declared in its alias group.
+            target_name, view = fused
+            module = self.parameters.module(target_name.rsplit(".", 1)[0])
+            binding = self.parameters.bind_view(name, meta, module, view, _full_slices(meta["shape"]))
+            self.parameters.aliases.declare(name, target_name, binding, self.parameters.params[target_name])
         binding, kv_layer = mla_projection_binding(self.parameters.modules, name, target_name, binding)
         if kv_layer is not None:
-            self.mla_layers[kv_layer.prefix] = kv_layer.attn
+            self._mla_layers[kv_layer.prefix] = kv_layer.attn
             self.consumers.append(kv_layer.snapshot)
         return binding
 
     def finish(self):
-        for prefix, attn in self.mla_layers.items():
+        for prefix, attn in self._mla_layers.items():
             self.derived.extend(mla_derived_images(prefix, attn))
 
-    @staticmethod
-    def aliases(a, b):
-        for left, right in (("q_a_proj", "kv_a_proj_with_mqa"), ("wk", "weights_proj")):
-            if a.replace(left, right) == b or b.replace(left, right) == a:
-                return True
-        return False
+    def _fused_rows(self, meta, target_name):
+        """``(fused parameter name, rows)`` the loader fills from ``target_name``; None for any other tensor.
+
+        ``DeepseekV2WeightLoaderMixin`` concatenates ``q_a_proj`` above ``kv_a_proj_with_mqa`` and the DSA
+        indexer's ``wk`` above its ``weights_proj``.
+        """
+        params = self.parameters.params
+        if target_name in params or ".experts." in target_name:
+            return None
+        for param_stem, source_stem, _ in self.stacked_params:
+            candidate = target_name.replace(source_stem, param_stem)
+            if param_stem == "fused_qkv_a_proj_with_mqa" and source_stem in target_name and candidate in params:
+                config = self._config
+                view = fused_qkv_a_view(
+                    params[candidate],
+                    source_stem,
+                    q_rows=config.q_lora_rank,
+                    kv_rows=config.kv_lora_rank + config.qk_rope_head_dim,
+                )
+                return candidate, view
+        for source, at_end in (("wk", False), ("weights_proj", True)):
+            marker = f".indexer.{source}.weight"
+            candidate = target_name.removesuffix(marker) + ".indexer.wk_weights_proj.weight"
+            if target_name.endswith(marker) and candidate in params:
+                if meta["dtype"] != "BF16":
+                    # The loader dequantizes other checkpoint dtypes into this BF16 parameter.
+                    raise _DtypeMismatch(f"fused DSA indexer requires BF16 canonical weights, got {meta['dtype']}")
+                fused, rows = params[candidate], meta["shape"][0]
+                return candidate, fused[-rows:] if at_end else fused[:rows]
+        return None

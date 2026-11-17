@@ -29,7 +29,6 @@ from typing import NamedTuple
 import torch
 
 from miles.backends.sglang_utils.gpu_delta.bindings import (
-    AliasGroups,
     ComputedImage,
     ConsumerSnapshot,
     DerivedImage,
@@ -150,21 +149,20 @@ def _leaf(live):
     return live.rsplit(".", 2)[-2]
 
 
-def route(name, attention):
-    """How the mapping binds one canonical Kimi-K3 tensor; raises for anything else.
+def route(live, attention):
+    """How the mapping binds one canonical Kimi-K3 tensor, from its served name; raises for anything else.
 
-    ``attention`` is the kind of the decoder layer that holds the tensor, ``"kda"`` or ``"mla"``, and
-    None outside the decoder layers, derived from config.json ``kda_layers``. Every name the shared static
-    policy excludes is unclassified. Pure.
+    ``live`` is ``sglang_name``'s result. ``attention`` is the kind of the decoder layer that holds the tensor,
+    ``"kda"`` or ``"mla"``, and None outside the decoder layers, derived from config.json ``kda_layers``.
+    Every name the shared static policy excludes is unclassified. Pure.
     """
-    live = sglang_name(name)
     match = _LAYER.fullmatch(live)
     if match is None:
         if attention is not None:
-            raise ValueError(f"a Kimi-K3 tensor outside the decoder layers has no attention kind: {name}")
+            raise ValueError(f"a Kimi-K3 tensor outside the decoder layers has no attention kind: {live}")
         kind = _MODEL_ROUTES.get(live)
     elif attention not in _ATTENTION_ROUTES:
-        raise ValueError(f"unsupported Kimi-K3 attention kind {attention!r}: {name}")
+        raise ValueError(f"unsupported Kimi-K3 attention kind {attention!r}: {live}")
     elif _EXPERT.fullmatch(match[2]):
         kind = "expert"
     elif match[2] in _LAYER_ROUTES:
@@ -172,7 +170,7 @@ def route(name, attention):
     else:
         kind = _ATTENTION_ROUTES[attention].get(match[2])
     if kind is None:
-        raise ValueError(f"unclassified Kimi-K3 canonical tensor: {name}")
+        raise ValueError(f"unclassified Kimi-K3 canonical tensor: {live}")
     return kind
 
 
@@ -367,8 +365,6 @@ class KimiK3Mapping:
         self.parameters = ParameterBindings(model, (), shadows)
         self.consumers = []
         self.derived = []
-        # Canonical tensors post_load_weights serves as views of one merged buffer; the layout's aliases().
-        self.aliases = AliasGroups()
         self._layers = {}  # layer index -> _Layer
         self._scores = {}  # attention-residual stem -> (proj, norm, cached)
         self._o_norms = {}  # KDA layer prefix -> (attention, o_norm shadow)
@@ -380,7 +376,7 @@ class KimiK3Mapping:
         live = sglang_name(name)
         match = _LAYER.fullmatch(live)
         layer = None if match is None else self._layer(int(match[1]))
-        kind = route(name, None if layer is None else layer.attention)
+        kind = route(live, None if layer is None else layer.attention)
         if kind == "dense":
             return self.parameters.bind(name, meta, live)
         elif kind == "attn_res":
@@ -391,7 +387,7 @@ class KimiK3Mapping:
             return self._bind_fused(name, meta, live, f"{layer.prefix}.self_attn.qkv_conv1d", _CONV_SHARDS)
         elif kind == "kda_bfa":
             binding = self.parameters.bind(name, meta, live)
-            self.aliases.declare(name, f"{layer.prefix}.self_attn._bfa_w", binding, layer.attn._bfa_w)
+            self.parameters.aliases.declare(name, f"{layer.prefix}.self_attn._bfa_w", binding, layer.attn._bfa_w)
             return binding
         elif kind == "kda_dt_bias":
             return self._bind_dt_bias(name, meta, layer)
@@ -473,7 +469,7 @@ class KimiK3Mapping:
         module = self.parameters.module(fused)
         view, slices = merged_column_target(module.weight, module, shards[_leaf(live)], meta["shape"])
         binding = self.parameters.bind_view(name, meta, module, view, slices)
-        self.aliases.declare(name, f"{fused}.weight", binding, module.weight)
+        self.parameters.aliases.declare(name, f"{fused}.weight", binding, module.weight)
         return binding
 
     def _bind_dt_bias(self, name, meta, layer):
@@ -515,12 +511,12 @@ class KimiK3Mapping:
         view = fused_qkv_a_view(
             fused.weight,
             leaf,
-            shape=meta["shape"],
             q_rows=attn.q_lora_rank,
             kv_rows=attn.kv_lora_rank + attn.qk_rope_head_dim,
         )
         binding = self.parameters.bind_view(name, meta, fused, view, _full_slices(meta["shape"]))
-        self.aliases.declare(name, f"{layer.prefix}.self_attn.fused_qkv_a_proj_with_mqa.weight", binding, fused.weight)
+        group = f"{layer.prefix}.self_attn.fused_qkv_a_proj_with_mqa.weight"
+        self.parameters.aliases.declare(name, group, binding, fused.weight)
         return binding
 
     def _bind_mla_projection(self, name, meta, live):
@@ -535,11 +531,14 @@ class KimiK3Mapping:
         """A KimiK3MLP gate or up projection: one shard of the dense layer's or the shared experts' gate_up_proj."""
         if layer.moe != moe:
             raise ValueError(f"unclassified Kimi-K3 {'MoE' if moe else 'dense MLP'} tensor: {name}")
-        module = self.parameters.module(
-            f"{layer.prefix}.mlp.shared_experts.gate_up_proj" if moe else f"{layer.prefix}.mlp.gate_up_proj"
-        )
+        fused = f"{layer.prefix}.mlp.shared_experts.gate_up_proj" if moe else f"{layer.prefix}.mlp.gate_up_proj"
+        module = self.parameters.module(fused)
         view, slices = merged_column_target(module.weight, module, _GATE_UP_SHARDS[_leaf(live)], meta["shape"])
-        return self.parameters.bind_view(name, meta, module, view, slices)
+        binding = self.parameters.bind_view(name, meta, module, view, slices)
+        if not moe or layer.mlp._front_w is None:
+            # Otherwise _front declares the shared experts' halves in the merged front buffer.
+            self.parameters.aliases.declare(name, f"{fused}.weight", binding, module.weight)
+        return binding
 
     def _bind_moe(self, name, meta, live, layer):
         if not layer.moe:
@@ -550,7 +549,7 @@ class KimiK3Mapping:
         """``_merge_front_weights`` re-points shared gate_up, router and latent down_proj into ``_front_w``."""
         front = layer.mlp._front_w
         if front is not None:
-            self.aliases.declare(name, f"{layer.prefix}.mlp._front_w", binding, front)
+            self.parameters.aliases.declare(name, f"{layer.prefix}.mlp._front_w", binding, front)
         return binding
 
     def _bind_expert(self, name, meta, layer, tail):

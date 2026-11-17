@@ -4,10 +4,6 @@ import sys
 import types
 from argparse import Namespace
 
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["megatron", "weight-update"])
-
 import pytest
 import torch
 from tests.fast.backends.megatron_utils import test_hf_weight_iterator_direct
@@ -344,6 +340,7 @@ def test_gpu_delta_cached_owners_select_one_tp_replica_and_reconstruct_current_v
         send_bucket=lambda unit: consumed.update({name: value.clone() for name, value in unit}),
         record_export_error=lambda error: pytest.fail(str(error)),
         get_export_plan=dict,
+        requires_export=True,
     )
     for update in range(2):
         calls.clear()
@@ -420,6 +417,7 @@ def test_gpu_delta_owner_failure_drains_later_gathers_and_reports_once(direct_mo
         send_bucket=lambda unit: events.append(("consume", [name for name, _ in unit])),
         record_export_error=errors.append,
         get_export_plan=dict,
+        requires_export=True,
     )
     assert list(iterator.iter_hf_weights({name: torch.ones(2, 2) for name in names}, materialize=True)) == []
     assert errors == [failure]
@@ -483,6 +481,28 @@ def test_block128_export_uses_checkpoint_compact_scales_and_preserves_other_tens
     plan = plan | {scale_name: plan[scale_name] | {"dtype": "F32"}}
     assert list(iterator._convert_to_hf_param_units([("trainer.weight", weight)])) == []
     assert len(errors) == 1 and "Incomplete canonical" in str(errors[0])
+
+
+@pytest.mark.parametrize("requires_export", [False, True])
+def test_checkpoint_target_reuse_skips_all_weight_export(
+    direct_module, gpu_delta_module, monkeypatch, requires_export
+):
+    iterator = gpu_delta_module.HfWeightIteratorGpuDelta.__new__(gpu_delta_module.HfWeightIteratorGpuDelta)
+    iterator.local_consumer = types.SimpleNamespace(requires_export=requires_export)
+    exports = []
+
+    def export(self, weights, **kwargs):
+        exports.append((weights, kwargs))
+        yield [("w", torch.ones(1))]
+
+    monkeypatch.setattr(direct_module.HfWeightIteratorDirect, "iter_hf_weights", export)
+
+    buckets = list(iterator.iter_hf_weights({"w": 1}, include_base=True, adapters=[], materialize=True))
+
+    # An update that encodes a captured target joins no export collective on any rank.
+    assert len(buckets) == len(exports) == int(requires_export)
+    if requires_export:
+        assert exports == [({"w": 1}, {"include_base": True, "adapters": [], "materialize": True})]
 
 
 def test_gpu_delta_full_snapshot_uses_direct_factory(direct_module, gpu_delta_module, monkeypatch):

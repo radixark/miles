@@ -358,7 +358,7 @@ def test_cached_recovery_payload_survives_target_and_encoder_reuse(tmp_path, mon
         for name, value in base.items()
     }
     encoder = gpu_delta_encoder.GpuBatchEncoder(torch.device("cuda", torch.cuda.current_device()), codec=codec)
-    cached = gpu_delta_encoder.RecoveryPayload.encode(encoder, codec, batches, raw, base, target)
+    cached = gpu_delta_encoder.RecoveryPayload.encode(encoder, batches, raw, base, target)
     assert encoder.stream.query()
     saved = [bytes(encoded[1]) for _, encoded in cached.matrices]
     first = _write_and_replay(cached, tmp_path / "first", plan, base, expected)
@@ -367,7 +367,7 @@ def test_cached_recovery_payload_survives_target_and_encoder_reuse(tmp_path, mon
     # Recovery must still describe version 7, including its copied small masks.
     for i, value in enumerate(target.values()):
         value.fill_(i + 41)
-    later = gpu_delta_encoder.RecoveryPayload.encode(encoder, codec, batches, raw, base, target)
+    later = gpu_delta_encoder.RecoveryPayload.encode(encoder, batches, raw, base, target)
     assert encoder.stream.query()
     assert later.raw != cached.raw
     del later

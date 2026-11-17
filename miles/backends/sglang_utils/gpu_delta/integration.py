@@ -4,7 +4,7 @@ from miles.backends.sglang_utils.gpu_delta import io  # noqa: F401
 
 
 def with_gpu_delta_controls(scheduler, dispatcher):
-    from miles.backends.sglang_utils.gpu_delta.session import with_gpu_delta_controls
+    from miles.backends.sglang_utils.gpu_delta.scheduler import with_gpu_delta_controls
 
     return with_gpu_delta_controls(scheduler, dispatcher)
 

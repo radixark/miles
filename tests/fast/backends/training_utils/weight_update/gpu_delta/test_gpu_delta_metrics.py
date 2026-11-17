@@ -97,6 +97,20 @@ def test_original_rank_pause_and_creator_only_cache_metrics_remain_separate():
     assert result[prefix + "host_encoded_cache_creators"] == 0
     assert result[prefix + "receiver_host_rank_outer_zstd_decode_s/p50"] == 2.5
     assert result[prefix + "receiver_host_rank_outer_zstd_encoded_bytes/sum"] == 400
+    assert result[prefix + "receiver_host_apply_kernel_prepare_s/max"] == 4
+    # A rank that omits a counter cannot be reported as zero: receiver metrics need every rank.
+    for receipt in activation["resumed_receipts"]:
+        receipt["result"]["timings"].update(apply_kernel_cache_misses=0, apply_kernel_cache_reused=1)
+    assert metrics.activation_metrics(activation)[prefix + "receiver_apply_kernel_cache_misses/max"] == 0
+    del activation["resumed_receipts"][0]["result"]["timings"]["apply_kernel_cache_misses"]
+    assert prefix + "receiver_apply_kernel_cache_misses/max" not in metrics.activation_metrics(activation)
+    assert metrics.activation_metrics(activation)[prefix + "receiver_apply_kernel_cache_reused/min"] == 1
+    # A retained client pause has no completed interval; its reader fence still reports.
+    for receipt in activation["resumed_receipts"]:
+        receipt["scheduler_timing"]["resumed_ns"] = None
+    result = metrics.activation_metrics(activation)
+    assert prefix + "receiver_scheduler_pause_s/p50" not in result
+    assert result[prefix + "receiver_reader_fence_s/max"] == 0.1
 
 
 @pytest.mark.parametrize("warm", [False, True])
@@ -176,7 +190,7 @@ def test_encoded_capacity_counts_once_while_rank_arenas_and_gpu_scratch_remain_p
             host_rank_private_capacity_bytes=0 if rank < 2 else 1024 * (rank + 1),
             host_rank_cpu_workers=32 if creator else 0,
             host_rank_outer_zstd_decoded_bytes=4096 if creator else 0,
-            host_prepared_cache_created=int(creator),
+            host_encoded_cache_created=int(creator),
             host_prepared_cache_capacity_bytes=shared_capacity,
             host_prepared_cache_capacity_generation=1,
             host_prepared_cache_arena_bytes=4096,
@@ -196,26 +210,3 @@ def test_encoded_capacity_counts_once_while_rank_arenas_and_gpu_scratch_remain_p
     assert result[prefix + "receiver_host_rank_outer_zstd_decoded_bytes/sum"] == 8192
     del activation["resumed_receipts"][0]["result"]["timings"]["host_prepared_cache_capacity_bytes"]
     assert prefix + "host_input_capacity_bytes/sum" not in metrics.activation_metrics(activation)
-
-
-def test_kernel_preparation_and_metadata_require_complete_rank_coverage():
-    activation = _activation()
-    for receipt in activation["resumed_receipts"]:
-        receipt["result"]["timings"].update(
-            apply_kernel_cache_misses=0,
-            apply_kernel_cache_reused=1,
-            apply_descriptor_h2d_bytes=128,
-            apply_metadata_h2d_bytes=512,
-        )
-    result = metrics.activation_metrics(activation)
-    prefix = "perf/gpu_delta/receiver_"
-    assert result[prefix + "host_apply_kernel_prepare_s/max"] == 4
-    assert result[prefix + "apply_kernel_cache_misses/max"] == 0
-    assert result[prefix + "apply_kernel_cache_reused/min"] == 1
-    assert result[prefix + "apply_descriptor_h2d_bytes/max"] == 128
-    assert result[prefix + "apply_metadata_h2d_bytes/max"] == 512
-    # An older/missing rank cannot be silently reported as a zero module-cache miss count.
-    del activation["resumed_receipts"][0]["result"]["timings"]["apply_kernel_cache_misses"]
-    result = metrics.activation_metrics(activation)
-    assert prefix + "apply_kernel_cache_misses/max" not in result
-    assert result[prefix + "apply_kernel_cache_reused/min"] == 1

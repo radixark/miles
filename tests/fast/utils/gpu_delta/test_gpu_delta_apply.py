@@ -154,7 +154,7 @@ def test_changed_membership_reuses_modules_and_preserves_pointer_order(planner):
         for family in range(3):
             m._compiled(device, family)
     assert tuple(m._compiled(0, f) for f in range(3)) == original
-    assert len(m.warmed) == 24
+    assert len(m.warmed) == m.kernel_cache_info().currsize == 24
 
 
 @pytest.mark.parametrize(
@@ -187,20 +187,20 @@ def test_word_coordinates_match_original_bytes_for_each_source_alignment(planner
 
 
 @pytest.mark.parametrize(
-    "contract,count",
+    "contract,count,message",
     [
-        (linear(0), 1),
-        (linear(1), -1),
-        (linear(1), True),
-        ((3, (3,), (-1,), (3,), (1,)), 1),
-        ((3, (4,), (1,), (3,), (1,)), 1),
-        ((1, (1,) * 65, (0,) * 65, (1,), (1,)), 1),
-        ((1, (1,), (1 << 63,), (1,), (1,)), 1),
-        (linear(2048), 1 << 31),
+        (linear(0), 1, "size/count"),
+        (linear(1), -1, "size/count"),
+        (linear(1), True, "size/count"),
+        ((3, (3,), (-1,), (3,), (1,)), 1, "affine geometry"),
+        ((3, (4,), (1,), (3,), (1,)), 1, "affine extent"),
+        ((1, (1,) * 65, (0,) * 65, (1,), (1,)), 1, "axis count"),
+        ((1, (1,), (1 << 63,), (1,), (1,)), 1, "affine geometry"),
+        (linear(1 << 42), 1, "launch grid overflow"),
     ],
 )
-def test_invalid_byte_contract_rejected_before_kernel_warmup(planner, contract, count):
-    with pytest.raises(ValueError):
+def test_invalid_byte_contract_rejected_before_kernel_warmup(planner, contract, count, message):
+    with pytest.raises(ValueError, match=message):
         planner.ByteApplyGroup([0], [4096], ((contract, count),)).prepare_metadata(0)
     assert planner.warmed == []
 
@@ -338,7 +338,7 @@ def owner(groups, device="cpu"):
     value = PreparedDelta.__new__(PreparedDelta)
     value.static_plans = [(None, None, g) for g in groups]
     value.apply_bindings, value.apply_source_patches = [], []
-    size = sum(2 * len(g.sources) + g.metadata_size for g in groups if g is not None)
+    size = sum(2 * len(g.sources) + g.metadata_size for g in groups)
     # Real tensors exercise the exact NumPy slab patch and tensor-view leases.
     value.apply_host_metadata = torch.empty(size, dtype=torch.int64, pin_memory=device != "cpu")
     value.apply_metadata = torch.empty(size, dtype=torch.int64, device=device)
@@ -360,17 +360,14 @@ def test_slab_patch_rejects_bad_slots_and_rebinds_fresh_owners_from_cache(planne
     for group in (g, h):
         group.prepare_metadata(0)
     template = tuple(g.metadata_rows)
-    first = owner([g, None, h])
+    first = owner([g, h])
     prebound = list(first.apply_bindings)
     for origin in (4096, 8192):
         first.decoded = [scratch(address=origin), scratch(address=origin + 4096)]
         _, calls = first._bind_apply_metadata()
         assert calls == prebound
         position = 0
-        for index, group in enumerate((g, None, h)):
-            if group is None:
-                assert calls[index] is None
-                continue
+        for index, group in enumerate((g, h)):
             middle = position + 2 * len(group.sources)
             stop = middle + group.metadata_size
             assert first.apply_host_view[position:middle].tolist() == list(
@@ -394,7 +391,7 @@ def test_slab_patch_rejects_bad_slots_and_rebinds_fresh_owners_from_cache(planne
     assert g.prepare_metadata(0)
     assert tuple(g.metadata_rows) == template
     assert [program.family for program in g.programs] == ["packed", "word_affine"]
-    second = owner([g, None, h])
+    second = owner([g, h])
     assert second.apply_metadata is not first.apply_metadata and second.error is not first.error
     # Bound closures own tensor views until explicit release; the cached groups
     # must not retain those per-update tensors afterward.

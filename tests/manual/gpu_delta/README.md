@@ -1,31 +1,22 @@
 # GPU-delta development guide
 
 Manual checks and the end-to-end benchmark for `--update-weight-transfer-mode gpu-delta`.
-[GPU-Delta Weight Transfer](../../../docs/advanced/gpu-delta-weight-transfer.md) describes
-the trainer pipeline, recovery, eval snapshots and `perf/gpu_delta/*` metrics; the
-[receiver contract](../../../miles/backends/sglang_utils/gpu_delta/README.md) owns layout
-admission, control APIs, cache lifecycle, decoder scheduling, receipts and receiver tests.
+[GPU-Delta Weight Transfer](../../../docs/advanced/gpu-delta-weight-transfer.md) is the user guide; the
+[receiver contract](../../../miles/backends/sglang_utils/gpu_delta/README.md) owns receiver behavior.
 
 ## Environment
 
-GPU-delta's CUDA decoder path, including the default Bitcomp-Zstd codec, does not require
-Blackwell. The GLM5.2 NVFP4 W4A16 benchmark needs eight Blackwell GPUs, a CUDA 13 Miles
-development image and the paired SGLang branch on `PYTHONPATH`; it uses CuTe DSL MoE, no
-MoE A2A and static bundled MTP. Install nvCOMP without changing the image dependency
-closure; manual tests also need `python-snappy`, `lz4` and `zstandard` as CPU oracles:
+The benchmark needs eight Blackwell GPUs, a CUDA 13 Miles development image, which installs nvCOMP
+(`docker/Dockerfile`), and the paired SGLang branch on `PYTHONPATH`. Manual tests also need
+`python-snappy`, `lz4` and `zstandard` as CPU oracles.
 
-```bash
-python -m pip install --no-deps nvidia-libnvcomp-cu13==6.0.0.12
-```
-
-These `GPU_DELTA_*` variables are development/debug controls, not a stable configuration
-API; runtime defaults suffice for normal use.
+These `GPU_DELTA_*` variables are development/debug controls, not a stable configuration API:
 
 | Development variable | Meaning |
 | --- | --- |
-| `GPU_DELTA_CODEC=bitcomp-zstd` | Trainer codec for ordinary learned updates: `snappy-zstd`, `lz4-zstd`, `lz4`, `bitcomp-zstd` or `bitcomp`. `*-zstd` adds GPU Zstd wrapping; `lz4` and `bitcomp` skip it. Read once at launch; the receiver selects the codec from each authenticated publication. |
-| `GPU_DELTA_INITIAL_SYNC_CODEC=bitcomp-zstd` | Trainer codec for initial sync, engine recovery, checkpoint companions and eval snapshots; accepts the same codecs. Initial synchronization is mandatory. |
-| `GPU_DELTA_SKIP_PAYLOAD_HASH=1` | Miles-only opt-in: omit owner-file SHA256 generation and send `validate_payload_hash=false` with each receiver update. Accepts `0` (default) or `1`; any other value raises. Such publications declare `payload_checksum_format="none"` and null file hashes; SGLang accepts them only with this explicit request option and does not read the variable. Manifest SHA256 and native decoder checks remain mandatory. |
+| `GPU_DELTA_CODEC=bitcomp-zstd` | Trainer codec for ordinary learned updates, one of the [user guide's codecs](../../../docs/advanced/gpu-delta-weight-transfer.md#usage). Read once at launch; receivers take the codec from each authenticated publication. |
+| `GPU_DELTA_INITIAL_SYNC_CODEC=bitcomp-zstd` | Trainer codec for initial sync, engine recovery, checkpoint companions and eval snapshots. |
+| `GPU_DELTA_SKIP_PAYLOAD_HASH=0` | `1` makes the trainer write publications without owner-file SHA256 (`payload_checksum_format="none"`), which [requesters follow](../../../docs/advanced/gpu-delta-weight-transfer.md#activation-and-failures). A trainer-only variable: launch validation and each trainer reject values other than `0` and `1`. See the receiver's [payload verification](../../../miles/backends/sglang_utils/gpu_delta/README.md#configuration-and-observations). |
 
 Receiver variables are in the receiver's
 [configuration table](../../../miles/backends/sglang_utils/gpu_delta/README.md#configuration-and-observations).
@@ -34,35 +25,37 @@ Ray workers do not inherit the submitting shell: use `runtime_env`,
 
 ## Five-layer E2E
 
-The dedicated test performs the required initial sync, then five rollouts with
-deterministic rewards. Four GPUs train; two TP2/DP1/EP1 engines shard attention, routed
-experts and BF16 shared experts over TP2, and DCP2 uses TRT-LLM DSA with a replicated Q
-projection, covering its derived Q/K weights (prefill CP has unit coverage only). The test
-keeps the default codecs, forwards the hash control, checks every manifest's phase codec
-and excludes the startup publication from its change gate. Warm updates on every TP rank
-must reuse the prepared Triton kernels, keep each rank's scheduler pause under 150 ms and
-each engine's all-TP apply/resume under 200 ms, and keep each rank's preparation and every
-matrix-producing owner's encoding stages under 1.5 s. These limits are about 3x the worst
-recent B300 warm maxima, leaving headroom for cluster CPU variance. Publications go to
-`/root/delta-updates/<run_id>/gpu_delta` and checkpoints carry delta companions. Without
-fault tolerance or engine restarts, receiver recovery is not covered, and attention FP8
-conversion stays disabled. The test takes no CLI options:
+`tests/e2e/megatron/test_glm5_2_744b_a40b_5layer_nvfp4_w4a16.py` serves the primary recipe on two TP2
+CuTe DSL engines (DCP2 with a replicated Q projection) after the required initial sync, for five
+deterministic-reward rollouts with checkpoint companions. It fails if every learned publication is a no-op
+and enforces the warm-update limits stated in the file; receiver recovery is not covered. It takes no
+options:
 
 ```bash
 python tests/e2e/megatron/test_glm5_2_744b_a40b_5layer_nvfp4_w4a16.py
 ```
 
-## Manual sender checks
+## Manual checks
+
+CPU mocks do not prove CUDA/native behavior. Each test's docstring states its hardware and package
+prerequisites; without CUDA the layout and apply tests skip, and any other missing prerequisite fails.
+`nvcomp_oracle.py` round-trips native nvCOMP compression through independent CPU decoders and checks
+asynchronous submission; the encoder test applies its `decode()` oracle. From the Miles checkout, run
+each command in a fresh process:
 
 ```bash
 python tests/manual/gpu_delta/nvcomp_oracle.py
-python -m pytest -q tests/manual/gpu_delta/test_gpu_delta_encoder.py
+for test in test_gpu_delta_encoder test_gpu_delta_layout_cuda test_host_cuda test_apply_cuda; do
+  python -m pytest -q "tests/manual/gpu_delta/$test.py"
+done
+# DE allocation and decoding, once per ambient allocator mode.
+for conf in backend:native,expandable_segments:True backend:cudaMallocAsync,expandable_segments:False; do
+  PYTORCH_ALLOC_CONF="$conf" python -m pytest -q \
+    tests/manual/gpu_delta/test_device_allocator_cuda.py tests/manual/gpu_delta/test_codec.py
+done
 ```
 
-The qualification script (not a pytest module) round-trips native nvCOMP Zstd, Snappy, LZ4
-and Bitcomp compression through independent CPU decoders and checks asynchronous
-submission; the encoder test applies its `decode()` oracle to producer and recovery
-payloads. Receiver tests are listed in the receiver contract's Validation section.
+See [NVIDIA's DE requirements](https://docs.nvidia.com/cuda/nvcomp/decompression_engine_faq.html).
 
 ## End-to-end benchmark from an HF base
 
@@ -91,41 +84,41 @@ python tests/manual/gpu_delta/bench_gpu_delta.py --model /models/GLM5.2-NVFP4 \
 
 ### Saved-delta apply mode
 
-`--reuse-fixtures` skips encoding and replays a completed fresh-encoding run's sealed
-publications on fresh receivers; fresh encoding remains the mode for sender performance:
+`--reuse-fixtures RUN` skips encoding and replays a completed fresh-encoding run's sealed publications
+on fresh receivers; fresh encoding remains the mode for sender performance:
 
 ```bash
 python tests/manual/gpu_delta/bench_gpu_delta.py --model /models/GLM5.2-NVFP4 \
   --prepared-inputs /data/gpu-delta/prepared-inputs --output /data/gpu-delta/new-replay \
   --reuse-fixtures /data/gpu-delta/original-run --reuse-producer-spec-sha256 REVIEWED_SHA256 \
-  --reuse-producer-spec /data/gpu-delta/original-run/producer-spec.json \
-  --codecs bitcomp-zstd --hashing on --frame-bytes 1048576 --versions 3 --sender-gpus 8
+  --reuse-producer-spec /data/gpu-delta/original-run/producer-spec.json --codecs bitcomp-zstd --hashing on
 ```
 
-- **Provenance:** every fresh encoding run writes `producer-spec.json` with its `argv`, the
-  input-cache `cache_files` hashes, `prepared_settings_sha256` and the producer source
-  `guard_files` hashes; replay requires its reviewed SHA256. For an older run, a reviewed
-  provenance adapter may supply the same four fields and link the original producer
-  evidence. Package versions stay unknown unless recorded separately.
-- **Admission before any receiver starts:** the original fixture phase must have passed with
-  SHA-on payloads and identical inputs, settings, plan, codec, frames, version chain,
-  mutations and owner partition. Every payload SHA256 and stable file identity, the sealed
-  manifest SHA256, the canonical plan and every owner record are verified; symlinks, path
-  escapes, partial seals, missing owners and an unfinished producer workflow fail. Fresh
-  receivers still check each publication against their inventory and bindings.
-- **Outputs:** nothing is copied. Each `arms/ARM/fixture-reuse.json` references the verified
-  original fixture, its workflow phase reads `REUSED` / `SKIPPED_ENCODING`, and
-  `fixture-verification.json` records the current verification wall time. Reused sender
-  measurements are labeled `historical_saved_fixture`, never current sender performance.
-  External capture or reduction scripts must resolve `fixture-reuse.json` and handle the
-  `NOT_RUN` oracle status used without `--validate-final-target`.
+Every fresh-encoding run writes `producer-spec.json` with its argv and the SHA256 of the prepared
+inputs' `READY.json`. Before any receiver starts, replay requires the spec's reviewed SHA256, that the
+spec names RUN and these prepared inputs, and that each arm's fixture covers versions 1 through
+`--versions` at this `--frame-bytes` with payload hashing on. Receivers then authenticate every
+manifest and payload file. Nothing is copied: `arms/ARM/fixture-reuse.json` references the fixture and
+the spec, and the reused sender timings are reported as `historical_saved_fixture`.
 
-For a receiver profile, add `--nsys` to the replay command with a new output directory. It
-captures warm version 2 (`--profile-version N` selects another but does not enable
-profiling) with CUDA, NVTX, OS-runtime, GIL, CPU and Python stack tracing, from preparation
-through both resume replies plus a 0.2 s arming lead-in. The script owns the `nsys` launch
-(do not wrap it; `nsys` must be on `PATH` with CPU profiling permitted), records it in
-`nsys-command.json` and writes `receiver-profile.nsys-rep`. Keep profiled timings separate.
+Add `--nsys` to a one-arm replay without `--validate-final-target` to capture warm update 2.
+`--profile-version N` selects a different warm update; it does not enable profiling by itself.
+Nsight Systems must be on `PATH`, with permission for system-wide CPU sampling. The launcher enables
+detailed NVTX, CPU/context-switch and Python/GIL sampling, CUDA and OS-runtime tracing. Its capture
+range opens 0.2 s before the selected update and closes after every engine's resume reply; the reported
+update time excludes the lead-in. Capture stops without terminating the benchmark, which finishes
+the remaining updates and cleanup. Keep profiled timings separate from ordinary measurements:
+
+```bash
+python tests/manual/gpu_delta/bench_gpu_delta.py --model /models/GLM5.2-NVFP4 \
+  --prepared-inputs /data/gpu-delta/prepared-inputs --output /data/gpu-delta/new-profile \
+  --reuse-fixtures /data/gpu-delta/original-run --reuse-producer-spec-sha256 REVIEWED_SHA256 \
+  --reuse-producer-spec /data/gpu-delta/original-run/producer-spec.json \
+  --codecs bitcomp-zstd --hashing on --frame-bytes 1048576 --nsys
+```
+
+The output includes `receiver-profile.nsys-rep`, the exact command in `nsys-command.json`, and
+`REPORT.md` with the captured update marked profiled.
 
 ### Timing scopes and limits
 

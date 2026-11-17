@@ -28,6 +28,12 @@ from miles.utils.gpu_delta.apply import (
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 
 
+def _launch(group, source, error):
+    pointers = torch.tensor(list(group.pointer_rows(source.data_ptr())), dtype=torch.int64, device="cuda")
+    metadata = torch.tensor(group.metadata_rows, dtype=torch.int64, device="cuda")
+    return group.bind_launch(pointers, metadata, error)
+
+
 def test_runtime_status_counts_mask_tails_and_preserve_sticky_errors():
     kernel = _compiled_status(torch.cuda.current_device())
     misses = _compiled_status.cache_info().misses
@@ -48,10 +54,13 @@ def test_runtime_status_counts_mask_tails_and_preserve_sticky_errors():
         launch = prepare_status_check(decoder, error)
         launch()
         assert error.item() == 0
-        statuses[count - 1] = 3
-        launch()
-        assert error.item() == 1
-        statuses[count - 1] = 0
+        # A failed frame in the last CTA, and in the first of several, sets the sticky error.
+        for frame in (count - 1, 0)[: 1 + (count > 1024)]:
+            error.zero_()
+            statuses[frame] = 3
+            launch()
+            assert error.item() == 1
+            statuses[frame] = 0
         actual[count - 1] = 0
         error.fill_(4)
         launch()
@@ -117,18 +126,12 @@ def test_runtime_geometry_word_units_tails_and_byte_fallback():
         if cache is not None:
             assert (current.misses, current.currsize) == (cache.misses, cache.currsize)
         cache = current
-        pointers = torch.tensor(
-            list(group.pointer_rows(source.data_ptr())),
-            dtype=torch.int64,
-            device="cuda",
-        )
-        metadata = torch.tensor(group.metadata_rows, dtype=torch.int64, device="cuda")
         error = torch.zeros(1, dtype=torch.int32, device="cuda")
         for grid in (1, group.tiles):
             target.copy_(before_target)
             for program in group.programs:
                 program.grid = (grid, 1, 1)
-            group.bind_launch(pointers, metadata, error)()
+            _launch(group, source, error)()
             torch.testing.assert_close(target, expected, rtol=0, atol=0)
             torch.testing.assert_close(source, before_source, rtol=0, atol=0)
 
@@ -212,18 +215,12 @@ def test_changed_counts_layouts_and_alignment_reuse_three_fixed_modules_and_exac
         assert group.kernels == kernels
         group.bind(scratch)
         populated_families.update(p.family for p in group.programs)
-        pointers = torch.tensor(
-            list(group.pointer_rows(scratch.data_ptr())),
-            dtype=torch.int64,
-            device="cuda",
-        )
-        metadata = torch.tensor(group.metadata_rows, dtype=torch.int64, device="cuda")
-        error = torch.zeros(1, dtype=torch.int32, device="cuda")
-        launch = group.bind_launch(pointers, metadata, error)
-        launch()
+        _launch(group, scratch, torch.zeros(1, dtype=torch.int32, device="cuda"))()
         for _, _, storage, _, expected in items:
             torch.testing.assert_close(storage, expected, rtol=0, atol=0)
         assert group.tiles == sum(count * math.ceil(c[0] / BLOCK) for c, count in group.contracts)
+        if (4100, 4) in kinds:
+            assert group.word32_contracts > 0
         assert _compiled.cache_info().misses == misses
     assert populated_families == {"packed", "word_affine", "general"}
 
@@ -247,14 +244,12 @@ def test_grid_stride_covers_group_boundaries_empty_groups_and_partial_tiles():
     group.prepare_metadata(source.device.index)
     group.bind(source)
     misses = _compiled.cache_info().misses
-    pointers = torch.tensor(list(group.pointer_rows(source.data_ptr())), dtype=torch.int64, device="cuda")
-    metadata = torch.tensor(group.metadata_rows, dtype=torch.int64, device="cuda")
     error = torch.zeros(1, dtype=torch.int32, device="cuda")
     assert group.grid_ctas == sum(min(p.tiles, 4 * p.resident_ctas) for p in group.programs)
     for grid in (1, 2, 4, group.tiles - 1, group.tiles, group.tiles + 1):
         for program in group.programs:
             program.grid = (grid, 1, 1)
-        launch = group.bind_launch(pointers, metadata, error)
+        launch = _launch(group, source, error)
         for target in targets:
             target.fill_(0x5A)
         error.fill_(1)

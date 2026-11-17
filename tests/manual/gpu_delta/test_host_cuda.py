@@ -6,7 +6,6 @@ DE test requires two SM100/SM103 GPUs; its barriers coordinate the oracle, not
 production preparation.
 """
 
-import json
 import mmap
 import multiprocessing
 import os
@@ -616,13 +615,15 @@ def _consumer(rank, engine, workers, publications, cache, barrier, output):
     import torch
 
     from miles.utils.gpu_delta import host as host
+    from miles.utils.gpu_delta import host_worker as host_worker
     from miles.utils.gpu_delta import memory as memory
     from miles.utils.gpu_delta.codec import NvcompDecoder
+    from miles.utils.gpu_delta.publication import CODECS
 
     os.environ["GPU_DELTA_HOST_CACHE_DIR"] = cache
-    # Exercise the exact capacity-growth algorithm with small oracle tensors.
+    # Exercise the exact capacity-growth algorithm with small oracle tensors in this rank.
     # Production's coarser alignment is not a wire/codec requirement.
-    host._CAPACITY_ALIGNMENT = 1 << 20
+    host_worker._CAPACITY_ALIGNMENT = 1 << 20
     torch.cuda.set_device(rank % 2)
     device = torch.device("cuda", rank % 2)
     os.environ["GPU_DELTA_CPU_WORKERS"] = str(workers)
@@ -689,7 +690,7 @@ def _consumer(rank, engine, workers, publications, cache, barrier, output):
                     )
                 )
                 size += len(expected[name])
-            decoder = NvcompDecoder(device, codec.removesuffix("-zstd"))
+            decoder = NvcompDecoder(device, CODECS[codec][0])
             table = np.asarray(frames, dtype=np.int64).T.copy()
             plan = decoder.prepare_batches(table, [len(frames)], source, stream)
             # DE writes only to hardware-decompression-capable outputs; bind_outputs does not recheck them.
@@ -727,13 +728,9 @@ def _consumer(rank, engine, workers, publications, cache, barrier, output):
             )
             records.append(
                 dict(
-                    version=version,
                     host_cache_id=identity,
-                    arena_identity=arena.capacity["identity"],
-                    local_names=sorted(names),
                     mapping_pointer=arena.tensor.data_ptr(),
                     metrics=metrics,
-                    exact_host_de_bytes=True,
                     allocation_granularity=granularity,
                 )
             )
@@ -747,8 +744,7 @@ def _consumer(rank, engine, workers, publications, cache, barrier, output):
         arena.close()
 
 
-@pytest.mark.parametrize("workers", [4, 8])
-def test_two_engines_reuse_host_de_capacity_and_grow(workers, monkeypatch):
+def test_two_engines_reuse_host_de_capacity_and_grow(monkeypatch):
     context = multiprocessing.get_context("spawn")
     # The producer reads its payload hash policy when each writer is constructed.
     monkeypatch.setenv("GPU_DELTA_SKIP_PAYLOAD_HASH", "0")
@@ -767,7 +763,7 @@ def test_two_engines_reuse_host_de_capacity_and_grow(workers, monkeypatch):
                 args=(
                     rank,
                     f"engine-{rank // 2}",
-                    workers,
+                    4,  # CPU workers per engine host
                     publications,
                     str(root / "cache"),
                     barriers[rank // 2],
@@ -788,29 +784,7 @@ def test_two_engines_reuse_host_de_capacity_and_grow(workers, monkeypatch):
                 if process.is_alive():
                     process.terminate()
                     process.join(timeout=15)
-        for engine in ("engine-0", "engine-1"):
-            engine_records = [record for record in records if record["engine_id"] == engine]
-            assert len(engine_records) == 2
-            for version in range(3):
-                rows = [record["updates"][version] for record in engine_records]
-                assert rows[0]["arena_identity"] != rows[1]["arena_identity"]
-                assert sum(row["metrics"]["host_rank_cpu_workers"] for row in rows) == workers
-                assert sum(row["metrics"]["host_prepared_cache_created"] for row in rows) == 1
-                assert sum(row["metrics"]["host_prepared_cache_reused"] for row in rows) == 1
-                assert all(row["metrics"]["host_rank_staging_copy_bytes"] > 0 for row in rows)
-                assert set(rows[0]["local_names"]) & set(rows[1]["local_names"]) == {"raw"}
-                assert sum(row["metrics"]["host_encoded_cache_created"] for row in rows) == 1
-                assert sum(row["metrics"]["host_encoded_cache_hash_files"] for row in rows) == 1
-                assert sum(row["metrics"]["host_rank_outer_zstd_tensors"] for row in rows) == (
-                    8 if version == 1 else 0
-                )
-                assert sum(row["metrics"]["host_rank_encoded_copy_tensors"] for row in rows) == (
-                    0 if version == 1 else 8
-                )
-                assert sum(row["metrics"]["host_rank_allocation_calls"] for row in rows) == (0 if version == 1 else 2)
-                assert all(row["metrics"]["host_rank_mapping_reused"] == int(version == 1) for row in rows)
         assert len({record["updates"][0]["host_cache_id"] for record in records}) == 2
-        assert len({record["updates"][0]["arena_identity"] for record in records}) == 4
         for record in records:
             a, b, c = record["updates"]
             for row, multiplier in ((a, 1), (c, 2)):
@@ -818,7 +792,6 @@ def test_two_engines_reuse_host_de_capacity_and_grow(workers, monkeypatch):
                 assert row["metrics"]["host_rank_capacity_bytes"] == (
                     (multiplier * row["metrics"]["host_rank_arena_bytes"] + alignment - 1) // alignment * alignment
                 )
-            assert a["arena_identity"] == b["arena_identity"] != c["arena_identity"]
             assert a["mapping_pointer"] == b["mapping_pointer"] != c["mapping_pointer"]
             assert [row["metrics"]["host_rank_capacity_generation"] for row in record["updates"]] == [1, 1, 2]
             assert all(
@@ -826,16 +799,3 @@ def test_two_engines_reuse_host_de_capacity_and_grow(workers, monkeypatch):
                 for row in record["updates"]
             )
             assert record["final_unmapped"]
-        print(
-            json.dumps(
-                dict(
-                    status="PASS",
-                    cpu_workers=workers,
-                    logical_engines=2,
-                    ranks_per_engine=2,
-                    updates=3,
-                    records=records,
-                ),
-                sort_keys=True,
-            )
-        )

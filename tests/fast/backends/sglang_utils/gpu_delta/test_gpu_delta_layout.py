@@ -2,25 +2,20 @@
 
 import re
 import sys
-import tempfile
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
-from safetensors.torch import save_file
-from sglang.srt.layers.linear import ColumnParallelLinear, RowParallelLinear
+from sglang.srt.layers.linear import ColumnParallelLinear, MergedColumnParallelLinear, RowParallelLinear
 
 from tests.fast.fixtures.gpu_delta_fixtures import byte_view
 
 from miles.backends.sglang_utils.gpu_delta import bindings as byte_layout
 from miles.backends.sglang_utils.gpu_delta import layout
-from miles.backends.sglang_utils.gpu_delta.bindings import ComputedImage, ConsumerSnapshot
-from miles.backends.sglang_utils.gpu_delta.byte_views import DestinationSegment
+from miles.backends.sglang_utils.gpu_delta.bindings import ConsumerSnapshot
 from miles.backends.sglang_utils.gpu_delta.checkpoint import CanonicalCheckpoint
 from miles.backends.sglang_utils.gpu_delta.derived import DerivedUpdate, prepare_updates
-from miles.backends.sglang_utils.gpu_delta.kernel_backends import flashinfer as fi
 from miles.backends.sglang_utils.gpu_delta.kernel_backends import identify_expert_layout
 from miles.backends.sglang_utils.gpu_delta.kernel_backends.flashinfer import FlashInferLayout
 from miles.backends.sglang_utils.gpu_delta.models import deepseek_v2
@@ -144,9 +139,9 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         consumer = patch.object(
-            fi,
+            FlashInferLayout,
             "consumer_objects",
-            side_effect=lambda layer, _: (
+            side_effect=lambda layer: (
                 layer._cutedsl_wrapper,
                 layer._cutedsl_scales,
                 *layer._cutedsl_scales,
@@ -186,10 +181,10 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
                     torch.testing.assert_close(byte_view(payload), byte_view(expected))
 
     def test_attention_and_shared_experts_follow_their_linear_partition_groups(self):
+        # DCP-gathered MLA consumers are checked against both SGLang trees with _mla_layer below.
         for tp_rank, tp_size in ((0, 1), (3, 8)):
-            for dcp in (False, True):
-                with self.subTest(tp_rank=tp_rank, tp_size=tp_size, dcp=dcp):
-                    self._check_shared_expert_partition(tp_rank, tp_size, dcp)
+            with self.subTest(tp_rank=tp_rank, tp_size=tp_size):
+                self._check_shared_expert_partition(tp_rank, tp_size)
         # CP partners repeat attention shards while shared experts retain their
         # own TP group: TP4/CP2 attention rank1 lives on global ranks1 and3.
         # Pure CP also repeats a complete attention image on each TP2 rank.
@@ -200,9 +195,9 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
             (1, 2, 0, 1),
         ):
             with self.subTest(tp_rank=tp_rank, tp_size=tp_size, attn_size=attn_size, prefill_cp=True):
-                self._check_shared_expert_partition(tp_rank, tp_size, False, attn_rank, attn_size)
+                self._check_shared_expert_partition(tp_rank, tp_size, attn_rank, attn_size)
 
-    def _check_shared_expert_partition(self, tp_rank, tp_size, dcp, attn_rank=3, attn_size=4):
+    def _check_shared_expert_partition(self, tp_rank, tp_size, attn_rank=3, attn_size=4):
         intermediate, hidden = 32, 16
         shard = intermediate // tp_size
         before = {
@@ -222,7 +217,8 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
         layer = root.model.layers[0]
         layer.mlp = torch.nn.Module()
         shared = layer.mlp.shared_experts = torch.nn.Module()
-        shared.gate_up_proj = torch.nn.Module()
+        shared.gate_up_proj = _linear(MergedColumnParallelLinear)
+        shared.gate_up_proj.output_sizes, shared.gate_up_proj.use_presharded_weights = [intermediate] * 2, False
         # The mapper follows the ordinary loader's input_dim for row parallel.
         shared.down_proj = _linear(RowParallelLinear)
         selection = slice(tp_rank * shard, (tp_rank + 1) * shard)
@@ -277,20 +273,7 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
         key, value = attn.kv_b_proj.weight.unflatten(0, (-1, 10)).split([4, 6], dim=1)
         attn.w_kc = key.clone().detach()
         attn.w_vc = value.transpose(1, 2).clone().detach()
-        if dcp:
-            # TP4 / DCP2, rank3: gathered consumers cover heads2:4, while local
-            # parameters cover only head3. The source origin is nonzero for both.
-            attn.q_b_proj_qrep_weight = attention_before["q_b_proj"][16:].clone()
-            attn.w_kc_qrep = attention_before["kv_b_proj"][20:].reshape(2, 10, hidden)[:, :4].clone()
         plan = layout.GpuDeltaLayout(root, _glm_checkpoint(inventory), None)
-        if dcp:
-            # Discovery must pin auxiliary consumers at construction;
-            # deferred finishing cannot silently accept a replacement image.
-            original_qrep = attn.q_b_proj_qrep_weight
-            attn.q_b_proj_qrep_weight = original_qrep.clone()
-            with self.assertRaisesRegex(RuntimeError, "consumer storage changed"):
-                plan.finish()
-            attn.q_b_proj_qrep_weight = original_qrep
         plan.finish()
         for binding in plan.bindings:
             if ".self_attn." in binding.name:
@@ -321,24 +304,6 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
         )
         torch.testing.assert_close(byte_view(attn.w_kc), byte_view(key), rtol=0, atol=0)
         torch.testing.assert_close(byte_view(attn.w_vc), byte_view(value.transpose(1, 2)), rtol=0, atol=0)
-        if dcp:
-            torch.testing.assert_close(
-                byte_view(attn.q_b_proj_qrep_weight),
-                byte_view(attention_after["q_b_proj"][16:]),
-                rtol=0,
-                atol=0,
-            )
-            torch.testing.assert_close(
-                byte_view(attn.w_kc_qrep),
-                byte_view(attention_after["kv_b_proj"][20:].reshape(2, 10, hidden)[:, :4]),
-                rtol=0,
-                atol=0,
-            )
-            original = attn.w_kc_qrep
-            attn.w_kc_qrep = original.clone()
-            with self.assertRaisesRegex(RuntimeError, "consumer storage changed"):
-                plan.check_identity()
-            attn.w_kc_qrep = original
         torch.testing.assert_close(
             byte_view(shared.gate_up_proj.weight),
             byte_view(torch.cat([after["gate"][selection], after["up"][selection]])),
@@ -432,17 +397,24 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
         plan.modules, plan.excluded = {prefix: layer}, {}
         plan.moe_layers = {prefix: (layer, FlashInferLayout("nvfp4", "cutedsl", True, "w4a16"))}
         meta = {"dtype": "F32", "shape": [], "encoding": "xor_raw_bytes"}
-        for projection in ("gate", "up", "down"):
+        # Expert 0's gate/up halves and down scalar; expert 3 belongs to another rank.
+        scalars = {
+            "gate": layer.w13_weight_scale_2[0, 0],
+            "up": layer.w13_weight_scale_2[0, 1],
+            "down": layer.w2_weight_scale_2[0],
+        }
+        for projection, scalar in scalars.items():
             for expert in (0, 3):
                 name = f"{prefix}.{expert}.{projection}_proj.input_scale"
                 self.assertIsNone(plan.bind(name, meta, name))
                 self.assertEqual(plan.excluded[name], byte_layout.STATIC_CALIBRATION)
+            name = f"{prefix}.3.{projection}_proj.weight_scale_2"
+            self.assertIsNone(plan.bind(name, meta, name))
+            self.assertEqual(plan.excluded[name], byte_layout.REMOTE_EXPERT)
             name = f"{prefix}.0.{projection}_proj.weight_scale_2"
             binding = plan.bind(name, meta, name)
-            after = torch.tensor(0.5)
             self.assertEqual(binding.encoding, "xor_raw_bytes")
-            torch._foreach_copy_([binding.storage[0]], [after])
-            torch.testing.assert_close(byte_view(binding.storage[0]), byte_view(after))
+            self.assertEqual(binding.storage[0].data_ptr(), scalar.data_ptr())
         self.assertTrue(torch.all(layer.w13_input_scale == 7))
         self.assertTrue(torch.all(layer.w2_input_scale == 11))
 
@@ -566,30 +538,22 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
         experts.moe_runner_config = SimpleNamespace(
             is_gated=True, activation="silu", gemm1_clamp_limit=None, swiglu_limit=None
         )
-        experts.num_local_experts, experts.num_experts = 1, 2
-        experts.moe_ep_rank = 1
-        experts.w13_input_scale_quant = experts.w2_input_scale_quant = torch.ones(1)
-        experts._map_global_expert_id_to_local_expert_id = lambda expert: expert - 1
-        experts.w13_weight_scale_2 = torch.nn.Parameter(torch.ones(1, 2), requires_grad=False)
-        experts.w2_weight_scale_2 = torch.nn.Parameter(torch.ones(1), requires_grad=False)
-        experts.g1_alphas, experts.g1_alphas_up, experts.g2_alphas = [torch.ones(1) for _ in range(3)]
+        experts.num_local_experts, experts.num_experts = 2, 2
+        experts.moe_ep_rank = 0
+        experts.w13_input_scale_quant = experts.w2_input_scale_quant = torch.ones(2)
+        experts._map_global_expert_id_to_local_expert_id = lambda expert: expert
+        experts.w13_weight_scale_2 = torch.nn.Parameter(torch.ones(2, 2), requires_grad=False)
+        experts.w2_weight_scale_2 = torch.nn.Parameter(torch.ones(2), requires_grad=False)
+        experts.g1_alphas, experts.g1_alphas_up, experts.g2_alphas = [torch.ones(2) for _ in range(3)]
         experts._cutedsl_wrapper = SimpleNamespace(quant_mode="w4a16")
-        experts._cutedsl_scales = (torch.ones(1), torch.ones(1), torch.ones(1))
+        experts._cutedsl_scales = (torch.ones(2), torch.ones(1), torch.ones(2))
         experts._cutedsl_input_scale = torch.ones(1)
         experts.quant_config = SimpleNamespace(use_per_token_activation=False)
+        # Fusion (EP1) serves the shared expert from routed slot n_routed_experts, beside routed expert 0.
         shared_scale = "model.layers.0.mlp.shared_experts.gate_proj.weight_scale_2"
-        inventory[shared_scale] = {
-            "dtype": "F32",
-            "shape": [],
-        }
-        moe = SimpleNamespace(
-            enable_eplb=False,
-            elastic_ep_backend=None,
-            init_expert_location="trivial",
-            ep_num_redundant_experts=0,
-            moe_a2a_backend="none",
-            moe_runner_backend="flashinfer_cutedsl",
-        )
+        for scale in (shared_scale, "model.layers.0.mlp.experts.0.gate_proj.weight_scale_2"):
+            inventory[scale] = {"dtype": "F32", "shape": []}
+        moe = _fixed_moe()
         with (
             patch.dict(
                 sys.modules,
@@ -605,12 +569,12 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
             plan.finish()
         require_topology.assert_called_once_with(moe)
         self.assertEqual(len(plan.excluded), 2)
+        # Every canonical tensor is bound or excluded with a reason; none is silently dropped.
+        self.assertEqual({binding.name for binding in plan.bindings} | plan.excluded.keys(), inventory.keys())
         for binding in plan.bindings:
             if binding.name == shared_scale:
-                self.assertEqual(
-                    binding.storage[0].data_ptr(),
-                    experts.w13_weight_scale_2[0, 0].data_ptr(),
-                )
+                self.assertEqual(binding.live_name, "model.layers.0.mlp.experts.1.gate_proj.weight_scale_2")
+                self.assertEqual(binding.storage[0].data_ptr(), experts.w13_weight_scale_2[1, 0].data_ptr())
             relative = binding.name.removeprefix(prefix)
             if relative in expected_views:
                 target = expected_views[relative]
@@ -618,7 +582,7 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
                 self.assertEqual(binding.slices, [[0, n] for n in target.shape])
                 self.assertEqual(binding.storage[0].data_ptr(), target.data_ptr())
                 self.assertEqual(binding.storage[0].stride(), target.stride())
-        for image, source in zip(plan.derived[-2:], (key, value.transpose(1, 2)), strict=False):
+        for image, source in zip(plan.derived, (key, value.transpose(1, 2)), strict=True):
             self.assertEqual(image.source.data_ptr(), source.data_ptr())
             self.assertEqual(image.source.stride(), source.stride())
         values = torch.tensor(
@@ -672,86 +636,71 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
         torch.testing.assert_close(byte_view(attn.w_kc), byte_view(key), rtol=0, atol=0)
         torch.testing.assert_close(byte_view(attn.w_vc), byte_view(value.transpose(1, 2)), rtol=0, atol=0)
 
-    def test_dcp_replicas_match_companion_binding(self):
-        # Attention TP4 / DCP2, rank 3 of 8 heads: local heads 6:8, gathered heads 4:8. The companion
-        # gathers separate copies: the local segment comes first, then one affine segment per image.
-        root, attn, _, inventory = _mla_layer(attn_rank=3, attn_size=4, heads=8, dcp=2)
-        plan = layout.GpuDeltaLayout(root, _glm_checkpoint(inventory), None)
-        q, kv = (next(b for b in plan.bindings if b.name.endswith(f"{n}.weight")) for n in ("q_b_proj", "kv_b_proj"))
-        self.assertEqual(q.slices, [[32, 64], [0, _LORA]])
-        self.assertEqual(q.storage, (attn.q_b_proj.weight, attn.q_b_proj_qrep_weight))
-        self.assertEqual(
-            [(segment.slices, segment.source_shape) for segment in q.segments],
-            [(((48, 64), (0, _LORA)), None), (((32, 64), (0, _LORA)), None)],
-        )
-        self.assertEqual(kv.slices, [[40, 80], [0, _LORA]])
-        self.assertEqual(kv.storage, (attn.kv_b_proj.weight, attn.w_kc_qrep))
-        # A logical head axis selects the K rows 0:4 of heads 4:8 in one view.
-        self.assertEqual(
-            [(segment.slices, segment.source_shape) for segment in kv.segments],
-            [(((60, 80), (0, _LORA)), None), (((4, 8), (0, _NOPE), (0, _LORA)), (8, _NOPE + _V, _LORA))],
-        )
-        for binding, local, image in (
-            (q, attn.q_b_proj.weight, attn.q_b_proj_qrep_weight),
-            (kv, None, attn.w_kc_qrep),
-        ):
-            if local is not None:
-                self.assertEqual(binding.segments[0].destinations[0].data_ptr(), local.data_ptr())
-            self.assertEqual(binding.segments[-1].destinations[0].data_ptr(), image.data_ptr())
-        # The companion snapshot pins w_kc, w_vc, w_kc_qrep, q_b_proj_qrep_weight and q_b_proj_qrep.
-        (snapshot,) = plan._consumers
-        self.assertEqual(
-            snapshot.objects,
-            (attn.w_kc, attn.w_vc, attn.w_kc_qrep, attn.q_b_proj_qrep_weight, attn.q_b_proj_qrep),
-        )
-
-    def test_dcp_replicas_bind_main_alias_once_and_transposed_value(self):
+    def test_dcp_replicas_bind_each_trees_images_once(self):
+        # The companion gathers separate copies after the local rows. SGLang main makes the local q_b rows a view of
+        # the gathered image, which then takes their mask once, and gathers a transposed V image. Each gathered
+        # image is one affine segment over a logical head axis.
         heads = 8
-        for attn_rank, attn_size, dcp in ((3, 4, 2), (0, 4, 2), (1, 2, 2), (5, 8, 4)):
-            with self.subTest(attn_rank=attn_rank, attn_size=attn_size, dcp=dcp):
-                root, attn, canonical, inventory = _mla_layer(attn_rank, attn_size, heads, dcp, storage="main")
-                local_q = attn.q_b_proj.weight
-                self.assertEqual(
-                    local_q.untyped_storage().data_ptr(), attn.q_b_proj_qrep_weight.untyped_storage().data_ptr()
-                )
-                plan = layout.GpuDeltaLayout(root, _glm_checkpoint(inventory), None)
-                plan.finish()
-                q = next(b for b in plan.bindings if b.name.endswith("q_b_proj.weight"))
-                # The gathered image carries the local rows, so they take the mask once.
-                self.assertEqual(q.storage, (attn.q_b_proj_qrep_weight,))
-                self.assertEqual(len(q.segments), 1)
-                updated = {name: torch.randn_like(value) for name, value in canonical.items()}
-                for binding in plan.bindings:
-                    name = binding.name.split(".")[-2]
-                    _apply_binding(binding, byte_view(canonical[name]) ^ byte_view(updated[name]))
-                for image in plan.derived:
-                    image.refresh(torch.tensor(True))
-                plan.check_identity()
-                local_heads = heads // attn_size
-                local = slice(attn_rank * local_heads, (attn_rank + 1) * local_heads)
-                first = attn_rank // dcp * dcp * local_heads
-                group = slice(first, first + dcp * local_heads)
-                q_heads = updated["q_b_proj"].unflatten(0, (heads, -1))
-                kv_heads = updated["kv_b_proj"].unflatten(0, (heads, -1))
-                for live, expected in (
-                    (local_q, q_heads[local].flatten(0, 1)),
-                    (attn.q_b_proj_qrep_weight, q_heads[group].flatten(0, 1)),
-                    (attn.kv_b_proj.weight, kv_heads[local].flatten(0, 1)),
-                    (attn.w_kc, kv_heads[local, :_NOPE]),
-                    (attn.w_vc, kv_heads[local, _NOPE:].transpose(1, 2)),
-                    (attn.w_kc_qrep, kv_heads[group, :_NOPE]),
-                    # all_gather(w_vc.contiguous()): [heads, kv_lora_rank, v_head_dim].
-                    (attn.w_vc_qrep, kv_heads[group, _NOPE:].transpose(1, 2)),
-                ):
-                    torch.testing.assert_close(byte_view(live), byte_view(expected), rtol=0, atol=0)
-                # SGLang main's snapshot also pins the gathered V image.
-                (snapshot,) = plan._consumers
-                self.assertIs(snapshot.objects[3], attn.w_vc_qrep)
-                original = attn.w_vc_qrep
-                attn.w_vc_qrep = original.clone()
-                with self.assertRaisesRegex(RuntimeError, "consumer storage changed"):
-                    plan.check_identity()
-                attn.w_vc_qrep = original
+        for storage in ("companion", "main"):
+            for attn_rank, attn_size, dcp in ((3, 4, 2), (0, 4, 2), (1, 2, 2), (5, 8, 4)):
+                with self.subTest(storage=storage, attn_rank=attn_rank, attn_size=attn_size, dcp=dcp):
+                    self._check_dcp_replicas(storage, heads, attn_rank, attn_size, dcp)
+
+    def _check_dcp_replicas(self, storage, heads, attn_rank, attn_size, dcp):
+        root, attn, canonical, inventory = _mla_layer(attn_rank, attn_size, heads, dcp, storage=storage)
+        local_q = attn.q_b_proj.weight
+        plan = layout.GpuDeltaLayout(root, _glm_checkpoint(inventory), None)
+        # Describe pins the gathered consumers; the first prepare's finish() rejects one replaced since.
+        original, attn.q_b_proj_qrep_weight = attn.q_b_proj_qrep_weight, attn.q_b_proj_qrep_weight.clone()
+        with self.assertRaisesRegex(RuntimeError, "consumer storage changed"):
+            plan.finish()
+        attn.q_b_proj_qrep_weight = original
+        plan.finish()
+        q, kv = (next(b for b in plan.bindings if b.name.endswith(f"{n}.weight")) for n in ("q_b_proj", "kv_b_proj"))
+        gathered = [attn.w_kc_qrep] if storage == "companion" else [attn.w_kc_qrep, attn.w_vc_qrep]
+        if storage == "companion":
+            self.assertEqual(q.storage, (local_q, attn.q_b_proj_qrep_weight))
+        else:
+            self.assertEqual(
+                local_q.untyped_storage().data_ptr(), attn.q_b_proj_qrep_weight.untyped_storage().data_ptr()
+            )
+            self.assertEqual(q.storage, (attn.q_b_proj_qrep_weight,))
+        self.assertEqual(kv.storage, (attn.kv_b_proj.weight, *gathered))
+        self.assertEqual((len(q.segments), len(kv.segments)), (len(q.storage), 1 + len(gathered)))
+        updated = {name: torch.randn_like(value) for name, value in canonical.items()}
+        for binding in plan.bindings:
+            name = binding.name.split(".")[-2]
+            _apply_binding(binding, byte_view(canonical[name]) ^ byte_view(updated[name]))
+        for image in plan.derived:
+            image.refresh(torch.tensor(True))
+        plan.check_identity()
+        local_heads = heads // attn_size
+        local = slice(attn_rank * local_heads, (attn_rank + 1) * local_heads)
+        first = attn_rank // dcp * dcp * local_heads
+        group = slice(first, first + dcp * local_heads)
+        q_heads = updated["q_b_proj"].unflatten(0, (heads, -1))
+        kv_heads = updated["kv_b_proj"].unflatten(0, (heads, -1))
+        expected = [
+            (local_q, q_heads[local].flatten(0, 1)),
+            (attn.q_b_proj_qrep_weight, q_heads[group].flatten(0, 1)),
+            (attn.kv_b_proj.weight, kv_heads[local].flatten(0, 1)),
+            (attn.w_kc, kv_heads[local, :_NOPE]),
+            (attn.w_vc, kv_heads[local, _NOPE:].transpose(1, 2)),
+            (attn.w_kc_qrep, kv_heads[group, :_NOPE]),
+        ]
+        if storage == "main":
+            # all_gather(w_vc.contiguous()): [heads, kv_lora_rank, v_head_dim].
+            expected.append((attn.w_vc_qrep, kv_heads[group, _NOPE:].transpose(1, 2)))
+        for live, value in expected:
+            torch.testing.assert_close(byte_view(live), byte_view(value), rtol=0, atol=0)
+        # The snapshot pins every absorbed and gathered consumer; a replaced image fails the identity check.
+        (snapshot,) = plan._consumers
+        pins = (attn.w_kc, attn.w_vc, *gathered, attn.q_b_proj_qrep_weight, attn.q_b_proj_qrep)
+        self.assertEqual(snapshot.objects, pins)
+        original = gathered[-1]
+        setattr(attn, "w_kc_qrep" if storage == "companion" else "w_vc_qrep", original.clone())
+        with self.assertRaisesRegex(RuntimeError, "consumer storage changed"):
+            plan.check_identity()
 
     def test_dcp_replicas_reject_storage_no_tree_builds(self):
         def admit(edit):
@@ -780,16 +729,13 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
 
     def test_fused_qkv_a_view_takes_explicit_loader_sizes(self):
         fused = torch.arange(7 * 2).reshape(7, 2)
-        meta = {"dtype": "BF16", "shape": [3, 2]}
-        sizes = {"shape": meta["shape"], "q_rows": 3, "kv_rows": 4}
+        sizes = {"q_rows": 3, "kv_rows": 4}
         q = deepseek_v2.fused_qkv_a_view(fused, "q_a_proj", **sizes)
         kv = deepseek_v2.fused_qkv_a_view(fused, "kv_a_proj_with_mqa", **sizes)
         self.assertEqual((q.data_ptr(), q.shape), (fused.data_ptr(), (3, 2)))
         self.assertEqual((kv.data_ptr(), kv.shape), (fused[3:].data_ptr(), (4, 2)))
         with self.assertRaisesRegex(ValueError, "unclassified fused Q/KV-A projection: q_b_proj"):
             deepseek_v2.fused_qkv_a_view(fused, "q_b_proj", **sizes)
-        with self.assertRaisesRegex(ValueError, "fused scalar projection metadata"):
-            deepseek_v2.fused_qkv_a_view(fused, "q_a_proj", **(sizes | {"shape": []}))
 
     def test_checkpoint_policy_excludes_static_tensors_before_the_mapping(self):
         policy = publication.StaticPolicy(
@@ -889,45 +835,36 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
         ):
             layout.GpuDeltaLayout(SimpleNamespace(), checkpoint, None)
 
-    def test_derived_updates_patch_the_raw_pieces_a_merged_loader_writes(self):
-        # TP2 rank0 of a [4, 4] merged bias: canonical rows [0, 2) and [4, 6) fill local [0, 2) and [2, 4).
-        old = torch.arange(8, dtype=torch.float32)
+    def test_derived_updates_read_predicted_raw_values_without_live_writes(self):
+        # A raw-mask binding a derived update reads, as NVFP4's weight_scale_2 feeds g1_alphas: finish() marks its
+        # target, raw preparation predicts the new value without writing it, and the update sees the new source.
+        old = torch.arange(4, dtype=torch.float32)
         new = old * 3 + 1
-        param = torch.nn.Parameter(old[[0, 1, 4, 5]].clone(), requires_grad=False)
-        # One raw-mask binding whose segments are the loader's typed views of the parameter.
-        binding = byte_layout.TensorBinding(
-            "model.layers.0.mixer.conv1d.bias",
-            "F32",
-            (8,),
-            [[0, 8]],
-            (param,),
-            encoding="xor_raw_bytes",
-            segments=(DestinationSegment(((0, 2),), (param[0:2],)), DestinationSegment(((4, 6),), (param[2:4],))),
-        )
+        param = torch.nn.Parameter(old.clone(), requires_grad=False)
+        meta = {"dtype": "F32", "shape": [4], "encoding": "xor_raw_bytes"}
+        binding = byte_layout._direct_binding("model.layers.0.mlp.experts.w2_weight_scale_2", meta, param)
         update = DerivedUpdate((param,), (torch.zeros(4),), lambda values: (values[0] * 2,))
         mapping = SimpleNamespace(
             parameters=SimpleNamespace(
                 moe_layers={"experts": (object(), SimpleNamespace(expert_derived_updates=lambda layer: [update]))},
                 shadowed={},
+                aliases=byte_layout.AliasGroups(),
             ),
             consumers=[],
             finish=lambda: None,
             derived=[],
-            aliases=lambda a, b: False,
         )
         plan = _bare_layout([binding], mapping)
         context = SimpleNamespace(get_exec=lambda: SimpleNamespace(moe=_fixed_moe()))
         with patch.dict(sys.modules, {"sglang.srt.runtime_context": context}):
             plan.finish()
-        views = binding.raw_bindings()
-        self.assertEqual(plan.derived_targets, {id(target) for view in views for target in view.storage})
-        # Predicted raw pieces reach the update, which sees the complete new loader image.
+        self.assertEqual(plan.derived_targets, {id(param)})
         mask = (old.view(torch.int32) ^ new.view(torch.int32)).view(torch.uint8)
-        prepared = byte_layout.prepare_raw_xor([(view, mask) for view in views], plan.derived_targets)
+        prepared = byte_layout.prepare_raw_xor([(binding, mask)], plan.derived_targets)
         raw_values = {id(target): value for target, _, value in prepared if value is not None}
         (copy,) = prepare_updates(plan.derived_updates, raw_values)
-        torch.testing.assert_close(copy.source, new[[0, 1, 4, 5]] * 2, rtol=0, atol=0)
-        torch.testing.assert_close(param, old[[0, 1, 4, 5]], rtol=0, atol=0)
+        torch.testing.assert_close(copy.source, new * 2, rtol=0, atol=0)
+        torch.testing.assert_close(param, old, rtol=0, atol=0)
 
     def test_alias_groups_admit_shared_storage_only_for_declared_views(self):
         fused = torch.zeros(10, 4, dtype=torch.bfloat16)
@@ -948,31 +885,41 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
             plan._reject_overlaps(groups)
         groups.declare(bindings[2].name, prefix + "qkv_proj.weight", bindings[2], fused)
         plan._reject_overlaps(groups)
+        # Routed-expert storage admits only expert slots, in either order: a shared expert served from routed
+        # slot 2 (fused) is one; the same canonical tensor bound outside the experts is an alias.
+        w2 = torch.zeros(3, 4, 2, dtype=torch.bfloat16)
+        meta = {"dtype": "BF16", "shape": [4, 2], "encoding": "xor_bytes"}
+        routed = byte_layout._direct_binding("mlp.experts.0.down_proj.weight", meta, w2[0])
+        shared = byte_layout._direct_binding("mlp.shared_experts.down_proj.weight", meta, w2[2])
+        fused = byte_layout._direct_binding(shared.name, meta, w2[2], live_name="mlp.experts.2.down_proj.weight")
+        for order in ([routed, shared], [shared, routed]):
+            plan.bindings = order
+            with self.assertRaisesRegex(ValueError, "unclassified live weight alias"):
+                plan._reject_overlaps(byte_layout.AliasGroups())
+        for order in ([routed, fused], [fused, routed]):
+            plan.bindings = order
+            plan._reject_overlaps(byte_layout.AliasGroups())
 
-    def test_images_read_canonical_storage_and_computed_images_need_cuda_consumers(self):
-        weight, bias = torch.zeros(4), torch.zeros(4)
+    def test_images_read_canonical_storage_and_write_pinned_consumers(self):
+        weight, cache, orphan = torch.zeros(4), torch.zeros(4), torch.zeros(4)
         bindings = [
             byte_layout._direct_binding(
-                f"model.norm.{name}", {"dtype": "F32", "shape": [4], "encoding": "xor_raw_bytes"}, tensor
+                "model.norm.weight", {"dtype": "F32", "shape": [4], "encoding": "xor_raw_bytes"}, weight
             )
-            for name, tensor in (("weight", weight), ("bias", bias))
         ]
-        served, cache, orphan = torch.zeros(4, dtype=torch.bfloat16), torch.zeros(4), torch.zeros(4)
         # What the mapping pinned while binding: every image destination except the orphan.
-        pinned = ConsumerSnapshot(lambda: (served, cache))
-
-        def round_to_served(value):
-            return (value.to(torch.bfloat16),)
+        pinned = ConsumerSnapshot(lambda: (cache,))
 
         def finish(*images, updates=(), late=None):
             moe = {"experts": (None, SimpleNamespace(expert_derived_updates=lambda layer: list(updates)))}
             consumers = [pinned]
             mapping = SimpleNamespace(
-                parameters=SimpleNamespace(moe_layers=moe if updates else {}, shadowed={}),
+                parameters=SimpleNamespace(
+                    moe_layers=moe if updates else {}, shadowed={}, aliases=byte_layout.AliasGroups()
+                ),
                 consumers=consumers,
                 finish=lambda: late and consumers.append(late),
                 derived=list(images),
-                aliases=lambda a, b: False,
             )
             plan = _bare_layout(bindings, mapping, consumers)
             context = SimpleNamespace(get_exec=lambda: SimpleNamespace(moe=_fixed_moe()))
@@ -980,11 +927,9 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
                 plan.finish()
             return plan
 
-        computed = byte_layout.ComputedImage("norm", (weight,), (served,), round_to_served)
+        copy = byte_layout.DerivedImage("copy", cache, weight)
+        update = DerivedUpdate((torch.zeros(1),), (weight,), lambda values: values)
         for images, updates, message in (
-            # A computed destination never overlaps canonical storage, and every source is canonical.
-            ((byte_layout.ComputedImage("norm", (bias,), (weight,), lambda value: (value,)),), (), "overlaps"),
-            ((byte_layout.ComputedImage("norm", (served,), (torch.zeros(4),), lambda v: (v.float(),)),), (), "owns"),
             # A copy of storage no binding owns would never be selected for refresh.
             (
                 (byte_layout.DerivedImage("copy", torch.zeros(4), torch.zeros(4)),),
@@ -992,151 +937,25 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
                 "^derived image copy reads storage no canonical binding owns$",
             ),
             # No image reads another image's or a prepared update's destination.
-            ((computed, byte_layout.DerivedImage("copy", torch.zeros(4, dtype=torch.bfloat16), served)), (), "copy"),
-            ((computed,), [DerivedUpdate((torch.zeros(1),), (weight,), lambda values: values)], "derived destination"),
+            ((copy,), [update], "^derived image copy reads another derived destination$"),
             # A destination no snapshot pins could be replaced while refreshes kept reaching the old tensor.
             (
                 (byte_layout.DerivedImage("copy", orphan, weight),),
                 (),
                 "^derived image copy writes an unpinned consumer$",
             ),
-            (
-                (byte_layout.ComputedImage("norm", (weight,), (orphan,), lambda value: (value,)),),
-                (),
-                "^computed image norm writes an unpinned consumer$",
-            ),
-            # CPU offload cannot feed a computed image refreshed on the apply stream.
-            ((computed,), (), "computed images require CUDA-resident storage: norm"),
             ((SimpleNamespace(name="other"),), (), "unsupported derived image: SimpleNamespace"),
         ):
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 finish(*images, updates=updates)
-        copy = byte_layout.DerivedImage("copy", cache, weight)
         plan = finish(copy)
         self.assertEqual((plan.derived, plan.computed), ([copy], []))
         # A snapshot appended in finish() was never checked at describe.
         with self.assertRaisesRegex(ValueError, "pin consumers while binding at describe, never in finish"):
             finish(copy, late=ConsumerSnapshot(lambda: (orphan,)))
 
-    def test_shadows_fill_from_the_checkpoint_at_the_first_prepare_of_version_zero(self):
-        name = "model.layers.0.mixer.A_log"
-        values = torch.randn(4, 3).bfloat16()
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "model.safetensors"
-            save_file({name: values}, str(path))
-            policy = publication.static_policy({"architectures": ["GlmMoeDsaForCausalLM"], "num_hidden_layers": 1})
-            inventory = {name: {"dtype": "BF16", "shape": [4, 3]}}
-            checkpoint = CanonicalCheckpoint(inventory, policy, publication.read_safetensors_headers([str(path)]))
-            filled_before_mapping_finish = []
-
-            def mapping(model, shadows):
-                parameters = byte_layout.ParameterBindings(torch.nn.Module(), shadows=shadows)
-
-                def bind(canonical, meta):
-                    # This rank serves rows [1, 3) only through arithmetic on them.
-                    shadow = parameters.shadow(canonical, meta, (1, 3), torch.device("cpu"))
-                    return parameters.bind_view(canonical, meta, None, shadow, [[1, 3], [0, 3]])
-
-                return SimpleNamespace(
-                    parameters=parameters,
-                    consumers=[],
-                    derived=[],
-                    bind=bind,
-                    finish=lambda: filled_before_mapping_finish.append(store[name].filled),
-                    aliases=lambda a, b: False,
-                )
-
-            store = {}
-            with (
-                patch.object(layout, "model_mapping", side_effect=mapping),
-                # This CPU test checks filling; the CUDA computed image that must read the shadow is admitted in
-                # test_a_canonical_shadow_must_feed_a_computed_image and the manual CUDA test.
-                patch.object(layout.GpuDeltaLayout, "_admit_images"),
-            ):
-                # Describe binds an unfilled shadow; the first prepare fills it before the mapping finishes.
-                plan = layout.GpuDeltaLayout(SimpleNamespace(), checkpoint, byte_layout.CanonicalShadows(store, True))
-                (binding,) = plan.bindings
-                self.assertFalse(store[name].filled)
-                self.assertIs(binding.storage[0], store[name].tensor)
-                plan.finish()
-                self.assertEqual(filled_before_mapping_finish, [True])
-                self.assertTrue(torch.equal(store[name].tensor.view(torch.int16), values[1:3].view(torch.int16)))
-                self.assertIsNone(plan._checkpoint)
-
-                # An applied update XORs the shadow; re-admission at version 1 keeps that committed value.
-                store[name].tensor.view(torch.int16).bitwise_xor_(0x0F0F)
-                committed = store[name].tensor.clone()
-                missing = CanonicalCheckpoint(
-                    inventory, policy, {name: (str(Path(directory) / "gone"), 8, 24, "BF16", [4, 3])}
-                )
-                later = layout.GpuDeltaLayout(SimpleNamespace(), missing, byte_layout.CanonicalShadows(store, False))
-                later.finish()
-                self.assertTrue(torch.equal(store[name].tensor, committed))
-
-                # Without its shadow a later admission cannot rebuild the committed version.
-                with self.assertRaisesRegex(
-                    ValueError, "unavailable after version 0; restart the engine from the HF base"
-                ):
-                    layout.GpuDeltaLayout(SimpleNamespace(), checkpoint, byte_layout.CanonicalShadows({}, False))
-                with self.assertRaisesRegex(ValueError, "lossy loader cast needs a canonical shadow"):
-                    layout.GpuDeltaLayout(SimpleNamespace(), checkpoint, None)
-
-    def test_a_canonical_shadow_must_feed_a_computed_image(self):
-        # Updates XOR the receiver-owned shadow; only a computed image serves its value.
-        name = "model.layers.0.mixer.A_log"
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "model.safetensors"
-            save_file({name: torch.randn(4).bfloat16()}, str(path))
-            policy = publication.static_policy({"architectures": ["GlmMoeDsaForCausalLM"], "num_hidden_layers": 1})
-            inventory = {name: {"dtype": "BF16", "shape": [4]}}
-            checkpoint = CanonicalCheckpoint(inventory, policy, publication.read_safetensors_headers([str(path)]))
-            served = torch.zeros(4)
-
-            def mapping(images):
-                def build(model, shadows):
-                    parameters = byte_layout.ParameterBindings(torch.nn.Module(), shadows=shadows)
-
-                    def bind(canonical, meta):
-                        shadow = parameters.shadow(canonical, meta, (0, 4), torch.device("cpu"))
-                        return parameters.bind_view(canonical, meta, None, shadow, [[0, 4]])
-
-                    def finish():
-                        derived.extend(images(parameters.shadowed[name]))
-
-                    derived = []
-                    return SimpleNamespace(
-                        parameters=parameters,
-                        consumers=[ConsumerSnapshot(lambda: (served,))],
-                        derived=derived,
-                        bind=bind,
-                        finish=finish,
-                        aliases=lambda a, b: False,
-                    )
-
-                return build
-
-            def finish(images):
-                with patch.object(layout, "model_mapping", side_effect=mapping(images)):
-                    plan = layout.GpuDeltaLayout(SimpleNamespace(), checkpoint, byte_layout.CanonicalShadows({}, True))
-                    plan.finish()
-
-            with self.assertRaisesRegex(ValueError, f"^canonical shadow {name} feeds no computed image$"):
-                finish(lambda shadow: [])
-            # A shadow some computed image reads is held to that image's CUDA residency.
-            with self.assertRaisesRegex(ValueError, "computed images require CUDA-resident storage: mixer.A"):
-                finish(
-                    lambda shadow: [ComputedImage("mixer.A", (shadow,), (served,), lambda log: (-log.float().exp(),))]
-                )
-
     def test_movable_or_reordered_experts_rejected_before_plan(self):
-        defaults = dict(
-            enable_eplb=False,
-            elastic_ep_backend=None,
-            init_expert_location="trivial",
-            ep_num_redundant_experts=0,
-            moe_a2a_backend="none",
-            moe_runner_backend="flashinfer_cutedsl",
-        )
+        defaults = vars(_fixed_moe())
         layout._require_fixed_moe_topology(SimpleNamespace(**defaults))
         for key, value in (
             ("enable_eplb", True),

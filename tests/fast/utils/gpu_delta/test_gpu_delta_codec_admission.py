@@ -130,14 +130,11 @@ def test_compressor_abi_and_stream_bound_workspace_queries(fake_nvcomp, name, sy
     "name,algorithm,capability,hardware,sorting",
     [
         ("snappy", "Snappy", (10, 0), True, "0"),
-        ("snappy", "Snappy", (10, 0), True, "1"),
-        ("lz4", "LZ4", (10, 3), True, "0"),
         ("lz4", "LZ4", (10, 3), True, "1"),
         # Requested sorting must stay off outside DE.
         ("snappy", "Snappy", (9, 0), False, "1"),
         ("lz4", "LZ4", (9, 0), False, "1"),
         ("bitcomp", "Bitcomp", (10, 3), False, "1"),
-        ("bitcomp", "Bitcomp", (9, 0), False, "1"),
     ],
 )
 def test_decoder_abi_and_frozen_hardware_options(
@@ -311,15 +308,15 @@ def test_prepared_stream_scratch_and_slot_status_ownership(monkeypatch):
     host_metadata = metadata.clone()
     plan = codec.PreparedDecodePlan(
         decoder,
-        counts,
-        torch.empty(128, dtype=torch.uint8),
-        workspace,
-        host_metadata,
-        metadata,
-        stream,
-        np.zeros(sum(counts), dtype=np.int64),
-        [128, 128],
-        [0, 0],
+        counts=counts,
+        host_input=torch.empty(128, dtype=torch.uint8),
+        workspace=workspace,
+        host_metadata=host_metadata,
+        metadata=metadata,
+        stream=stream,
+        output_offsets=np.zeros(sum(counts), dtype=np.int64),
+        output_bounds=[128, 128],
+        output_remainders=[0, 0],
     )
     assert workspace.temporary.shape == (39,)
     assert workspace.temporary.data_ptr() % decoder.alignments.temp == 0

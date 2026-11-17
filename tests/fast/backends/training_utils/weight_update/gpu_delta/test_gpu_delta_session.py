@@ -4,12 +4,11 @@ import asyncio
 from dataclasses import replace
 
 import pytest
-from tests.fast.backends.sglang_utils import test_sglang_api_client
 
 from miles.backends.training_utils.weight_update.protocols.gpu_delta import session
 
 
-def _setup(failure=None, failed_engine=1):
+def _setup(failure=None, failed_engine=1, payload_checksum_format="sha256"):
     events, clients, descriptions = [], [], []
     for engine in range(2):
         identities = [
@@ -34,6 +33,7 @@ def _setup(failure=None, failed_engine=1):
         "base_version": 0,
         "target_version": 1,
         "plan_digest": "canonical-checkpoint-digest",
+        "payload_checksum_format": payload_checksum_format,
     }
     return clients, descriptions, publication, events
 
@@ -46,6 +46,10 @@ class _Engine:
         self.calls = 0
         self.timings = {"prepare_s": 10.0 + index, "apply_s": 2.0, "resume_s": 3.0, "activation_s": 15.0 + index}
 
+    async def _make_request(self, endpoint, payload):
+        # The GPU-delta controls post through the engine client's request helper; ``args`` records the wire payload.
+        return await getattr(self, endpoint)(**payload)
+
     async def update_weights_from_gpu_delta(self, **kwargs):
         self.calls += 1
         assert self.calls == 1, "An uncertain XOR publication was replayed"
@@ -54,10 +58,10 @@ class _Engine:
         await asyncio.sleep(0.01 if self.index else 0)
         failure = self.failure if self.index == self.failed_engine else None
         if failure == "transport":
-            raise RuntimeError("update request lost")
+            error = RuntimeError("update request lost")
+            error.add_note("response.text='TimeoutError: '")  # As SGLangApiClient attaches a receiver's 409 body.
+            raise error
         self.events.append((self.index, "prepared"))
-        if failure == "rejected":
-            return {"success": False, "message": "update rejected"}
         provenance = {
             key: kwargs[key]
             for key in ("session_id", "stream_id", "manifest_sha256", "base_version", "target_version", "plan_digest")
@@ -96,25 +100,24 @@ class _Engine:
         }
 
 
-@pytest.mark.parametrize("weight_version,skip_payload_hash", [(None, False), ("42", True)])
-def test_fast_engine_resumes_while_other_engine_still_prepares(monkeypatch, weight_version, skip_payload_hash):
-    if skip_payload_hash:
-        monkeypatch.setenv("GPU_DELTA_SKIP_PAYLOAD_HASH", "1")
-    else:
-        monkeypatch.delenv("GPU_DELTA_SKIP_PAYLOAD_HASH", raising=False)
-    clients, descriptions, publication, events = _setup()
-    pool = session.receiver_pool(descriptions)
+@pytest.mark.parametrize("weight_version,payload_checksum_format", [(None, "sha256"), ("42", "none")])
+def test_fast_engine_resumes_while_other_engine_still_prepares(monkeypatch, weight_version, payload_checksum_format):
+    # Requesters follow the writer's recorded hash policy, never their own environment.
+    monkeypatch.setenv("GPU_DELTA_SKIP_PAYLOAD_HASH", "0" if payload_checksum_format == "none" else "1")
+    clients, descriptions, publication, events = _setup(payload_checksum_format=payload_checksum_format)
+    identities = session.engine_identities(descriptions)
     result = asyncio.run(
-        session.activate_publication(clients, pool, publication, session_id="s", weight_version=weight_version)
+        session.activate_publication(clients, identities, publication, session_id="s", weight_version=weight_version)
     )
     for client in clients:
         assert client.calls == 1
+        # An unset weight version stays off the wire, like every unset option.
         assert client.args == {
-            **{key: value for key, value in publication.items() if key != "codec"},
+            **{key: value for key, value in publication.items() if key not in ("codec", "payload_checksum_format")},
             "session_id": "s",
             "participants": tuple(client.identities),
-            "weight_version": weight_version,
-            "validate_payload_hash": not skip_payload_hash,
+            **({} if weight_version is None else {"weight_version": weight_version}),
+            "validate_payload_hash": payload_checksum_format == "sha256",
         }
     assert len(result["receipts"]) == 4
     assert all(
@@ -134,13 +137,24 @@ def test_fast_engine_resumes_while_other_engine_still_prepares(monkeypatch, weig
     assert result["coordinator_timings"]["activation_s"] > 0
 
 
-@pytest.mark.parametrize("failure", ["transport", "rejected", "reply"])
+@pytest.mark.parametrize("pause_mode", ["retract", "in_place"])
+def test_rollout_sync_requests_its_pause_mode(pause_mode):
+    # Eval pins and recovery omit the mode and retain the receiver's retracting default.
+    clients, descriptions, publication, _ = _setup()
+    identities = session.engine_identities(descriptions)
+    asyncio.run(session.activate_publication(clients, identities, publication, session_id="s", pause_mode=pause_mode))
+    for client in clients:
+        assert client.args["pause_mode"] == pause_mode
+        assert "flush_cache" not in client.args
+
+
+@pytest.mark.parametrize("failure", ["transport", "reply"])
 @pytest.mark.parametrize("failed_engine", [0, 1])
 def test_update_failure_settles_other_engine_without_abort_or_replay(failure, failed_engine):
     clients, descriptions, publication, events = _setup(failure, failed_engine)
     with pytest.raises(RuntimeError, match="requires receiver recovery"):
         asyncio.run(
-            session.activate_publication(clients, session.receiver_pool(descriptions), publication, session_id="s")
+            session.activate_publication(clients, session.engine_identities(descriptions), publication, session_id="s")
         )
     assert [client.calls for client in clients] == [1, 1]
     assert (1 - failed_engine, "resumed") in events
@@ -149,15 +163,21 @@ def test_update_failure_settles_other_engine_without_abort_or_replay(failure, fa
     assert ((failed_engine, "resumed") in events) == (failure == "reply")
 
 
-@pytest.mark.parametrize("failure", ["transport", "applied_reply", "reply", "rejected"])
+@pytest.mark.parametrize("failure", ["transport", "applied_reply", "reply"])
 def test_failed_or_lost_reply_quarantines_only_that_engine_without_status_or_replay(failure):
     clients, descriptions, publication, events = _setup(failure)
     result = asyncio.run(
         session.activate_publication(
-            clients, session.receiver_pool(descriptions), publication, session_id="s", fault_tolerant=True
+            clients, session.engine_identities(descriptions), publication, session_id="s", fault_tolerant=True
         )
     )
-    assert set(result["failed_engines"]) == {"engine-1"}
+    # The failure text keeps the client's note: the receiver's typed message reaches the cell's error.
+    message = {
+        "transport": "update request lost\nresponse.text='TimeoutError: '",
+        "applied_reply": "apply reply lost",
+        "reply": "update reply lost",
+    }[failure]
+    assert result["failed_engines"] == {"engine-1": f"RuntimeError: {message}"}
     assert result["succeeded_engine_ids"] == ["engine-0"]
     assert [client.calls for client in clients] == [1, 1]
     assert len(result["resumed_receipts"]) == 2
@@ -186,7 +206,7 @@ def test_wrong_receipt_cannot_advance_a_failed_engine(field, value):
     clients[1].update_weights_from_gpu_delta = wrong_receipt
     result = asyncio.run(
         session.activate_publication(
-            clients, session.receiver_pool(descriptions), publication, session_id="s", fault_tolerant=True
+            clients, session.engine_identities(descriptions), publication, session_id="s", fault_tolerant=True
         )
     )
     assert set(result["failed_engines"]) == {"engine-1"}
@@ -195,66 +215,21 @@ def test_wrong_receipt_cannot_advance_a_failed_engine(field, value):
     assert [client.calls for client in clients] == [1, 1]
 
 
-def test_receiver_pool_contains_only_identity_and_rejects_duplicate_membership():
+def test_engine_identities_contain_only_identity_and_reject_duplicate_membership():
     clients, descriptions, publication, events = _setup()
-    pool = session.receiver_pool(descriptions)
-    assert pool.engine_ids == ("engine-0", "engine-1")
-    assert pool.participants == tuple(tuple(client.identities) for client in clients)
-    assert set(vars(pool)) == {"engine_ids", "participants"}
+    identities = session.engine_identities(descriptions)
+    assert identities.engine_ids == ("engine-0", "engine-1")
+    assert identities.participants == tuple(tuple(client.identities) for client in clients)
+    assert set(vars(identities)) == {"engine_ids", "participants"}
     for invalid in ([], descriptions + descriptions):
         with pytest.raises(ValueError, match="Missing or duplicate original receiver identities"):
-            session.receiver_pool(invalid)
-    for selected_clients, selected_pool in (
-        (clients[:1], pool),
-        (clients, replace(pool, engine_ids=pool.engine_ids[:1])),
-        (clients, replace(pool, participants=pool.participants[:1])),
+            session.engine_identities(invalid)
+    for selected_clients, selected in (
+        (clients[:1], identities),
+        (clients, replace(identities, engine_ids=identities.engine_ids[:1])),
+        (clients, replace(identities, participants=identities.participants[:1])),
     ):
-        with pytest.raises(ValueError, match="client and pool sizes differ"):
-            asyncio.run(session.activate_publication(selected_clients, selected_pool, publication))
+        with pytest.raises(ValueError, match="client and engine identity counts differ"):
+            asyncio.run(session.activate_publication(selected_clients, selected, publication))
     assert not events
     assert all(client.args is None for client in clients)
-
-
-client = test_sglang_api_client.client
-recorder = test_sglang_api_client.recorder
-
-
-@pytest.mark.parametrize(
-    "options",
-    [
-        pytest.param({}, id="defaults"),
-        pytest.param(
-            {
-                "release_state": True,
-                "flush_cache": False,
-                "abort_all_requests": True,
-                "weight_version": "actor-42",
-                "validate_payload_hash": False,
-            },
-            id="overrides",
-        ),
-    ],
-)
-async def test_gpu_delta_request_identity_and_cache_policy(client, recorder, options):
-    request = {
-        "session_id": "publication-1",
-        "manifest_path": "/checkpoint/gpu-delta/manifest.json",
-        "manifest_sha256": "a" * 64,
-        "stream_id": "stream-1",
-        "base_version": 2,
-        "target_version": 3,
-        "plan_digest": "b" * 64,
-        "participants": [{"engine_id": "engine", "rank_id": "rank"}],
-    }
-    await client.update_weights_from_gpu_delta(**request, **options)
-    verb, url, kwargs = recorder.calls[0]
-    assert (verb, url) == ("post", f"{test_sglang_api_client.SERVER_URL}/update_weights_from_gpu_delta")
-    assert kwargs["json"] == {
-        **request,
-        "release_state": False,
-        "flush_cache": True,
-        "abort_all_requests": False,
-        "validate_payload_hash": True,
-        **options,
-    }
-    assert len(recorder.calls) == 1

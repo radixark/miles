@@ -5,27 +5,21 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import Callable
-from contextlib import contextmanager
 from dataclasses import dataclass
 
 import numpy as np
 import torch
 
-from miles.backends.sglang_utils.gpu_delta.bindings import (
-    REMOTE_EXPERT,
-    STATIC_CALIBRATION,
-    TensorBinding,
-    prepare_raw_xor,
-)
+from miles.backends.sglang_utils.gpu_delta.bindings import REMOTE_EXPERT, TensorBinding, prepare_raw_xor
 from miles.backends.sglang_utils.gpu_delta.byte_views import _byte_view
 from miles.backends.sglang_utils.gpu_delta.checkpoint import read_canonical_checkpoint
 from miles.backends.sglang_utils.gpu_delta.derived import prepare_updates
 from miles.backends.sglang_utils.gpu_delta.layout import GpuDeltaLayout
 from miles.utils.gpu_delta import profiling
-from miles.utils.gpu_delta.publication import _CATALOG_FIELDS, COMPUTED_ROTARY, plan_digest, tensor_metadata
-
-# Exclusions a publication may still name; static bundled drafts and frozen modules are never admitted.
-_PUBLISHABLE_EXCLUSIONS = frozenset({None, REMOTE_EXPERT, STATIC_CALIBRATION, COMPUTED_ROTARY})
+from miles.utils.gpu_delta.codec import NvcompDecoder
+from miles.utils.gpu_delta.host import HostArena
+from miles.utils.gpu_delta.host_worker import copy_bytes
+from miles.utils.gpu_delta.publication import CODECS, catalog_entry, plan_digest, tensor_metadata
 
 
 class GpuDeltaBackend:
@@ -48,8 +42,6 @@ class GpuDeltaBackend:
         self.device = torch.device(model_runner.device, model_runner.gpu_id)
         if self.device.type != "cuda" or self.device.index is None:
             raise ValueError("direct GPU deltas require an explicit CUDA device")
-        from miles.utils.gpu_delta.host import HostArena
-
         self.host_arena = HostArena(identity["engine_id"], self.device.index, identity)
         self.decoders = {}
         self.apply_stream = None
@@ -80,7 +72,7 @@ class GpuDeltaBackend:
 @dataclass
 class _PreparedBatch:
     decoder: object
-    apply: Callable[[], None] | None
+    apply: Callable[[], None]
     zero_ranges: list[torch.Tensor]
     check_status: Callable[[], None]
 
@@ -178,7 +170,7 @@ def _plan_decode(plans, publication, offsets):
     counts = [int(tensors["frame_count"].sum()) for tensors in batches]
     table = np.empty((4, sum(counts)), dtype=np.int64)
     gaps, position = [], 0
-    for (outputs, _, _), tensors, count in zip(plans, batches, counts, strict=False):
+    for (outputs, _, _), tensors, count in zip(plans, batches, counts, strict=True):
         tensor_ids, output_offsets = outputs
         frame_counts = tensors["frame_count"]
         starts = tensors["frame_start"] - (np.cumsum(frame_counts) - frame_counts)
@@ -212,16 +204,19 @@ def _qualify_canonical_plan(backend, publication):
     entries = {entry["name"]: (ordinal, entry) for ordinal, entry in enumerate(catalog["tensors"])}
     if len(entries) != len(catalog["tensors"]):
         raise ValueError("duplicate canonical tensor")
+    bound = {binding.name for binding in backend.layout.bindings}
     definitions = []
     for name, (_, entry) in entries.items():
-        if name not in backend.layout.inventory or backend.layout.excluded.get(name) not in _PUBLISHABLE_EXCLUSIONS:
+        # Only a tensor this rank binds, or a routed expert another rank owns, may carry a delta;
+        # any other exclusion, or an unbound tensor without one, would silently drop its mask.
+        exclusion = backend.layout.excluded.get(name)
+        if not (exclusion == REMOTE_EXPERT or (exclusion is None and name in bound)):
             raise ValueError(f"delta publication has an unadmitted tensor: {name}")
         spec = {"name": name, **backend.layout.inventory[name]}
-        expected = tensor_metadata(**spec)
-        if entry != {key: value for key, value in expected.items() if key in _CATALOG_FIELDS}:
+        if entry != catalog_entry(tensor_metadata(**spec)):
             raise ValueError(f"canonical tensor metadata mismatch: {name}")
         definitions.append(spec)
-    missing = {binding.name for binding in backend.layout.bindings} - entries.keys()
+    missing = bound - entries.keys()
     if missing:
         raise ValueError(f"publication is missing local tensors: {sorted(missing)}")
     if plan_digest(definitions) != digest:
@@ -256,17 +251,12 @@ class PreparedDelta:
 
     @profiling.annotate("gpu_delta.prepare.layout")
     def prepare(self, request, cancelled=None):
-        from miles.utils.gpu_delta.host import copy_bytes
-
         backend = self.backend
         preparation_started = time.perf_counter()
-        payload_started = time.perf_counter()
         publication = backend.host_arena.prepare_publication(request, self.timings, cancelled)
         backend.layout.finish()
         self.codec = publication.header["codec"]
-        from miles.utils.gpu_delta.codec import NvcompDecoder
-
-        inner_codec = self.codec.removesuffix("-zstd")
+        inner_codec = CODECS[self.codec][0]
         if inner_codec not in backend.decoders:
             backend.decoders[inner_codec] = NvcompDecoder(self.device, inner_codec)
         self.decoder = backend.decoders[inner_codec]
@@ -277,8 +267,7 @@ class PreparedDelta:
         self.timings["host_plan_validate_s"] = time.perf_counter() - plan_started
         self.timings["host_plan_cache_reused"] = int(reused_plan)
         self.host_snapshot = backend.host_arena.prepare_local(publication, table.ordinals, self.timings, self.hardware)
-        self.timings["host_rank_prepare_body_s"] = time.perf_counter() - payload_started
-        self.timings["host_rank_prepare_s"] = self.timings["host_rank_prepare_body_s"]
+        self.timings["host_rank_prepare_s"] = time.perf_counter() - preparation_started
 
         tensors_started = time.perf_counter()
         compressed, raw_rows, self.derived, self.computed = table.select(publication.tensors)
@@ -306,7 +295,7 @@ class PreparedDelta:
             raw_h2d_bytes = position + size
         self.raw_pinned = torch.empty(raw_h2d_bytes, dtype=torch.uint8, device="cpu", pin_memory=True)
         raw_view = memoryview(self.raw_pinned.numpy())
-        for ordinal, (_, position, size) in zip(table.ordinals[raw_rows], raw_targets, strict=False):
+        for ordinal, (_, position, size) in zip(table.ordinals[raw_rows], raw_targets, strict=True):
             copy_bytes(raw_view[position : position + size], self.host_snapshot.get(int(ordinal)))
         self.timings.update(
             host_raw_pack_s=time.perf_counter() - raw_started,
@@ -315,7 +304,6 @@ class PreparedDelta:
             raw_h2d_bytes=raw_h2d_bytes,
             compressed_batches=len(self.static_plans),
             computed_images=len(self.computed),
-            decode_stages=2,
             layers_per_batch=backend.layers_per_batch,
             compressed_tensors=self.matrix_tensor_count,
             de_host_input_bytes=int(frame_table[1].sum()) if self.hardware else 0,
@@ -338,49 +326,16 @@ class PreparedDelta:
         self.decoded_ready = [torch.cuda.Event() for _ in range(2)]
         self.decoded_free = [torch.cuda.Event() for _ in range(2)]
         with torch.cuda.stream(self.stream):
-            raw_views = [
-                (view, position, size) for binding, position, size in raw_targets for view in binding.raw_bindings()
-            ]
-            self.raw_device = (
-                self.raw_pinned.to(self.device, non_blocking=True)
-                if any(view.storage[0].device.type == "cuda" for view, _, _ in raw_views)
-                else None
-            )
-            if self.raw_device is None:
-                self.timings["raw_h2d_bytes"] = 0
-            raw_updates = prepare_raw_xor(
-                [
-                    (
-                        binding,
-                        (self.raw_pinned if binding.storage[0].device.type == "cpu" else self.raw_device)[
-                            position : position + size
-                        ],
-                    )
-                    for binding, position, size in raw_views
-                ],
-                backend.layout.derived_targets,
-            )
-            raw_values = {id(target): source for target, _, source in raw_updates if source is not None}
-            self.derived.extend(prepare_updates(backend.layout.derived_updates, raw_values))
-            gpu_derived = []
-            for image in self.derived:
-                destination = (
-                    self.cpu_derived
-                    if image.source.device.type == "cpu" or image.destination.device.type == "cpu"
-                    else gpu_derived
-                )
-                destination.append(image)
-            self.derived = gpu_derived
+            raw_updates = self._prepare_raw_masks(raw_targets)
             self.error = torch.zeros(1, dtype=torch.int32, device=self.device)
-            from miles.utils.gpu_delta.apply import _compiled
+            from miles.utils.gpu_delta.apply import kernel_cache_info
 
             compile_started = time.perf_counter()
-            cache_before = _compiled.cache_info()
+            cache_before = kernel_cache_info()
             metadata_reused = self._prepare_raw_apply(raw_updates)
             for _, _, group in self.static_plans:
-                if group is not None:
-                    metadata_reused = group.prepare_metadata(self.device.index) or metadata_reused
-            cache_after = _compiled.cache_info()
+                metadata_reused = group.prepare_metadata(self.device.index) or metadata_reused
+            cache_after = kernel_cache_info()
             self.timings.update(
                 host_apply_kernel_prepare_s=time.perf_counter() - compile_started,
                 apply_kernel_cache_misses=cache_after.misses - cache_before.misses,
@@ -390,30 +345,13 @@ class PreparedDelta:
                 ),
             )
             self.apply_host_metadata = torch.empty(
-                sum(
-                    2 * len(group.sources) + group.metadata_size
-                    for _, _, group in self.static_plans
-                    if group is not None
-                ),
+                sum(2 * len(group.sources) + group.metadata_size for _, _, group in self.static_plans),
                 dtype=torch.int64,
                 pin_memory=True,
             )
             self.apply_metadata = torch.empty(self.apply_host_metadata.numel(), dtype=torch.int64, device=self.device)
             self._prepare_apply_bindings()
-        self.workspace = self.decode_plan = None
-        if self.static_plans:
-            self.decode_plan = self.decoder.prepare_batches(
-                frame_table,
-                frame_counts,
-                backend.host_arena.tensor,
-                self.io_stream if self.hardware else self.stream,
-            )
-            self.decode_plan.record_stream(self.stream)
-            self.workspace = self.decode_plan.workspace
-            from miles.utils.gpu_delta.apply import prepare_status_check
-
-            with torch.cuda.stream(self.stream):
-                self.status_checks = [prepare_status_check(decode, self.error) for decode in self.decode_plan.batches]
+        self._prepare_decode_plan(frame_table, frame_counts)
         # PREPARED includes small input transfers, never output-slot allocation,
         # decoding or synchronization with rollout. The fixed apply kernel
         # is already compiled/loaded; membership never specializes its code.
@@ -431,6 +369,60 @@ class PreparedDelta:
             decoder_metadata_h2d_bytes=frame_table.nbytes,
             decoder_workspace_bytes=(self.workspace.temporary.numel() if self.workspace else 0),
         )
+
+    def _prepare_raw_masks(self, raw_targets):
+        """Upload the raw masks, predict derived values without live writes, and split derived copies by device.
+
+        Runs on the apply stream; returns ``prepare_raw_xor``'s physical masks.
+        """
+        self.raw_device = (
+            self.raw_pinned.to(self.device, non_blocking=True)
+            if any(binding.storage[0].device.type == "cuda" for binding, _, _ in raw_targets)
+            else None
+        )
+        if self.raw_device is None:
+            self.timings["raw_h2d_bytes"] = 0
+        raw_updates = prepare_raw_xor(
+            [
+                (
+                    binding,
+                    (self.raw_pinned if binding.storage[0].device.type == "cpu" else self.raw_device)[
+                        position : position + size
+                    ],
+                )
+                for binding, position, size in raw_targets
+            ],
+            self.backend.layout.derived_targets,
+        )
+        raw_values = {id(target): source for target, _, source in raw_updates if source is not None}
+        self.derived.extend(prepare_updates(self.backend.layout.derived_updates, raw_values))
+        gpu_derived = []
+        for image in self.derived:
+            destination = (
+                self.cpu_derived
+                if image.source.device.type == "cpu" or image.destination.device.type == "cpu"
+                else gpu_derived
+            )
+            destination.append(image)
+        self.derived = gpu_derived
+        return raw_updates
+
+    def _prepare_decode_plan(self, frame_table, frame_counts):
+        """Upload the decoder's frame table and bind each decode batch's status check to the sticky error."""
+        self.workspace = self.decode_plan = None
+        if self.static_plans:
+            self.decode_plan = self.decoder.prepare_batches(
+                frame_table,
+                frame_counts,
+                self.backend.host_arena.tensor,
+                self.io_stream if self.hardware else self.stream,
+            )
+            self.decode_plan.record_stream(self.stream)
+            self.workspace = self.decode_plan.workspace
+            from miles.utils.gpu_delta.apply import prepare_status_check
+
+            with torch.cuda.stream(self.stream):
+                self.status_checks = [prepare_status_check(decode, self.error) for decode in self.decode_plan.batches]
 
     def _prepare_raw_apply(self, updates):
         """Bind the small-mask XOR launch completely before the scheduler pause."""
@@ -457,7 +449,7 @@ class PreparedDelta:
         else:
             group = cached[1]
         if group.cpu_targets:
-            self.timings["raw_h2d_bytes"] = self.timings.get("raw_h2d_bytes", 0) + sum(
+            self.timings["raw_h2d_bytes"] += sum(
                 mask.numel() * mask.element_size() for _, mask, _ in updates if mask.device.type == "cpu"
             )
             masks = torch.cat(
@@ -493,9 +485,6 @@ class PreparedDelta:
         offsets = [[], []]
         position = 0
         for index, (_, _, group) in enumerate(self.static_plans):
-            if group is None:
-                self.apply_bindings.append(None)
-                continue
             count = 2 * len(group.sources)
             start, stop = position + count, position + count + group.metadata_size
             self.apply_host_view[position:start] = list(group.pointer_rows(0, allow_unbound_cpu=True))
@@ -514,7 +503,7 @@ class PreparedDelta:
             raise RuntimeError("GPU delta apply metadata slab capacity mismatch")
         self.apply_source_patches = [
             (np.asarray(i, dtype=np.int64), np.asarray(o, dtype=np.int64))
-            for i, o in zip(indices, offsets, strict=False)
+            for i, o in zip(indices, offsets, strict=True)
         ]
 
     @profiling.annotate("gpu_delta.pause.bind_apply_metadata")
@@ -522,9 +511,8 @@ class PreparedDelta:
         """Validate decoded slots, then patch only actual source bases."""
         groups = []
         for index, (_, _, group) in enumerate(self.static_plans):
-            if group is not None:
-                group.bind(self.decoded[index % 2])
-                groups.append(group)
+            group.bind(self.decoded[index % 2])
+            groups.append(group)
         for slot, (indices, offsets) in enumerate(self.apply_source_patches):
             if indices.size:
                 # Each group's constant-time bound check above proves no int64
@@ -570,7 +558,7 @@ class PreparedDelta:
         started = time.perf_counter()
         with torch.cuda.stream(self.stream):
             self.decoded = (
-                [self.decoder._empty(self.max_decoded, torch.uint8) for _ in range(2)] if self.static_plans else []
+                [self.decoder.empty(self.max_decoded, torch.uint8) for _ in range(2)] if self.static_plans else []
             )
             decoders = self.decode_plan.bind_outputs(self.decoded) if self.decode_plan else []
             apply_groups, apply_calls = self._bind_apply_metadata()
@@ -605,7 +593,6 @@ class PreparedDelta:
             apply_grid_ctas=sum(group.grid_ctas for group in apply_groups),
             apply_contracts=sum(len(group.contracts) for group in apply_groups),
             apply_word32_contracts=sum(group.word32_contracts for group in apply_groups),
-            transformed_tensors=0,
             decoded_buffers=len(self.decoded),
             decoded_scratch_bytes=len(self.decoded) * self.max_decoded,
         )
@@ -620,16 +607,6 @@ class PreparedDelta:
         )
         self.h2d_bytes += self.timings.get("cpu_weight_h2d_bytes", 0)
 
-    @contextmanager
-    def _phase(self, name):
-        if profiling.ENABLED:
-            profiling.nvtx.range_push("gpu_delta.pause." + name)
-        try:
-            yield
-        finally:
-            if profiling.ENABLED:
-                profiling.nvtx.range_pop()
-
     @profiling.annotate("gpu_delta.pause.apply")
     def apply(self):
         apply_started = time.perf_counter()
@@ -641,26 +618,9 @@ class PreparedDelta:
                 if self.cpu_storages:
                     self._bind_cpu_mirrors()
                 # Queue small XOR masks before allocating and binding matrix buffers.
-                with self._phase("raw_apply"):
-                    if self.raw_apply is not None:
-                        self.raw_apply()
+                self._apply_raw()
                 self._allocate_paused()
-                with self._phase("paused_gpu_pipeline"):
-                    if self.batches:
-                        self.io_stream.wait_stream(self.stream)
-                        if self.hardware:
-                            self._decode_batch(self.batches[0], 0)
-                        else:
-                            self._copy_batch(self.batches[0], 0)
-                    matrices_started = time.perf_counter()
-                    if self.batches:
-                        if self.hardware:
-                            self._apply_hardware_batches()
-                        else:
-                            self._apply_cuda_batches()
-                    self.timings["host_matrix_enqueue_s"] = time.perf_counter() - matrices_started
-                    with self._phase("derived_refresh"):
-                        self._refresh_images()
+                self._apply_matrices()
                 done = torch.cuda.Event()
                 done.record(self.stream)
         completion_started = time.perf_counter()
@@ -677,13 +637,35 @@ class PreparedDelta:
         self.timings["paused_apply_host_wall_s"] = time.perf_counter() - apply_started
         return {
             "applied": True,
-            "verification": "manifest-sha256-and-decoder-status",
             "target_version": self.target_version,
             "tensors": self.matrix_tensor_count + self.raw_tensor_count,
             "timings": self.timings,
             "h2d_bytes": self.h2d_bytes,
         }
 
+    @profiling.annotate("gpu_delta.pause.raw_apply")
+    def _apply_raw(self):
+        if self.raw_apply is not None:
+            self.raw_apply()
+
+    @profiling.annotate("gpu_delta.pause.paused_gpu_pipeline")
+    def _apply_matrices(self):
+        if self.batches:
+            self.io_stream.wait_stream(self.stream)
+            if self.hardware:
+                self._decode_batch(self.batches[0], 0)
+            else:
+                self._copy_batch(self.batches[0], 0)
+        matrices_started = time.perf_counter()
+        if self.batches:
+            if self.hardware:
+                self._apply_hardware_batches()
+            else:
+                self._apply_cuda_batches()
+        self.timings["host_matrix_enqueue_s"] = time.perf_counter() - matrices_started
+        self._refresh_images()
+
+    @profiling.annotate("gpu_delta.pause.derived_refresh")
     def _refresh_images(self):
         # After the last matrix batch: copies, prepared calibration, then computed images.
         # The sticky error gate keeps every old value when any decode or apply failed.
@@ -704,8 +686,9 @@ class PreparedDelta:
             if index + 1 < len(self.batches):
                 self._decode_batch(self.batches[index + 1], index + 1)
 
+    @profiling.annotate("gpu_delta.pause.h2d")
     def _copy_batch(self, batch, index):
-        with torch.cuda.stream(self.io_stream), self._phase("h2d"):
+        with torch.cuda.stream(self.io_stream):
             slot = index % 2
             if index >= 2:
                 self.io_stream.wait_event(self.decoded_free[slot])
@@ -733,20 +716,19 @@ class PreparedDelta:
             self._enqueue_decode(batch)
             self.decoded_ready[slot].record(stream)
 
+    @profiling.annotate("gpu_delta.pause.decode")
     def _enqueue_decode(self, batch):
         # Zero unwritten gaps, then decode, both on the caller's current stream.
-        with self._phase("decode"):
-            if batch.zero_ranges:
-                torch._foreach_zero_(batch.zero_ranges)
-            batch.decoder.enqueue()
+        if batch.zero_ranges:
+            torch._foreach_zero_(batch.zero_ranges)
+        batch.decoder.enqueue()
 
+    @profiling.annotate("gpu_delta.pause.layout_apply")
     def _apply_batch(self, batch):
         # Sticky status and every consumer of it are ordered on the apply
         # stream. DE never races that gate while decoding the next batch.
-        with self._phase("layout_apply"):
-            batch.check_status()
-            if batch.apply is not None:
-                batch.apply()
+        batch.check_status()
+        batch.apply()
 
     @profiling.annotate("gpu_delta.pause.release_gpu")
     def _release_gpu(self):

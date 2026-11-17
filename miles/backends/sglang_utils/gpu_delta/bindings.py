@@ -22,7 +22,7 @@ from miles.backends.sglang_utils.gpu_delta.byte_views import (
     _storage_key,
 )
 from miles.backends.sglang_utils.gpu_delta.kernel_backends import identify_expert_layout
-from miles.utils.gpu_delta.publication import _is_raw_encoding
+from miles.utils.gpu_delta.publication import is_raw_encoding
 
 _DTYPES = {
     torch.bfloat16: "BF16",
@@ -49,13 +49,6 @@ def _full_slices(shape):
     return [[0, size] for size in shape]
 
 
-def _by_device(tensors):
-    devices = {}
-    for tensor in tensors:
-        devices.setdefault(tensor.device, []).append(tensor)
-    return tuple(tuple(group) for group in devices.values())
-
-
 def _require_canonical_dtype(meta):
     if meta["dtype"] not in _DTYPES.values():
         raise _DtypeMismatch(f"unsupported checkpoint dtype: {meta['dtype']}")
@@ -80,20 +73,18 @@ class TensorBinding:
     destinations: tuple[torch.Tensor, ...] = ()
     segments: tuple[DestinationSegment, ...] = ()
     format: str | None = None
-    # The live parameter ParameterBindings.bind resolved, which the receiver batches a non-layer binding by;
-    # None when it is the canonical name.
+    # The served name ParameterBindings.bind resolved, None when it is the canonical name: a live parameter, which
+    # the receiver batches a non-layer binding by, or a routed-expert slot, which the layout classifies storage by.
     live_name: str | None = None
 
     def __post_init__(self):
         # The admitted binding is immutable for the session. Keep dtype and
         # slicing metadata off the paused per-tensor application path.
         self.torch_dtype = _TORCH_DTYPES[self.dtype]
-        if self.encoding == "xor_raw_bytes":
-            self.is_raw = True
-        elif self.encoding == "xor_bytes":
-            self.is_raw = False
-        else:
-            raise ValueError(f"unsupported GPU delta tensor encoding: {self.encoding}")
+        self.is_raw = is_raw_encoding(self.encoding)
+        if self.is_raw and (self.segments or len(self.storage) != 1):
+            # prepare_raw_xor XORs one typed target with the payload on its device.
+            raise ValueError(f"a raw-mask binding targets one typed tensor: {self.name}")
         self.raw_ue8m0 = self.format == "fp8-block128-ue8m0" and self.dtype == "U8"
         self._selection = tuple(slice(start, stop) for start, stop in self.slices)
         layer = re.search(r"(?:^|\.)layers\.(\d+)\.", self.name)
@@ -102,33 +93,6 @@ class TensorBinding:
     @cached_property
     def storage_pointers(self):
         return tuple(_storage_key(tensor) for tensor in self.storage)
-
-    def raw_bindings(self):
-        """One raw-mask binding per raw segment (or the whole tensor) and destination device.
-
-        prepare_raw_xor takes only these views, never a segmented binding itself.
-        """
-        return self._raw_views
-
-    @cached_property
-    def _raw_views(self):
-        if self.segments:
-            # Raw segments are typed live pieces; each view applies only its own canonical range.
-            return tuple(
-                replace(
-                    self,
-                    shape=self.shape if segment.source_shape is None else segment.source_shape,
-                    slices=[list(axis) for axis in segment.slices],
-                    storage=targets,
-                    segments=(),
-                )
-                for segment in self.segments
-                for targets in _by_device(segment.destinations)
-            )
-        devices = _by_device(self.storage)
-        if len(devices) == 1:
-            return (self,)
-        return tuple(replace(self, storage=targets) for targets in devices)
 
     def apply_bindings(self):
         """Return receiver-local byte-layout pieces of one canonical tensor."""
@@ -166,16 +130,13 @@ def prepare_raw_xor(items, derived_targets=()):
     """
     groups, prepared = {}, []
     for binding, payload in items:
-        if binding.segments:
-            raise ValueError(f"raw XOR applies the raw_bindings() views of a segmented binding: {binding.name}")
-        selected = binding.selected_bytes(payload)
-        for target in binding.storage:
-            mask = selected.reshape(-1)
-            if not binding.raw_ue8m0 and binding.torch_dtype == target.dtype and id(target) not in derived_targets:
-                prepared.append((target, mask, None))
-            else:
-                key = binding.torch_dtype, target.dtype, binding.raw_ue8m0, target.device
-                groups.setdefault(key, []).append((target, mask))
+        (target,) = binding.storage
+        mask = binding.selected_bytes(payload).reshape(-1)
+        if not binding.raw_ue8m0 and binding.torch_dtype == target.dtype and id(target) not in derived_targets:
+            prepared.append((target, mask, None))
+        else:
+            key = binding.torch_dtype, target.dtype, binding.raw_ue8m0, target.device
+            groups.setdefault(key, []).append((target, mask))
     for (canonical_dtype, target_dtype, ue8m0, _), members in groups.items():
         targets, masks = zip(*members, strict=True)
         mask = torch.cat(masks)
@@ -219,6 +180,7 @@ def _direct_binding(name, meta, target, slices=None, live_name=None):
     decoded matrix mask its byte view.
     """
     slices = _full_slices(meta["shape"]) if slices is None else slices
+    _require_slices(name, meta, slices)
     view_shape = tuple(stop - start for start, stop in slices)
     if target.numel() != math.prod(view_shape):
         raise ValueError(
@@ -226,7 +188,7 @@ def _direct_binding(name, meta, target, slices=None, live_name=None):
             f"canonical={meta['dtype']}{view_shape}, "
             f"live={_dtype_name(target.dtype)}{tuple(target.shape)}"
         )
-    raw = _is_raw_encoding(meta["encoding"])
+    raw = is_raw_encoding(meta["encoding"])
     return TensorBinding(
         name,
         meta["dtype"],
@@ -262,15 +224,6 @@ def _moe_binding(name, meta, layer, expert, projection, suffix, layout):
     _normalize_expert_meta(meta, layout, suffix)
     if not layout.gated and projection == "gate":
         raise ValueError("non-gated experts have no gate projection")
-    # Scalar metadata stays gate-first.
-    if projection == "gate":
-        stem, half = "w13", 0
-    elif projection == "up":
-        stem, half = "w13", 1
-    elif projection == "down":
-        stem, half = "w2", None
-    else:
-        raise ValueError(f"unsupported expert projection: {projection}")
     if suffix == "input_scale" and layout.format == "nvfp4":
         # Activation calibration belongs to the immutable checkpoint prior.
         # Only weight-derived scales change during training.
@@ -279,10 +232,15 @@ def _moe_binding(name, meta, layer, expert, projection, suffix, layout):
     if local < 0:
         return None
     if suffix == "weight_scale_2" and layout.format == "nvfp4":
-        target = getattr(
-            layer, f"{stem}_weight_scale_2"
-        )  # config-access-exempt: Select the admitted gate/up or down expert scale image.
-        target = target[local, half] if projection != "down" and layout.gated else target[local]
+        # Global scales stay gate-first: w13 holds the [gate, up] pair of a gated expert, else its up scale.
+        if projection == "down":
+            target = layer.w2_weight_scale_2[local]
+        elif projection == "gate":
+            target = layer.w13_weight_scale_2[local, 0]
+        elif projection == "up":
+            target = layer.w13_weight_scale_2[local, 1] if layout.gated else layer.w13_weight_scale_2[local]
+        else:
+            raise ValueError(f"unsupported expert projection: {projection}")
         return _direct_binding(name, meta, target)
     slices = layout.expert_slices(layer, projection, suffix, meta["shape"])
     local_shape = tuple(stop - start for start, stop in slices)
@@ -319,7 +277,7 @@ def _moe_binding(name, meta, layer, expert, projection, suffix, layout):
         DestinationSegment(
             tuple(
                 (start + origin, stop + origin)
-                for (start, stop), (origin, _) in zip(segment.slices, slices, strict=False)
+                for (start, stop), (origin, _) in zip(segment.slices, slices, strict=True)
             ),
             segment.destinations,
         )
@@ -523,17 +481,6 @@ class ConsumerSnapshot:
             raise RuntimeError("GPU delta consumer storage changed; readmission required")
 
 
-def gate_up_target(target, module, shard, slices):
-    from sglang.srt.distributed.utils import get_group_rank_size
-
-    rank, _ = get_group_rank_size(module.tp_group)
-    dim = target.output_dim
-    half = target.shape[dim] // 2
-    target = target.narrow(dim, shard * half, half)
-    slices[dim] = [rank * half, (rank + 1) * half]
-    return target
-
-
 def _output_dim(param):
     dim = getattr(
         param, "output_dim", None
@@ -597,7 +544,7 @@ def _byte_extent(tensor):
 
 
 class AliasGroups:
-    """Canonical tensors a loader concatenates into one live allocation; a mapping's ``aliases``.
+    """Canonical tensors a loader concatenates into one live allocation: ``ParameterBindings.aliases``.
 
     ``declare`` verifies that every live view of a binding lies inside its group's fused buffer
     and is disjoint from the other members, so any two members of one group may share storage.
@@ -724,6 +671,8 @@ class ParameterBindings:
         self.gate_up_params = [(source, shard) for target, source, shard in stacked_params if target == "gate_up_proj"]
         self.excluded = {}
         self.moe_layers = {}  # prefix -> (layer, its identified ExpertLayout)
+        # Declared fused views; the layout admits shared live storage only between members of one group.
+        self.aliases = AliasGroups()
         self.shadows = shadows
         self.shadowed = {}  # canonical name -> its shadow; the layout fills them at the first prepare
 
@@ -752,10 +701,11 @@ class ParameterBindings:
         """
         _require_canonical_dtype(meta)
         _require_unquantized(name, module)
-        _require_slices(name, meta, slices)
         return _direct_binding(name, meta, view, [list(axis) for axis in slices])
 
-    def bind(self, name, meta, target_name, target=None):
+    def bind(self, name, meta, target_name):
+        """Bind canonical ``name`` to the served ``target_name``: a routed-expert slot, a dense parameter, or a
+        loader shard of a merged gate/up projection."""
         _require_canonical_dtype(meta)
         match = re.fullmatch(r"(.+\.experts)\.(\d+)\.(gate|up|down)_proj\.(.+)", target_name)
         if match:
@@ -778,24 +728,27 @@ class ParameterBindings:
             )
             if binding is None:
                 self.excluded[name] = STATIC_CALIBRATION if suffix == "input_scale" else REMOTE_EXPERT
+            elif target_name != name:
+                # A renamed slot: a model's served expert name, or the routed slot serving a fused shared expert.
+                binding = replace(binding, live_name=target_name)
             return binding
+        target = self.params.get(target_name)
         if target is None:
-            target = self.params.get(target_name)
-        slices = _full_slices(meta["shape"])
-        if target is None:
-            for source_stem, shard in self.gate_up_params:
-                if source_stem not in target_name or ".experts." in target_name:
-                    continue
-                candidate = target_name.replace(source_stem, "gate_up_proj")
-                target = self.params.get(candidate)
-                if target is None:
-                    continue
-                module = self.modules[candidate.rsplit(".", 1)[0]]
-                target = gate_up_target(target, module, shard, slices)
-                target_name = candidate
-                break
-        if target is None:
-            raise ValueError(f"unclassified canonical tensor: {name}")
+            return self._bind_gate_up_shard(name, meta, target_name)
         module = self.modules[target_name.rsplit(".", 1)[0]]
-        target, slices = dense_target(name, meta, module, target, slices)
+        target, slices = dense_target(name, meta, module, target, _full_slices(meta["shape"]))
         return _direct_binding(name, meta, target, slices, live_name=None if target_name == name else target_name)
+
+    def _bind_gate_up_shard(self, name, meta, target_name):
+        """A gate or up projection the loader serves as one shard of a merged ``gate_up_proj``, declared fused."""
+        for source_stem, shard in self.gate_up_params:
+            candidate = target_name.replace(source_stem, "gate_up_proj")
+            if source_stem not in target_name or ".experts." in target_name or candidate not in self.params:
+                continue
+            fused, module = self.params[candidate], self.modules[candidate.rsplit(".", 1)[0]]
+            _require_unquantized(name, module)
+            view, slices = merged_column_target(fused, module, shard, meta["shape"])
+            binding = _direct_binding(name, meta, view, slices, live_name=candidate)
+            self.aliases.declare(name, candidate, binding, fused)
+            return binding
+        raise ValueError(f"unclassified canonical tensor: {name}")

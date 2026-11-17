@@ -79,7 +79,7 @@ def test_delta_routes_preserve_typed_requests_auth_and_app_route_class(http_delt
             publication
             | {
                 "release_state": True,
-                "flush_cache": False,
+                "pause_mode": "in_place",
                 "abort_all_requests": True,
                 "weight_version": "actor-42",
                 "validate_payload_hash": False,
@@ -112,12 +112,16 @@ def test_delta_routes_preserve_typed_requests_auth_and_app_route_class(http_delt
         assert received == calls[-1]
         if request_type is UpdateWeightsFromGpuDeltaReqInput:
             assert received.validate_payload_hash is payload.get("validate_payload_hash", True)
+            assert received.pause_mode == payload.get("pause_mode", "retract")
     response = GpuDeltaReqOutput(success=True, message="", participants=receipts, rid="control-reply")
     received = msgpack_decode(msgpack_encode(response))
     assert type(received) is GpuDeltaReqOutput and received == response
     assert len(calls) == len(cases)
     assert calls[0].release_state is False
     rejected = client.post("/update_weights_from_gpu_delta", json={"manifest_path": "/manifest.json"})
+    assert rejected.status_code == 422 and len(calls) == len(cases)
+    # The scheduler pauses only by retraction or in place; SGLang's abort mode is not one of them.
+    rejected = client.post("/update_weights_from_gpu_delta", json=publication | {"pause_mode": "abort"})
     assert rejected.status_code == 422 and len(calls) == len(cases)
 
     # A real scheduler failure retains the same typed HTTP route and response.
@@ -155,15 +159,7 @@ def publication():
         base_version=2,
         target_version=7,
         plan_digest="b" * 64,
-        participants=[
-            dict(
-                engine_id="e0",
-                rank_id=f"r{i}",
-                hostname=f"host-{i // 2}",
-                host_cache_id=f"cache-{i // 2}",
-            )
-            for i in range(3)
-        ],
+        participants=[dict(engine_id="e0", rank_id=f"r{i}") for i in range(3)],
     )
 
 
@@ -192,10 +188,7 @@ def test_update_waits_for_every_rank_before_apply_and_resume(control, publicatio
         tuple(range(ranks_per_route)),
         tuple(range(ranks_per_route, 2 * ranks_per_route)),
     )
-    publication["participants"] = [
-        dict(engine_id="e0", rank_id=f"r{rank}", hostname="host", host_cache_id="cache")
-        for rank in range(2 * ranks_per_route)
-    ]
+    publication["participants"] = [dict(engine_id="e0", rank_id=f"r{rank}") for rank in range(2 * ranks_per_route)]
 
     async def run():
         facade, _, versions = control
@@ -248,19 +241,19 @@ def test_update_waits_for_every_rank_before_apply_and_resume(control, publicatio
 
 
 @pytest.mark.parametrize(
-    "failure,release_state,flush_cache,abort_all_requests,weight_version,pause_at",
+    "failure,release_state,pause_mode,abort_all_requests,weight_version,pause_at",
     [
-        (None, False, True, False, None, None),
-        (None, True, False, True, "0", None),
-        (None, False, False, True, "actor-42", None),
-        (None, True, True, False, None, "entry"),
-        (None, False, True, False, None, "prepare"),
-        ("prepare", True, True, False, None, None),
-        ("apply", True, True, False, None, None),
-        ("resume", True, True, False, None, None),
-        ("uncertain_apply", True, True, False, None, None),
-        ("clear", True, True, False, None, None),
-        ("release", True, True, False, None, None),
+        (None, False, "retract", False, None, None),
+        (None, True, "in_place", True, "0", None),
+        (None, False, "in_place", False, "actor-42", None),
+        (None, True, "retract", False, None, "entry"),
+        (None, False, "in_place", False, None, "prepare"),
+        ("prepare", True, "retract", False, None, None),
+        ("apply", True, "retract", False, None, None),
+        ("resume", True, "retract", False, None, None),
+        ("uncertain_apply", True, "retract", False, None, None),
+        ("clear", True, "retract", False, None, None),
+        ("release", True, "retract", False, None, None),
     ],
 )
 def test_update_preserves_receipts_options_and_failure_boundaries(
@@ -269,7 +262,7 @@ def test_update_preserves_receipts_options_and_failure_boundaries(
     monkeypatch,
     failure,
     release_state,
-    flush_cache,
+    pause_mode,
     abort_all_requests,
     weight_version,
     pause_at,
@@ -306,7 +299,7 @@ def test_update_preserves_receipts_options_and_failure_boundaries(
                 state, phase, duration = "PREPARED", "prepare", 5
             elif isinstance(obj, io.ApplyGpuDeltaReqInput):
                 assert facade.manager.is_pause
-                assert obj.flush_cache is flush_cache
+                assert obj.pause_mode == pause_mode
                 assert aborted == (["abort"] if abort_all_requests else [])
                 if failure == "uncertain_apply":
                     raise OSError("lost apply acknowledgment")
@@ -324,7 +317,6 @@ def test_update_preserves_receipts_options_and_failure_boundaries(
                 state, phase, duration = "CLEARED", "clear", 13
                 if isinstance(obj, io.ReleaseGpuDeltaCacheReqInput):
                     phase, duration = "release", 17
-                    assert obj.owner_rank_ids == ["r0", "r2"]
                     assert isinstance(calls[-2], io.ClearGpuDeltaStateReqInput)
                 else:
                     assert isinstance(obj, io.ClearGpuDeltaStateReqInput)
@@ -349,13 +341,15 @@ def test_update_preserves_receipts_options_and_failure_boundaries(
             io.UpdateWeightsFromGpuDeltaReqInput(
                 **publication,
                 release_state=release_state,
-                flush_cache=flush_cache,
+                pause_mode=pause_mode,
                 abort_all_requests=abort_all_requests,
                 weight_version=weight_version,
             )
         )
         assert result["success"] is (failure is None)
-        assert cache_clears == (["clear"] if flush_cache and failure in {None, "resume", "clear", "release"} else [])
+        assert cache_clears == (
+            ["clear"] if pause_mode == "retract" and failure in {None, "resume", "clear", "release"} else []
+        )
         assert aborted == (["abort"] if abort_all_requests and failure != "prepare" else [])
         if failure is None:
             assert versions == [serving_version]
@@ -398,6 +392,29 @@ def test_public_request_rejects_multiple_tokenizer_workers_before_dispatch(contr
     result = asyncio.run(facade.request(io.UpdateWeightsFromGpuDeltaReqInput(**publication)))
     assert not result["success"] and "one Python tokenizer worker" in result["message"]
     assert sent == versions == [] and not facade.manager.is_pause
+
+
+def test_unsettled_preparation_is_aborted_and_named(control, publication, monkeypatch):
+    # The timeout carries no message; the reply still names its type.
+    monkeypatch.setattr(tokenizer, "_PREPARE_TIMEOUT_S", 0.01)
+
+    async def run():
+        facade, _, versions = control
+        calls = []
+
+        async def request(obj):
+            calls.append(type(obj))
+            if isinstance(obj, io.PrepareGpuDeltaReqInput):
+                await asyncio.Future()
+            return {"success": True, "message": "", "participants": []}
+
+        facade._request = request
+        result = await facade.request(io.UpdateWeightsFromGpuDeltaReqInput(**publication))
+        assert result == {"success": False, "message": "TimeoutError: ", "participants": []}
+        assert calls == [io.PrepareGpuDeltaReqInput, io.AbortGpuDeltaReqInput]
+        assert not facade.manager.is_pause and versions == []
+
+    asyncio.run(asyncio.wait_for(run(), timeout=2))
 
 
 @pytest.mark.parametrize("phase", ["prepare", "apply"])
@@ -477,7 +494,11 @@ def test_prepare_failure_does_not_wait_for_other_ranks(publication, failure):
         )
         results = await task
         assert len(results) == 1 and not results[0].success
-        assert "prepare failed" in results[0].message or "incarnation" in results[0].message
+        expected = {
+            "prepare": "prepare failed",
+            "replacement": "delta prepare replied from another receiver incarnation",
+        }
+        assert results[0].message == expected[failure]
 
     asyncio.run(asyncio.wait_for(run(), timeout=2))
 

@@ -17,12 +17,12 @@ def apply_prepared_masks(bindings, masks, derived=()):
     from miles.utils.gpu_delta.apply import plan_apply, prepare_status_check
 
     outputs, size = [], 0
-    for binding, mask in zip(bindings, masks, strict=False):
+    for binding, mask in zip(bindings, masks, strict=True):
         offset = (size + 15) // 16 * 16
         outputs.append((binding, offset, mask.numel()))
         size = offset + mask.numel()
     payload = torch.zeros(size, dtype=torch.uint8, device="cuda")
-    for (_, offset, length), mask in zip(outputs, masks, strict=False):
+    for (_, offset, length), mask in zip(outputs, masks, strict=True):
         payload[offset : offset + length].copy_(mask.reshape(-1))
     prepared = PreparedDelta.__new__(PreparedDelta)
     prepared.error = torch.zeros(1, dtype=torch.int32, device="cuda")
@@ -36,17 +36,11 @@ def apply_prepared_masks(bindings, masks, derived=()):
         for image in derived:
             image.refresh(prepared.error == 0)
 
-    apply = None
-    if group is not None:
-        group.prepare_metadata(decoded.device.index)
-        group.bind(decoded)
-        pointers = torch.tensor(
-            list(group.pointer_rows(decoded.data_ptr())),
-            dtype=torch.int64,
-            device="cuda",
-        )
-        metadata = torch.tensor(group.metadata_rows, dtype=torch.int64, device="cuda")
-        apply = group.bind_launch(pointers, metadata, prepared.error)
+    group.prepare_metadata(decoded.device.index)
+    group.bind(decoded)
+    pointers = torch.tensor(list(group.pointer_rows(decoded.data_ptr())), dtype=torch.int64, device="cuda")
+    metadata = torch.tensor(group.metadata_rows, dtype=torch.int64, device="cuda")
+    apply = group.bind_launch(pointers, metadata, prepared.error)
     # Compilation and module loading must not execute against live weights.
     for value, before in saved:
         torch.testing.assert_close(

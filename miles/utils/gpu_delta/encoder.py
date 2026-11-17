@@ -16,7 +16,7 @@ import triton
 import triton.language as tl
 
 from miles.utils.gpu_delta.nvcomp import NvcompCompressor
-from miles.utils.gpu_delta.publication import CODECS, FRAME_BYTES, PublicationWriter
+from miles.utils.gpu_delta.publication import CODECS, FRAME_BYTES, PublicationWriter, validate_frame_bytes
 
 
 # Batch cardinality is runtime data, not a new compilation per batch shape.
@@ -199,9 +199,8 @@ class GpuBatchEncoder:
     """
 
     def __init__(self, device: torch.device, codec: str, frame_bytes: int = FRAME_BYTES):
-        if type(frame_bytes) is not int or not 0 < frame_bytes <= 4 << 20:
-            raise ValueError("GPU delta frame_bytes must be a positive integer at most 4 MiB")
-        self.device, self.frame_bytes = torch.device(device), frame_bytes
+        validate_frame_bytes(frame_bytes)
+        self.device, self.codec, self.frame_bytes = torch.device(device), codec, frame_bytes
         self.stream = torch.cuda.Stream(device=self.device)
         inner_codec, outer_codec = CODECS[codec]
         self.compressor = NvcompCompressor(inner_codec, self.device)
@@ -406,7 +405,7 @@ class RecoveryPayload:
     frame_bytes: int
 
     @classmethod
-    def encode(cls, encoder, codec, batches, raw_names, base, target):
+    def encode(cls, encoder, batches, raw_names, base, target):
         names, encoded = [], []
         for batch in batches:
             names.extend(batch)
@@ -415,7 +414,7 @@ class RecoveryPayload:
         return cls(
             list(zip(names, finalized, strict=True)),
             {name: np.bitwise_xor(base[name].numpy(), target[name].numpy()).tobytes() for name in raw_names},
-            codec,
+            encoder.codec,
             encoder.frame_bytes,
         )
 

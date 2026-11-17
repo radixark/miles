@@ -9,7 +9,6 @@ import triton
 import triton.language as tl
 
 BLOCK = 2048
-ELEMENTS = 512
 WARPS = 4
 RESIDENT_WAVES = 4
 MAX_AXES = 64
@@ -347,7 +346,7 @@ def _xor_batch(pointers, metadata, error, BLOCK: tl.constexpr, FAMILY: tl.conste
         tile = tl.program_id(0).to(tl.int64)
         tile_stride = tl.num_programs(0).to(tl.int64)
         groups = tl.load(metadata)
-        total = tl.load(metadata + groups)  # final END; metadata[0] is0 if empty
+        total = tl.load(metadata + groups)  # final END; metadata[0] is 0 if empty
         while tile < total:
             low = tl.full((), 0, tl.int64)
             high = groups
@@ -414,6 +413,11 @@ def _compiled(device_index, family):
         return kernel
 
 
+def kernel_cache_info():
+    """Hit and miss counts of the fixed apply-module cache, for receiver receipts."""
+    return _compiled.cache_info()
+
+
 def _normalize(shape, stride):
     """Keep the same flat element mapping with fewer affine axes."""
     axes = []
@@ -460,7 +464,7 @@ def _row_alignment(shape, stride, alignment):
         return alignment
     elif mode == 2:
         # The inner row coordinate is BLOCK aligned. Include every active outer
-        # stride so a16B base pointer never overstates a4B-aligned row start.
+        # stride so a 16 B base pointer never overstates a 4 B-aligned row start.
         return math.gcd(alignment, *(step for n, step in zip(shape[:-1], stride[:-1], strict=False) if n > 1))
     else:
         raise ValueError(f"invalid GPU delta access mode: {mode}")
@@ -607,10 +611,7 @@ class ByteApplyGroup:
             raise ValueError("invalid GPU delta apply pointer/offset")
         if sum(count * triton.cdiv(c[0], BLOCK) for c, count in self.contracts) > _MAX_TILES:
             raise ValueError("GPU delta apply launch grid overflow")
-        # Capacity belongs to the validated immutable original byte geometry.
         self.contracts = tuple(((c[0], *(tuple(part) for part in c[1:])), count) for c, count in self.contracts)
-        words = 1 + 2 * len(self.contracts) + sum(11 + 4 * max(len(c[1]), len(c[3])) for c, _ in self.contracts)
-        self.metadata_size = words + words % 2 + 4
         self.kernels = tuple(_compiled(device_index, family) for family in range(3))
         self.resident_ctas = tuple(_resident_ctas(kernel, device_index) for kernel in self.kernels)
         # Snapshot geometry: no caller-owned mutable pointer lists enter the
@@ -626,8 +627,8 @@ class ByteApplyGroup:
                 maximum = max(offsets)
                 self.source_limit = max(self.source_limit, maximum + span)
                 self.source_max_offset = max(self.source_max_offset, maximum)
-            # bind() requires origin %16 ==0, so capped gcd(origin+offsets) equals
-            # gcd(16,offsets). Empty contracts retain the existing alignment1 convention.
+            # bind() requires origin % 16 == 0, so capped gcd(origin + offsets) equals
+            # gcd(16, offsets). Empty contracts keep the existing alignment-1 convention.
             alignments.append((math.gcd(16, *offsets), math.gcd(16, *targets)) if count else (1, 1))
             indices.extend(range(pointer_position, pointer_position + count))
             if self.cpu_targets:
@@ -729,9 +730,8 @@ class ByteApplyGroup:
                         resident,
                     )
                 )
-        self.metadata_rows.extend([0] * (self.metadata_size - len(self.metadata_rows)))
-        if len(self.metadata_rows) != self.metadata_size:
-            raise RuntimeError("GPU delta family metadata capacity exceeded")
+        # Every family slice has even length, so the next slab slice stays 16-byte aligned.
+        self.metadata_size = len(self.metadata_rows)
         self.grid_ctas = sum(program.grid[0] for program in self.programs)
 
     def bind_launch(self, pointers, metadata, error):

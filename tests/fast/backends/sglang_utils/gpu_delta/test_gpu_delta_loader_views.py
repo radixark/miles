@@ -1,7 +1,7 @@
 """CPU checks of the binding helpers model mappings share through ParameterBindings.
 
-SGLang loader shards (merged column, dense TP slices) checked against the real loaders, bound
-views, alias groups, router pinning, and receiver-owned canonical shadows.
+SGLang loader shards (merged column, dense TP slices) checked against the real loaders, bound views, the raw-mask
+binding invariant and alias groups.
 """
 
 from types import SimpleNamespace
@@ -9,7 +9,6 @@ from unittest.mock import patch
 
 import pytest
 import torch
-from safetensors.torch import save_file
 from sglang.srt.layers import linear as sglang_linear
 from sglang.srt.layers.linear import (
     ColumnParallelLinear,
@@ -18,23 +17,16 @@ from sglang.srt.layers.linear import (
     QKVParallelLinear,
     RowParallelLinear,
 )
-from sglang.srt.layers.moe.topk import TopKConfig
 
 from miles.backends.sglang_utils.gpu_delta.bindings import (
     AliasGroups,
-    CanonicalShadow,
-    CanonicalShadows,
     ParameterBindings,
     TensorBinding,
     _direct_binding,
     dense_target,
     merged_column_target,
-    prepare_raw_xor,
-    router_bias_consumer,
 )
 from miles.backends.sglang_utils.gpu_delta.byte_views import DestinationSegment, _DtypeMismatch
-from miles.backends.sglang_utils.gpu_delta.checkpoint import CanonicalCheckpoint
-from miles.utils.gpu_delta.publication import read_safetensors_headers
 
 
 def _sglang_linear(cls, tp_size, tp_rank, *args, **kwargs):
@@ -121,6 +113,17 @@ def test_loader_shard_helpers_reject_other_classes_shards_and_geometry():
         merged_column_target(weight, merged, 0, [8, 6])
 
 
+@pytest.mark.parametrize("method", ["ModelOptFp4LinearMethod", "Fp8LinearMethod"])
+def test_gate_up_shards_reject_a_quantized_merged_projection(method):
+    model = torch.nn.Module()
+    model.mlp = torch.nn.Module()
+    model.mlp.gate_up_proj = _sglang_linear(MergedColumnParallelLinear, 1, 0, 2, [4, 4], params_dtype=torch.bfloat16)
+    model.mlp.gate_up_proj.quant_method = type(method, (), {})()
+    parameters = ParameterBindings(model, [("gate_up_proj", "gate_proj", 0), ("gate_up_proj", "up_proj", 1)])
+    with pytest.raises(ValueError, match=f"^unsupported dense delta quantization {method}: mlp.gate_proj.weight$"):
+        parameters.bind("mlp.gate_proj.weight", {"dtype": "BF16", "shape": [4, 2]}, "mlp.gate_proj.weight")
+
+
 def test_dense_tp_slices_admit_only_exact_row_and_column_parallel_linears():
     group = SimpleNamespace(rank_in_group=1, world_size=2)
     for cls, local, dim, axis in (
@@ -160,20 +163,12 @@ def test_bind_view_checks_dtype_quantization_selection_and_storage():
         parameters.bind_view("w", meta, None, target, [[0, 8], [0, 6]])
 
 
-def test_raw_xor_rejects_a_segmented_binding():
-    # Typed raw segments of one raw-mask vector: rows [0, 2) and [4, 6) fill local [0, 2) and [2, 4).
+def test_raw_binding_targets_one_typed_tensor():
+    # prepare_raw_xor XORs one typed target; a raw mask never splits into segments or across storages.
     target = torch.zeros(4, 6, dtype=torch.bfloat16)
-    segmented = TensorBinding(
-        "b",
-        "BF16",
-        (8,),
-        [[0, 8]],
-        (target[0],),
-        encoding="xor_raw_bytes",
-        segments=(DestinationSegment(((0, 2),), (target[0, :2],)), DestinationSegment(((4, 6),), (target[0, 2:4],))),
-    )
-    with pytest.raises(ValueError, match="raw_bindings"):
-        prepare_raw_xor([(segmented, torch.zeros(16, dtype=torch.uint8))])
+    for storage, segments in (((target[0], target[1]), ()), ((target[0],), (DestinationSegment(((0, 2),), ()),))):
+        with pytest.raises(ValueError, match="^a raw-mask binding targets one typed tensor: b$"):
+            TensorBinding("b", "BF16", (8,), [[0, 8]], storage, encoding="xor_raw_bytes", segments=segments)
 
 
 def test_sub_byte_f4_stays_an_unsupported_canonical_dtype():
@@ -208,91 +203,3 @@ def test_alias_groups_admit_only_disjoint_views_of_one_fused_buffer():
         groups.declare("q", "qkv", rows("q", 6, 8), fused)
     groups.declare("v", "qkv", rows("v", 6, 10), fused)
     assert groups("q", "v") and groups("v", "k")
-
-
-def test_router_bias_consumer_pins_the_parameter_routing_reads():
-    bias = torch.nn.Parameter(torch.zeros(4), requires_grad=False)
-    topk = SimpleNamespace(topk_config=TopKConfig(top_k=2, correction_bias=bias))
-    with pytest.raises(ValueError, match="routing does not read the bound correction bias: gate.bias"):
-        router_bias_consumer("gate.bias", topk, torch.nn.Parameter(torch.zeros(4), requires_grad=False))
-    snapshot = router_bias_consumer("gate.bias", topk, bias)
-    snapshot.check_objects()
-    config = topk.topk_config
-    for replace_object in (
-        lambda: setattr(config, "correction_bias", bias.detach().clone()),
-        lambda: setattr(topk, "topk_config", TopKConfig(top_k=2, correction_bias=bias)),
-    ):
-        replace_object()
-        with pytest.raises(RuntimeError, match="consumer storage changed"):
-            snapshot.check_objects()
-        topk.topk_config, config.correction_bias = config, bias
-        snapshot.check_objects()
-
-
-def test_canonical_shadows_hold_checkpoint_rows_for_the_session(tmp_path):
-    values = torch.randn(8, 3).bfloat16()
-    path = tmp_path / "model.safetensors"
-    save_file({"w": values}, str(path))
-    checkpoint = CanonicalCheckpoint(
-        {"w": {"shape": [8, 3], "dtype": "BF16"}}, None, read_safetensors_headers([str(path)])
-    )
-    meta, cpu = {"dtype": "BF16", "shape": [8, 3]}, torch.device("cpu")
-    store = {}
-    shadows = CanonicalShadows(store, create=True)
-    # Describe allocates the rank's rows; the first prepare fills them from the immutable checkpoint.
-    tensor = shadows.get("w", meta, (2, 6), cpu)
-    assert (tensor.shape, tensor.dtype, store["w"].filled) == ((4, 3), torch.bfloat16, False)
-    assert shadows.get("w", meta, [2, 6], cpu) is tensor
-    shadows.fill(checkpoint, ["w"])
-    assert store["w"].filled and torch.equal(tensor.view(torch.int16), values[2:6].view(torch.int16))
-
-    # A filled shadow holds the committed version; no later fill rereads the checkpoint.
-    tensor.view(torch.int16).bitwise_xor_(0x1234)
-    committed = tensor.clone()
-    unreadable = SimpleNamespace(inventory={}, read_rows=lambda *args: pytest.fail("reread a filled shadow"))
-    shadows.fill(unreadable, ["w"])
-    later = CanonicalShadows(store, create=False)
-    assert later.get("w", meta, (2, 6), cpu) is tensor
-    later.fill(unreadable, ["w"])
-    assert torch.equal(tensor, committed)
-
-    # After version 0 nothing may be created or filled from the checkpoint.
-    with pytest.raises(ValueError, match="canonical shadow other is unavailable after version 0; restart the engine"):
-        later.get("other", meta, (0, 2), cpu)
-    store["u"] = CanonicalShadow("BF16", (8, 3), (0, 2), torch.empty(2, 3, dtype=torch.bfloat16))
-    with pytest.raises(ValueError, match="canonical shadow u is unavailable after version 0"):
-        later.fill(checkpoint, ["u"])
-
-    # Re-admission checks the shadow's geometry; the checkpoint must agree before any copy.
-    for changed, rows, device in (
-        (meta, (2, 5), cpu),
-        ({"dtype": "F16", "shape": [8, 3]}, (2, 6), cpu),
-        ({"dtype": "BF16", "shape": [9, 3]}, (2, 6), cpu),
-        (meta, (2, 6), torch.device("meta")),
-    ):
-        with pytest.raises(ValueError, match="canonical shadow geometry changed: w"):
-            shadows.get("w", changed, rows, device)
-    for rows in ((6, 9), (3, 3)):
-        with pytest.raises(ValueError, match="are outside"):
-            shadows.get("x", meta, rows, cpu)
-    # An unindexed CUDA device allocates on the current device but never equals it at re-admission.
-    for device in ("cuda", torch.device("cuda")):
-        with pytest.raises(ValueError, match="^canonical shadow x takes its destination's indexed device, not cuda$"):
-            shadows.get("x", meta, (0, 2), device)
-    assert "x" not in store and shadows.get("w", meta, (2, 6), "cpu") is tensor
-    store["v"] = CanonicalShadow("F16", (8, 3), (0, 2), torch.empty(2, 3, dtype=torch.float16))
-    stale = CanonicalCheckpoint({"v": meta}, None, {"v": checkpoint.locations["w"]})
-    with pytest.raises(ValueError, match="canonical shadow geometry changed: v"):
-        shadows.fill(stale, ["v"])
-    assert not store["v"].filled
-
-
-def test_parameter_bindings_bind_lossy_casts_only_to_session_shadows():
-    meta, cpu = {"dtype": "F32", "shape": [128], "encoding": "xor_raw_bytes"}, torch.device("cpu")
-    with pytest.raises(_DtypeMismatch, match="lossy loader cast needs a canonical shadow"):
-        ParameterBindings(torch.nn.Module()).shadow("o_norm.weight", meta, (0, 128), cpu)
-    parameters = ParameterBindings(torch.nn.Module(), shadows=CanonicalShadows({}, create=True))
-    shadow = parameters.shadow("o_norm.weight", meta, (0, 128), cpu)
-    binding = parameters.bind_view("o_norm.weight", meta, None, shadow, [[0, 128]])
-    assert parameters.shadowed == {"o_norm.weight": shadow}
-    assert binding.storage == (shadow,) and binding.is_raw

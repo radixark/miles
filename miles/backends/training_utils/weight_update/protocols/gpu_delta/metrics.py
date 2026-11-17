@@ -17,7 +17,6 @@ _RANK_TIMINGS = (
     "host_prepare_s",
     "paused_apply_host_wall_s",
     "host_encoded_cache_wait_s",
-    "host_prepared_cache_wait_s",
     "host_rank_prepare_s",
     "host_rank_outer_zstd_decode_s",
     "host_rank_outer_zstd_worker_decode_sum_s",
@@ -34,12 +33,16 @@ _RANK_TIMINGS = (
     "host_matrix_enqueue_s",
     "host_apply_completion_wait_s",
 )
+# The receiver builds the prepared image with its encoded cache, so both share creators.
 _CACHE_TIMINGS = (
     "host_encoded_cache_read_worker_sum_s",
     "host_encoded_cache_sha256_worker_sum_s",
     "host_encoded_cache_read_hash_s",
     "host_encoded_cache_build_s",
     "host_encoded_cache_allocation_s",
+    "host_prepared_cache_layout_s",
+    "host_prepared_cache_build_s",
+    "host_prepared_cache_allocation_s",
 )
 _RANK_COUNTERS = (
     "host_plan_cache_reused",
@@ -49,8 +52,6 @@ _RANK_COUNTERS = (
     "host_rank_cpu_workers",
     "host_encoded_cache_created",
     "host_encoded_cache_reused",
-    "host_prepared_cache_created",
-    "host_prepared_cache_reused",
     "compressed_batches",
     "compressed_tensors",
     "layers_per_batch",
@@ -85,6 +86,8 @@ _CACHE_WORK_TOTALS = (
     "host_encoded_cache_hash_files",
     "host_encoded_cache_allocation_calls",
     "host_encoded_cache_allocation_bytes",
+    "host_prepared_cache_allocation_calls",
+    "host_prepared_cache_allocation_bytes",
 )
 
 
@@ -107,7 +110,8 @@ def activation_metrics(activation):
         timing = receipt["scheduler_timing"]
         start, fence, end = (timing[key] for key in ("pause_started_ns", "reader_fence_completed_ns", "resumed_ns"))
         fences.append((fence - start) / 1e9)
-        pauses.append((end - start) / 1e9)
+        if end is not None:  # A retained client pause has no completed interval.
+            pauses.append((end - start) / 1e9)
     _distribution(metrics, "receiver_reader_fence_s", fences)
     _distribution(metrics, "receiver_scheduler_pause_s", pauses)
     timings = [row["result"]["timings"] for row in rows]
@@ -147,12 +151,6 @@ def activation_metrics(activation):
             _distribution(metrics, name, values)
             if name.endswith("_bytes"):
                 metrics[_PREFIX + name + "/sum"] = sum(values)
-    prepared_creators = [row for row in timings if row.get("host_prepared_cache_created") == 1]
-    for name in ("host_prepared_cache_layout_s", "host_prepared_cache_build_s", "host_prepared_cache_allocation_s"):
-        _distribution(metrics, "creator_" + name, [row[name] for row in prepared_creators])
-    for name in ("host_prepared_cache_allocation_calls", "host_prepared_cache_allocation_bytes"):
-        if prepared_creators:
-            metrics[_PREFIX + "creator_" + name + "/sum"] = sum(row[name] for row in prepared_creators)
     if all(
         "host_rank_private_capacity_bytes" in row and "host_prepared_cache_capacity_bytes" in row for row in timings
     ):

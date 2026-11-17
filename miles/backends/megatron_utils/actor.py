@@ -501,7 +501,11 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.backend.async_save:
             maybe_finalize_async_save(blocking=True)
         if self.weight_updater is not None:
-            self.weight_updater.finish_checkpoint_delta()
+            self.weight_updater.finalize_gpu_delta_checkpoint()
+
+    def _gpu_delta_allocations(self):
+        # Keep persistent codec and recovery allocations outside the offloaded model allocator.
+        return torch_memory_saver.disable() if self.args.offload_train else nullcontext()
 
     @with_logs
     @timer
@@ -945,68 +949,63 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.debug_rollout_only:
             return
 
-        delta_companion = (
+        self._finalize_pending_async_save()
+
+        save(
+            self.args,
+            rollout_id,
+            self.model,
+            self.optimizer,
+            self.opt_param_scheduler,
+            adapter_slots=self.adapter_slots,
+            schedule_first_rollout=self._schedule_first_rollout,
+        )
+        if (
             self.role == "actor"
             and self.weight_updater is not None
             and self.args.update_weight_transfer_mode == "gpu-delta"
-        )
-        with ExitStack() as stack:
-            if delta_companion and self.args.offload_train:
-                stack.enter_context(torch_memory_saver.disable())
-                if self._asleep:
-                    reload_process_groups()
-                    stack.callback(destroy_process_groups)
+        ):
+            checkpoint_dir = get_checkpoint_name(self.args.backend.save, rollout_id, return_base_dir=True)
+            with self._gpu_delta_allocations():
+                self.weight_updater.prepare_gpu_delta_checkpoint(
+                    checkpoint_dir, rollout_id, self._get_actor_weight_version()
+                )
 
-            self._finalize_pending_async_save()
-            save(
+        if self.args.save_hf is not None and self.role == "actor":
+            assert self.snapshot_publisher is not None, "HF export requires a snapshot publisher"
+            save_hf_model(
                 self.args,
                 rollout_id,
                 self.model,
-                self.optimizer,
-                self.opt_param_scheduler,
+                publisher=self.snapshot_publisher,
                 adapter_slots=self.adapter_slots,
-                schedule_first_rollout=self._schedule_first_rollout,
             )
-            if delta_companion:
-                checkpoint_dir = get_checkpoint_name(self.args.backend.save, rollout_id, return_base_dir=True)
-                self.weight_updater.save_checkpoint_delta(checkpoint_dir, rollout_id, self._get_actor_weight_version())
-
-            if self.args.save_hf is not None and self.role == "actor":
-                assert self.snapshot_publisher is not None, "HF export requires a snapshot publisher"
-                save_hf_model(
-                    self.args,
-                    rollout_id,
-                    self.model,
-                    publisher=self.snapshot_publisher,
-                    adapter_slots=self.adapter_slots,
-                    raise_on_error=uses_gpu_delta_eval(self.args),
-                )
-                if uses_gpu_delta_eval(self.args):
+            # Dedicated eval pins --save-hf only without --eval-hf-dir.
+            if uses_gpu_delta_eval(self.args) and self.args.eval_hf_dir is None:
+                with self._gpu_delta_allocations():
                     self.weight_updater.export_gpu_delta_snapshot(
                         self.args.save_hf.format(rollout_id=rollout_id),
-                        self._last_rollout_id,
+                        rollout_id,
                         self._get_actor_weight_version(),
+                        in_hf_export=True,
                     )
 
-            if (
-                force_sync
-                or not self.args.backend.async_save
-                or self.args.custom_megatron_post_save_hook_path is not None
-            ):
-                self._finalize_pending_async_save()
+        # A collective finalize publishes the companion's READY once Megatron's writer has drained.
+        if force_sync or not self.args.backend.async_save or self.args.custom_megatron_post_save_hook_path is not None:
+            self._finalize_pending_async_save()
 
-            if (x := self.args.custom_megatron_post_save_hook_path) is not None and dist.get_rank() == 0:
-                from miles.utils.function_registry import load_function
+        if (x := self.args.custom_megatron_post_save_hook_path) is not None and dist.get_rank() == 0:
+            from miles.utils.function_registry import load_function
 
-                checkpoint_dir = get_checkpoint_name(self.args.backend.save, rollout_id, return_base_dir=True)
-                hf_checkpoint_dir = (
-                    self.args.save_hf.format(rollout_id=rollout_id)
-                    if self.args.save_hf is not None and self.role == "actor"
-                    else None
-                )
-                post_save_hook = load_function(x)
-                fn_args = compute_custom_function_config(self.args, x)
-                post_save_hook(fn_args, rollout_id, checkpoint_dir, hf_checkpoint_dir)
+            checkpoint_dir = get_checkpoint_name(self.args.backend.save, rollout_id, return_base_dir=True)
+            hf_checkpoint_dir = (
+                self.args.save_hf.format(rollout_id=rollout_id)
+                if self.args.save_hf is not None and self.role == "actor"
+                else None
+            )
+            post_save_hook = load_function(x)
+            fn_args = compute_custom_function_config(self.args, x)
+            post_save_hook(fn_args, rollout_id, checkpoint_dir, hf_checkpoint_dir)
 
     @with_logs
     @timer
@@ -1038,10 +1037,9 @@ class MegatronTrainRayActor(TrainRayActor):
             self.export_hf(rollout_id, path)
             return
         self._heartbeat.bump()
-        # EvalDispatcher onloads the trainer before exporting. Keep persistent
-        # codec allocations outside its offloaded model allocator.
-        with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
-            write_eval_snapshot(self.weight_updater, path, self._last_rollout_id, self._get_actor_weight_version())
+        # EvalDispatcher onloads the trainer first.
+        with self._gpu_delta_allocations():
+            write_eval_snapshot(self.weight_updater, path, rollout_id, self._get_actor_weight_version())
 
     def _named_actor_weights(self, *, translate_gpu_to_cpu: bool = False, include_model_companion: bool = False):
         return named_params_and_buffers(

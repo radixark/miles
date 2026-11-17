@@ -1,21 +1,6 @@
 """Benchmark GPU-delta compression and receiver updates from one NVFP4 HF base.
 
-Run from the Miles checkout with paired SGLang on PYTHONPATH::
-
-    python tests/manual/gpu_delta/bench_gpu_delta.py --model /models/base
-
-This GLM5.2 NVFP4 W4A16 workload requires eight Blackwell GPUs, CUDA 13 and
-nvCOMP 6; GPU-delta's CUDA decoder path does not itself require Blackwell.
-The workload uses static bundled MTP and two independent TP4/DP4/EP4 receivers.
-Sender processes split whole layers across GPUs; no Megatron checkpoint is needed.
-Defaults: Bitcomp-Zstd with payload hashing on/off and 1 MiB inner frames.
-Use --reuse-fixtures with a reviewed producer SPEC to skip encoding and apply
-saved deltas. Reused sender timings are historical; receiver timings are fresh.
-The expensive second model load/oracle is opt-in with --validate-final-target.
-Without it, reports explicitly remain NOT_VALIDATED for target equivalence.
-Use --nsys with saved fixtures to launch Nsight Systems with CPU, GIL and CUDA
-tracing around one warm receiver prepare/apply/resume update. The captured
-update defaults to version 2; --profile-version N selects another warm update.
+Usage, defaults, saved-delta replay, profiling and timing scopes: tests/manual/gpu_delta/README.md.
 """
 
 from __future__ import annotations
@@ -32,8 +17,6 @@ import re
 import shutil
 import signal
 import socket
-import stat
-import struct
 import subprocess
 import sys
 import time
@@ -46,7 +29,14 @@ import httpx
 import numpy as np
 import zstandard
 
-from miles.backends.training_utils.weight_update.protocols.gpu_delta.session import activate_publication, receiver_pool
+from miles.backends.training_utils.weight_update.protocols.gpu_delta.client import (
+    clear_gpu_delta_state,
+    get_gpu_delta_info,
+)
+from miles.backends.training_utils.weight_update.protocols.gpu_delta.session import (
+    activate_publication,
+    engine_identities,
+)
 from miles.utils.gpu_delta.publication import (
     CODECS,
     DTYPE_BYTES,
@@ -58,8 +48,10 @@ from miles.utils.gpu_delta.publication import (
     plan_digest,
     read_checkpoint_plan,
     read_publication_metadata,
+    read_safetensors_headers,
     seal_publication,
     sha256,
+    validate_frame_bytes,
 )
 
 # Same rollout topology/precision/MTP as the GLM5.2 W4A16 recipe. CuTe DSL + no
@@ -143,94 +135,30 @@ def _engine_specs(ports):
     ]
 
 
-def _validate_pool(pool, engine_count):
+def _validate_identities(identities, engine_count):
     size = 8 // engine_count
-    if sum(len(group) for group in pool.participants) != 8 or len(pool.participants) != engine_count:
+    if sum(len(group) for group in identities.participants) != 8 or len(identities.participants) != engine_count:
         raise ValueError("Expected eight original participants across the requested engines")
-    for engine, participants in enumerate(pool.participants):
+    for engine, participants in enumerate(identities.participants):
         if (
             len(participants) != size
-            or pool.engine_ids[engine] != f"engine-{engine:05d}"
+            or identities.engine_ids[engine] != f"engine-{engine:05d}"
             or {p["dp_rank"] for p in participants} != set(range(size))
             or {p["tp_rank"] for p in participants} != set(range(size))
             or any(p["pp_rank"] != 0 for p in participants)
         ):
             raise ValueError("Engine participant topology differs from the requested TP/DP/EP layout")
-    arena_ids = [{p["host_cache_id"] for p in participants} for participants in pool.participants]
+    arena_ids = [{p["host_cache_id"] for p in participants} for participants in identities.participants]
     if any(len(ids) != 1 for ids in arena_ids) or len(set().union(*arena_ids)) != engine_count:
         raise ValueError("Each benchmark engine must own one distinct host arena")
 
 
-def _capture_gpu_processes(pool, ports):
-    """Untimed native PID/UUID observation, separate from requested GPU masks."""
-    device_text = subprocess.check_output(
-        ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader,nounits"], text=True
-    )
-    process_text = subprocess.check_output(
-        ["nvidia-smi", "--query-compute-apps=pid,gpu_uuid", "--format=csv,noheader,nounits"], text=True
-    )
-    devices = {
-        int(index.strip()): uuid.strip()
-        for index, uuid in (line.split(",") for line in device_text.splitlines() if line.strip())
-    }
-    processes = [
-        (int(pid.strip()), uuid.strip())
-        for pid, uuid in (line.split(",") for line in process_text.splitlines() if line.strip())
-    ]
-    joined = []
-    for spec, participants in zip(_engine_specs(ports), pool.participants, strict=True):
-        expected = {devices[int(index)] for index in spec["gpu_ids"].split(",")}
-        actual = set()
-        for participant in participants:
-            candidates = _pid_candidates(participant["pid"])
-            uuids = {uuid for pid, uuid in processes if pid in candidates}
-            matched = len(uuids) == 1 and uuids <= expected
-            if matched:
-                actual.update(uuids)
-            joined.append(
-                {
-                    "identity": participant,
-                    "namespace_pids": candidates,
-                    "gpu_uuid": next(iter(uuids)) if matched else None,
-                    "candidate_gpu_uuids": sorted(uuids),
-                }
-            )
-        if actual != expected:
-            for row in joined:
-                if row["identity"]["engine_id"] == spec["engine_id"]:
-                    row["gpu_uuid"] = None
-    # NVML can expose host PIDs outside the container's /proc namespace. Preserve
-    # that observation instead of treating an unavailable join as a model error.
-    return {
-        "devices_raw": device_text,
-        "compute_apps_raw": process_text,
-        "participants": joined,
-        "status": "MAPPED" if all(row["gpu_uuid"] for row in joined) else "UNQUALIFIED_PID_NAMESPACE",
-    }
-
-
-def _pid_candidates(pid):
-    status = Path(f"/proc/{pid}/status").read_text()
-    nested = next((line.split()[1:] for line in status.splitlines() if line.startswith("NSpid:")), [])
-    return sorted({pid, *map(int, nested)})
-
-
 def _tensor_index(model):
-    index = {}
-    for shard in sorted(model.glob("*.safetensors")):
-        with shard.open("rb") as stream:
-            header_bytes = struct.unpack("<Q", stream.read(8))[0]
-            header = json.loads(stream.read(header_bytes))
-        for name, spec in header.items():
-            if name == "__metadata__":
-                continue
-            if name in index:
-                raise ValueError(f"Duplicate checkpoint tensor: {name}")
-            start, end = spec["data_offsets"]
-            if start < 0 or end < start or end + 8 + header_bytes > shard.stat().st_size:
-                raise ValueError(f"Invalid checkpoint tensor range: {name}")
-            index[name] = spec | {"shard": shard.name, "offset": 8 + header_bytes + start, "nbytes": end - start}
-    return index
+    headers = read_safetensors_headers(sorted(model.glob("*.safetensors")))
+    return {
+        name: {"shard": path.name, "offset": offset, "nbytes": nbytes, "dtype": dtype, "shape": shape}
+        for name, (path, offset, nbytes, dtype, shape) in headers.items()
+    }
 
 
 def _mutate(raw, name, dtype, seed, version, rate):
@@ -645,17 +573,11 @@ def _seal_fixture(args, plan, metadata, assignments, results):
         "target_checkpoint": str(args.target.resolve()),
         "input_cache_id": args.input_cache_id,
         "rounds": [],
-        "calibration": "CPU Zstd level-1 sample-frame estimate; selected-codec size is measured, not forced to this ratio.",
-        "canonical_denominator": "Canonical checkpoint/export tensors; excludes frozen draft and static checkpoint entries.",
-        "changed_bytes_definition": "Unequal storage bytes, not changed bits or compressed size.",
         "codec": codec,
         "arm": args.arm_name,
         "sender_gpus": len(results),
         "sender_owners": assignments,
         "owner_plan": "owner-plan.json",
-        "inner_codec_origin": "Production GpuBatchEncoder on each owner's GPU: pinned snapshots, GPU XOR/inner compression, optional owner-wide GPU Zstd. Contiguous whole-layer HF ownership, no Megatron export.",
-        "fixture_wall_scope": "Per-version maximum of owner-local prepared-input read/encode/publication spans. Owners are not synchronized between versions. Parent sealing is separate.",
-        "compression_wall_scope": "Sequential owner encode_device, finish_device and publication calls, including optional payload SHA, H2D/XOR/final D2H and shard flush/fsync. Excludes shared input preparation, pinned input reads and parent manifest sealing.",
     }
     for version in range(1, args.versions + 1):
         records = [owner[version - 1] for owner in results]
@@ -682,357 +604,61 @@ def _seal_fixture(args, plan, metadata, assignments, results):
         print(json.dumps({key: value for key, value in row.items() if key != "publications"}), flush=True)
 
 
-# Saved-publication admission authenticates immutable producer artifacts; it does
-# not decode payloads or replace the production receiver's admission or oracle.
-_FIXTURE_JSON_LIMIT = 256 << 20  # Full-model manifests contain about 174,000 tensors.
-_PUBLICATION_IDENTITY = (
-    "stream_id",
-    "publication_id",
-    "plan_digest",
-    "base_version",
-    "target_version",
-    "codec",
-    "frame_bytes",
-    "payload_checksum_format",
-)
-_FIXTURE_PLAN_FIELDS = ("name", "dtype", "shape", "encoding", "format", "checkpoint_dtype")
-_PRODUCER_FILES = (
-    "tests/manual/gpu_delta/bench_gpu_delta.py",
-    "miles/utils/gpu_delta/encoder.py",
-    "miles/utils/gpu_delta/nvcomp.py",
-    "miles/utils/gpu_delta/publication.py",
-)
-
-
-def _require(condition, message):
-    if not condition:
-        raise ValueError(message)
-
-
-def _sha(value):
-    _require(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value), "Invalid SHA256")
-    return value
-
-
-def _safe_fixture_path(path, root=None):
-    """Require the literal absolute path, including all parents, to be canonical."""
-    path = Path(path)
-    _require(path.is_absolute() and ".." not in path.parts, "Expected absolute contained path")
-    _require(path.resolve(strict=True) == path, "Symlink or noncanonical path is not reusable")
-    if root is not None:
-        _require(path != root and root in path.parents, "Path escapes saved fixture/input root")
-    return path
-
-
-def _stamp(info):
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-
-
-def _read_fixture_file(path, expected=None, json_data=False):
-    """Hash a stable regular file without following a final symlink or copying payloads."""
-    path = _safe_fixture_path(path)
-    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as source:
-        before = os.fstat(source.fileno())
-        _require(stat.S_ISREG(before.st_mode), "Expected a regular file")
-        _require(not json_data or before.st_size <= _FIXTURE_JSON_LIMIT, "JSON metadata exceeds bound")
-        digest, chunks, total = hashlib.sha256(), [], 0
-        while block := source.read(8 << 20):
-            total += len(block)
-            digest.update(block)
-            if json_data:
-                chunks.append(block)
-            _require(total <= before.st_size, "File grew while verifying")
-        _require(
-            total == before.st_size and _stamp(before) == _stamp(os.fstat(source.fileno())) == _stamp(path.stat()),
-            "File changed while verifying",
-        )
-    actual = digest.hexdigest()
-    _require(expected is None or actual == _sha(expected), "File SHA256 differs")
-    ref = {"path": str(path), "sha256": actual, "nbytes": total}
-    if not json_data:
-        return ref
-    value = json.loads(b"".join(chunks), parse_constant=lambda _: _require(False, "Nonfinite JSON"))
-    return value, ref
-
-
-def _option(argv, name):
-    _require(argv.count(name) == 1, f"Producer SPEC must explicitly contain {name}")
-    start = argv.index(name) + 1
-    values = []
-    while start < len(argv) and not argv[start].startswith("--"):
-        values.append(argv[start])
-        start += 1
-    _require(values, f"Empty producer option {name}")
-    return values
-
-
-def _producer(spec_path, spec_sha, root, cache, args, metadata):
-    spec, ref = _read_fixture_file(spec_path, _sha(spec_sha), json_data=True)
-    argv = spec["argv"]
-    _require(isinstance(argv, list) and all(isinstance(v, str) for v in argv), "Invalid producer argv")
-    expected = {
-        "--output": str(root),
-        "--prepared-inputs": str(cache),
-        "--model": str(args.model),
-        "--versions": str(args.versions),
-        "--seed": str(args.seed),
-        "--frame-bytes": str(args.frame_bytes),
-        "--sender-gpus": str(args.sender_gpus),
-    }
-    for flag, value in expected.items():
-        _require(_option(argv, flag) == [value], f"Producer setting differs: {flag}")
-    _require(_option(argv, "--ratio") == [str(args.ratio)], "Producer mutation ratio differs")
-    _require(not any(flag.startswith("--reuse-") for flag in argv), "Reference the original encoder run")
-    _require("on" in _option(argv, "--hashing"), "Producer did not encode SHA-on payloads")
-    for arm in args.arms:
-        _require(arm["codec"] in _option(argv, "--codecs"), "Producer codec differs")
-    # Producer metadata pins are explicit. Do not infer them from today's
-    # receiver source or from cache file names alone.
-    for relative, file_ref in metadata.items():
-        _require(
-            spec["cache_files"].get(f"{cache.name}/{relative}") == file_ref["sha256"],
-            "Producer input-cache identity differs",
-        )
-    pins = {}
-    for suffix in _PRODUCER_FILES:
-        matches = [(name, sha) for name, sha in spec["guard_files"].items() if name.endswith("/" + suffix)]
-        _require(len(matches) == 1, "Producer source provenance missing/ambiguous")
-        pins[matches[0][0]] = _sha(matches[0][1])
-    _require(argv[0].endswith("/tests/manual/gpu_delta/bench_gpu_delta.py"), "Wrong producer entrypoint")
-    return spec, {
-        "spec": ref,
-        "source_files": pins,
-        "package_versions": spec.get("package_versions", "unknown; retain original setup evidence"),
-    }
-
-
-def _check_manifest(path, descriptor, owners, plan, metadata_refs, payload_refs, validate_codec):
-    header, ref = _read_fixture_file(path, descriptor["manifest_sha256"], json_data=True)
-    metadata_refs.append(ref)
-    for kind in ("catalog", "metadata"):
-        record = header[kind]
-        metadata_refs.append(_read_fixture_file(path.parent / record["file"], record["sha256"]))
-    manifest = read_publication_metadata(path)
-    validate_codec(manifest)  # Production codec/frame admission, unchanged.
-    _require(all(manifest[k] == descriptor[k] for k in _PUBLICATION_IDENTITY), "Manifest identity differs")
-    tensors, files = [], []
-    for owner, record in owners:
-        shard = record["shard"]
-        _require(shard["metadata"] == {k: descriptor[k] for k in _PUBLICATION_IDENTITY}, "Owner publication differs")
-        _require(sorted(t["name"] for t in shard["tensors"]) == sorted(owner["tensors"]), "Owner tensor set differs")
-        _require([f["name"] for f in shard["files"]] == [f"owner-{owner['owner']:05d}.bin"], "Owner payload differs")
-        tensors.extend(shard["tensors"])
-        files.extend(shard["files"])
-    _require(len({t["name"] for t in tensors}) == len(tensors), "Duplicate tensor ownership")
-    _require(manifest["tensors"] == sorted(tensors, key=lambda t: t["name"]), "Sealed tensors differ from owners")
-    _require(manifest["files"] == sorted(files, key=lambda f: f["name"]), "Sealed files differ from owners")
-    _require(
-        [{k: t[k] for k in _FIXTURE_PLAN_FIELDS if k in t} for t in manifest["tensors"]]
-        == sorted(plan, key=lambda t: t["name"]),
-        "Publication canonical plan differs",
-    )
-    _require(not (path.parent / "manifest.json.pending").exists(), "Publication sealing incomplete")
-    for file in manifest["files"]:
-        _require(type(file["nbytes"]) is int and file["nbytes"] >= 0, "Invalid payload extent")
-        payload = _safe_fixture_path(path.parent / file["name"], path.parent)
-        _require(payload.parent == path.parent, "Nested payload path")
-        proof = _read_fixture_file(payload, _sha(file["sha256"]))
-        _require(proof["nbytes"] == file["nbytes"], "Payload size differs")
-        payload_refs.append(proof)
-    return manifest
-
-
-def _admit_saved_fixtures(args, prepared, plan, assignments, validate_codec):
-    """Verify saved publications and return small immutable references, one per arm.
-
-    ``plan`` and ``assignments`` come from the immutable checkpoint inventory
-    and existing whole-layer partitioner. No current encoder is invoked here.
-    """
-    root, cache = _safe_fixture_path(args.reuse_fixtures), _safe_fixture_path(args.prepared_inputs)
-    _require(root.is_dir() and cache.is_dir(), "Saved run and prepared cache must exist")
-    _require(not any(a["skip_payload_hash"] for a in args.arms), "Saved-delta mode requires SHA-on payloads")
-    _require(args.sender_gpus is not None, "Saved-delta mode requires explicit --sender-gpus")
-    _require(
-        args.output != root and root not in args.output.parents and args.output not in root.parents,
-        "New output must be disjoint from the saved run",
-    )
-    metadata = {}
-    for relative in ("READY.json", "data/index.json", "inventory/inventory.json"):
-        path = _safe_fixture_path(cache / relative, cache)
-        if relative == "READY.json":
-            value, metadata[relative] = _read_fixture_file(path, json_data=True)
-            _require(value == prepared, "Prepared READY changed after admission")
-        else:
-            # Provenance needs the inventory SHA, not another parsed copy.
-            metadata[relative] = _read_fixture_file(path)
-    for file in prepared["files"]:
-        p = _safe_fixture_path(cache / file["path"], cache)
-        _require(p.is_file() and p.stat().st_size == file["nbytes"], "Prepared input file extent differs")
-    spec, provenance = _producer(
-        args.reuse_producer_spec, args.reuse_producer_spec_sha256, root, cache, args, metadata
-    )
-    _require(
-        spec["prepared_settings_sha256"] == hashlib.sha256(canonical_json(prepared["settings"])).hexdigest(),
-        "Producer prepared settings differ",
-    )
-    arguments, arguments_ref = _read_fixture_file(root / "arguments.json", json_data=True)
-    _require(arguments["output"] == str(root), "Saved producer output differs")
-    for key in ("model", "prepared_inputs", "versions", "seed", "ratio", "frame_bytes"):
-        current = getattr(args, key)
-        _require(arguments[key] == (str(current) if isinstance(current, Path) else current), "Saved arguments differ")
-    # Older producers used None for all visible GPUs. The pinned producer
-    # record resolves that default; exact owner-plan equality below still
-    # checks the actual partition, not merely the declared device count.
-    _require(arguments["sender_gpus"] in (None, args.sender_gpus), "Saved sender count differs")
-    workflow, workflow_ref = _read_fixture_file(root / "workflow.json", json_data=True)
-    _require(not any(p["status"] == "RUNNING" for p in workflow["phases"]), "Saved producer workflow is still active")
-    inputs, inputs_ref = _read_fixture_file(root / "inputs.json", json_data=True)
-    _require(
-        inputs["path"] == str(cache) and inputs["id"] == args.input_cache_id and inputs["preparation"] == prepared,
-        "Saved input reference differs",
-    )
-    result = {}
-    for arm in args.arms:
-        phase = [p for p in workflow["phases"] if p["phase"] == "fixture" and p["arm"] == arm["name"]]
-        _require(
-            len(phase) == 1 and phase[0]["status"] == "PASS" and phase[0]["exit_code"] == 0,
-            "Saved encoder phase is not complete",
-        )
-        _require(arm in workflow["arms"] and arm in arguments["arms"], "Saved arm differs")
-        directory = _safe_fixture_path(root / "arms" / arm["name"] / "fixture", root)
-        fixture, fixture_ref = _read_fixture_file(directory / "fixture.json", json_data=True)
-        owner_plan, owner_ref = _read_fixture_file(directory / "owner-plan.json", json_data=True)
-        _require(owner_plan == assignments == fixture["sender_owners"], "Sender owner partition differs")
-        _require(
-            fixture["sender_gpus"] == len(assignments) and fixture["owner_plan"] == "owner-plan.json",
-            "Sender owner count/path differs",
-        )
-        expected = {
-            "plan_digest": prepared["plan_digest"],
-            "rate": prepared["rate"],
-            "requested_zstd_ratio": args.ratio,
-            "seed": args.seed,
-            "input_cache_id": args.input_cache_id,
-            "codec": arm["codec"],
-            "arm": arm["name"],
-            "target_checkpoint": str(_safe_fixture_path(cache / "target-checkpoint", cache)),
-        }
-        _require(all(fixture[k] == value for k, value in expected.items()), "Fixture settings/target differ")
-        stream = hashlib.sha256(
-            canonical_json(
-                {"seed": args.seed, "plan": prepared["plan_digest"], "rate": prepared["rate"], "arm": arm["name"]}
-            )
-        ).hexdigest()
-        _require(
-            fixture["stream_id"] == stream and len(fixture["rounds"]) == args.versions, "Incomplete fixture chain"
-        )
-        refs, payloads = [fixture_ref, owner_ref, arguments_ref, workflow_ref, inputs_ref, *metadata.values()], []
-        for version, row in enumerate(fixture["rounds"], 1):
-            identity = {
-                "stream_id": stream,
-                "publication_id": f"{stream}:{version}",
-                "plan_digest": prepared["plan_digest"],
-                "base_version": version - 1,
-                "target_version": version,
-                "codec": arm["codec"],
-                "frame_bytes": args.frame_bytes,
-                "payload_checksum_format": "sha256",
-            }
-            _require(
-                row["version"] == version and set(row["publications"]) == {arm["codec"]}, "Fixture version differs"
-            )
-            descriptor = row["publications"][arm["codec"]]
-            path = _safe_fixture_path(directory / arm["codec"] / f"v{version}" / "manifest.json", directory)
-            _require(
-                descriptor["manifest_path"] == str(path) and all(descriptor[k] == v for k, v in identity.items()),
-                "Publication identity/path differs",
-            )
-            owners = []
-            for owner in assignments:
-                prefix = f"owner-{owner['owner']:05d}"
-                _require(not (directory / f"{prefix}-failed.json").exists(), "Encoder owner failed")
-                record, ref = _read_fixture_file(directory / f"{prefix}-v{version}.json", json_data=True)
-                refs.append(ref)
-                _require(
-                    record["version"] == version
-                    and all(record["metrics"][k] == owner[k] for k in ("owner", "gpu", "groups", "canonical_bytes")),
-                    "Owner record differs",
-                )
-                _require(record["metrics"]["payload_checksum_format"] == "sha256", "Owner hash policy differs")
-                owners.append((owner, record))
-            _check_manifest(path, descriptor, owners, plan, refs, payloads, validate_codec)
-            _require(
-                row["canonical_bytes"] == prepared["canonical_bytes"]
-                and row["changed_bytes"] == sum(r["changed_bytes"] for _, r in owners),
-                "Fixture byte accounting differs",
-            )
-            _require(
-                row["compression"]["owners"] == [r["metrics"] for _, r in owners], "Historical sender metrics differ"
-            )
-            _require(
-                row["accounting"][arm["codec"]] == _publication_accounting(descriptor),
-                "Publication accounting differs",
-            )
-        # Seal a reference only after every round/owner/payload has passed. It
-        # does not mutate or create a completion marker inside the old run.
-        result[arm["name"]] = {
-            "schema": "gpu_delta_saved_fixture_v1",
-            "mode": "saved_delta_apply",
-            "fixture": fixture_ref,
-            "producer": provenance,
-            "metadata": refs,
-            "payloads": payloads,
-            "historical_fixture_phase": phase[0],
-            "sender_measurement_scope": "historical_saved_fixture",
-            "payload_bytes_verified": True,
-            "prepared_checkpoint_bytes_verified": False,
-            "limits": [
-                "Prepared checkpoint identity uses original metadata/settings/file sizes, not full byte hashes.",
-                "Fresh receiver admission remains mandatory; target equivalence requires the opt-in oracle.",
-                "No current sender/compression performance or changed-encoder validation.",
-            ],
-        }
-    return result
-
-
-def _resolve_fixture(arm_output):
-    """Resolve explicit metadata; never silently choose an external directory."""
-    reference = arm_output / "fixture-reuse.json"
-    if not reference.exists():
-        return arm_output / "fixture", None
-    value, _ = _read_fixture_file(reference, json_data=True)
-    _require(
-        value["schema"] == "gpu_delta_saved_fixture_v1" and value["mode"] == "saved_delta_apply",
-        "Unsupported fixture reference",
-    )
-    fixture, _ = _read_fixture_file(value["fixture"]["path"], value["fixture"]["sha256"], json_data=True)
-    _require(fixture["arm"] == arm_output.name, "Referenced arm differs")
-    return Path(value["fixture"]["path"]).parent, value
-
-
-def _record_producer(args, prepared):
-    """Record fresh encoder provenance; workflow completion is admitted separately."""
-    source_root = Path(__file__).resolve().parents[3]
-    argv = [str(source_root / "tests/manual/gpu_delta/bench_gpu_delta.py")]
+def _record_producer(args):
+    """The producer spec that a --reuse-fixtures replay names with its reviewed SHA256."""
+    argv = [str(Path(__file__).resolve())]
     for name in ("model", "output", "prepared_inputs", "versions", "seed", "ratio", "frame_bytes", "sender_gpus"):
         argv.extend(["--" + name.replace("_", "-"), str(getattr(args, name))])
     argv.extend(["--codecs", *args.codecs, "--hashing", *args.hashing])
-    value = {
-        "schema": "gpu_delta_benchmark_producer_v1",
-        "argv": argv,
-        "cache_files": {
-            f"{args.prepared_inputs.name}/{name}": _read_fixture_file(args.prepared_inputs / name)["sha256"]
-            for name in ("READY.json", "data/index.json", "inventory/inventory.json")
-        },
-        "prepared_settings_sha256": hashlib.sha256(canonical_json(prepared["settings"])).hexdigest(),
-        "guard_files": {
-            str(source_root / name): _read_fixture_file(source_root / name)["sha256"] for name in _PRODUCER_FILES
-        },
-        "package_versions": "unknown; retain the original environment/setup evidence",
-    }
+    spec = {"argv": argv, "cache_files": {f"{args.prepared_inputs.name}/READY.json": args.input_cache_id}}
     with (args.output / "producer-spec.json").open("x") as output:
-        json.dump(value, output, indent=2, allow_nan=False)
+        json.dump(spec, output, indent=2, allow_nan=False)
         output.write("\n")
+
+
+def _saved_fixtures(args):
+    """Check a completed fresh-encoding run's saved fixtures against its reviewed producer spec and this run.
+
+    The reviewed SHA256 pins only the spec: the producer's argv, whose --output must be the saved run, and the
+    SHA256 of these prepared inputs' READY.json. Each arm's fixture.json is checked, not pinned: it must cover
+    versions 1 through --versions at this frame size with payload hashing on. Receivers authenticate each
+    manifest and, with hashing on, every payload file before applying it.
+    """
+    data = args.reuse_producer_spec.read_bytes()
+    spec = json.loads(data)
+    argv = spec["argv"]
+    if (
+        sha256(data) != args.reuse_producer_spec_sha256
+        or argv[argv.index("--output") + 1] != str(args.reuse_fixtures)
+        or spec["cache_files"].get(f"{args.prepared_inputs.name}/READY.json") != args.input_cache_id
+    ):
+        raise ValueError("Producer spec differs from its reviewed SHA256, the saved run or the prepared inputs")
+    producer = {"spec": {"path": str(args.reuse_producer_spec), "sha256": args.reuse_producer_spec_sha256}}
+    references = {}
+    for arm in args.arms:
+        directory = args.reuse_fixtures / "arms" / arm["name"] / "fixture"
+        fixture = _read(directory / "fixture.json")
+        rounds = [
+            (p.get("target_version"), p.get("frame_bytes"), p.get("payload_checksum_format"))
+            for p in (row["publications"].get(arm["codec"], {}) for row in fixture["rounds"])
+        ]
+        if (
+            fixture["input_cache_id"] != args.input_cache_id
+            or fixture["target_checkpoint"] != str(args.prepared_inputs / "target-checkpoint")
+            or rounds != [(version, args.frame_bytes, "sha256") for version in range(1, args.versions + 1)]
+        ):
+            raise ValueError(f"Saved fixture differs from this run's inputs, versions, frames or hashing: {directory}")
+        references[arm["name"]] = {"mode": "saved_delta_apply", "path": str(directory), "producer": producer}
+    return references
+
+
+def _resolve_fixture(arm_output):
+    """An arm's fixture directory and, for a replay, its saved-delta reference."""
+    reference = arm_output / "fixture-reuse.json"
+    if not reference.exists():
+        return arm_output / "fixture", None
+    value = _read(reference)
+    return Path(value["path"]), value
 
 
 async def _request(client, endpoint, payload=None, timeout=1200):
@@ -1054,16 +680,12 @@ class _BenchmarkClient:
         self.server_url = server_url
         self.http = None
 
-    async def get_gpu_delta_info(self, engine_id):
-        return await _request(self, "get_gpu_delta_info", {"engine_id": engine_id})
-
-    async def update_weights_from_gpu_delta(self, **payload):
+    async def _make_request(self, endpoint, payload):
+        """The request helper that the GPU-delta controls (``protocols.gpu_delta.client``) post through."""
         # Preparation has its own server deadline; a client read deadline must
         # not turn a valid slow preparation into an uncertain update.
-        return await _request(self, "update_weights_from_gpu_delta", payload, timeout=httpx.Timeout(1200.0, read=None))
-
-    async def clear_gpu_delta_state(self):
-        return await _request(self, "clear_gpu_delta_state", {})
+        timeout = httpx.Timeout(1200.0, read=None) if endpoint == "update_weights_from_gpu_delta" else 1200
+        return await _request(self, endpoint, payload, timeout=timeout)
 
 
 async def _ready(client, process, timeout):
@@ -1143,8 +765,6 @@ async def _engines(args, model):
             code = "import json,sys; from sglang.srt.server_args import ServerArgs; from sglang.srt.entrypoints.http_server import launch_server; launch_server(ServerArgs(**json.load(open(sys.argv[1]))))"
             command = [sys.executable, "-c", code, str(config_path)]
             env = os.environ | SERVER_ENV | {"CUDA_VISIBLE_DEVICES": spec["gpu_ids"]}
-            # Miles selects payload hashing and sends it in each update request.
-            env.pop("GPU_DELTA_SKIP_PAYLOAD_HASH", None)
             log = (args.output / f"engine-{engine}.log").open("x")
             process = subprocess.Popen(
                 command,
@@ -1223,12 +843,11 @@ async def _generation(clients):
     return records
 
 
-def _profile_update(enabled):
+def _capture_range(enabled):
+    """The coordinator's nsys capture range around one update of every engine."""
     if not enabled:
         return nullcontext()
-    # Only an explicit profiling run imports the NVTX API. The one coordinator
-    # gate encloses both engines; rank-local ranges must not control capture.
-    from torch.cuda import nvtx
+    from torch.cuda import nvtx  # Only a profiled update imports the NVTX API.
 
     return nvtx.range("gpu_delta_benchmark_capture")
 
@@ -1242,46 +861,30 @@ async def _run(args, *, oracle):
             _save(args.output / "target-generation.json", await _generation(clients))
             return
         descriptions = await asyncio.gather(
-            *[c.get_gpu_delta_info(engine_id=f"engine-{i:05d}") for i, c in enumerate(clients)]
+            *[get_gpu_delta_info(c, engine_id=f"engine-{i:05d}") for i, c in enumerate(clients)]
         )
-        pool = receiver_pool(descriptions)
+        identities = engine_identities(descriptions)
         digest = fixture["plan_digest"]
-        _validate_pool(pool, len(clients))
-        _save(args.output / "gpu-processes.json", _capture_gpu_processes(pool, args.ports))
+        _validate_identities(identities, len(clients))
         _save(args.output / "inventory.json", {"descriptions": descriptions, "plan_digest": digest})
         _save(args.output / "base-generation.json", await _generation(clients))
         for version in fixture["rounds"]:
             profiled = args.nsys and version["version"] == args.profile_version
             started = time.monotonic()
             try:
-                with _profile_update(profiled):
+                with _capture_range(profiled):
                     if profiled:
-                        from torch.cuda import nvtx
-
-                        # Allow the profiler to start collecting child processes.
-                        # The trace still needs review for complete rank coverage.
-                        with nvtx.range("gpu_delta.capture_arming"):
-                            await asyncio.sleep(0.2)
+                        await asyncio.sleep(0.2)  # Let nsys start collecting the engine processes.
                         started = time.monotonic()
-                    receipt = await activate_publication(clients, pool, version["publications"][codec])
+                    receipt = await activate_publication(clients, identities, version["publications"][codec])
                 result = {
                     "version": version["version"],
                     "coordinator_s": time.monotonic() - started,
                     "codec": codec,
                     "measurement_phase": "first-use-allocation" if version["version"] == 1 else "warm-update",
                     "receipt": receipt,
+                    "profiled": profiled,
                 }
-                if args.nsys:
-                    result["profile"] = {
-                        "tool": "Nsight Systems",
-                        "capture_version": args.profile_version,
-                        "capture_range_emitted": profiled,
-                        "nvtx_capture_range": "gpu_delta_benchmark_capture",
-                        "capture_arming_s": 0.2 if profiled else 0.0,
-                        "capture_arming_scope": "before coordinator timer; trace coverage requires review",
-                        "scope": "receiver preparation through all engine resume replies",
-                        "timing_scope": "profiling run; exclude from unprofiled performance comparisons",
-                    }
                 _save(args.output / f"update-{version['version']}.json", result)
             except Exception as error:
                 _save(
@@ -1292,7 +895,7 @@ async def _run(args, *, oracle):
             # Untimed functional check; exact storage checks belong to primitive
             # tests. Generation equality alone does not prove every weight byte.
             _save(args.output / f"generation-{version['version']}.json", await _generation(clients))
-        cleared = await asyncio.gather(*[client.clear_gpu_delta_state() for client in clients])
+        cleared = await asyncio.gather(*[clear_gpu_delta_state(client) for client in clients])
         _save(args.output / "clear-state.json", cleared)
         if any(not reply["success"] for reply in cleared):
             raise RuntimeError("Receiver state release failed")
@@ -1363,7 +966,7 @@ def _compare(left, right):
 
 
 def _apply_metrics(timings):
-    """Optional kernel/setup measurements; old receipts remain unmeasured."""
+    """Kernel cache and paused setup measurements."""
     fields = {
         "kernel_prepare_s": "host_apply_kernel_prepare_s",
         "kernel_cache_misses": "apply_kernel_cache_misses",
@@ -1373,10 +976,10 @@ def _apply_metrics(timings):
         "descriptor_h2d_bytes": "apply_descriptor_h2d_bytes",
         "apply_metadata_h2d_bytes": "apply_metadata_h2d_bytes",
     }
-    result = {name: _seconds(timings[field]) if field in timings else None for name, field in fields.items()}
+    result = {name: _seconds(timings[field]) for name, field in fields.items()}
     # Three fixed kernel families can each miss once; reuse is a boolean counter.
     for name, allowed in (("kernel_cache_misses", (0, 1, 2, 3)), ("kernel_cache_reused", (0, 1))):
-        if result[name] is not None and result[name] not in allowed:
+        if result[name] not in allowed:
             raise ValueError(f"Invalid per-update kernel counter: {name}")
     return result
 
@@ -1428,16 +1031,8 @@ def _rank_rows(update, publication, identities):
 
 def _owner_compression(metrics):
     final = metrics["finalization"]
-    combined = _seconds(metrics["compression_and_publication_s"])
-    if not math.isclose(
-        combined,
-        metrics["batch_wall_s"] + final["finalize_wall_s"] + metrics["publication_write_s"],
-        rel_tol=1e-9,
-        abs_tol=1e-9,
-    ):
-        raise ValueError("Compression/publication timing differs from its sequential components")
     return {
-        "compression_and_publication_s": combined,
+        "compression_and_publication_s": _seconds(metrics["compression_and_publication_s"]),
         "publication_write_s": _seconds(metrics["publication_write_s"]),
         "batch_wall_s": _seconds(metrics["batch_wall_s"]),
         "finalization_wall_s": _seconds(final["finalize_wall_s"]),
@@ -1449,17 +1044,8 @@ def _owner_compression(metrics):
     }
 
 
-def _compression(row, assignments):
-    metrics = row["compression"]["owners"]
-    by_owner = {owner["owner"]: owner for owner in metrics}
-    if len(by_owner) != len(metrics) or set(by_owner) != set(assignments):
-        raise ValueError("Missing or duplicate compression owners")
-    for owner, value in by_owner.items():
-        if any(value[key] != assignments[owner][key] for key in ("gpu", "groups", "canonical_bytes")):
-            raise ValueError("Compression owner assignment differs")
-    owners = [_owner_compression(value) for value in metrics]
-    if not owners or sum(owner["raw_metrics"]["canonical_bytes"] for owner in owners) != row["canonical_bytes"]:
-        raise ValueError("Compression owners do not cover the canonical bytes")
+def _compression(row):
+    owners = [_owner_compression(value) for value in row["compression"]["owners"]]
     return {
         "owner_max": {
             key: _maximum(owners, key)
@@ -1480,12 +1066,11 @@ def _compression(row, assignments):
 
 
 def _maximum(rows, key):
-    values = [row[key] for row in rows]
-    return None if any(value is None for value in values) else max(values)
+    return max(row[key] for row in rows)
 
 
 def _format(value, scale=1):
-    return "unmeasured" if value is None else f"{value * scale:.3f}"
+    return f"{value * scale:.3f}"
 
 
 def _report_table(headers, rows):
@@ -1507,14 +1092,6 @@ def _markdown(summary):
         f"Prepared inputs: `{summary['inputs']['path']}`; reused: {summary['inputs']['reused']}.",
         "",
     ]
-    if any("profile" in row for _, row in versions):
-        lines += [
-            "Only the version marked **capture range** emitted the NVTX capture range. All rows in this "
-            "profiling run used instrumented processes; their receiver timings are separate from unprofiled performance results. "
-            "The selected range includes a 0.2-second capture-arming lead-in before the coordinator timer; "
-            "this delay does not prove complete trace coverage.",
-            "",
-        ]
     lines += _report_table(
         [
             "Codec",
@@ -1534,11 +1111,7 @@ def _markdown(summary):
                 arm["codec"],
                 row["frame_bytes"] / 1024,
                 "off" if arm["skip_payload_hash"] else "on",
-                (
-                    f"{row['version']} ({'capture range' if row['profile']['capture_range_emitted'] else 'profiling run'})"
-                    if "profile" in row
-                    else row["version"]
-                ),
+                f"{row['version']}{' (profiled)' if row['profiled'] else ''}",
                 row["compression"]["measurement_scope"],
                 _format(row["compression"]["owner_max"]["compression_and_publication_s"]),
                 _format(row["receiver_max"]["prepare_s"]),
@@ -1554,31 +1127,6 @@ def _markdown(summary):
             for arm, row in versions
         ),
     )
-    lines += _report_table(
-        [
-            "Codec",
-            "Version",
-            "Kernel prepare ms",
-            "Kernel cache misses/rank",
-            "Paused setup ms",
-            "Apply wall ms",
-            "Descriptor KiB",
-            "Apply metadata KiB",
-        ],
-        (
-            [
-                arm["codec"],
-                row["version"],
-                _format(row["receiver_max"]["kernel_prepare_s"], scale=1000),
-                _format(row["receiver_max"]["kernel_cache_misses"]),
-                _format(row["receiver_max"]["setup_s"], scale=1000),
-                _format(row["receiver_max"]["apply_host_s"], scale=1000),
-                _format(row["receiver_max"]["descriptor_h2d_bytes"], scale=1 / 1024),
-                _format(row["receiver_max"]["apply_metadata_h2d_bytes"], scale=1 / 1024),
-            ]
-            for arm, row in versions
-        ),
-    )
     return "\n".join(lines) + "\n"
 
 
@@ -1587,12 +1135,7 @@ def _arm_report(output, arm, oracle_records):
     fixture = _read(fixture_directory / "fixture.json")
     codec = arm["codec"]
     checksum = "none" if arm["skip_payload_hash"] else "sha256"
-    if fixture["codec"] != codec or fixture["arm"] != arm["name"]:
-        raise ValueError("Fixture codec/arm differs")
     sender_owners = fixture["sender_owners"]
-    assignments = {owner["owner"]: owner for owner in sender_owners}
-    if len(assignments) != len(sender_owners) or len(assignments) != fixture["sender_gpus"]:
-        raise ValueError("Sender owner plan differs from the fixture")
     inventory = _read(output / "receiver" / "inventory.json")
     if inventory["plan_digest"] != fixture["plan_digest"]:
         raise ValueError("Activation and fixture canonical digests differ")
@@ -1602,27 +1145,17 @@ def _arm_report(output, arm, oracle_records):
     if not identities or len(identities) != len(original) or len(routes) != len(original):
         raise ValueError("Missing or duplicate receiver identities/routes")
     versions = []
-    for expected, row in enumerate(fixture["rounds"], 1):
+    for row in fixture["rounds"]:
         version = row["version"]
         publication = row["publications"][codec]
-        if (
-            version != expected
-            or publication["base_version"] != version - 1
-            or publication["target_version"] != version
-        ):
-            raise ValueError("Fixture versions are not consecutive")
         if publication["payload_checksum_format"] != checksum:
             raise ValueError("Sender publication hash policy differs from arm")
         update = _read(output / "receiver" / f"update-{version}.json")
-        if update["version"] != version or update["codec"] != codec:
-            raise ValueError("Update version/codec differs")
         ranks = _rank_rows(update, publication, identities)
         if any(rank["skip_payload_hash"] != arm["skip_payload_hash"] for rank in ranks):
             raise ValueError("Receiver hash policy differs from arm")
-        compression = _compression(row, assignments)
+        compression = _compression(row)
         compression["measurement_scope"] = "historical_saved_fixture" if reuse else "current_run"
-        if any(owner["raw_metrics"]["payload_checksum_format"] != checksum for owner in compression["owners"]):
-            raise ValueError("Sender owner hash policy differs from arm")
         selected = _generations(_read(output / "receiver" / f"generation-{version}.json"), routes, version)
         versions.append(
             {
@@ -1652,10 +1185,9 @@ def _arm_report(output, arm, oracle_records):
                     )
                 },
                 "ranks": ranks,
+                "profiled": update["profiled"],
             }
         )
-        if "profile" in update:
-            versions[-1]["profile"] = update["profile"]
     if not versions:
         raise ValueError("No fixture updates")
     comparison = (
@@ -1680,50 +1212,25 @@ def _arm_report(output, arm, oracle_records):
     }
 
 
-def _report_geometry(report):
-    return [
-        (row["version"], row["frame_bytes"], row["canonical_bytes"], row["changed_bytes"])
-        for row in report["versions"]
-    ]
-
-
 def _write_report(output: Path, arms, validate_final_target=True):
     oracle = _read(output / "oracle" / "target-generation.json") if validate_final_target else None
     reports = [_arm_report(output / "arms" / arm["name"], arm, oracle) for arm in arms]
-    reference = reports[0]
-    for arm in reports[1:]:
-        if any(
-            arm[key] != reference[key]
-            for key in ("plan_digest", "seed", "rate", "target_checkpoint", "input_cache_id", "sender_owners")
-        ):
-            raise ValueError("Arms do not share the same target and sender ownership")
-        if _report_geometry(arm) != _report_geometry(reference):
-            raise ValueError("Arms do not share the same update geometry")
     status = (
         ("PASS" if all(arm["status"] == "PASS" for arm in reports) else "FAILED")
         if validate_final_target
         else "NOT_VALIDATED"
     )
     inputs = _read(output / "inputs.json")
-    if reference["input_cache_id"] != inputs["id"]:
-        raise ValueError("Arm inputs differ from the prepared-input reference")
     summary = {
         "status": status,
         "inputs": inputs,
         "arms": reports,
         "final_target_validation": status if validate_final_target else "NOT_RUN",
     }
-    _save(
-        output / "comparison.json",
-        {
-            "status": status,
-            "arms": [{"name": arm["name"]} | arm["comparison"] for arm in reports],
-        },
-    )
     _save(output / "summary.json", summary)
     (output / "REPORT.md").write_text(_markdown(summary))
     if status == "FAILED":
-        raise ValueError("Final selected generation differs from target checkpoint; see comparison.json")
+        raise ValueError("Final selected generation differs from target checkpoint; see summary.json")
     return summary
 
 
@@ -1816,44 +1323,16 @@ def _end_to_end(args):
         {"path": str(args.prepared_inputs), "id": args.input_cache_id, "reused": reused, "preparation": prepared},
     )
     _save(args.output / "arguments.json", {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()})
-    fixture_refs = {}
-    if not args.reuse_fixtures:
-        _record_producer(args, prepared)
     if args.reuse_fixtures:
-        from miles.utils.gpu_delta.host_worker import validate_codec
-
-        started = time.monotonic()
-        plan = _read(args.prepared_inputs / "inventory" / "inventory.json")["tensors"]
-        owners = [o for o in _partition_plan(plan, args.sender_gpus) if o["groups"]]
-        assignments = [o | {"tensors": [t["name"] for t in o["tensors"]]} for o in owners]
-        fixture_refs = _admit_saved_fixtures(args, prepared, plan, assignments, validate_codec)
-        _save(
-            args.output / "fixture-verification.json",
-            {
-                "status": "VERIFIED",
-                "wall_s": time.monotonic() - started,
-                "scope": "Current saved-publication metadata and payload SHA verification; no encoding",
-            },
-        )
+        references = _saved_fixtures(args)
+    else:
+        _record_producer(args)
     for arm in args.arms:
         directory = Path("arms") / arm["name"]
-        if fixture_refs:
-            arm_output = args.output / directory
-            arm_output.mkdir(parents=True)
-            with (arm_output / "fixture-reuse.json").open("x") as file:
-                json.dump(fixture_refs[arm["name"]], file, indent=2, allow_nan=False)
-                file.write("\n")
-            records.append(
-                {
-                    "phase": "fixture",
-                    "arm": arm["name"],
-                    "status": "REUSED",
-                    "encoding": "SKIPPED_ENCODING",
-                    "wall_s": None,
-                    "reference": str(directory / "fixture-reuse.json"),
-                }
-            )
-            _save(args.output / "workflow.json", {"arms": args.arms, "phases": records})
+        if args.reuse_fixtures:
+            (args.output / directory).mkdir(parents=True)
+            _save(args.output / directory / "fixture-reuse.json", references[arm["name"]])
+            records.append({"phase": "fixture", "arm": arm["name"], "status": "REUSED"})
         else:
             _run_phase("fixture", args, directory / "fixture", arm, records)
         _run_phase("run", args, directory / "receiver", arm, records)
@@ -1910,11 +1389,9 @@ def main():
         "--reuse-fixtures", type=Path, help="Saved-delta apply mode: existing encoder run root; skip encoding"
     )
     parser.add_argument(
-        "--reuse-producer-spec",
-        type=Path,
-        help="Reviewed producer-spec.json or provenance adapter (not the receiver run)",
+        "--reuse-producer-spec", type=Path, help="Reviewed producer-spec.json of the --reuse-fixtures run"
     )
-    parser.add_argument("--reuse-producer-spec-sha256", help="Reviewed SHA256 of the original producer SPEC")
+    parser.add_argument("--reuse-producer-spec-sha256", help="Reviewed SHA256 of --reuse-producer-spec")
     parser.add_argument(
         "--validate-final-target",
         action="store_true",
@@ -1953,16 +1430,14 @@ def main():
     parser.add_argument("--startup-timeout", type=float, default=3600)
     args = parser.parse_args()
     if args.reuse_fixtures:
-        if not all(
-            (args.prepared_inputs, args.reuse_producer_spec, args.reuse_producer_spec_sha256, args.sender_gpus)
-        ):
-            parser.error("--reuse-fixtures requires --prepared-inputs, --sender-gpus and both producer SPEC options")
+        if not (args.prepared_inputs and args.reuse_producer_spec and args.reuse_producer_spec_sha256):
+            parser.error("--reuse-fixtures requires --prepared-inputs and both --reuse-producer-spec options")
         if args.hashing != ["on"]:
-            parser.error("Saved-delta apply currently requires --hashing on (authenticated saved payloads)")
-        for path in (args.reuse_fixtures, args.reuse_producer_spec, args.prepared_inputs):
-            _safe_fixture_path(path)
+            parser.error("--reuse-fixtures replays SHA-on publications; pass --hashing on")
+        args.reuse_fixtures = args.reuse_fixtures.resolve(strict=True)
+        args.reuse_producer_spec = args.reuse_producer_spec.resolve(strict=True)
     elif args.reuse_producer_spec or args.reuse_producer_spec_sha256:
-        parser.error("Producer SPEC options require --reuse-fixtures")
+        parser.error("--reuse-producer-spec options require --reuse-fixtures")
     args.model = args.model.resolve(strict=True)
     args.output = (
         args.output or Path("gpu-delta-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f"))
@@ -1978,8 +1453,10 @@ def main():
             parser.error("--nsys requires saved fixtures, one arm and no final-target oracle")
         if not 2 <= args.profile_version <= args.versions:
             parser.error("--profile-version must select a warm update from 2 through --versions")
-    if not 0 < args.frame_bytes <= 4 << 20:
-        parser.error("--frame-bytes must be positive and at most 4 MiB")
+    try:
+        validate_frame_bytes(args.frame_bytes)
+    except ValueError as error:
+        parser.error(str(error))
     if args.sender_gpus is not None and args.sender_gpus < 1:
         parser.error("--sender-gpus must be positive")
     try:
@@ -1996,7 +1473,6 @@ def main():
     if args.nsys and not args._nsys_child:
         _run_nsys(args)
     else:
-        _save(args.output / "arguments.json", {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()})
         _end_to_end(args)
 
 

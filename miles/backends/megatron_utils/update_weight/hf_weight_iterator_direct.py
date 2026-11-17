@@ -120,15 +120,17 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
                 yield from self._convert_to_hf_param_units(named_params)
 
     def _convert_and_gather_expert_batch(self, batch: _ExpertBatch, weights):
-        """Convert once per expert across EP/EDP, then gather the converted units."""
+        """Convert once per expert across EP/EDP, then gather HF weights and scales."""
         device = torch.device("cuda", torch.cuda.current_device())
         rank = dist.get_rank()
+        # Sender placement is independent of ownership: non-senders also
+        # quantize their assigned experts, once across all expert-DP replicas.
         local_params = (
             (info.name, weights[info.name].detach().to(device=device, non_blocking=True))
             for info in batch.param_infos
             if info.src_rank == rank
         )
-        units = [unit for unit in self._convert_to_hf_param_units(local_params) if unit]
+        units = list(self._convert_to_hf_param_units(local_params))
         for gather in batch.gathers:
             units = gather(units, device=device)
         return units

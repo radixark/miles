@@ -13,10 +13,10 @@ from miles.backends.sglang_utils.gpu_delta.derived import DerivedUpdate
 class ExpertLayout(Protocol):
     """One routed-expert layer's live storage, as its SGLang kernel backend laid it out.
 
-    A backend's ``identify_layout(layer, runner_backend)`` builds it once, from the warmed consumer,
-    at the layer's first canonical tensor; ``ParameterBindings.moe_layers`` keeps it beside the layer
-    for the session. It describes existing storage and never selects, builds or rewrites a consumer.
-    Every method receives that same layer.
+    A backend's ``identify_layout(layer, storage)`` builds it once, from the warmed consumer and its
+    runner's storage family, at the layer's first canonical tensor; ``ParameterBindings.moe_layers``
+    keeps it beside the layer for the session. It describes existing storage and never selects, builds
+    or rewrites a consumer. Every method receives that same layer.
     """
 
     # Canonical format tag: bf16, nvfp4, mxfp4, mxfp8 or fp8-block128-ue8m0. Generic binding keys the

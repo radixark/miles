@@ -4,26 +4,28 @@ from __future__ import annotations
 
 import asyncio
 import time
+import traceback
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from miles.utils.gpu_delta.publication import configured_skip_payload_hash
+from miles.backends.training_utils.weight_update.protocols.gpu_delta.client import update_weights_from_gpu_delta
+
+# Every descriptor carries its writer's launch-validated payload-hash policy.
+_VALIDATE_PAYLOAD_HASH = {"sha256": True, "none": False}
 
 
 @dataclass(frozen=True)
-class ReceiverPool:
-    """Current receiver identities; independent of the publication contract."""
+class EngineIdentities:
+    """Current receiver incarnations per engine; independent of the publication contract."""
 
     participants: tuple[tuple[dict, ...], ...]
     engine_ids: tuple[str, ...]
 
 
-def receiver_pool(descriptions: Sequence[dict]) -> ReceiverPool:
+def engine_identities(descriptions: Sequence[dict]) -> EngineIdentities:
     participants, engine_ids, rank_ids = [], [], set()
     for description in descriptions:
-        if not description["success"]:
-            raise RuntimeError(f"GPU-delta admission failed: {description['message']}")
         identities = tuple(row["identity"] for row in description["participants"])
         if not identities:
             raise ValueError("Missing or duplicate original receiver identities")
@@ -36,17 +38,18 @@ def receiver_pool(descriptions: Sequence[dict]) -> ReceiverPool:
         engine_ids.append(engine_id)
     if not participants or len(set(engine_ids)) != len(engine_ids):
         raise ValueError("Missing or duplicate original receiver identities")
-    return ReceiverPool(tuple(participants), tuple(engine_ids))
+    return EngineIdentities(tuple(participants), tuple(engine_ids))
 
 
 async def activate_publication(
     clients,
-    pool: ReceiverPool,
+    identities: EngineIdentities,
     publication,
     session_id: str | None = None,
     weight_version: str | None = None,
     fault_tolerant=False,
     request_timeout=None,
+    pause_mode: str | None = None,
 ):
     """Activate engines independently; settle all before advancing the trainer.
 
@@ -54,29 +57,33 @@ async def activate_publication(
     An RPC failure settles every other engine request before returning an error.
     A failed or ambiguous RPC is returned to the FT controller for quarantine
     and replacement. A lost reply never triggers an XOR retry. Healthy engines
-    retain their completed activation independently.
+    retain their completed activation independently. Only a rollout sync
+    passes ``pause_mode`` (see ``activate_engine``).
     """
     started = time.monotonic()
     session_id = session_id or uuid.uuid4().hex
-    if len(clients) != len(pool.engine_ids) or len(clients) != len(pool.participants):
-        raise ValueError("GPU-delta client and pool sizes differ")
+    if len(clients) != len(identities.engine_ids) or len(clients) != len(identities.participants):
+        raise ValueError("GPU-delta client and engine identity counts differ")
     responses = await asyncio.gather(
         *[
-            activate_engine(client, publication, participants, session_id, weight_version, request_timeout)
-            for client, participants in zip(clients, pool.participants, strict=True)
+            activate_engine(
+                client, publication, participants, session_id, weight_version, request_timeout, pause_mode=pause_mode
+            )
+            for client, participants in zip(clients, identities.participants, strict=True)
         ],
         return_exceptions=True,
     )
     failures = {
-        engine_id: f"{type(response).__name__}: {response}"
-        for engine_id, response in zip(pool.engine_ids, responses, strict=True)
+        # format_exception_only keeps the client's note with the receiver's 409 body (its typed message).
+        engine_id: "".join(traceback.format_exception_only(response)).strip()
+        for engine_id, response in zip(identities.engine_ids, responses, strict=True)
         if isinstance(response, BaseException)
     }
     if failures and not fault_tolerant:
         raise RuntimeError(f"GPU-delta activation requires receiver recovery: {failures}")
     completed = [
         (engine_id, response)
-        for engine_id, response in zip(pool.engine_ids, responses, strict=True)
+        for engine_id, response in zip(identities.engine_ids, responses, strict=True)
         if not isinstance(response, BaseException)
     ]
     return {
@@ -91,8 +98,13 @@ async def activate_publication(
     }
 
 
-async def activate_engine(client, publication, participants, session_id, weight_version, timeout):
-    """Activate one engine; its receipts must prove this session's completed activation."""
+async def activate_engine(client, publication, participants, session_id, weight_version, timeout, pause_mode=None):
+    """Activate one engine; its receipts must prove this session's completed activation.
+
+    A rollout sync passes its ``--pause-generation-mode`` as ``pause_mode``, which also decides the cache flush.
+    Eval pins and replacement recovery leave it unset: the receiver's defaults retract and flush, so no KV or
+    prefix cache computed with older weights survives their activation.
+    """
     request = {
         key: publication[key]
         for key in ("manifest_path", "manifest_sha256", "stream_id", "base_version", "target_version", "plan_digest")
@@ -100,12 +112,12 @@ async def activate_engine(client, publication, participants, session_id, weight_
     # Serving reports the actor's model version, while publication/receipt
     # versions retain their consecutive XOR-stream identity.
     request.update(session_id=session_id, weight_version=weight_version)
-    request["validate_payload_hash"] = not configured_skip_payload_hash()
+    request["validate_payload_hash"] = _VALIDATE_PAYLOAD_HASH[publication["payload_checksum_format"]]
+    if pause_mode is not None:
+        request["pause_mode"] = pause_mode
     response = await asyncio.wait_for(
-        client.update_weights_from_gpu_delta(**request, participants=participants), timeout
+        update_weights_from_gpu_delta(client, **request, participants=participants), timeout
     )
-    if not response["success"]:
-        raise RuntimeError(f"GPU-delta RPC failed: {response['message']}")
     check_resumed(response["participants"], participants, request)
     return response
 

@@ -84,7 +84,11 @@ def test_registry_lists_exactly_the_admitted_runners():
 def test_registered_runner_identifies_through_its_backend_module(runner):
     layer, fmt = _RUNNERS[runner]
     layout = identify_expert_layout(layer(), runner)
-    assert layout == fi.identify_layout(layer(), runner) and layout.format == fmt
+    assert layout == fi.identify_layout(layer(), kernel_backends._MOE_RUNNER_BACKENDS[runner].storage)
+    assert layout.format == fmt
+    # The backend module takes the row's storage family, never the runner value itself.
+    with pytest.raises(ValueError, match=f"^unsupported FlashInfer expert backend: {runner}$"):
+        fi.identify_layout(layer(), runner)
     assert [name for name in _INTERFACE if not hasattr(layout, name)] == []
 
 
@@ -109,7 +113,7 @@ def test_dispatchers_are_exactly_the_admitted_launch_pairs():
 def test_layer_runner_and_launch_runner_resolve_to_the_exact_value():
     layer = _nvfp4()
     layer.quant_method.runner = SimpleNamespace(runner_backend=MoeRunnerBackend.FLASHINFER_CUTEDSL)
-    assert bindings._identify_moe_layout(layer) == fi.identify_layout(layer, "flashinfer_cutedsl")
+    assert bindings._identify_moe_layout(layer) == fi.identify_layout(layer, "cutedsl")
     # A direct TRTLLM wrapper owns no runner; identification reads the launch value instead.
     layer = _bf16()
     launch = SimpleNamespace(get_exec=lambda: SimpleNamespace(moe=SimpleNamespace(moe_runner_backend="megamoe")))
@@ -136,16 +140,3 @@ def test_backend_modules_import_only_shared_leaves():
                 assert module.split(".")[0] not in {"sglang", "flashinfer", "deep_gemm", "triton"}, (path.name, module)
                 if module.startswith("miles."):
                     assert module in shared or module.startswith(kernel_backends.__name__), (path.name, module)
-
-
-def test_flashinfer_storage_families_cover_exactly_its_registry_rows():
-    # flashinfer._backend maps each exact runner value registered for the module to its storage family.
-    served = {
-        runner for runner, row in kernel_backends._MOE_RUNNER_BACKENDS.items() if row.identify is fi.identify_layout
-    }
-    for runner in _RUNNER_VALUES:
-        if runner in served:
-            fi._backend(runner)
-        else:
-            with pytest.raises(ValueError, match=f"unsupported FlashInfer expert backend: {runner}"):
-                fi._backend(runner)

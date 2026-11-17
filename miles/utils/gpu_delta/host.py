@@ -5,10 +5,12 @@ CUDA decoders consume it directly; DE decoders stage only their local spans into
 rank-private hardware-decompression-capable input storage.
 """
 
+import contextlib
 import fcntl
 import hashlib
 import mmap
 import os
+import shutil
 import socket
 import stat
 import subprocess
@@ -24,12 +26,12 @@ import orjson
 
 from miles.utils.gpu_delta import profiling
 from miles.utils.gpu_delta.host_worker import (
-    _CAPACITY_ALIGNMENT,
     _map_cache,
     _metadata_views,
     _MetadataMapping,
     configured_cpu_workers,
     copy_bytes,
+    grown_capacity,
     new_metrics,
     publication_token,
 )
@@ -53,6 +55,8 @@ def _cache_base():
             mount = Path(mount)
             if root.is_relative_to(mount):
                 mounts.append((len(mount.parts), right.split()[0]))
+    # Also load-bearing for cohort reclamation: _is_live needs native per-description flock, which NFS,
+    # CIFS and FUSE emulate with POSIX locks that an owner's own probe would take and drop.
     if not mounts or max(mounts)[1] != "tmpfs":
         raise ValueError("GPU_DELTA_HOST_CACHE_DIR must be on host-shared tmpfs")
     return root
@@ -77,6 +81,43 @@ def host_cache_id(engine_id):
         if len(value) != 32 or any(c not in "0123456789abcdef" for c in value):
             raise ValueError("invalid GPU-delta host cache identity")
         return value
+
+
+def _attach_namespace(root, directory, reclaim):
+    """Create ``directory`` and return its ``.live`` file, share-locked for the arena's lifetime.
+
+    Every rank attaches under the root lock, so no namespace is seen between its creation and its
+    lock. With ``reclaim``, the owner then removes every namespace no live arena locks: it renames
+    them under the lock and deletes them after releasing it. Process death releases the lock;
+    directories without ``.live`` predate this rule and count as dead.
+    """
+    dead = []
+    with (root / ".lock").open("a+b") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        directory.mkdir(mode=0o700, exist_ok=True)
+        live = (directory / ".live").open("a+b")
+        fcntl.flock(live, fcntl.LOCK_SH)
+        if reclaim:
+            for namespace in root.iterdir():
+                if namespace.is_dir() and not _is_live(namespace):
+                    # A failed rename leaks the namespace; it never fails this attach.
+                    with contextlib.suppress(OSError):
+                        dead.append(namespace.rename(root / f".dead-{uuid.uuid4().hex}"))
+    for namespace in dead:
+        # tmpfs frees the pages a dying process still maps at its last munmap.
+        shutil.rmtree(namespace, ignore_errors=True)
+    return live
+
+
+def _is_live(namespace):
+    try:
+        with (namespace / ".live").open("rb") as live:
+            fcntl.flock(live, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    except FileNotFoundError:
+        pass
+    return False
 
 
 def _byte_tensor(mapping):
@@ -192,6 +233,7 @@ class HostArena(_MetadataMapping):
     The original engine cohort shares encoded files under each publication's hash
     policy. Successful all-rank apply/resume permits the next publication to
     overwrite encoded and prepared bytes; failed preparation never grants release.
+    Its cohort directory stays live until close; the owner reclaims dead ones.
     """
 
     def __init__(self, engine_id, device, identity):
@@ -202,7 +244,7 @@ class HostArena(_MetadataMapping):
         self.hardware = None
         self.shared_allocation = self.shared_capacity = None
         self.directory = None
-        self._namespace = None
+        self._namespace = self._live = None
         self.owner = False
         self._metadata_mapping = self._metadata_capacity = None
         self._worker = None
@@ -212,12 +254,11 @@ class HostArena(_MetadataMapping):
         return _cache_root(self.engine_id)
 
     def _reserve_rank_arena(self, size, metrics):
-        if self.capacity is not None and size <= self.capacity["capacity"] and self.hardware:
+        grown = grown_capacity(self.capacity if self.hardware else None, size)
+        if grown is None:
             metrics["host_rank_mapping_reused"] = 1
             return
-        previous = self.capacity if self.hardware else None
-        capacity = size if previous is None else 2 * size
-        capacity = (capacity + _CAPACITY_ALIGNMENT - 1) // _CAPACITY_ALIGNMENT * _CAPACITY_ALIGNMENT
+        capacity, generation = grown
         started = time.perf_counter()
         allocation = None
         if capacity:
@@ -227,12 +268,7 @@ class HostArena(_MetadataMapping):
         self.hardware = True
         self.mapping = allocation.view if allocation is not None else None
         self.tensor = _byte_tensor(self.mapping)
-        generation = previous["generation"] + 1 if previous else 1
-        self.capacity = {
-            "generation": generation,
-            "capacity": allocation.capacity if allocation is not None else 0,
-            "identity": uuid.uuid4().hex,
-        }
+        self.capacity = {"generation": generation, "capacity": allocation.capacity if allocation is not None else 0}
         metrics["host_rank_allocation_s"] = time.perf_counter() - started
         metrics["host_rank_allocation_calls"] = int(allocation is not None)
         metrics["host_rank_allocation_bytes"] = self.capacity["capacity"]
@@ -268,9 +304,6 @@ class HostArena(_MetadataMapping):
         participants = sorted(request["participants"], key=lambda value: value["rank_id"])
         namespace = {"stream_id": request["stream_id"], "participants": participants}
         if self._namespace is None:
-            self._namespace = namespace
-            self.directory = self.root / publication_token(namespace)
-            self.directory.mkdir(mode=0o700, exist_ok=True)
             owner = min(
                 (
                     p
@@ -280,6 +313,9 @@ class HostArena(_MetadataMapping):
                 key=lambda p: (p["tp_rank"], p["dp_rank"], p["pid"], p["rank_id"]),
             )
             self.owner = self.identity == owner
+            self.directory = self.root / publication_token(namespace)
+            self._live = _attach_namespace(self.root, self.directory, reclaim=self.owner)
+            self._namespace = namespace
         elif namespace != self._namespace:
             raise ValueError("host cache original cohort or stream changed")
         publication = Path(request["manifest_path"]).resolve(strict=True)
@@ -428,6 +464,12 @@ class HostArena(_MetadataMapping):
         self._close_private()
         self._close_shared()
         self._metadata_mapping = self._metadata_capacity = None
+        if self._live is not None:
+            # Only after the CPU child is reaped: the owner of a later cohort may now reclaim it.
+            # Unlock first: a fork()ed descendant sharing this open file description would keep the lock.
+            fcntl.flock(self._live, fcntl.LOCK_UN)
+            self._live.close()
+            self._live = None
 
 
 class HostPublication:

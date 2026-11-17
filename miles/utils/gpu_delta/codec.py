@@ -22,6 +22,7 @@ import torch
 
 from miles.utils.gpu_delta import profiling
 from miles.utils.gpu_delta.nvcomp import _load_library, _NvcompApi
+from miles.utils.gpu_delta.publication import MAX_FRAME_BYTES
 
 
 class _DecompressOptions(ctypes.Structure):
@@ -37,7 +38,6 @@ class _DecompressOptions(ctypes.Structure):
 
 
 _ALGORITHMS = {"snappy": "Snappy", "lz4": "LZ4", "bitcomp": "Bitcomp"}
-_MAX_FRAME_BYTES = 4 << 20
 _INT64_MAX = np.iinfo(np.int64).max
 
 
@@ -118,7 +118,7 @@ class NvcompDecoder(_NvcompApi):
         )
         self._bind_queries()
 
-    def _empty(self, shape, dtype):
+    def empty(self, shape, dtype):
         if self.hardware:
             from miles.utils.gpu_delta.memory import device_empty
 
@@ -139,9 +139,9 @@ class NvcompDecoder(_NvcompApi):
         maximum_count = max((batch[0] for batch in geometry), default=0)
         temporary = max((self.temporary_bytes(batch, cuda_stream) for batch in geometry), default=0)
         workspace = DecodeWorkspace(
-            self._empty((temporary,), torch.uint8),
-            self._empty((2, maximum_count), torch.int64),
-            self._empty((2, maximum_count), torch.int32),
+            self.empty((temporary,), torch.uint8),
+            self.empty((2, maximum_count), torch.int64),
+            self.empty((2, maximum_count), torch.int32),
         )
         if temporary and workspace.temporary.data_ptr() % self.alignments.temp:
             raise ValueError("Misaligned decoder workspace")
@@ -168,7 +168,7 @@ class NvcompDecoder(_NvcompApi):
             # frames can fit the device limit.
             if (
                 np.any(decoded <= 0)
-                or np.any(decoded > min(_MAX_FRAME_BYTES, maximum))
+                or np.any(decoded > min(MAX_FRAME_BYTES, maximum))
                 or np.any(encoded <= 0)
                 or np.any(encoded > maximum)
             ):
@@ -222,22 +222,22 @@ class NvcompDecoder(_NvcompApi):
             host_rows = host.numpy()
             np.add(table[0], input_base, out=host_rows[0])
             host_rows[1:3] = table[1:3]
-            metadata = self._empty(host.shape, torch.int64)
+            metadata = self.empty(host.shape, torch.int64)
             if metadata.numel():
                 first = 0 if self.hardware else 1
                 metadata[first:3].copy_(host[first:3], non_blocking=True)
         return PreparedDecodePlan(
             self,
-            counts,
-            host_input,
-            workspace,
-            host,
-            metadata,
-            stream,
-            table[3].copy(),
-            bounds,
-            remainders,
-            table[:2],
+            counts=counts,
+            host_input=host_input,
+            workspace=workspace,
+            host_metadata=host,
+            metadata=metadata,
+            stream=stream,
+            output_offsets=table[3].copy(),
+            output_bounds=bounds,
+            output_remainders=remainders,
+            input_frames=table[:2],
         )
 
 
@@ -324,23 +324,23 @@ class PreparedDecodePlan:
                 input_offsets, copy_ranges = None, ()
             self.batches.append(
                 PreparedDecode(
-                    decoder,
-                    host_input,
-                    self.decoded_slots,
-                    workspace,
-                    host_rows,
-                    rows,
-                    stream,
-                    statuses,
-                    actual_sizes,
-                    expected_sizes,
-                    arguments,
-                    output_offsets[offset : offset + count],
-                    host_rows[3].numpy(),
-                    self.input_slots,
-                    input_offsets,
-                    copy_ranges,
-                    [],
+                    decoder=decoder,
+                    host_input=host_input,
+                    decoded_slots=self.decoded_slots,
+                    workspace=workspace,
+                    host_metadata=host_rows,
+                    metadata=rows,
+                    stream=stream,
+                    statuses=statuses,
+                    actual_sizes=actual_sizes,
+                    expected_sizes=expected_sizes,
+                    _arguments=arguments,
+                    output_offsets=output_offsets[offset : offset + count],
+                    output_pointers=host_rows[3].numpy(),
+                    input_slots=self.input_slots,
+                    input_offsets=input_offsets,
+                    copy_ranges=copy_ranges,
+                    input_copies=[],
                 )
             )
             offset += count
@@ -393,7 +393,7 @@ class PreparedDecodePlan:
             self.decoder._record_stream(tensor, self.stream)
         with torch.cuda.device(self.decoder.device), torch.cuda.stream(self.stream):
             if not self.decoder.hardware:
-                self.input_slots[:] = [self.decoder._empty(size, torch.uint8) for size in self.input_bounds]
+                self.input_slots[:] = [self.decoder.empty(size, torch.uint8) for size in self.input_bounds]
                 self.input_capacity_bytes = sum(self.input_bounds)
                 for index, batch in enumerate(self.batches):
                     slot = self.input_slots[index % 2]
@@ -412,18 +412,14 @@ class PreparedDecodePlan:
                 if self.metadata.numel():
                     self.metadata[0].copy_(self.host_metadata[0], non_blocking=True)
             for index, batch in enumerate(self.batches):
-                np.add(
-                    batch.output_offsets,
-                    bases[index % 2],
-                    out=batch.output_pointers,
-                )
+                np.add(batch.output_offsets, bases[index % 2], out=batch.output_pointers)
             if self.metadata.numel():
                 self.metadata[3].copy_(self.host_metadata[3], non_blocking=True)
         self.decoded_slots[:] = decoded_slots
         return self.batches
 
 
-@dataclass
+@dataclass(kw_only=True)
 class PreparedDecode:
     decoder: NvcompDecoder
     host_input: torch.Tensor

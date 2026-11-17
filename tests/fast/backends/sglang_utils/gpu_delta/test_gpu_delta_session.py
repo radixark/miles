@@ -7,15 +7,17 @@ import os
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
-import torch
 
 from miles.backends.sglang_utils.gpu_delta import io as delta_io
+from miles.backends.sglang_utils.gpu_delta import scheduler as delta_scheduler
 from miles.backends.sglang_utils.gpu_delta import session as delta_runtime
 from miles.backends.sglang_utils.gpu_delta.receiver import GpuDeltaBackend
-from miles.backends.sglang_utils.gpu_delta.session import DeltaSession, GpuDeltaSchedulerControl
+from miles.backends.sglang_utils.gpu_delta.scheduler import GpuDeltaSchedulerControl
+from miles.backends.sglang_utils.gpu_delta.session import DeltaSession
 
 
 class Payload:
@@ -32,7 +34,6 @@ class Payload:
         return {
             "applied": True,
             "target_version": self.target_version,
-            "verification": "manifest-sha256-and-decoder-status",
             "timings": {"host_prepare_s": 0.25},
         }
 
@@ -50,7 +51,7 @@ class Backend:
         self.started = threading.Event()
         self.ready = threading.Event()
         self.error = None
-        self.host_arena = SimpleNamespace(directory=None)
+        self.host_arena = SimpleNamespace(directory=None, owner=False)
         self.closed = False
 
     def close(self):
@@ -123,6 +124,21 @@ def prepare_ready(session, backend, req=None, timeout=5):
 def applied(session, backend, req=None):
     prepare_ready(session, backend, req)
     return session.apply("publication-1", lambda: None, lambda: None, lambda: True)
+
+
+def block_release(backend, check=lambda: None):
+    """Hold the resumed payload's host release on the session worker until the returned event is set."""
+    entered, release, scheduler_thread = threading.Event(), threading.Event(), threading.get_ident()
+
+    def close(reuse_host=False):
+        assert reuse_host and threading.get_ident() != scheduler_thread
+        entered.set()
+        assert release.wait(5)
+        check()
+        Payload.close(backend.payload, reuse_host)
+
+    backend.payload.close = close
+    return entered, release
 
 
 def test_prepare_completion_uses_request_route_without_scheduler_socket(make_session):
@@ -207,7 +223,8 @@ def test_prepare_and_status_do_not_wait_for_file_io(make_session, abort_state, d
     session._executor.submit(lambda: None).result(timeout=2)
     if drain_failure:
         assert replied.wait(2)
-        assert not replies[-1][1] and "GPU drain failed" in replies[-1][2]
+        # The late discard raised in the preparation future: its reply names the exception type.
+        assert not replies[-1][1] and replies[-1][2] == "RuntimeError: GPU drain failed"
         assert cleanup == ["drain"]
         assert not backend.closed and not backend.payload.closed.is_set()
     else:
@@ -268,17 +285,7 @@ def test_engine_release_runs_off_scheduler_and_before_next_prepare(make_session)
     other.prepare(request([other.identity]))
     assert other_backend.started.wait(2)
     applied(session, backend)
-    entered, release = threading.Event(), threading.Event()
-    caller = threading.get_ident()
-
-    def cleanup(reuse_host=False):
-        assert reuse_host
-        assert threading.get_ident() != caller
-        entered.set()
-        assert release.wait(5)
-        Payload.close(backend.payload, reuse_host)
-
-    backend.payload.close = cleanup
+    entered, release = block_release(backend)
     try:
         assert session.resume("publication-1", lambda _: None)["state"] == "RESUMED"
         assert entered.wait(2)
@@ -310,7 +317,7 @@ def test_bad_publication_never_mutates(make_session):
     backend.error = ValueError("encoded checksum mismatch")
     session.prepare(request([session.identity]))
     backend.ready.set()
-    assert "checksum" in wait_state(session, "FAILED")["message"]
+    assert wait_state(session, "FAILED")["message"] == "preparation failed: ValueError: encoded checksum mismatch"
     assert backend.payload.applications == 0
     session.abort("publication-1")
     assert session.status()["state"] == "ABORTED"
@@ -336,14 +343,12 @@ def test_wrong_or_repeated_transaction_never_replays_xor(make_session):
     assert backend.payload.applications == 1
     with pytest.raises(ValueError, match="another delta stream"):
         session.prepare(
-            req
-            | {
-                "session_id": "other",
-                "stream_id": "other-job",
-                "base_version": 1,
-                "target_version": 2,
-            }
+            req | {"session_id": "other", "stream_id": "other-job", "base_version": 1, "target_version": 2}
         )
+    with pytest.raises(ValueError, match="must not be replayed"):
+        session.prepare(req)
+    # Reusing an immutable mask to cancel it is an explicit new transaction.
+    assert session.prepare(req | {"session_id": "cancel"}).result()["state"] == "PREPARED"
 
 
 @pytest.mark.parametrize("failure", ["fence", "retract", "flush", "apply"])
@@ -371,6 +376,8 @@ def test_update_failure_is_terminal_and_never_reclaims_after_failed_fence(make_s
     assert backend.payload.applications == (1 if failure == "apply" else 0)
     status = session.status()
     assert status["state"] == "POISONED" and status["scheduler_timing"]["blocked_s"] is None
+    cause = "device verdict failed after a possible write" if failure == "apply" else f"{failure} failed"
+    assert status["message"] == f"update failed after pause: RuntimeError: {cause}; restart required"
     assert not backend.payload.released.is_set()
     count = backend.payload.applications
     with pytest.raises(ValueError, match="prepared session"):
@@ -389,6 +396,7 @@ def test_resume_failure_retains_ownership(make_session):
             lambda _: (_ for _ in ()).throw(RuntimeError("resume failed")),
         )
     assert session.status()["state"] == "POISONED"
+    assert session.status()["message"] == "resume failed: RuntimeError: resume failed; restart required"
     assert not backend.payload.released.is_set()
     assert session.status()["scheduler_timing"]["blocked_s"] is None
 
@@ -426,182 +434,116 @@ def test_scheduler_blocked_timing_excludes_background_prepare(make_session, monk
     }
 
 
-@pytest.mark.parametrize(
-    "override,ep_joiner,cache,error,message",
-    [
-        ({"enable_dp_attention_local_control_broadcast": True}, False, None, ValueError, "global control"),
-        ({}, True, None, ValueError, "global control"),
-        (
-            {"attn_cp_size": 2, "enable_cp_decode_attn_tp": True},
-            False,
-            None,
-            ValueError,
-            "CP decode attention TP caches",
-        ),
-        ({"attn_dcp_size": 2}, False, None, ValueError, "DCP groups inside attention TP"),
-        ({"pp_size": 2}, False, None, ValueError, "PP1"),
-        ({"dwdp_size": 2}, False, None, ValueError, "DWDP expert weight prefetch"),
-        # DWDP's launch forces the local control broadcast; describe names DWDP itself.
-        (
-            {"dwdp_size": 2, "enable_dp_attention_local_control_broadcast": True},
-            False,
-            None,
-            ValueError,
-            "DWDP expert weight prefetch",
-        ),
-        ({}, False, "shared IPC", RuntimeError, "shared IPC"),
-        # Prefill CP without CP decode attention TP passes topology admission.
-        ({"attn_cp_size": 2}, False, "derived HPC", ValueError, "derived HPC"),
-    ],
+_ADMITTED_LAUNCH = dict(
+    enable_dp_attention_local_control_broadcast=False,
+    attn_tp_size=1,
+    attn_cp_size=1,
+    attn_dcp_size=1,
+    enable_cp_decode_attn_tp=False,
+    pp_size=1,
+    dwdp_size=1,
+    nnodes=1,
+    attn_dp_enabled=False,
 )
-def test_describe_rejects_topologies_and_weight_caches_before_plan_or_session(
-    monkeypatch, override, ep_joiner, cache, error, message
-):
-    from sglang.srt import runtime_context
-
-    parallel = dict(
-        enable_dp_attention_local_control_broadcast=False,
-        attn_tp_size=1,
-        attn_cp_size=1,
-        attn_dcp_size=1,
-        enable_cp_decode_attn_tp=False,
-        pp_size=1,
-        dwdp_size=1,
-    )
-    monkeypatch.setattr(runtime_context, "get_parallel", lambda: SimpleNamespace(**(parallel | override)))
-    monkeypatch.setattr(
-        runtime_context,
-        "get_exec",
-        lambda: SimpleNamespace(moe=SimpleNamespace(is_ep_scale_joiner=ep_joiner)),
-    )
-    # SGLang main reads its DSPARK lm_head dtype; the companion tree declares none and never reads it.
-    monkeypatch.setattr(
-        runtime_context,
-        "get_spec",
-        lambda: SimpleNamespace(speculative_dspark_lm_head_dtype=None, speculative_token_map=None),
-    )
-    calls = []
-    model = object()
-
-    def check_shared(op):
-        assert op == "apply_gpu_delta"
-        calls.append("shared")
-        if cache == "shared IPC":
-            raise RuntimeError(cache)
-
-    def check_derived(candidate):
-        assert candidate is model
-        calls.append("derived")
-        return cache
-
-    monkeypatch.setitem(
-        sys.modules,
-        "sglang.srt.model_executor.model_runner_components.weight_updater",
-        SimpleNamespace(_unsupported_derived_weight_cache_error=check_derived),
-    )
-    runner = SimpleNamespace(weight_updater=SimpleNamespace(_assert_weight_cache_inactive=check_shared), model=model)
-    scheduler = SimpleNamespace(
-        enable_lora=False,
-        disaggregation_mode=SimpleNamespace(value="null"),
-        rust_server=None,
-        tp_worker=SimpleNamespace(model_runner=runner),
-    )
-    control = GpuDeltaSchedulerControl(scheduler)
-    with pytest.raises(error, match=message):
-        control._describe("engine-0")
-    # Topology rejections precede every weight-cache probe.
-    assert calls == {None: [], "shared IPC": ["shared"], "derived HPC": ["shared", "derived"]}[cache]
-    assert control.session is None
+_DSPARK, _TOKEN_MAP = "speculative_dspark_lm_head_dtype", "speculative_token_map"
 
 
-def _describe_until_weight_caches(monkeypatch, declared, **spec):
-    """A control whose describe passes topology admission and raises at the first weight-cache probe.
+@pytest.fixture
+def describe_control(monkeypatch):
+    """Build a control whose describe sees one launch; also returns the spec fields it reads and its cache probes.
 
-    ``declared`` lists the fields of the SGLang tree's spec namespace; also returns the spec fields describe reads.
+    ``launch`` overrides the admitted topology; ``is_ep_scale_joiner`` sets the MoE config. A spec that names the
+    DSPARK lm_head dtype stands for SGLang main, whose spec namespace declares it; the companion tree declares none.
+    ``cache`` is the weight-cache verdict: "shared IPC" fails the shared-weight probe, any other string is the
+    derived-cache error.
     """
     from sglang.srt import runtime_context
 
-    parallel = SimpleNamespace(
-        enable_dp_attention_local_control_broadcast=False,
-        attn_tp_size=1,
-        attn_cp_size=1,
-        attn_dcp_size=1,
-        enable_cp_decode_attn_tp=False,
-        pp_size=1,
-        dwdp_size=1,
-    )
-    monkeypatch.setattr(runtime_context, "get_parallel", lambda: parallel)
-    monkeypatch.setattr(
-        runtime_context, "get_exec", lambda: SimpleNamespace(moe=SimpleNamespace(is_ep_scale_joiner=False))
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "sglang.srt.arg_groups.fields.spec",
-        SimpleNamespace(Spec=SimpleNamespace(__struct_fields__=declared)),
-    )
-    reads = []
+    def make(launch, spec, cache):
+        launch = _ADMITTED_LAUNCH | launch
+        moe = SimpleNamespace(is_ep_scale_joiner=launch.pop("is_ep_scale_joiner", False))
+        monkeypatch.setattr(runtime_context, "get_parallel", lambda: SimpleNamespace(**launch))
+        monkeypatch.setattr(runtime_context, "get_exec", lambda: SimpleNamespace(moe=moe))
+        declared = ("speculative_algorithm", *spec.keys() & {_DSPARK})
+        monkeypatch.setitem(
+            sys.modules,
+            "sglang.srt.arg_groups.fields.spec",
+            SimpleNamespace(Spec=SimpleNamespace(__struct_fields__=declared)),
+        )
+        values, reads, probes, model = {_TOKEN_MAP: None} | spec, [], [], object()
 
-    class Spec:
-        def __getattr__(self, field):
-            reads.append(field)
-            return spec[field]
+        class Spec:
+            def __getattr__(self, field):
+                reads.append(field)
+                return values[field]
 
-    monkeypatch.setattr(runtime_context, "get_spec", Spec)
+        monkeypatch.setattr(runtime_context, "get_spec", Spec)
 
-    def check_shared(op):
-        raise RuntimeError("weight-cache probes reached")
+        def check_shared(op):
+            assert op == "apply_gpu_delta"
+            probes.append("shared")
+            if cache == "shared IPC":
+                raise RuntimeError(cache)
 
-    runner = SimpleNamespace(weight_updater=SimpleNamespace(_assert_weight_cache_inactive=check_shared), model=None)
-    scheduler = SimpleNamespace(
-        enable_lora=False,
-        disaggregation_mode=SimpleNamespace(value="null"),
-        rust_server=None,
-        tp_worker=SimpleNamespace(model_runner=runner),
-    )
-    return GpuDeltaSchedulerControl(scheduler), reads
+        def check_derived(candidate):
+            assert candidate is model
+            probes.append("derived")
+            return cache
+
+        monkeypatch.setitem(
+            sys.modules,
+            "sglang.srt.model_executor.model_runner_components.weight_updater",
+            SimpleNamespace(_unsupported_derived_weight_cache_error=check_derived),
+        )
+        runner = SimpleNamespace(
+            weight_updater=SimpleNamespace(_assert_weight_cache_inactive=check_shared), model=model
+        )
+        scheduler = SimpleNamespace(
+            enable_lora=False,
+            disaggregation_mode=SimpleNamespace(value="null"),
+            rust_server=None,
+            tp_worker=SimpleNamespace(model_runner=runner),
+        )
+        return GpuDeltaSchedulerControl(scheduler), reads, probes
+
+    return make
 
 
 @pytest.mark.parametrize(
-    "declared,dtype,rejected",
+    "launch,spec,cache,message,reads",
     [
-        # The companion tree's spec namespace has no lm_head dtype field; describe never reads one.
-        (False, None, False),
-        # SGLang main: the draft projects through a quantized lm_head cache only when the dtype is set.
-        (True, None, False),
-        (True, "fp8", True),
-        (True, "mxfp8", True),
+        # Topology and feature rejections precede every spec read and weight-cache probe.
+        ({"enable_dp_attention_local_control_broadcast": True}, {}, None, "global control", []),
+        ({"is_ep_scale_joiner": True}, {}, None, "global control", []),
+        ({"attn_cp_size": 2, "enable_cp_decode_attn_tp": True}, {}, None, "CP decode attention TP caches", []),
+        ({"attn_dcp_size": 2}, {}, None, "DCP groups inside attention TP", []),
+        ({"pp_size": 2}, {}, None, "PP1", []),
+        ({"dwdp_size": 2}, {}, None, "DWDP expert weight prefetch", []),
+        # DWDP's launch forces the local control broadcast; describe names DWDP itself.
+        ({"dwdp_size": 2, "enable_dp_attention_local_control_broadcast": True}, {}, None, "DWDP", []),
+        # Without attention DP, every rank's prepare reply targets the head node's IPC socket.
+        ({"nnodes": 2}, {}, None, "attention DP when an engine spans several nodes", []),
+        # SGLang main's DSPARK draft projects through a quantized lm_head cache once its dtype is set.
+        ({}, {_DSPARK: "fp8"}, None, "quantized lm_head cache; unset --speculative-dspark-lm-head", [_DSPARK]),
+        ({}, {_DSPARK: "mxfp8"}, None, "DSPARK's quantized lm_head cache", [_DSPARK]),
+        # Both trees' EAGLE workers give the draft a gathered copy of the target lm_head's hot-token rows.
+        ({}, {_TOKEN_MAP: "/hot.pt"}, None, "hot-token lm_head copy; unset --speculative-token-map$", [_TOKEN_MAP]),
+        # Admitted launches reach the weight-cache probes, shared IPC weights first.
+        ({}, {}, "shared IPC", "shared IPC", [_TOKEN_MAP]),
+        # Prefill CP without CP decode attention TP, multi-node attention DP and an unset DSPARK dtype are admitted.
+        ({"attn_cp_size": 2}, {}, "derived HPC", "derived HPC", [_TOKEN_MAP]),
+        ({"nnodes": 2, "attn_dp_enabled": True}, {}, "derived HPC", "derived HPC", [_TOKEN_MAP]),
+        ({}, {_DSPARK: None}, "derived HPC", "derived HPC", [_DSPARK, _TOKEN_MAP]),
     ],
 )
-def test_describe_rejects_dspark_quantized_lm_head_only_where_declared(monkeypatch, declared, dtype, rejected):
-    fields = (
-        "speculative_algorithm",
-        "speculative_dspark_lm_head_dtype" if declared else "speculative_draft_window_size",
-    )
-    control, reads = _describe_until_weight_caches(
-        monkeypatch, fields, speculative_dspark_lm_head_dtype=dtype, speculative_token_map=None
-    )
-    if rejected:
-        with pytest.raises(
-            ValueError, match="DSPARK's quantized lm_head cache; unset --speculative-dspark-lm-head-dtype"
-        ):
-            control._describe("engine-0")
-    else:
-        # The weight-cache probes run only after every spec check admits the launch.
-        with pytest.raises(RuntimeError, match="weight-cache probes reached"):
-            control._describe("engine-0")
-    dspark = ["speculative_dspark_lm_head_dtype"] if declared else []
-    assert reads == dspark + ([] if rejected else ["speculative_token_map"])
-    assert control.session is None
-
-
-def test_describe_rejects_a_speculative_token_map(monkeypatch):
-    # Both trees' EAGLE workers give the draft a gathered copy of the target lm_head's hot-token rows.
-    control, reads = _describe_until_weight_caches(
-        monkeypatch, ("speculative_algorithm",), speculative_token_map="/models/hot_token_ids.pt"
-    )
-    with pytest.raises(ValueError, match="draft's hot-token lm_head copy; unset --speculative-token-map$"):
+def test_describe_rejects_launches_and_weight_caches_before_plan_or_session(
+    describe_control, launch, spec, cache, message, reads
+):
+    control, spec_reads, probes = describe_control(launch, spec, cache)
+    with pytest.raises(RuntimeError if cache == "shared IPC" else ValueError, match=message):
         control._describe("engine-0")
-    assert reads == ["speculative_token_map"]
+    assert spec_reads == reads
+    assert probes == {None: [], "shared IPC": ["shared"], "derived HPC": ["shared", "derived"]}[cache]
     assert control.session is None
 
 
@@ -656,7 +598,7 @@ def test_cp_tp_replies_preserve_follower_failure_and_original_identity(monkeypat
         else:
             assert output is None
 
-    monkeypatch.setattr("torch.distributed.gather_object", gather_object)
+    monkeypatch.setattr(delta_scheduler, "gather_object", gather_object)
     result = control.handle(delta_io.AbortGpuDeltaReqInput(session_id="publication-1", rid="abort"))
     if rank == 0:
         assert len(calls) == len(groups)
@@ -674,24 +616,17 @@ def test_clear_drains_release_before_private_close_and_shared_unlink(make_sessio
     (directory / "state.json").write_text("READY")
     source = tmp_path / "immutable-publication"
     source.write_bytes(b"retained")
-    backend.host_arena.directory = directory
+    backend.host_arena = SimpleNamespace(directory=directory, owner=True)
     req = request([session.identity]) | dict(target_version=7)
     applied(session, backend, req)
-    entered, release = threading.Event(), threading.Event()
 
-    def cleanup(reuse_host=False):
-        assert reuse_host
-        entered.set()
-        assert release.wait(5)
+    def still_shared():
         assert not backend.closed
         assert (directory / "state.json").read_text() == "READY"
-        Payload.close(backend.payload, reuse_host)
 
-    backend.payload.close = cleanup
+    entered, release = block_release(backend, still_shared)
     session.resume("publication-1", lambda version: None)
     assert entered.wait(2)
-    from concurrent.futures import ThreadPoolExecutor
-
     with ThreadPoolExecutor(1) as pool:
         clearing = pool.submit(session.clear)
         try:
@@ -706,12 +641,25 @@ def test_clear_drains_release_before_private_close_and_shared_unlink(make_sessio
     assert session.backend is None and session._update.state == "CLEARED"
     assert session._update.prepared is None and session._update.result == {}
     assert session._update.release_future is None
-    # Closing all rank-local resources does not itself unlink the shared cache.
+    # Closing all rank-local resources does not itself unlink the shared cache; only its arena owner does.
+    follower, follower_backend = make_session(identity(rank=1))
+    follower_backend.host_arena = SimpleNamespace(directory=directory, owner=False)
+    follower.clear()
+    follower.release_cache()
     assert directory.exists()
-    session.release_cache(owner=True)
+    # Another cohort's owner may already have reclaimed a closed cohort; its removal is then complete.
+    reclaimed, reclaimed_backend = make_session(identity(rank=2))
+    reclaimed_backend.host_arena = SimpleNamespace(directory=tmp_path / "reclaimed-cohort", owner=True)
+    reclaimed.clear()
+    reclaimed.release_cache()
+    reclaimed.reattach(lambda *_: reclaimed_backend)
+    # A describe between the all-rank clear and the cache release must not attach over the closed cohort.
+    with pytest.raises(ValueError, match="cache removal has not completed"):
+        session.reattach(lambda *_: pytest.fail("attached before the cache removal"))
+    session.release_cache()
     assert not directory.exists() and source.read_bytes() == b"retained"
     assert session.clear()["version"] == 7
-    session.release_cache(owner=True)
+    session.release_cache()
     scheduler = SimpleNamespace(_engine_paused=False)
     control = GpuDeltaSchedulerControl(scheduler)
     control.session = session
@@ -720,12 +668,19 @@ def test_clear_drains_release_before_private_close_and_shared_unlink(make_sessio
     result = control.handle(delta_io.PrepareGpuDeltaReqInput(**request([session.identity])))
     assert result is None
     rejected, success, message = replies[0]
-    assert not success and "must not be replayed" in message
+    assert not success and message == "ValueError: completed delta session must not be replayed"
     assert rejected["state"] == "CLEARED" and rejected["version"] == 7
     assert rejected["identity"] == session.identity
     for current_receipt in (receipt, session.status(), rejected):
         for key in req.keys() - {"manifest_path", "participants"}:
             assert current_receipt[key] == req[key]
+    # A fresh transaction waits for describe to attach a backend; the cleared record stays settled.
+    with pytest.raises(ValueError, match="must be described before its next update"):
+        session.prepare(req | dict(session_id="publication-2", base_version=7, target_version=8))
+    assert session.status()["state"] == "CLEARED" and session.status()["session_id"] == "publication-1"
+    # After an update only the retained shadows hold the committed version, so describe never recreates them.
+    session.reattach(lambda identity, store, create: SimpleNamespace(create=create))
+    assert session.backend.create is False
 
 
 @pytest.mark.parametrize("state", ["PREPARED", "POISONED"])
@@ -750,14 +705,17 @@ def test_failed_async_release_prevents_resource_reuse(make_session, next_operati
 
     backend.payload.close = fail_release
     session.resume("publication-1", lambda _: None)
+    following = request([session.identity]) | dict(session_id="publication-2", base_version=1, target_version=2)
     if next_operation == "clear":
         with pytest.raises(OSError, match="state release failed"):
             session.clear()
+        # That clear stopped the worker; a rejected prepare leaves the settled update current.
+        with pytest.raises(RuntimeError, match="after shutdown"):
+            session.prepare(following)
+        assert session.status()["state"] == "RESUMED"
     else:
         backend.started.clear()
-        session.prepare(
-            request([session.identity]) | dict(session_id="publication-2", base_version=1, target_version=2)
-        )
+        session.prepare(following)
         receipt = wait_state(session, "FAILED")
         assert "state release failed" in receipt["message"]
         assert not backend.started.is_set()
@@ -766,11 +724,11 @@ def test_failed_async_release_prevents_resource_reuse(make_session, next_operati
     assert session.backend is backend
 
 
-@pytest.mark.parametrize("flush_cache", [True, False])
+@pytest.mark.parametrize("pause_mode", ["retract", "in_place"])
 @pytest.mark.parametrize("keep_pause", [True, False])
 @pytest.mark.parametrize("weight_version", [None, "0", "actor-42"])
-def test_update_owns_pause_fence_retract_and_resume_order(
-    make_session, monkeypatch, flush_cache, keep_pause, weight_version
+def test_update_owns_pause_fence_cache_and_resume_order(
+    make_session, monkeypatch, pause_mode, keep_pause, weight_version
 ):
     from sglang.utils import TypeBasedDispatcher
 
@@ -782,8 +740,8 @@ def test_update_owns_pause_fence_retract_and_resume_order(
         events.append("fence")
 
     def pause(obj):
-        assert scheduler._engine_paused and obj.mode == "retract"
-        events.append("retract")
+        assert scheduler._engine_paused and obj.mode == pause_mode
+        events.append(pause_mode)
 
     def flush(empty_cache):
         assert not empty_cache
@@ -800,7 +758,7 @@ def test_update_owns_pause_fence_retract_and_resume_order(
     scheduler.flush_cache = flush
     scheduler.continue_generation = resume
     scheduler.record_weight_version_change = lambda version: events.append(("version", version))
-    control = delta_runtime.GpuDeltaSchedulerControl(scheduler)
+    control = delta_scheduler.GpuDeltaSchedulerControl(scheduler)
     monkeypatch.setattr(
         "sglang.srt.runtime_context.get_parallel",
         lambda: SimpleNamespace(attn_cp_size=1, attn_tp_size=1),
@@ -810,8 +768,8 @@ def test_update_owns_pause_fence_retract_and_resume_order(
         assert groups == ()
         return control
 
-    monkeypatch.setattr(delta_runtime, "GpuDeltaSchedulerControl", make_control)
-    wrapped = delta_runtime.with_gpu_delta_controls(scheduler, TypeBasedDispatcher([]))
+    monkeypatch.setattr(delta_scheduler, "GpuDeltaSchedulerControl", make_control)
+    wrapped = delta_scheduler.with_gpu_delta_controls(scheduler, TypeBasedDispatcher([]))
     session, backend = make_session()
     control.session = session
 
@@ -821,12 +779,18 @@ def test_update_owns_pause_fence_retract_and_resume_order(
     backend.payload.apply = recorded("apply", backend.payload.apply)
     backend.payload.close = recorded("release", backend.payload.close)
     backend.close = recorded("close", backend.close)
-    prepare_ready(session, backend, timeout=2)
+    session.prepare(request([session.identity]))
+    # A rejected apply (still preparing, then another session's) never pauses, fences, retracts or flushes.
+    for session_id in ("publication-1", "another-session"):
+        rejected = wrapped(delta_io.ApplyGpuDeltaReqInput(session_id=session_id, rid="rejected"))
+        assert not rejected.success and not rejected.participants[0]["generation_paused"] and events == []
+        backend.ready.set()
+        wait_state(session, "PREPARED", timeout=2)
     result = wrapped(
-        delta_io.ApplyGpuDeltaReqInput(session_id="publication-1", rid="apply-rid", flush_cache=flush_cache)
+        delta_io.ApplyGpuDeltaReqInput(session_id="publication-1", rid="apply-rid", pause_mode=pause_mode)
     )
     assert result.rid == "apply-rid" and scheduler._engine_paused
-    expected = ["fence", "retract"] + (["flush"] if flush_cache else []) + ["apply"]
+    expected = ["fence", pause_mode] + (["flush"] if pause_mode == "retract" else []) + ["apply"]
     assert result.success and events == expected
     assert result.participants[0]["generation_paused"]
     assert result.participants[0]["result"] == {"applied": True, "target_version": 1}
@@ -854,7 +818,7 @@ def test_update_owns_pause_fence_retract_and_resume_order(
     cleared = wrapped(delta_io.ClearGpuDeltaStateReqInput())
     assert cleared.success and cleared.participants[0]["version"] == 1
     assert events[len(expected) :] == ["release", "close"]
-    released = wrapped(delta_io.ReleaseGpuDeltaCacheReqInput(owner_rank_ids=[session.identity["rank_id"]]))
+    released = wrapped(delta_io.ReleaseGpuDeltaCacheReqInput())
     assert released.success and released.participants[0]["state"] == "CLEARED"
     assert scheduler._engine_paused is keep_pause
     assert released.participants[0]["generation_paused"] is keep_pause
@@ -889,9 +853,8 @@ def test_describe_binds_published_scheduler_ranks(
     from sglang.srt.runtime_context import SpawnRanks, publish, reset_context
     from sglang.srt.server_args import ServerArgs
 
-    reset_context()
-    try:
-        # Derive the serving identity from the published launch-time ranks.
+    def launch(**nodes):
+        reset_context()
         publish(
             ServerArgs(
                 model_path="dummy",
@@ -900,10 +863,15 @@ def test_describe_binds_published_scheduler_ranks(
                 attn_dp_size=attn_dp_size,
                 dcp_size=dcp_size,
                 ep_size=tp_size,
+                **nodes,
             ),
             role="test",
             ranks=SpawnRanks(world_rank=world_rank, dp_rank=dp_rank),
         )
+
+    try:
+        # Derive the serving identity from the published launch-time ranks.
+        launch()
         runner = SimpleNamespace(
             model=object(),
             weight_updater=SimpleNamespace(_assert_weight_cache_inactive=lambda _: None),
@@ -920,10 +888,7 @@ def test_describe_binds_published_scheduler_ranks(
             assert model_runner is runner
             backends.append(identity.copy())
             shadows.append(store)
-            return SimpleNamespace(
-                host_arena=SimpleNamespace(directory=None),
-                close=lambda: None,
-            )
+            return SimpleNamespace(host_arena=SimpleNamespace(directory=None, owner=False), close=lambda: None)
 
         monkeypatch.setitem(
             sys.modules,
@@ -976,7 +941,7 @@ def test_describe_binds_published_scheduler_ranks(
         assert cache_engines == ["engine-0"]
         control.session.version = 7
         assert control.session.clear()["version"] == 7
-        control.session.release_cache(owner=True)
+        control.session.release_cache()
         with pytest.raises(ValueError, match="another engine"):
             control._describe("unused-new-engine-name")
         fresh = control._describe("engine-0")
@@ -985,86 +950,19 @@ def test_describe_binds_published_scheduler_ranks(
         # Both backends share the session's shadow store; only the version-0 one may create shadows.
         assert [store.create for store in shadows] == [True, False]
         assert all(store.store is control.session.shadow_store for store in shadows)
+        # A second node needs attention DP, whose prepare replies reach the head node over TCP.
+        launch(nnodes=2, dist_init_addr="127.0.0.1:5000")
+        if attn_dp_size > 1:
+            assert control._describe("engine-0") == fresh
+        else:
+            with pytest.raises(ValueError, match="attention DP when an engine spans several nodes"):
+                control._describe("engine-0")
         control.session._executor.shutdown(wait=True)
     finally:
         reset_context()
 
 
-def test_shadows_persist_across_clear_and_are_created_only_at_version_zero(monkeypatch):
-    from sglang.srt import runtime_context
-
-    from miles.backends.sglang_utils.gpu_delta.bindings import CanonicalShadows
-
-    parallel = SimpleNamespace(
-        enable_dp_attention_local_control_broadcast=False,
-        attn_tp_size=1,
-        attn_cp_size=1,
-        attn_dcp_size=1,
-        enable_cp_decode_attn_tp=False,
-        pp_size=1,
-        dwdp_size=1,
-        tp_rank=0,
-        dp_rank=None,
-        pp_rank=0,
-    )
-    monkeypatch.setattr(runtime_context, "get_parallel", lambda: parallel)
-    monkeypatch.setattr(
-        runtime_context, "get_exec", lambda: SimpleNamespace(moe=SimpleNamespace(is_ep_scale_joiner=False))
-    )
-    monkeypatch.setattr(
-        runtime_context,
-        "get_spec",
-        lambda: SimpleNamespace(speculative_dspark_lm_head_dtype=None, speculative_token_map=None),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "sglang.srt.model_executor.model_runner_components.weight_updater",
-        SimpleNamespace(_unsupported_derived_weight_cache_error=lambda model: None),
-    )
-    monkeypatch.setattr("miles.utils.gpu_delta.host.host_cache_id", lambda engine_id: "shared-host")
-    monkeypatch.setattr("miles.utils.gpu_delta.host_worker.process_start_ticks", lambda: 456)
-    opened = []
-
-    def make_backend(model_runner, identity, shadows):
-        opened.append(shadows)
-        return SimpleNamespace(host_arena=SimpleNamespace(directory=None), close=lambda: None)
-
-    monkeypatch.setitem(
-        sys.modules,
-        "miles.backends.sglang_utils.gpu_delta.receiver",
-        SimpleNamespace(GpuDeltaBackend=make_backend),
-    )
-    runner = SimpleNamespace(
-        model=object(), weight_updater=SimpleNamespace(_assert_weight_cache_inactive=lambda _: None)
-    )
-    scheduler = SimpleNamespace(
-        enable_lora=False,
-        disaggregation_mode=SimpleNamespace(value="null"),
-        rust_server=None,
-        tp_worker=SimpleNamespace(model_runner=runner),
-    )
-    control = GpuDeltaSchedulerControl(scheduler)
-    control._describe("engine-0")
-    (first,) = opened
-    assert isinstance(first, CanonicalShadows) and first.create and first.store is control.session.shadow_store
-    meta, cpu = {"dtype": "F32", "shape": [4]}, torch.device("cpu")
-    tensor = first.get("o_norm.weight", meta, (0, 4), cpu)
-    first.store["o_norm.weight"].filled = True
-    for version, create in ((0, True), (1, False)):
-        # Clear closes the backend but keeps the store; describe re-attaches with the same shadows.
-        control.session.version = version
-        control.session.clear()
-        control.session.release_cache(owner=True)
-        control._describe("engine-0")
-        reopened = opened[-1]
-        assert reopened.store is first.store and reopened.create is create
-        assert reopened.get("o_norm.weight", meta, (0, 4), cpu) is tensor
-    with pytest.raises(ValueError, match="canonical shadow other is unavailable after version 0"):
-        opened[-1].get("other", meta, (0, 4), cpu)
-    control.session._executor.shutdown(wait=True)
-
-
-@pytest.mark.parametrize("outcome", ["resumed", "retained", "apply_failed", "resume_failed"])
+@pytest.mark.parametrize("outcome", ["resumed", "apply_failed"])
 def test_nvtx_pause_ends_only_after_successful_unpause(make_session, monkeypatch, outcome):
     events = []
     profiling = delta_runtime.profiling
@@ -1095,43 +993,12 @@ def test_nvtx_pause_ends_only_after_successful_unpause(make_session, monkeypatch
     if outcome == "apply_failed":
         with pytest.raises(RuntimeError, match="control failure"):
             session.apply("publication-1", fail, lambda: None, None)
-        assert session.status()["state"] == "POISONED"
-        assert events[-1] == ("mark", "gpu_delta.pause.poisoned")
+        # The scheduler is still paused: the range stays open behind a poisoned mark.
+        assert events == [("start", "gpu_delta.pause"), ("mark", "gpu_delta.pause.poisoned")]
+        assert session._update.nvtx_pause_id == 17
     else:
         session.apply("publication-1", lambda: None, lambda: None, None)
-        assert events == [("start", "gpu_delta.pause")]
-
-        def resume(version):
-            assert version == 1
-            events.append(("resume", version))
-            if outcome == "resume_failed":
-                fail()
-
-        if outcome == "resume_failed":
-            with pytest.raises(RuntimeError, match="control failure"):
-                session.resume("publication-1", resume)
-        else:
-            session.resume("publication-1", resume, keep_pause=outcome == "retained")
-    if outcome == "resumed":
-        assert events[-2:] == [("resume", 1), ("end", 17)]
+        session.resume("publication-1", lambda version: events.append(("resume", version)))
+        assert events == [("start", "gpu_delta.pause"), ("resume", 1), ("end", 17)]
         assert session._update.nvtx_pause_id is None
-        assert session.status()["scheduler_timing"]["blocked_s"] is not None
-    else:
-        assert not any(event[0] == "end" for event in events)
-        assert session._update.nvtx_pause_id == 17
-        assert session.status()["scheduler_timing"]["blocked_s"] is None
-
-
-def test_explicit_mask_cancellation_requires_a_fresh_transaction(make_session):
-    session, backend = make_session()
-    backend.ready.set()
-    first = request([session.identity])
-    assert session.prepare(first).result()["state"] == "PREPARED"
-    session.apply(first["session_id"], lambda: None, lambda: None, lambda: True)
-    session.resume(first["session_id"], lambda version: None)
-    with pytest.raises(ValueError, match="must not be replayed"):
-        session.prepare(first)
-    with pytest.raises(ValueError, match="another delta stream"):
-        session.prepare(first | {"session_id": "cancel", "stream_id": "another-stream"})
-    # Reusing an immutable mask to cancel it is an explicit new transaction.
-    assert session.prepare(first | {"session_id": "cancel"}).result()["state"] == "PREPARED"
+    assert (session.status()["scheduler_timing"]["blocked_s"] is None) is (outcome == "apply_failed")

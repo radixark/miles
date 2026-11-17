@@ -12,12 +12,16 @@ from miles.backends.sglang_utils.gpu_delta.io import (
     AbortGpuDeltaReqInput,
     ApplyGpuDeltaReqInput,
     ClearGpuDeltaStateReqInput,
+    GetGpuDeltaInfoReqInput,
     GpuDeltaReqOutput,
     PrepareGpuDeltaReqInput,
     ReleaseGpuDeltaCacheReqInput,
     ResumeGpuDeltaReqInput,
     UpdateWeightsFromGpuDeltaReqInput,
 )
+
+# Bound on the all-rank preparation; a preparation still unsettled is aborted before any weight changes.
+_PREPARE_TIMEOUT_S = 1800
 
 
 class GpuDeltaCommunicator:
@@ -100,12 +104,15 @@ class GpuDeltaTokenizerControl:
                 }
             if isinstance(obj, UpdateWeightsFromGpuDeltaReqInput):
                 return await self._update(obj)
-            if isinstance(obj, ClearGpuDeltaStateReqInput):
+            elif isinstance(obj, ClearGpuDeltaStateReqInput):
                 return await self._clear()
-            # Admission does not gate generation or acquire its writer lock.
-            return await self._request(obj)
+            elif isinstance(obj, GetGpuDeltaInfoReqInput):
+                # Admission does not gate generation or acquire its writer lock.
+                return await self._request(obj)
+            else:
+                raise ValueError(f"unknown GPU delta request: {type(obj).__name__}")
         except Exception as exc:
-            return {"success": False, "message": str(exc), "participants": []}
+            return {"success": False, "message": f"{type(exc).__name__}: {exc}", "participants": []}
 
     async def _resume(self, obj):
         async with self.manager.is_pause_cond:
@@ -127,8 +134,8 @@ class GpuDeltaTokenizerControl:
             self.manager.is_pause = True
             if obj.abort_all_requests:
                 self.manager.abort_request(abort_all=True)
-            result = await self._request(ApplyGpuDeltaReqInput(session_id=obj.session_id, flush_cache=obj.flush_cache))
-            if result["success"] and obj.flush_cache and self.manager.mm_processor is not None:
+            result = await self._request(ApplyGpuDeltaReqInput(session_id=obj.session_id, pause_mode=obj.pause_mode))
+            if result["success"] and obj.pause_mode == "retract" and self.manager.mm_processor is not None:
                 self.manager.mm_processor.clear_preprocess_cache()
             return result, was_paused
 
@@ -151,7 +158,7 @@ class GpuDeltaTokenizerControl:
         # After apply dispatch, neither cancellation nor failure may replay XOR
         # or reopen admission: a participant may already have modified weights.
         try:
-            result = await asyncio.wait_for(self._request(prepare), timeout=1800)
+            result = await asyncio.wait_for(self._request(prepare), timeout=_PREPARE_TIMEOUT_S)
         except BaseException:
             await self._request(AbortGpuDeltaReqInput(session_id=obj.session_id))
             raise
@@ -190,15 +197,8 @@ class GpuDeltaTokenizerControl:
         result = await self._request(ClearGpuDeltaStateReqInput())
         if not result["success"]:
             return result
-        owners = {}
-        for rank in result["participants"]:
-            identity = rank["identity"]
-            if identity is not None:
-                owners.setdefault(
-                    (identity["hostname"], identity["host_cache_id"]),
-                    identity["rank_id"],
-                )
-        return await self._request(ReleaseGpuDeltaCacheReqInput(owner_rank_ids=list(owners.values())))
+        # Each engine-host's arena owner removes its shared cache once every rank has closed.
+        return await self._request(ReleaseGpuDeltaCacheReqInput())
 
     async def _request(self, obj):
         results = await self.communicator(obj)

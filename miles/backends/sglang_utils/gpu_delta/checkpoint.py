@@ -1,9 +1,9 @@
 """Canonical metadata for the GPU-delta receiver's immutable startup checkpoint.
 
-Read only at first delta admission. The exclusive controller must keep the
-original local checkpoint unchanged for the engine's lifetime; this is metadata
-discovery, not proof of the current model's weight values. Ordinary loaders and
-model methods are never modified.
+Read whenever describe builds a backend, including after a clear. The exclusive
+controller must keep the original local checkpoint unchanged for the engine's
+lifetime; this is metadata discovery, not proof of the current model's weight
+values. Ordinary loaders and model methods are never modified.
 """
 
 import json
@@ -12,7 +12,12 @@ from pathlib import Path
 
 import numpy as np
 
-from miles.utils.gpu_delta.publication import StaticPolicy, read_safetensors_headers, static_policy
+from miles.utils.gpu_delta.publication import (
+    ADMITTED_LOAD_FORMATS,
+    StaticPolicy,
+    read_safetensors_headers,
+    static_policy,
+)
 
 
 @dataclass(frozen=True)
@@ -57,8 +62,8 @@ def read_canonical_checkpoint(model_runner):
     loader = model_runner.loader
     # Group offloading retains prefetched GPU copies independently of the CPU
     # parameter storage. Updating that storage would leave those copies stale.
-    offload = model_runner.server_args
-    if offload.cpu_offload_gb == 0 and offload.offload_group_size > 0:
+    server_args = model_runner.server_args
+    if server_args.cpu_offload_gb == 0 and server_args.offload_group_size > 0:
         raise ValueError("GPU delta does not support prefetched group offloading")
     # ModelOpt's already-quantized branch delegates to DefaultModelLoader.
     # Subclasses may override the iterator or transform its names and values.
@@ -66,7 +71,7 @@ def read_canonical_checkpoint(model_runner):
         raise ValueError("GPU delta requires the standard local checkpoint loader")
     if type(loader) is ModelOptModelLoader and not model_config._is_already_quantized():
         raise ValueError("GPU delta does not support load-time ModelOpt conversion")
-    if config.load_format not in {"auto", "safetensors", "fastsafetensors"}:
+    if config.load_format not in ADMITTED_LOAD_FORMATS:
         raise ValueError("GPU delta requires a standard safetensors load format")
     if model_runner.is_draft_worker or config.draft_model_idx is not None:
         raise ValueError("GPU delta checkpoint admission requires the target model")

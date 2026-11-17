@@ -21,6 +21,7 @@ from miles.utils.args.custom_function import CustomFunctionConfig
 from miles.utils.timer import Timer
 
 actor_module = test_shared_ppo_lifecycle.actor_module
+_EVAL_MODEL = SimpleNamespace(name="eval")
 
 
 def _checkpoint_worker(actor_module, **overrides):
@@ -40,7 +41,6 @@ def _checkpoint_worker(actor_module, **overrides):
         )
     )
     worker.role = "actor"
-    worker._asleep = True
     worker._heartbeat = Mock()
     worker.model, worker.optimizer, worker.opt_param_scheduler = object(), object(), object()
     worker.snapshot_publisher = None
@@ -83,8 +83,8 @@ def test_checkpoint_companion_becomes_ready_only_after_megatron_finishes(
     monkeypatch.setattr(actor_module, "save", save)
     monkeypatch.setattr(actor_module, "maybe_finalize_async_save", complete_megatron)
     monkeypatch.setattr(actor_module, "get_checkpoint_name", lambda *_args, **_kwargs: checkpoint_dir)
-    worker.weight_updater.save_checkpoint_delta.side_effect = prepare
-    worker.weight_updater.finish_checkpoint_delta.side_effect = complete_delta
+    worker.weight_updater.prepare_gpu_delta_checkpoint.side_effect = prepare
+    worker.weight_updater.finalize_gpu_delta_checkpoint.side_effect = complete_delta
 
     # The final checkpoint needs a companion even when no subsequent weight sync runs.
     worker.save_model(6, force_sync=force_sync)
@@ -110,8 +110,8 @@ def test_post_save_hook_finalizes_companions_on_all_ranks(actor_module, monkeypa
     monkeypatch.setattr(actor_module.dist, "get_rank", lambda: rank)
     hook = Mock(side_effect=lambda *_args: events.append("hook"))
     monkeypatch.setattr("miles.utils.function_registry.load_function", lambda _path: hook)
-    worker.weight_updater.save_checkpoint_delta.side_effect = lambda *_args: events.append("delta")
-    worker.weight_updater.finish_checkpoint_delta.side_effect = lambda: events.append("finish_delta")
+    worker.weight_updater.prepare_gpu_delta_checkpoint.side_effect = lambda *_args: events.append("delta")
+    worker.weight_updater.finalize_gpu_delta_checkpoint.side_effect = lambda: events.append("finish_delta")
 
     worker.save_model(6)
 
@@ -122,7 +122,7 @@ def test_post_save_hook_finalizes_companions_on_all_ranks(actor_module, monkeypa
 
 def test_failed_checkpoint_delta_releases_temporary_offload_runtime(actor_module, monkeypatch):
     worker = _checkpoint_worker(actor_module, offload_train=True)
-    worker.weight_updater.save_checkpoint_delta.side_effect = RuntimeError("delta encode failed")
+    worker.weight_updater.prepare_gpu_delta_checkpoint.side_effect = RuntimeError("delta encode failed")
     events = []
 
     @contextmanager
@@ -138,15 +138,13 @@ def test_failed_checkpoint_delta_releases_temporary_offload_runtime(actor_module
     monkeypatch.setattr(actor_module, "save", Mock())
     monkeypatch.setattr(actor_module, "maybe_finalize_async_save", Mock())
     monkeypatch.setattr(actor_module, "get_checkpoint_name", lambda *_args, **_kwargs: "/checkpoints/iter_6")
-    monkeypatch.setattr(actor_module, "reload_process_groups", lambda: events.append("reload"))
-    monkeypatch.setattr(actor_module, "destroy_process_groups", lambda: events.append("destroy"))
 
     with pytest.raises(RuntimeError, match="delta encode failed"):
         worker.save_model(6, force_sync=True)
 
-    assert events == ["disable", "reload", "destroy", "enable"]
+    assert events == ["disable", "enable"]
     # Only the previous save was finalized; a failed companion is never announced ready.
-    worker.weight_updater.finish_checkpoint_delta.assert_called_once_with()
+    worker.weight_updater.finalize_gpu_delta_checkpoint.assert_called_once_with()
 
 
 @pytest.mark.parametrize("mode,eval_model", [("broadcast", True), ("gpu-delta", False)])
@@ -163,16 +161,39 @@ def test_other_eval_modes_keep_full_hf_export(actor_module, mode, eval_model):
     worker.export_hf.assert_called_once_with(9, "/snapshot")
 
 
+@pytest.mark.parametrize("eval_hf_dir", [None, "/eval"])
+def test_save_hf_carries_an_eval_snapshot_only_when_eval_reuses_it(actor_module, monkeypatch, eval_hf_dir):
+    worker = _checkpoint_worker(
+        actor_module, save_hf="/hf/{rollout_id}", eval_hf_dir=eval_hf_dir, sglang=SimpleNamespace(models=[_EVAL_MODEL])
+    )
+    worker.snapshot_publisher = object()
+    events = []
+    save_hf = Mock(side_effect=lambda *args, **kwargs: events.append("hf"))
+    worker.weight_updater.export_gpu_delta_snapshot.side_effect = lambda *args, **kwargs: events.append("snapshot")
+    monkeypatch.setattr(actor_module, "save_hf_model", save_hf)
+    monkeypatch.setattr(actor_module, "save", Mock())
+    monkeypatch.setattr(actor_module, "maybe_finalize_async_save", Mock())
+    monkeypatch.setattr(actor_module, "get_checkpoint_name", lambda *_args, **_kwargs: "/checkpoints/iter_6")
+
+    worker.save_model(6)
+
+    # A failed HF export stays a skipped eval point, as in the other modes: the snapshot export follows the HF
+    # export's completion marker into that directory (the protocol tests pin the marker rule).
+    assert "raise_on_error" not in save_hf.call_args.kwargs
+    if eval_hf_dir is None:
+        worker.weight_updater.export_gpu_delta_snapshot.assert_called_once_with("/hf/6", 6, 42, in_hf_export=True)
+        assert events == ["hf", "snapshot"]
+    else:
+        worker.weight_updater.export_gpu_delta_snapshot.assert_not_called()
+
+
 @pytest.mark.parametrize("offload_train,fails", [(False, False), (True, False), (True, True)])
 def test_eval_snapshot_preserves_identity_completion_and_allocator_lifetime(
     actor_module, monkeypatch, tmp_path, offload_train, fails
 ):
     worker = _checkpoint_worker(
-        actor_module,
-        offload_train=offload_train,
-        sglang=SimpleNamespace(models=[SimpleNamespace(name="eval")]),
+        actor_module, offload_train=offload_train, sglang=SimpleNamespace(models=[_EVAL_MODEL])
     )
-    worker._last_rollout_id = 7
     monkeypatch.setattr(actor_module.dist, "is_initialized", lambda: False)
     monkeypatch.setattr(actor_module, "reload_process_groups", lambda: pytest.fail("dispatcher already onloaded"))
     monkeypatch.setattr(actor_module, "destroy_process_groups", lambda: pytest.fail("dispatcher owns offload"))
@@ -190,7 +211,7 @@ def test_eval_snapshot_preserves_identity_completion_and_allocator_lifetime(
     path = tmp_path / "snapshot"
 
     def publish(directory, rollout_id, version):
-        assert (rollout_id, version) == (7, 42)
+        assert (rollout_id, version) == (9, 42)  # The requested eval point names the snapshot.
         assert events == (["disable"] if offload_train else [])
         assert not (directory / ".complete").exists()
         if fails:

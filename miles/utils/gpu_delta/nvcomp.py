@@ -106,34 +106,28 @@ class NvcompCompressor(_NvcompApi):
     """
 
     def __init__(self, codec: str, device: torch.device):
-        if codec not in ("zstd", "snappy", "lz4", "bitcomp"):
+        # Zeroed options: Snappy/Zstd fields are all reserved; LZ4 zeros select CHAR without bitshuffle.
+        if codec == "snappy":
+            symbol, options = "Snappy", _Options()
+        elif codec == "lz4":
+            symbol, options = "LZ4", _LZ4Options()
+        elif codec == "zstd":
+            symbol, options = "Zstd", _Options()
+        elif codec == "bitcomp":
+            # Sparse (1), U8 (NVCOMP_TYPE_UCHAR=1), BITCOMP_LOSSLESS (0): XOR payloads are bytes; delta stays zero.
+            symbol, options = "Bitcomp", _BitcompOptions(algorithm=1, data_type=1, mode=0)
+        else:
             raise ValueError("GPU delta compression requires zstd, snappy, lz4 or bitcomp")
         self.codec, self.device = codec, torch.device(device)
         if self.device.type != "cuda" or self.device.index is None:
             raise ValueError("GPU delta compressor requires an explicit CUDA device")
         self._library, self.version = _load_library()
-        symbol, options = {
-            "snappy": ("Snappy", _Options),
-            "lz4": ("LZ4", _LZ4Options),
-            "zstd": ("Zstd", _Options),
-            "bitcomp": ("Bitcomp", _BitcompOptions),
-        }[codec]
         self._prefix, self._label = f"nvcompBatched{symbol}Compress", f"{codec} compression"
+        self._options = options
         pointer, size = ctypes.c_void_p, ctypes.c_size_t
-        self._options = options()
-        if codec == "bitcomp":
-            # Sparse, U8, lossless. XOR payloads are bytes, never floating-point values.
-            self._options.algorithm = 1
-            self._options.data_type = 1  # NVCOMP_TYPE_UCHAR
-            self._options.mode = 0  # BITCOMP_LOSSLESS; delta remains zero.
-        elif codec in ("snappy", "lz4", "zstd"):
-            # Keep zeroed options: Snappy/Zstd fields are all reserved; LZ4 zeros select CHAR without bitshuffle.
-            pass
-        else:
-            raise ValueError(f"unsupported GPU delta compression codec: {codec}")
-        self._bound = self._bind("GetMaxOutputChunkSize", [size, options, ctypes.POINTER(size)])
+        self._bound = self._bind("GetMaxOutputChunkSize", [size, type(options), ctypes.POINTER(size)])
         self._compress = self._bind(
-            "Async", [pointer, pointer, size, size, pointer, size, pointer, pointer, options, pointer, pointer]
+            "Async", [pointer, pointer, size, size, pointer, size, pointer, pointer, type(options), pointer, pointer]
         )
         self._bind_queries()
         self._bound_cache = {}

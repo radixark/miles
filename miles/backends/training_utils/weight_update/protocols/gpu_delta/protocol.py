@@ -10,6 +10,7 @@ adds GPU Zstd, then packs the final payload for one D2H transfer.
 from __future__ import annotations
 
 import logging
+import shutil
 import time
 import uuid
 from collections import Counter
@@ -22,26 +23,30 @@ import torch.distributed as dist
 
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.protocols.delta import _safetensors_dtype
+from miles.backends.training_utils.weight_update.protocols.gpu_delta import client as gpu_delta_client
 from miles.backends.training_utils.weight_update.protocols.gpu_delta import metrics as gpu_delta_metrics
 from miles.backends.training_utils.weight_update.protocols.gpu_delta import session as gpu_delta_session
+from miles.backends.training_utils.weight_update.protocols.gpu_delta.eval import (
+    record_eval_stream,
+    uses_gpu_delta_eval,
+)
 from miles.backends.training_utils.weight_update.protocols.utils.data_replica import get_data_replica_rank_and_size
 from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
 from miles.backends.training_utils.weight_update.session import set_weight_version
 from miles.utils import async_utils
 from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.function_registry import load_function
 from miles.utils.gpu_delta import encoder as gpu_delta_encoder
 from miles.utils.gpu_delta import publication as gpu_delta_publication
+from miles.utils.hf_utils.config import HF_EXPORT_COMPLETE_MARKER
 from miles.utils.test_utils.fault_injector.controller import reach_fault_hook
 from miles.utils.test_utils.fault_injector.models import FaultHookName
 
 logger = logging.getLogger(__name__)
 
 _PLAIN_FLOAT_DTYPE_BY_SAFETENSORS_DTYPE = {
-    "F64": torch.float64,
-    "F32": torch.float32,
-    "F16": torch.float16,
-    "BF16": torch.bfloat16,
+    _safetensors_dtype(dtype): dtype for dtype in (torch.float64, torch.float32, torch.float16, torch.bfloat16)
 }
 
 
@@ -50,12 +55,13 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
 
     use_weight_update_session = False
 
-    def __init__(self, args, frame_bytes=gpu_delta_publication.FRAME_BYTES):
+    def __init__(self, args):
         super().__init__(args)
         self._update_codec = gpu_delta_publication.configured_codec()
         self._initial_sync_codec = gpu_delta_publication.configured_codec(initial_sync=True)
+        # Trainer-only (--train-env-vars) values never reach driver admission; reject them before baseline capture.
+        gpu_delta_publication.configured_skip_payload_hash()
         self.codec = self._initial_sync_codec
-        self._frame_bytes = frame_bytes
         self._snapshot = {}
         self._next_snapshot = {}
         self._hf_snapshot = {}
@@ -66,7 +72,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._recovery_payload = self._recovery_publication = None
         self._checkpoint = None
         self._capture_only = False
-        self.requires_export = True
         self._committed_incarnations = {}
         self._raw_names = self._gpu_batch_names = ()
         self._batch_by_name = {}
@@ -81,8 +86,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._reset_sync()
         self._post_write_hook = None
         if args.custom_update_weight_post_write_path:
-            from miles.utils.function_registry import load_function
-
             self._post_write_hook = load_function(args.custom_update_weight_post_write_path)
 
     def _reset_sync(self):
@@ -100,7 +103,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._encoding_jobs = []
         self._encoding_started = None
         self._batch_remaining = [len(names) for names in self._gpu_batch_names]
-        self.publication_metrics = {}
 
     def connect(
         self,
@@ -115,32 +117,30 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self.rollout_engines = rollout_engines
         self._engine_cell_ids = tuple(engine_cell_ids)
         self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, rollout_engines, engine_cell_ids)
-        self._engine_ids = tuple(f"engine-{offset:05d}" for offset in engine_gpu_offsets)
+        engine_ids = tuple(f"engine-{offset:05d}" for offset in engine_gpu_offsets)
         self.group_name = "miles-gpu-delta"
         self._is_metrics_rank = parallel_state.is_metrics_rank
         self.initialize_export(parallel_state, placement)
-        descriptions = _on_root(self._describe)
+        descriptions = _on_root(lambda: self._describe(engine_ids))
         active = [i for i, description in enumerate(descriptions) if description is not None]
         self.rollout_engines = [self.rollout_engines[i] for i in active]
-        self._engine_ids = tuple(self._engine_ids[i] for i in active)
         self._engine_cell_ids = tuple(self._engine_cell_ids[i] for i in active)
-        descriptions = [descriptions[i] for i in active]
-        self._receivers = gpu_delta_session.receiver_pool(descriptions)
-        self._fresh_receivers = all(
-            rank["version"] == 0 and rank["state"] == "IDLE"
-            for description in descriptions
-            for rank in description["participants"]
-        )
+        self._receivers = gpu_delta_session.engine_identities([descriptions[i] for i in active])
 
     def initialize_export(self, parallel_state, placement):
-        """Initialize producer ownership and codecs independently of receiver connections."""
+        """Initialize producer ownership, the canonical plan and the recovery encoder before any receiver contact."""
         if self.is_sender is None:
             replica_rank, _ = get_data_replica_rank_and_size(parallel_state, placement)
             self.is_sender = replica_rank == 0
-        codec = self.codec
-        self._select_codec(self._initial_sync_codec)
-        self._select_codec(codec)
-        self.get_export_plan()
+        error = None
+        try:
+            self.get_export_plan()
+        except Exception as caught:
+            error = caught
+        # A rank-local failure, such as a missing local checkpoint, must not strand peers in a collective.
+        _collective_check(error, "canonical plan")
+        # Recovery, checkpoint and eval payloads always use the initial-sync codec.
+        self._encoder(self._initial_sync_codec)
 
     def _incarnations(self):
         return {
@@ -155,31 +155,32 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             self._plan_digest = gpu_delta_publication.plan_digest(plan)
         return self._plan
 
-    def _select_codec(self, codec):
-        if self._gpu_encoder is not None and self.codec == codec:
-            return
-        error = None
-        try:
-            if codec not in self._gpu_encoders:
+    def _encoder(self, codec):
+        """Create each codec's encoder once; every rank caches it only after collective admission."""
+        if codec not in self._gpu_encoders:
+            encoder, error = None, None
+            try:
                 device = torch.device("cuda", torch.cuda.current_device())
-                self._gpu_encoders[codec] = gpu_delta_encoder.GpuBatchEncoder(
-                    device, frame_bytes=self._frame_bytes, codec=codec
+                encoder = gpu_delta_encoder.GpuBatchEncoder(
+                    device, frame_bytes=gpu_delta_publication.FRAME_BYTES, codec=codec
                 )
-        except Exception as caught:
-            error = caught
-        _collective_check(error, "nvCOMP producer admission")
-        self.codec = codec
-        self._gpu_encoder = self._gpu_encoders[codec]
+            except Exception as caught:
+                error = caught
+            _collective_check(error, "nvCOMP producer admission")
+            self._gpu_encoders[codec] = encoder
+        return self._gpu_encoders[codec]
 
-    def _describe(self):
+    def _describe(self, engine_ids):
         futures = [
-            self.cell_updaters_of_cell_id[cell_id].submit_client_call("get_gpu_delta_info", engine_id=engine_id)
-            for engine_id, cell_id in zip(self._engine_ids, self._engine_cell_ids, strict=True)
+            self.cell_updaters_of_cell_id[cell_id].submit_client_call(
+                "_make_request", **gpu_delta_client.info_request(engine_id)
+            )
+            for engine_id, cell_id in zip(engine_ids, self._engine_cell_ids, strict=True)
         ]
         descriptions = []
-        for engine_id, cell_id, future in zip(self._engine_ids, self._engine_cell_ids, futures, strict=True):
+        for engine_id, cell_id, future in zip(engine_ids, self._engine_cell_ids, futures, strict=True):
             description = future.result()
-            if description is not None and description["success"]:
+            if description is not None:
                 rows = description["participants"]
                 incarnation = tuple(
                     sorted((row["identity"] for row in rows), key=lambda identity: identity["rank_id"])
@@ -216,7 +217,8 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         # The first receiver publication uses the initial codec even when a
         # checkpoint or eval snapshot already captured the immutable HF prior.
         # Cache setup precedes timed publication/export and is never per bucket.
-        self._select_codec(self._initial_sync_codec if initial_sync else self._update_codec)
+        self.codec = self._initial_sync_codec if initial_sync else self._update_codec
+        self._gpu_encoder = self._encoder(self.codec)
         self._uncommitted = True
         # Publications remain consecutive even when a restored/model-companion
         # version repeats, jumps or rewinds. Each receiver pool owns its stream.
@@ -239,6 +241,10 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             )
             if self._gpu_batch_names:
                 self._encoder_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-delta-encode")
+            if not self.requires_export:
+                # A checkpoint already captured this target; encode it without another export.
+                self._seen = set(self._next_snapshot)
+                self._enqueue_ready_batches(self._seen)
         except Exception as error:
             self._error = error
         try:
@@ -249,11 +255,15 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             if self._writer is not None:
                 self._writer.close()
             raise
-        self.requires_export = self._target_step != self._source_step
-        if not self.requires_export:
-            self._seen = set(self._next_snapshot)
-            self._enqueue_ready_batches(self._seen)
         return True
+
+    @property
+    def requires_export(self):
+        """False while an update encodes a target that a checkpoint or eval snapshot already captured.
+
+        The owner exporter then runs no export; every capture outside an update exports.
+        """
+        return not (self._uncommitted and self._target_step == self._source_step)
 
     def _capture_baseline(self, iter_buckets):
         self._capturing = True
@@ -284,6 +294,11 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             )
         self._stream_id = _on_root(lambda: uuid.uuid4().hex)
         self._stream_dir = Path(self.args.update_weight_disk_dir) / self._stream_id
+        if uses_gpu_delta_eval(self.args):
+            directory = _on_root(
+                lambda: record_eval_stream(self.args.update_weight_disk_dir, self.args.run_uuid, self._stream_id)
+            )
+            self._after_write(directory, ())
         # Rolling and immutable snapshots share the startup allocation until
         # the first commit, which must not recycle this storage for a new target.
         self._hf_snapshot = self._snapshot
@@ -296,11 +311,10 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             )
 
     def _declare_receiver_baseline(self):
-        # The startup checkpoint is base version 0, not a learned update. Wait
-        # for every engine's scheduler/tokenizer acknowledgement before rollout;
-        # an ambiguous partial acknowledgement must not be automatically retried.
-        if not self._fresh_receivers:
-            raise RuntimeError("GPU-delta sender baseline lost; restart the receiver pool from HF")
+        # The startup checkpoint is base version 0, not a learned update; connect
+        # admitted only IDLE version-0 receivers. Wait for every engine's
+        # scheduler/tokenizer acknowledgement before rollout; an ambiguous
+        # partial acknowledgement must not be automatically retried.
         self._uncommitted = True
         _on_root(lambda: set_weight_version(list(self.cell_updaters_of_cell_id.values()), 0), broadcast_value=False)
         self._uncommitted = False
@@ -516,6 +530,9 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._snapshot_step = self._source_step
         self._target_step = None
         self._publication_version = self._target_version
+        if self._recovery_step != self._snapshot_step:
+            # Step keys repeat after a load_state rollback; keep only the committed target's payload.
+            self._recovery_payload = self._recovery_publication = self._recovery_step = None
         active = _on_root(
             lambda: [
                 engine_id
@@ -535,7 +552,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         started = time.monotonic()
         self._recovery_payload = gpu_delta_encoder.RecoveryPayload.encode(
             self._gpu_encoders[self._initial_sync_codec],
-            self._initial_sync_codec,
             self._gpu_batch_names,
             self._raw_names,
             self._hf_snapshot,
@@ -546,7 +562,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._recovery_encode_s = time.monotonic() - started
 
     def _publish_recovery(self, directory, target_version, training_step=None):
-        """Persist each owner's cached bytes; gather only the manifest records."""
+        """Persist each owner's cached bytes; gather only the manifest records. The caller runs the hook."""
         metadata = dict(
             stream_id=self._stream_id,
             publication_id=_on_root(lambda: uuid.uuid4().hex),
@@ -574,12 +590,26 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
 
         return _on_root(seal)
 
+    def _after_write(self, directory, readers):
+        """Run the post-write hook on every rank once a publication is complete, before any reader."""
+        if self._post_write_hook is None:
+            return
+        error = None
+        try:
+            fn_args = compute_custom_function_config(self.args, self.args.custom_update_weight_post_write_path)
+            self._post_write_hook(fn_args, str(directory), list(readers))
+        except Exception as caught:
+            error = caught
+        _collective_check(error, "publication visibility")
+
     def _recovery_descriptor(self):
         # A repeated model/step can reuse compressed bytes, but fresh receivers
         # must join the current publication sequence before the next delta.
         if self._recovery_publication is None or self._recovery_publication["target_version"] != self._target_version:
             directory = self._stream_dir / f"recovery_v{self._target_version:06d}"
-            self._recovery_publication = self._publish_recovery(directory, self._target_version)
+            descriptor = self._publish_recovery(directory, self._target_version)
+            self._after_write(directory, self.rollout_engines)
+            self._recovery_publication = descriptor
         return self._recovery_publication
 
     def _capture_recovery_payload(self, rollout_id, weight_version, iter_buckets):
@@ -640,13 +670,21 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             ) = previous_cache
             raise
 
-    def export_snapshot(self, path, rollout_id, weight_version, iter_buckets):
-        """Publish an immutable HF-relative eval snapshot without contacting receivers."""
+    def export_snapshot(self, path, rollout_id, weight_version, iter_buckets, in_hf_export=False):
+        """Publish an immutable HF-relative eval snapshot without contacting receivers.
+
+        With ``in_hf_export``, ``path`` holds this step's HF export, which eval skips unless it completed. Only rank 0
+        writes its completion marker, so every rank follows rank 0, and an incomplete export gets no snapshot.
+        """
+        if in_hf_export and not _on_root(lambda: (Path(path) / HF_EXPORT_COMPLETE_MARKER).exists()):
+            return None
         self._capture_recovery_payload(rollout_id, weight_version, iter_buckets)
         # Payloads share the rollout publication lifetime. Eval queue GC owns
         # only the small descriptor, so later snapshots can still cancel this one.
         directory = self._stream_dir / f"eval-{_on_root(lambda: uuid.uuid4().hex)}"
         descriptor = self._publish_recovery(directory, 1, rollout_id)
+        # The dedicated eval engines that read it are not this trainer's clients.
+        self._after_write(directory, ())
 
         def complete():
             snapshot = Path(path) / "gpu_delta"
@@ -660,9 +698,10 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         """Capture the saved training step once, before its ordinary weight sync."""
         self._capture_recovery_payload(rollout_id, weight_version, iter_buckets)
         directory = Path(checkpoint_dir) / "gpu_delta"
-        descriptor = self._publish_recovery(directory, self._publication_version + 1, rollout_id)
-        self._checkpoint = directory, descriptor
-        self._recovery_publication = descriptor
+        # Like Megatron, replace any companion an earlier save left at this iteration: an unfinalized one a
+        # crashed job left, or a finalized one before a --ckpt-step rollback.
+        _on_root(lambda: shutil.rmtree(directory, ignore_errors=True), broadcast_value=False)
+        self._checkpoint = directory, self._publish_recovery(directory, self._publication_version + 1, rollout_id)
 
     def finalize_checkpoint(self):
         """Called collectively after the matching Megatron writer has drained."""
@@ -671,8 +710,11 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         directory, descriptor = self._checkpoint
         _on_root(lambda: gpu_delta_publication.write_checkpoint_ready(directory, descriptor), broadcast_value=False)
         self._checkpoint = None
+        # The hook sees the whole companion, READY included. No rollout engine reads it: replacement engines
+        # get their own recovery publication.
+        self._after_write(directory, ())
 
-    def _activate_subset(self, publication, engine_ids, weight_version):
+    def _activate_subset(self, publication, engine_ids, weight_version, pause_mode=None):
         selected = set(engine_ids)
         indices = [
             i
@@ -681,17 +723,18 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             )
             if engine_id in selected and not self.cell_updaters_of_cell_id[cell_id].is_errored
         ]
-        pool = gpu_delta_session.ReceiverPool(
+        identities = gpu_delta_session.EngineIdentities(
             tuple(self._receivers.participants[i] for i in indices),
             tuple(self._receivers.engine_ids[i] for i in indices),
         )
         return gpu_delta_session.activate_publication(
             [self.rollout_engines[i] for i in indices],
-            pool,
+            identities,
             publication,
             weight_version=str(weight_version),
             fault_tolerant="weight_update" in self.args.ft_components,
             request_timeout=self.args.update_weight_engine_request_timeout,
+            pause_mode=pause_mode,
         )
 
     def _record_activation_failures(self, result):
@@ -711,13 +754,12 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                     "target_version": self._target_version,
                     "engine_ids": result["succeeded_engine_ids"],
                     "resumed_receipts": result["resumed_receipts"],
-                    "release_state": False,
                 }
             ).decode(),
         )
         return {"perf/gpu_delta/recovery_load_s": time.monotonic() - started}
 
-    def publish(self):
+    def _publish(self):
         """Seal owner payloads independently of receiver activation."""
         seal_started = time.monotonic()
         shard, error = None, None
@@ -726,7 +768,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         except Exception as caught:
             error = caught
         _collective_check(error, "payload sealing")
-        self.publication_metrics = {
+        shard["producer_metrics"] = {
             "owner_rank": dist.get_rank(),
             "codec": self.codec,
             "tensor_count": len(shard["tensors"]),
@@ -746,29 +788,21 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             "encoding_granularity": "batch",
             "owner_seal_s": time.monotonic() - seal_started,
             **self._encoded_transfer_bytes,
+            # baseline_d2h_bytes counts the current export; the old pinned baseline
+            # is retained, not transferred back from the GPU.
+            "baseline_d2h_bytes": self._encoded_transfer_bytes["baseline_d2h_bytes"]
+            + sum(t.nbytes for t in self._next_snapshot.values()),
+            "raw_cpu_write_s": self._raw_cpu_write_s,
+            "raw_tail_wait_s": self._raw_tail_wait_s,
+            "raw_export_d2h_bytes": sum(self._next_snapshot[name].nbytes for name in self._raw_names),
+            **self._writer.payload_metrics,
+            **self._gpu_encoder.finalization_metrics,
         }
-        self.publication_metrics["raw_cpu_write_s"] = self._raw_cpu_write_s
-        self.publication_metrics["raw_tail_wait_s"] = self._raw_tail_wait_s
-        self.publication_metrics["raw_export_d2h_bytes"] = sum(
-            self._next_snapshot[name].nbytes for name in self._raw_names
-        )
-        # baseline_d2h_bytes counts the current export; the old pinned baseline
-        # is retained, not transferred back from the GPU.
-        self.publication_metrics["baseline_d2h_bytes"] += sum(t.nbytes for t in self._next_snapshot.values())
-        self.publication_metrics.update(self._writer.payload_metrics)
-        self.publication_metrics.update(self._gpu_encoder.finalization_metrics)
-        shard["producer_metrics"] = self.publication_metrics
         shards = [None] * dist.get_world_size() if dist.get_rank() == 0 else None
-        gather_started = time.monotonic()
         dist.gather_object(shard, shards, dst=0, group=get_gloo_group())
-        # This duration is rank-local: the just-completed gather serialized the
-        # prefix above. Diagnostic callers can collect it outside their timer.
-        self.publication_metrics["metadata_gather_s"] = time.monotonic() - gather_started
 
         def seal():
-            manifest_started = time.monotonic()
             descriptor = gpu_delta_publication.seal_publication(self._version_dir, shards)
-            descriptor["manifest_seal_s"] = time.monotonic() - manifest_started
             descriptor["summary_counts"] = {
                 key: sum(owner["producer_metrics"][key] for owner in shards)
                 for key in (
@@ -793,17 +827,11 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         # the small publication descriptor, not all owners' diagnostics.
         if dist.get_rank() == 0:
             publication["producer_metrics"] = [owner["producer_metrics"] for owner in shards]
-        try:
-            if self._post_write_hook is not None:
-                fn_args = compute_custom_function_config(self.args, self.args.custom_update_weight_post_write_path)
-                self._post_write_hook(fn_args, str(self._version_dir), list(self.rollout_engines))
-        except Exception as caught:
-            error = caught
-        _collective_check(error, "publication visibility")
+        self._after_write(self._version_dir, self.rollout_engines)
         return publication
 
     def finalize(self, weight_version):
-        publication = self.publish()
+        publication = self._publish()
         incarnations = self._incarnations()
         ordinary = tuple(
             engine_id
@@ -814,7 +842,12 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         future = None
         if dist.get_rank() == 0:
             reach_fault_hook(FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_SEND)
-            future = async_utils.submit(self._activate_subset(publication, ordinary, weight_version))
+            # Rollout syncs pause in --pause-generation-mode; replacement recovery keeps the receiver's defaults.
+            future = async_utils.submit(
+                self._activate_subset(
+                    publication, ordinary, weight_version, pause_mode=self.args.pause_generation_mode
+                )
+            )
         error = None
         try:
             # Only replacements need an HF-relative payload. Healthy updates

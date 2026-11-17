@@ -6,7 +6,6 @@ test oracle, never a production fallback; test_gpu_delta_encoder.py imports it.
 """
 
 import ctypes
-import importlib.metadata
 import json
 from functools import cache
 
@@ -16,14 +15,12 @@ import snappy
 import torch
 import zstandard
 
-from miles.utils.gpu_delta.nvcomp import NvcompCompressor
+from miles.utils.gpu_delta.nvcomp import NvcompCompressor, _load_library
 
 
 @cache
 def _bitcomp_host_decoder():
-    package = f"nvidia-libnvcomp-cu{torch.version.cuda.split('.')[0]}"
-    distribution = importlib.metadata.distribution(package)
-    library = ctypes.CDLL(str(distribution.locate_file("nvidia/libnvcomp/lib64/libnvcomp.so.6")))
+    library, _ = _load_library()
     pointer = ctypes.c_void_p
     library.bitcompCreatePlanFromCompressedData.argtypes = [ctypes.POINTER(pointer), pointer]
     library.bitcompHostUncompress.argtypes = [pointer, pointer, pointer]

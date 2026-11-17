@@ -22,7 +22,7 @@ class _DtypeMismatch(ValueError):
 class DestinationSegment:
     # Coordinates are canonical ELEMENTS, not bytes. Only the returned views
     # use byte coordinates, so BF16 source selections retain their element size.
-    # Matrix segments hold byte views; raw (scalar/vector) segments hold typed live views.
+    # Destinations are byte views; a raw-mask binding has no segments.
     slices: tuple[tuple[int, int], ...]
     destinations: tuple[torch.Tensor, ...]
     source_shape: tuple[int, ...] | None = None

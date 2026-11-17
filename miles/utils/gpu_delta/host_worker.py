@@ -136,16 +136,26 @@ class _MetadataMapping:
             self._metadata_capacity = allocation
 
 
-# Cold capacity fits the required extent; growth reserves twice the new extent.
 _CAPACITY_ALIGNMENT = 64 << 20
 
 
-def _reserve_cache(directory, previous, size, metrics, kind):
+def grown_capacity(previous, size):
+    """None when ``previous`` fits ``size``; otherwise the (capacity, generation) of its replacement.
+
+    Cold capacity fits the required extent; growth reserves twice the new extent.
+    """
     if previous is not None and size <= previous["capacity"]:
-        return previous
+        return None
     capacity = size if previous is None else 2 * size
     capacity = (capacity + _CAPACITY_ALIGNMENT - 1) // _CAPACITY_ALIGNMENT * _CAPACITY_ALIGNMENT
-    generation = previous["generation"] + 1 if previous else 1
+    return capacity, previous["generation"] + 1 if previous else 1
+
+
+def _reserve_cache(directory, previous, size, metrics, kind):
+    grown = grown_capacity(previous, size)
+    if grown is None:
+        return previous
+    capacity, generation = grown
     path = directory / f"{kind}-{generation}.bin"
     started = time.perf_counter()
     with path.open("xb+") as target:
@@ -224,7 +234,7 @@ def _read_verify_payloads(publication, backing, file_spans, definitions, pool, m
         raise error
 
 
-def _natural_key(name):
+def natural_key(name):
     return tuple(int(piece) if piece.isdigit() else piece for piece in re.split(r"(\d+)", name))
 
 
@@ -530,7 +540,7 @@ class HostBuilder(_MetadataMapping):
             self._shared_order = np.array(
                 sorted(
                     range(len(entries)),
-                    key=lambda i: (self._raw[i], _natural_key(entries[i]["name"])),
+                    key=lambda i: (self._raw[i], natural_key(entries[i]["name"])),
                 ),
                 dtype=np.int64,
             )
@@ -684,7 +694,10 @@ class HostBuilder(_MetadataMapping):
 
 
 def _parent_watch(parent_fd):
-    select.select([parent_fd], [], [])
+    # poll, not select: the inherited pidfd keeps the scheduler's number, which may exceed FD_SETSIZE.
+    watcher = select.poll()
+    watcher.register(parent_fd, select.POLLIN)
+    watcher.poll()
     # The exact parent process died, even if another process inherited an IPC fd.
     os._exit(1)
 

@@ -27,6 +27,7 @@ from safetensors.numpy import load as load_columns
 from safetensors.numpy import save as save_columns
 
 FRAME_BYTES = 1 << 20
+MAX_FRAME_BYTES = 4 << 20
 CODECS = {
     "snappy-zstd": ("snappy", "zstd"),
     "lz4-zstd": ("lz4", "zstd"),
@@ -55,6 +56,8 @@ DTYPE_BYTES = {
 }
 # The safetensors format's own header limit; a corrupt length must not allocate unbounded memory.
 _MAX_HEADER_BYTES = 100_000_000
+# SGLang load formats that read the local safetensors checkpoint as-is; launch and receiver admission share them.
+ADMITTED_LOAD_FORMATS = frozenset({"auto", "safetensors", "fastsafetensors"})
 
 
 def read_safetensors_headers(files):
@@ -311,6 +314,11 @@ def configured_skip_payload_hash() -> bool:
         raise ValueError("GPU_DELTA_SKIP_PAYLOAD_HASH must be 0 or 1")
 
 
+def validate_frame_bytes(frame_bytes) -> None:
+    if type(frame_bytes) is not int or not 0 < frame_bytes <= MAX_FRAME_BYTES:
+        raise ValueError("GPU-delta frame_bytes must be a positive integer at most 4 MiB")
+
+
 def tensor_metadata(name, dtype, shape, encoding="xor_bytes", format=None, checkpoint_dtype=None):
     """Describe canonical bytes without any receiver topology or layout."""
     metadata = {
@@ -336,6 +344,11 @@ def _write_exclusive(path: Path, content: bytes) -> None:
         os.fsync(output.fileno())
 
 
+def _spec_metadata(name, spec, encoding):
+    optional = {key: spec[key] for key in ("format", "checkpoint_dtype") if key in spec}
+    return tensor_metadata(name, spec["dtype"], spec["shape"], encoding=encoding, **optional)
+
+
 class PublicationWriter:
     """One owner's append-only payload; manifest is sealed after all owners finish.
 
@@ -358,8 +371,7 @@ class PublicationWriter:
         publication_id: str | None = None,
         frame_bytes: int = FRAME_BYTES,
     ):
-        if type(frame_bytes) is not int or not 0 < frame_bytes <= 4 << 20:
-            raise ValueError("GPU-delta frame_bytes must be a positive integer at most 4 MiB")
+        validate_frame_bytes(frame_bytes)
         if codec not in CODECS:
             raise ValueError(f"GPU-delta codec must be one of {tuple(CODECS)}")
         self.directory = Path(directory)
@@ -383,53 +395,40 @@ class PublicationWriter:
 
     def add_raw_xor_tensor(self, name, mask, spec):
         """Write an uncompressed scalar/vector XOR mask, omitting all-zero masks."""
-        entry = tensor_metadata(
-            name, spec["dtype"], spec["shape"], "xor_raw_bytes", spec.get("format"), spec.get("checkpoint_dtype")
-        )
+        entry = _spec_metadata(name, spec, "xor_raw_bytes")
         mask = np.frombuffer(mask, dtype=np.uint8)
         if mask.size != entry["nbytes"]:
             raise ValueError(f"Canonical tensor byte count differs for {name}")
         entry["changed_bytes"] = int(np.count_nonzero(mask))
         with self._lock:
             if entry["changed_bytes"]:
-                payload = memoryview(mask)
-                padding = bytes((-self._file.tell()) % 16)
-                self._file.write(padding)
-                if self._hash is not None:
-                    self._hash.update(padding)
-                entry["raw"] = dict(file=self._filename, encoded_offset=self._file.tell(), encoded_bytes=len(payload))
-                self._file.write(payload)
-                if self._hash is not None:
-                    self._hash.update(payload)
+                entry["raw"] = dict(file=self._filename, encoded_offset=self._append(mask), encoded_bytes=mask.size)
             self._entries[name] = entry
         return entry
 
     def add_encoded_tensor(self, name, frames, payload, outer, changed_bytes, spec):
         """Publish finalized matrix bytes; optional CPU hashing covers only final wire bytes."""
-        entry = tensor_metadata(
-            name, spec["dtype"], spec["shape"], "xor_bytes", spec.get("format"), spec.get("checkpoint_dtype")
-        )
+        entry = _spec_metadata(name, spec, "xor_bytes")
         entry["changed_bytes"] = changed_bytes
         # The encoder owns frame construction and checks native sizes/statuses.
         entry["frames"] = frames
         with self._lock:
             if outer is not None:
-                self._write_encoded_bytes(bytes((-self._file.tell()) % 16))
-                entry["outer"] = dict(outer, file=self._filename, encoded_offset=self._file.tell())
-                self._write_encoded_bytes(payload)
+                started = time.monotonic()
+                entry["outer"] = dict(outer, file=self._filename, encoded_offset=self._append(payload))
+                self.payload_metrics["matrix_hash_write_s"] += time.monotonic() - started
                 self.payload_metrics["matrix_inner_arena_bytes"] += outer["decoded_bytes"]
                 self.payload_metrics["matrix_payload_bytes"] += len(payload)
             self._entries[name] = entry
         return entry
 
-    def _write_encoded_bytes(self, data):
-        if not data:
-            return
-        started = time.monotonic()
-        self._file.write(data)
-        if self._hash is not None:
-            self._hash.update(data)
-        self.payload_metrics["matrix_hash_write_s"] += time.monotonic() - started
+    def _append(self, payload):
+        """Write 16-byte alignment padding and ``payload`` under the lock; return the payload offset."""
+        for data in (bytes((-self._file.tell()) % 16), payload):
+            self._file.write(data)
+            if self._hash is not None:
+                self._hash.update(data)
+        return self._file.tell() - len(payload)
 
     def finish_shard(self) -> dict:
         with self._lock:
@@ -478,7 +477,7 @@ _CATALOG_FIELDS = ("name", "dtype", "shape", "nbytes", "encoding", "byte_order",
 _FRAME_FIELDS = ("encoded_offset", "encoded_bytes", "decoded_offset", "decoded_bytes")
 
 
-def _is_raw_encoding(encoding):
+def is_raw_encoding(encoding):
     if encoding == "xor_raw_bytes":
         return True
     elif encoding == "xor_bytes":
@@ -487,19 +486,20 @@ def _is_raw_encoding(encoding):
         raise ValueError(f"unsupported GPU-delta tensor encoding: {encoding}")
 
 
-def write_publication_metadata(directory, manifest):
-    """Seal readable static catalog and named numeric columns, then the manifest.
+def catalog_entry(metadata):
+    """The static catalog fields of one tensor's metadata, as the writer seals them and receivers compare them."""
+    return {key: metadata[key] for key in _CATALOG_FIELDS if key in metadata}
 
-    Payload files already exist. This also supports explicit metadata-only conversion
-    of saved benchmark publications; receivers accept only the current wire format.
-    """
+
+def write_publication_metadata(directory, manifest):
+    """Seal readable static catalog and named numeric columns, then the manifest; payload files already exist."""
     directory = Path(directory)
     entries = sorted(manifest["tensors"], key=lambda entry: entry["name"])
     files = sorted(manifest["files"], key=lambda entry: entry["name"])
     file_ids = {entry["name"]: i for i, entry in enumerate(files)}
     catalog = {
         "plan_digest": manifest["plan_digest"],
-        "tensors": [{key: entry[key] for key in _CATALOG_FIELDS if key in entry} for entry in entries],
+        "tensors": [catalog_entry(entry) for entry in entries],
     }
     columns = {
         "tensors." + key: []
@@ -517,7 +517,7 @@ def write_publication_metadata(directory, manifest):
     columns.update({group + "." + field: [] for group in ("frames", "outer_frames") for field in _FRAME_FIELDS})
     columns.update({"gaps.offset": [], "gaps.nbytes": []})
     for entry in entries:
-        raw = _is_raw_encoding(entry["encoding"])
+        raw = is_raw_encoding(entry["encoding"])
         payload = entry.get("raw" if raw else "outer")
         values = {
             "changed_bytes": entry["changed_bytes"],
@@ -601,7 +601,7 @@ def read_publication_metadata(path):
                 "encoded_offset": int(columns["tensors.payload_offset"][i]),
                 "encoded_bytes": int(columns["tensors.payload_nbytes"][i]),
             }
-            if _is_raw_encoding(entry["encoding"]):
+            if is_raw_encoding(entry["encoding"]):
                 entry["raw"] = payload
             else:
                 entry["outer"] = payload | {

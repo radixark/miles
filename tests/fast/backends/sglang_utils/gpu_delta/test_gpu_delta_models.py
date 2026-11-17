@@ -13,6 +13,7 @@ from miles.backends.sglang_utils.gpu_delta.models.deepseek_v2 import DeepseekV2M
 def _model(architecture):
     model = torch.nn.Module()
     model.config = SimpleNamespace(architectures=[architecture])
+    model.num_fused_shared_experts = 0
     return model
 
 

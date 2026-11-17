@@ -1,8 +1,11 @@
 """Feature-owned HTTP and IPC schemas for GPU-delta controls."""
 
-from typing import Any
+from typing import Any, Literal
 
 from sglang.srt.managers.io_struct import BaseReq, hook_custom_types
+
+# The modes of the SGLang scheduler pause that apply runs; abort_all_requests aborts requests instead.
+PauseMode = Literal["retract", "in_place"]
 
 
 class ClearGpuDeltaStateReqInput(BaseReq, kw_only=True):
@@ -11,7 +14,7 @@ class ClearGpuDeltaStateReqInput(BaseReq, kw_only=True):
 
 class ReleaseGpuDeltaCacheReqInput(BaseReq, kw_only=True):
     # Internal second phase, sent only after every rank has closed its resources.
-    owner_rank_ids: list[str]
+    pass
 
 
 class GetGpuDeltaInfoReqInput(BaseReq, kw_only=True):
@@ -32,14 +35,14 @@ class PrepareGpuDeltaReqInput(BaseReq, kw_only=True):
 
 class UpdateWeightsFromGpuDeltaReqInput(PrepareGpuDeltaReqInput, kw_only=True):
     release_state: bool = False
-    flush_cache: bool = True
+    pause_mode: PauseMode = "retract"
     abort_all_requests: bool = False
     weight_version: str | None = None
 
 
 class ApplyGpuDeltaReqInput(BaseReq, kw_only=True):
     session_id: str
-    flush_cache: bool = True
+    pause_mode: PauseMode = "retract"
 
 
 class AbortGpuDeltaReqInput(BaseReq, kw_only=True):

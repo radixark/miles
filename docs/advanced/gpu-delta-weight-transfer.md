@@ -17,7 +17,7 @@ This page covers the trainer side, recovery, dedicated eval and metrics. The
 owns layout admission, control APIs, cache lifecycle, decoder scheduling and receipt
 fields; the
 [development guide](https://github.com/radixark/miles/blob/main/tests/manual/gpu_delta/README.md)
-owns development variables, the five-layer E2E test and the benchmark.
+owns development variables, the manual checks, the five-layer E2E test and the benchmark.
 
 ## Usage
 
@@ -31,13 +31,20 @@ owns development variables, the five-layer E2E test and the benchmark.
 - `--hf-checkpoint` must be the immutable local safetensors checkpoint that the rollout
   engines load with a standard load format; dummy loading is rejected. Both sides trust
   this prior, so no model-sized baseline fingerprint is computed.
-- `--update-weight-disk-dir` must be visible to every trainer and serving rank.
-- Install the prebuilt nvCOMP library without changing the image's dependency closure:
-  `python -m pip install --no-deps nvidia-libnvcomp-cu13==6.0.0.12`. No custom C++/CUDA
-  extension is built.
+- `--update-weight-disk-dir` must be visible to every trainer and serving rank. For
+  storage without cross-host visibility, set `--custom-update-weight-post-write-path`:
+  every trainer rank runs it once each GPU-delta directory the trainer writes is complete
+  and before any reader opens it (updates, replacement recovery, eval snapshots, checkpoint
+  companions after their `READY.json`, and the eval stream record). Its `rollout_engines`
+  argument is empty for checkpoint companions, eval snapshots and the stream record, which
+  no connected rollout engine reads.
+- The CUDA 13 Miles image installs the prebuilt nvCOMP library; elsewhere run
+  `python -m pip install --no-deps nvidia-libnvcomp-cu13==6.0.0.12`. No C++/CUDA extension
+  is built.
 - Launch validation (`miles/utils/gpu_delta/admission.py`) requires separate training
-  and rollout GPUs, the direct Megatron exporter, retract pauses and a static MTP draft,
-  and rejects LoRA, PD, `--check-weight-update-equal` and trainer fault tolerance.
+  and rollout GPUs, the direct Megatron exporter, `--pause-generation-mode retract`
+  (default) or `in_place` and a static MTP draft, and rejects LoRA, PD,
+  `--check-weight-update-equal` and trainer fault tolerance.
   Rollout weights must stay resident (no `--offload-rollout`). Supported serving layouts
   and parallelism are part of the receiver contract.
 
@@ -53,9 +60,10 @@ Snappy and LZ4 decoding use the SM100/SM103 decompression engine, and model or b
 kernels keep their own hardware requirements.
 
 `miles.utils.gpu_delta` owns canonical publication, encoding and the reusable CUDA apply,
-codec, memory and host-staging primitives. The training protocol, engine activation, eval
-snapshots and metrics live in `miles.backends.training_utils.weight_update.protocols.gpu_delta`,
-and Megatron export ownership in `miles.backends.megatron_utils.update_weight.gpu_delta`.
+codec, memory and host-staging primitives. The training protocol, the receiver control
+requests, engine activation, eval snapshots and metrics live in
+`miles.backends.training_utils.weight_update.protocols.gpu_delta`, and Megatron export
+ownership in `miles.backends.megatron_utils.update_weight.gpu_delta`.
 SGLang imports the receiver hooks of `miles.backends.sglang_utils.gpu_delta` directly, so
 every serving process needs the matching Miles package.
 
@@ -103,9 +111,8 @@ fallback.
 `--update-weight-buffer-size` bounds each canonical input batch; a larger single tensor
 stands alone. An owner's complete compact inner-codec payload must fit in HBM through
 finalization, and host snapshots must fit in RAM; there is no out-of-memory fallback.
-Inner frames are 1 MiB (the benchmark's `--frame-bytes` accepts positive sizes up to
-4 MiB, subject to nvCOMP alignment); the receiver checks actual encoded and decoded
-lengths against its device limit.
+Inner frames are 1 MiB; the receiver checks actual encoded and decoded lengths against
+its device limit.
 
 ## Publication format
 
@@ -133,9 +140,18 @@ One Miles coordinator exclusively owns the engine endpoints during an update and
 one `update_weights_from_gpu_delta` request per engine. Engines prepare and activate
 independently; each waits for its own original ranks before resuming, so independent
 replicas may briefly serve different versions. Ordinary updates, recovery and eval all
-use this path with the same explicit payload-hash policy. The receiver's phases are
-defined in its
+use this path, and every requester, the eval controller included, asks receivers to
+validate payload hashes exactly when the publication records SHA-256 payloads
+(`payload_checksum_format`). The receiver's phases are defined in its
 [lifecycle contract](https://github.com/radixark/miles/blob/main/miles/backends/sglang_utils/gpu_delta/README.md#ownership-and-lifecycle).
+
+Rollout syncs pause each engine in `--pause-generation-mode`. `retract`, the default,
+requeues running requests and flushes the engine's KV and prefix caches. `in_place`
+skips the flush and keeps running requests, their KV and the prefix cache, so generation
+continues on KV computed with older weights, as an in-place pause does in the other
+transfer modes. Replacement recovery and dedicated eval pins always use the receiver's
+defaults, retract and flush, so eval never reuses KV or prefix cache computed with older
+weights.
 
 The trainer drains every engine request before handling failures. A failed request has
 an unknown phase, so it never authorizes a client abort or retry; an uncertain receiver
@@ -151,23 +167,21 @@ trainer blocking. Receiver preparation runs before the pause; inner decompressio
 in-place mutation run within it. Do not sum nested phases or add trainer and receiver
 times from different workloads.
 
-Publication diagnostics keep `metadata_gather_s` in each rank's producer metrics and
-`manifest_seal_s` on the returned descriptor. The first is that rank's owner-metadata
-gather wall time, not payload transfer; the second is root's manifest validation,
-serialization, hashing and exclusive write/link span. Neither adds a collective or a
-training-metric reduction.
-
 ## Recovery and checkpoint companions
 
 Each trainer owner keeps an immutable copy of its canonical HF-base bytes besides the
 rolling committed snapshot and the pending target. Owners compress HF-base to current
 bytes only when a replacement engine, checkpoint or eval snapshot needs them, using the
 initial-sync codec and the already captured target. Healthy updates perform no recovery
-compression, and the result is cached for reuse at the same target step.
+compression. The result is cached for reuse at the same target step and dropped when a
+commit moves to another step, so a step repeated after a `load_state` rollback is
+compressed again.
 
 A fresh engine starts from the HF checkpoint; its next update supplies a base-relative
 payload while existing engines receive the rolling delta, through the same endpoint and
-captured participant identities. Recovery keeps the receiver cache for later updates.
+captured participant identities. That payload is always a recovery publication
+(`recovery_v*`) under `--update-weight-disk-dir`, never a checkpoint companion. Recovery
+keeps the receiver cache for later updates.
 The trainer settles every engine request before committing its rolling baseline, which
 requires live trainer snapshots and the same canonical plan. With `--use-fault-tolerance`
 and the `weight_update` component, an in-flight receiver failure or lost reply marks only
@@ -184,9 +198,10 @@ On an ordinary Megatron save, the stable target is captured and compressed ahead
 next weight sync, which reuses that capture; a final save also produces a companion when
 no later sync runs. Owner payloads, `catalog.json`, `metadata.safetensors` and
 `manifest.json` live in the checkpoint iteration's `gpu_delta/` directory, and
-`READY.json` appears only after the Megatron writer finishes. The manifest records the
-HF-base path, training step and separate transfer version. Ship the completed directory
-together with the unchanged HF base that both sides trust.
+`READY.json` appears only after the Megatron writer finishes. A save replaces any
+companion already in that directory, such as an unfinalized one a crashed job left. The
+manifest records the HF-base path, training step and separate transfer version. Ship the
+completed directory together with the unchanged HF base that both sides trust.
 
 ## Dedicated eval snapshots
 
@@ -196,6 +211,17 @@ eval snapshot holds a `gpu_delta/READY.json` descriptor that references the targ
 delta from the immutable HF checkpoint in the shared publication directory. The trainer
 reuses its HF-relative recovery payload; eval has no separate rolling baseline or
 transfer counter. Full HF exports remain available for custom checkpoint evaluators.
+Without `--eval-hf-dir`, eval reuses the `--save-hf` directories: each save also writes
+the eval snapshot there, while a failed HF export leaves its directory unmarked and
+without a snapshot, so that eval point is skipped rather than failing the trainer. With
+`--eval-hf-dir`, the `--save-hf` directories get no GPU-delta snapshot.
+
+Receivers follow one delta stream per incarnation, so the trainer records each stream it
+starts in `--update-weight-disk-dir` (`eval-stream-<run uuid>/STREAM`), and eval pins only
+snapshots of the recorded stream. A resumed job's first eval point, whose save carries the
+previous trainer's stream, is skipped before any eval engine is contacted; pinning it would
+leave the fresh eval engines unable to apply this job's snapshots. A restart that keeps its
+trainer keeps the stream, so that point is still evaluated.
 
 The eval executor holds its existing eval lock across pinning and generation. To pin a
 new snapshot, the controller calls the ordinary update API twice, each time with a fresh
@@ -218,47 +244,32 @@ reuse the existing owner gather, so no engine RPC, device synchronization or col
 is added. Distributions have `/min`, `/p50` and `/max`.
 
 - `receiver_<field>` reduces receipt field `<field>` over every original rank's RESUMED
-  receipt, and appears only when every rank reports it. Field meanings are in the
+  receipt, and appears only when every rank reports it. Field meanings are only in the
   receiver's [receipt tables](https://github.com/radixark/miles/blob/main/miles/backends/sglang_utils/gpu_delta/README.md#configuration-and-observations).
   The rank work totals `host_rank_outer_zstd_{encoded_bytes,decoded_bytes,tensors,frames}`,
   `host_rank_allocation_{calls,bytes}`, `host_rank_{arena,capacity,private_capacity}_bytes`
   and `host_rank_staging_copy_bytes` also add `/sum`.
-- `creator_<field>` reduces `<field>` over the ranks that created an engine-host cache.
+- `creator_<field>` reduces `<field>` over the ranks that created an engine-host cache;
+  its `/sum` totals are 0 when no rank created one in this update.
 - Unprefixed cache capacities count once per engine-host cache, including reuse.
 
 | Metric | Meaning |
 |---|---|
 | `receiver_ranks`, `receiver_engines`, `base_version`, `target_version` | Coverage (original ranks with RESUMED receipts, engines with server timings) and publication versions, independent of the rollout step |
-| `receiver_scheduler_pause_s` | Each original process's completed pause from its RESUMED scheduler timestamps: reader fence, retraction/cache flush, application, its own engine's APPLIED wait and resume. Failed or open intervals are never reported |
+| `receiver_scheduler_pause_s` | Each original process's completed pause from its RESUMED scheduler timestamps: reader fence, generation pause and any cache flush, application, its own engine's APPLIED wait and resume. Failed or open intervals are never reported |
 | `receiver_reader_fence_s` | Pause start through reader-fence completion |
-| `receiver_host_prepare_s`, `receiver_host_metadata_prepare_s`, `receiver_host_metadata_wait_s` | Background preparation before the pause, including small metadata preparation and its own stream waits; the nested metadata span; those waits alone |
-| `receiver_host_manifest_read_parse_s`, `receiver_host_plan_validate_s`, `receiver_host_tensor_prepare_s`, `receiver_host_raw_pack_s` | Manifest, canonical-plan qualification, local tensor planning and CPU mask packing spans |
-| `receiver_host_rank_prepare_s` | Publication access and CPU-child work or follower wait, rank-local canonical admission, mapping and local input preparation |
-| `receiver_host_apply_kernel_prepare_s`, `receiver_apply_kernel_cache_misses`, `receiver_apply_kernel_cache_reused` | Fixed-family kernel cache lookup or first compilation/loading before the pause; misses count module warmup requests, not compiler runs (a request can load a disk binary); reused marks a cache hit |
-| `receiver_paused_setup_host_s`, `receiver_paused_apply_host_wall_s` | Paused slot allocation, pointer uploads and binding; complete paused apply through GPU completion and scratch release |
-| `receiver_host_matrix_enqueue_s`, `receiver_host_apply_completion_wait_s` | Host enqueue of the paused matrix batches; host wait for paused GPU completion |
-| `receiver_host_plan_cache_reused`, `receiver_host_batch_plan_reused` | Per-rank reuse of the admitted static plan and of the active-geometry cache |
-| `receiver_compressed_batches`, `receiver_compressed_tensors`, `receiver_layers_per_batch`, `receiver_decoded_zero_ranges`, `receiver_decoded_zero_bytes` | Actual batches and tensors, configured layers per batch, and omitted canonical ranges zeroed before decode |
-| `receiver_h2d_bytes`, `receiver_raw_h2d_bytes`, `receiver_decoder_metadata_h2d_bytes`, `receiver_apply_metadata_h2d_bytes`, `receiver_apply_descriptor_h2d_bytes`, `receiver_decoder_metadata_uploads` | Explicit uploads: the total (small masks, metadata, CUDA compressed input and CPU-resident weight mirrors) and its raw and metadata components; descriptor bytes are part of apply metadata. Decoders upload descriptors once in preparation and output pointers once in the pause; CUDA also uploads input pointers |
-| `receiver_de_host_input_bytes` | Compressed bytes DE reads directly from host memory; a different traffic category from `receiver_h2d_bytes`, not a bandwidth estimate |
-| `receiver_decoded_buffers`, `receiver_decoded_scratch_bytes`, `receiver_decoder_workspace_bytes` | Per-rank prepared capacities, not peak HBM; decoded scratch totals both paused slots |
-| `receiver_host_encoded_cache_{created,reused,wait_s}`, `receiver_host_prepared_cache_{created,reused,wait_s}` | Engine-host creator and follower flags and the owner wait; the prepared image is built with the encoded cache, so its values match |
 | `receiver_host_encoded_caches`, `host_encoded_cache_creators` | Engine-host caches in this update (not physical nodes) and the ranks that built one |
-| `creator_host_encoded_cache_{read_hash_s,read_worker_sum_s,sha256_worker_sum_s,build_s,allocation_s}`, `creator_host_encoded_cache_{hash_bytes,hash_files,allocation_calls,allocation_bytes}/sum` | Creator-only cache work, excluding reusers' zero counters. `read_hash_s` is the submission/join wall time of parallel owner-file verification; the worker sums add overlapping intervals and must not be added to it. All file tasks drain before READY or failure |
-| `host_encoded_cache_capacity_{bytes,generation}`, `host_prepared_cache_{capacity_bytes,capacity_generation,arena_bytes}` | Retained tmpfs capacity, growth generation and prepared extent per engine-host cache; byte fields add `/sum`. Independent engines may retain duplicate encoded bytes |
-| `creator_host_prepared_cache_{layout_s,build_s,allocation_s}`, `creator_host_prepared_cache_allocation_{calls,bytes}/sum` | Prepared-image creator spans and allocation work, once per engine-host |
-| `receiver_host_rank_outer_zstd_{decode_s,worker_decode_sum_s,encoded_bytes,decoded_bytes,tensors,frames}` | Actual outer-Zstd work: one owner per engine-host decodes the full image; followers and unwrapped codecs report zero. `decode_s` is the wrapped path's wall time including submission, raw copies and joins; the worker sum adds each worker's native decode and scatter |
-| `receiver_host_rank_cpu_workers` | Each rank's CPU worker count; zero on followers |
-| `receiver_host_rank_{arena_bytes,capacity_bytes,allocation_s,allocation_calls,allocation_bytes,capacity_generation,mapping_reused}` | Each rank's selected input extent, mapped capacity and growth work. CUDA ranks map the same shared pages, so their sums count aliases and their allocation calls count registrations; DE inputs are separate allocations. Fitting warm updates allocate or register nothing new |
-| `receiver_host_rank_private_capacity_bytes`, `receiver_host_rank_staging_copy_{s,bytes}` | DE-private input storage and the selected-span copy into it; zero for CUDA decode |
+| `creator_host_encoded_cache_{read_hash_s,read_worker_sum_s,sha256_worker_sum_s,build_s,allocation_s}`, `creator_host_encoded_cache_{hash_bytes,hash_files,allocation_calls,allocation_bytes}/sum` | Creator reductions of the encoded-cache work fields; reusers' zero counters are excluded |
+| `host_encoded_cache_capacity_{bytes,generation}`, `host_prepared_cache_{capacity_bytes,capacity_generation,arena_bytes}` | Engine-host cache reductions; byte fields add `/sum`, and independent engines may retain duplicate encoded bytes |
+| `creator_host_prepared_cache_{layout_s,build_s,allocation_s}`, `creator_host_prepared_cache_allocation_{calls,bytes}/sum` | Creator reductions of the prepared-image work fields, once per engine-host |
 | `host_input_capacity_bytes/sum` | Shared prepared pages once per engine-host plus DE rank-private capacity; excludes temporary native Zstd output slabs and is not total host RAM |
 | `engine_coordinator_{prepare,apply,resume,activation}_s` | Server-side tokenizer phase spans of each engine's single update request, excluding optional resource clearing |
 | `coordinator_activation_s` | Trainer-side await of all engine requests; no global phases are inferred from overlapping engine lifetimes |
 | `activation_join_s` | This trainer's wait, after publication and any recovery compression, for the settled activation summary |
 | `recovery_owner_encode_s`, `recovery_load_s` | This owner's HF-relative recovery compression during the update (zero when none); activation of replacement engines, present only when replacements exist |
-| `producer_ranks`, `producer_prefix_{producer_wall_s,export_staging_wait_s,encoding_tail_wait_s,owner_seal_s}` | Owner count and per-owner prefixes that end at the existing pre-publication owner gather, before receiver activation: update start to sealed shard, the final export D2H fence, the encoding, finalization and write tail after export, and shard sealing |
+| `producer_ranks`, `producer_prefix_{producer_wall_s,export_staging_wait_s,encoding_tail_wait_s,owner_seal_s}` | Owner count and per-owner prefixes that end at the existing pre-publication owner gather, before receiver activation: publication setup to sealed shard, the final export D2H fence, the encoding, finalization and write tail after export, and shard sealing |
 | `payload_{tensor_count,canonical_bytes,changed_bytes,raw_tensor_count,raw_changed_tensors,raw_bytes,matrix_inner_arena_bytes,matrix_payload_bytes}` | Owner payload totals; see below |
-| `trainer_logging_rank`, `trainer_logging_rank_blocked_s` | The logging trainer's rank and its interval from `begin_sync` through the existing final trainer barrier. It excludes actor reconnect/cleanup and controller orchestration and is not an all-trainer maximum |
+| `trainer_logging_rank`, `trainer_logging_rank_blocked_s` | The logging trainer's rank and its interval from publication setup in `begin_sync`, after any baseline capture and codec selection, through the existing final trainer barrier. It excludes actor reconnect/cleanup and controller orchestration and is not an all-trainer maximum |
 
 Payload totals count each owner file once, not receiver fanout, and reuse the existing
 owner gather without another payload scan, collective or CUDA synchronization.
@@ -267,7 +278,7 @@ data, uncompressed scalar/vector XOR masks and alignment padding, excluding the 
 manifest. `payload_matrix_inner_arena_bytes` is the aligned inner-codec size before
 optional Zstd and is not additive with wire bytes. `perf/update_weights_density` is
 changed over canonical bytes, and `perf/update_weights_gpu_delta_s` is the local
-interval from `begin_sync` to the activation commit, before the final barrier.
+interval from that publication setup to the activation commit, before the final barrier.
 
 All seconds use local monotonic clocks. Nested phases are not additive, and no metric
 implies GPU-idle time or an RL throughput improvement. After the final trainer barrier,
@@ -282,18 +293,18 @@ The next train call cannot emit the same summary again.
 ## Limits
 
 - Receiver admission, including its routed-expert-only quantization contract and
-  primary recipe, the admitted model mappings and parallel layouts, and the excluded
+  primary recipe, the admitted model mappings (DeepSeek-V4.1 and Kimi-K3 are best-effort
+  placeholders without end-to-end coverage) and parallel layouts, and the excluded
   serving features (pipeline parallelism, CP decode-attention-TP caches, EPLB,
   redundant experts and elastic joins, among others) are listed in the
-  [receiver contract](https://github.com/radixark/miles/blob/main/miles/backends/sglang_utils/gpu_delta/README.md#admission-and-supported-layouts).
-- The DeepSeek-V4.1 and Kimi-K3 receiver mappings are best-effort placeholders
-  without end-to-end coverage; see the
   [receiver contract](https://github.com/radixark/miles/blob/main/miles/backends/sglang_utils/gpu_delta/README.md#admission-and-supported-layouts).
 - The trainer's canonical plan and every receiver read one static-tensor policy,
   `static_policy` in `miles/utils/gpu_delta/publication.py`, selected by the checkpoint's
   exact `config.json` `architectures[0]`. It decides which tensors never carry an update
   (bundled MTP drafts, computed rotary buffers and frozen modules); a checkpoint
-  architecture without a policy row is rejected.
+  architecture without a policy row is rejected. Activation calibration never carries
+  one either, under every policy: the plan omits each `.input_scale`, and receivers keep
+  serving the checkpoint's NVFP4 activation scales.
 - Frozen modules are tensors the trainer never exports, matched by the static-tensor
   policy. Receivers keep serving their checkpoint bytes, and an export that includes one
   fails the plan's inventory check; training them needs a converter and a policy change

@@ -24,7 +24,6 @@ from miles.backends.sglang_utils.gpu_delta.byte_views import (
     _DtypeMismatch,
     _factored_segments,
     _same_image,
-    _unique_images,
 )
 from miles.backends.sglang_utils.gpu_delta.derived import DerivedUpdate, _validate_checks
 
@@ -114,57 +113,6 @@ _MXFP4_TRTLLM_MAIN = replace(
 _MXFP4_MEGAMOE_MAIN = replace(_PAIRS["megamoe", "mxfp4"], scale="weight_scale_inv")
 
 
-@dataclass(frozen=True)
-class FlashInferLayout:
-    """The ExpertLayout of one routed-expert layer on a FlashInfer runner."""
-
-    format: str
-    backend: str
-    gated: bool
-    quant_mode: str = ""
-    up_first: bool = False
-    # identify_layout sets this only for a method whose storage differs from its pair's row.
-    override: _Pair | None = None
-
-    @property
-    def pair(self):
-        pair = self.override or _PAIRS.get((self.backend, self.format))
-        if pair is None:
-            raise ValueError(f"unsupported FlashInfer expert layout: {self.backend}/{self.format}")
-        return pair
-
-    # ExpertLayout (kernel_backends/base.py). Each method forwards to the module function of the same
-    # name, which takes the layout explicitly; inside a method body that name is the function.
-    def expert_slices(self, layer, projection, suffix, shape):
-        return expert_slices(layer, self, projection, suffix, shape)
-
-    def expert_scale_target(self, layer, local_expert, projection, canonical_shape):
-        return expert_scale_target(layer, self, local_expert, projection, canonical_shape)
-
-    def expert_destinations(self, layer, local_expert, projection, suffix, canonical_shape, canonical_dtype):
-        return expert_destinations(layer, self, local_expert, projection, suffix, canonical_shape, canonical_dtype)
-
-    def consumer_objects(self, layer):
-        return consumer_objects(layer, self)
-
-    def expert_derived_updates(self, layer):
-        return expert_derived_updates(layer, self)
-
-
-def _backend(backend):
-    # The storage family of each exact runner value kernel_backends/__init__.py routes here; the
-    # routed and MXFP4 runners consume TRTLLM's shuffled storage.
-    if backend in {"flashinfer_trtllm", "flashinfer_trtllm_routed", "flashinfer_mxfp4"}:
-        resolved = "trtllm"
-    elif backend == "flashinfer_cutedsl":
-        resolved = "cutedsl"
-    elif backend == "flashinfer_megamoe":
-        resolved = "megamoe"
-    else:
-        raise ValueError(f"unsupported FlashInfer expert backend: {backend}")
-    return resolved
-
-
 def _mxfp4_trtllm_gated_interleave():
     """Whether SGLang's Mxfp4FlashinferTrtllmMoEMethod stored FlashInfer's gated row interleave.
 
@@ -193,15 +141,8 @@ def _mxfp4_scale_storage(layer, main_served, main):
 
 
 def _require_cutedsl_without_swap_ab(layer):
-    """Admit the standard CuTe DSL layout only in its 64-row W13 interleave (the _PAIRS row).
-
-    The companion tree interleaves 64-row groups with ``interleave_w13_halves``. SGLang main interleaves with
-    FlashInfer's ``interleave_cute_dsl_moe_weights`` and builds the CuteDslMoEWrapper under one
-    ``use_cutedsl_moe_swap_ab`` decision, made on the CUDA device the experts run on (CPU offloading moves them
-    back between forwards): 64-row groups, except the swap-AB layout's 16-row groups on SM100 and SM103, which
-    no CUDA check has compared yet. The warmed wrapper records that decision (FlashInfer 0.7.4 or later); the
-    receiver README's FlashInfer section states the rule.
-    """
+    """Admit the standard CuTe DSL layout only in its 64-row W13 interleave (the _PAIRS row), never SGLang main's
+    swap-AB 16-row groups, which the warmed wrapper records; the receiver README's FlashInfer section has the rule."""
     wrapper = layer._cutedsl_wrapper
     if (
         hasattr(wrapper, "swap_ab") and wrapper.swap_ab
@@ -213,8 +154,12 @@ def _require_cutedsl_without_swap_ab(layer):
 
 
 def identify_layout(layer, backend):
-    """Identify an existing inference path; do not select or construct one."""
-    backend = _backend(backend)
+    """Identify an existing inference path; do not select or construct one.
+
+    ``backend`` is the storage family ``kernel_backends/__init__.py`` records for the runner.
+    """
+    if backend not in {family for family, _ in _PAIRS}:
+        raise ValueError(f"unsupported FlashInfer expert backend: {backend}")
     method = layer.quant_method
     name = type(method).__name__
     gated = bool(layer.moe_runner_config.is_gated)
@@ -308,12 +253,8 @@ def identify_layout(layer, backend):
 
 
 def _cutedsl_scale_images(layer, stem, expert, allowed):
-    primary = getattr(layer, f"{stem}_blockscale_swizzled")[
-        expert
-    ]  # config-access-exempt: Select the admitted gate/up or down CuTe scale image.
-    source = getattr(layer, f"{stem}_weight_scale")[
-        expert
-    ]  # config-access-exempt: Select the admitted gate/up or down scale parameter.
+    primary = _consumer_field(layer, f"{stem}_blockscale_swizzled")[expert]
+    source = _consumer_field(layer, f"{stem}_weight_scale")[expert]
     mma = getattr(
         layer, f"{stem}_blockscale_mma", None
     )  # config-access-exempt: CuTe may retain an additional MMA scale image for this projection.
@@ -328,7 +269,6 @@ def _cutedsl_scale_images(layer, stem, expert, allowed):
         if not physical.is_contiguous():
             raise ValueError("unsupported nonstandard CuTe DSL MMA physical strides")
         images.append(physical.view(primary.shape).view(primary.dtype))
-    images = _unique_images(images)
     if not any(_same_image(source, image) for image in images):
         raise ValueError("NVFP4 source scale does not alias a prepared scale image")
     return images
@@ -392,9 +332,7 @@ def _weight_image(layer, stem, expert, layout):
     Scale bindings derive their geometry from this image, so only its element
     width is checked here; the weight's own binding admits its served dtype.
     """
-    image = getattr(layer, f"{stem}_weight")[
-        expert
-    ]  # config-access-exempt: Select the admitted gate/up or down weight image.
+    image = _consumer_field(layer, f"{stem}_weight")[expert]
     orientation = layout.pair.weight
     if orientation == "blocked":
         if image.element_size() != 2:
@@ -417,278 +355,310 @@ def _weight_image(layer, stem, expert, layout):
         raise ValueError(f"unsupported FlashInfer weight orientation: {orientation}")
 
 
-def expert_scale_target(layer, layout, local_expert, projection, canonical_shape):
-    """Existing FP32 API storage for lossless block-128 UE8M0 expansion.
+@dataclass(frozen=True)
+class FlashInferLayout:
+    """The ExpertLayout (kernel_backends/base.py) of one routed-expert layer on a FlashInfer runner."""
 
-    Preparation translates the canonical exponent XOR to a physical FP32 XOR;
-    ordinary byte-layout views cannot express this change of representation.
-    """
-    stem = _stem(projection)
-    target = getattr(layer, f"{stem}_weight_scale_inv")[
-        local_expert
-    ]  # config-access-exempt: Select the admitted block128 projection scale parameter.
-    if target.dtype != torch.float32:
-        raise _DtypeMismatch(f"block128 UE8M0 layout requires served=F32 (torch.float32), found {target.dtype}")
-    if target.ndim != 2:
-        raise ValueError("unexpected block-128 FP32 scale image")
-    rows, cols = canonical_shape
-    if layout.gated and projection != "down":
-        if target.shape[0] % 2:
-            raise ValueError("invalid block-128 gate/up scale geometry")
-        half_rows = target.shape[0] // 2
-        start = half_rows if projection == "up" else 0
+    format: str
+    backend: str
+    gated: bool
+    quant_mode: str = ""
+    up_first: bool = False
+    # identify_layout sets this only for a method whose storage differs from its pair's row.
+    override: _Pair | None = None
+
+    @property
+    def pair(self):
+        pair = self.override or _PAIRS.get((self.backend, self.format))
+        if pair is None:
+            raise ValueError(f"unsupported FlashInfer expert layout: {self.backend}/{self.format}")
+        return pair
+
+    def expert_scale_target(self, layer, local_expert, projection, canonical_shape):
+        """Existing FP32 API storage for lossless block-128 UE8M0 expansion.
+
+        Preparation translates the canonical exponent XOR to a physical FP32 XOR;
+        ordinary byte-layout views cannot express this change of representation.
+        """
+        stem = _stem(projection)
+        target = _consumer_field(layer, f"{stem}_weight_scale_inv")[local_expert]
+        if target.dtype != torch.float32:
+            raise _DtypeMismatch(f"block128 UE8M0 layout requires served=F32 (torch.float32), found {target.dtype}")
+        if target.ndim != 2:
+            raise ValueError("unexpected block-128 FP32 scale image")
+        rows, cols = canonical_shape
+        if self.gated and projection != "down":
+            if target.shape[0] % 2:
+                raise ValueError("invalid block-128 gate/up scale geometry")
+            half_rows = target.shape[0] // 2
+            start = half_rows if projection == "up" else 0
+            if rows > half_rows:
+                raise ValueError("block-128 scale projection exceeds its half")
+            target = target[start : start + rows]
+        if rows > target.shape[0] or cols > target.shape[1]:
+            raise ValueError("block-128 scale projection exceeds live storage")
+        return target[:rows, :cols]
+
+    def expert_slices(self, layer, projection, suffix, shape):
+        """Canonical projection owned by the ordinary expert loader's TP rank.
+
+        CuTe DSL and MegaMoE partition checkpoint extents before padding. TRTLLM's
+        padded loader instead uses its physical intermediate extent as the rank
+        stride. Keep that distinction at admission; apply sees only byte strides.
+        """
+        slices = [[0, extent] for extent in shape]
+        if layer.moe_tp_size != 1:
+            if projection == "down":
+                axis = 1
+            elif projection in {"gate", "up"}:
+                axis = 0
+            else:
+                raise ValueError(f"unsupported FlashInfer expert projection: {projection}")
+            extent = shape[axis]
+            if layer.use_padded_loading:
+                divisor = 1
+                if suffix in {"weight_scale", "weight_scale_inv"}:
+                    if self.format == "fp8-block128-ue8m0":
+                        divisor = 128
+                    elif axis == 1 and self.format == "nvfp4":
+                        divisor = 16
+                    elif axis == 1 and self.format in {"mxfp4", "mxfp8"}:
+                        divisor = 32
+                    elif axis == 1:
+                        raise ValueError(f"unsupported FlashInfer padded scale format: {self.format}")
+                elif axis == 1 and self.format in {"nvfp4", "mxfp4"}:
+                    divisor = 2
+                width = (layer.intermediate_size_per_partition + divisor - 1) // divisor
+            else:
+                width, remainder = divmod(extent, layer.moe_tp_size)
+                if remainder:
+                    raise ValueError("canonical expert extent must divide its TP group")
+            start = min(layer.moe_tp_rank * width, extent)
+            slices[axis] = [start, min(start + width, extent)]
+        return slices
+
+    def expert_destinations(self, layer, local_expert, projection, suffix, canonical_shape, canonical_dtype):
+        """Return disjoint canonical rectangles and live bit-preserving views.
+
+        Canonical shapes are the local logical projection, excluding padding.
+        Scalar calibration and FP32 scale expansion use separately prepared physical
+        XOR masks; they cannot use the canonical mask's byte-layout destinations.
+        """
+        pair, fmt = self.pair, _FORMATS[self.format]
+        stem = _stem(projection)
+        if projection == "down" or not self.gated:
+            group, half = 0, 0
+        else:
+            group, half = pair.group, int((projection == "up") != self.up_first)
+
+        def mapped(row):
+            return _row_map(row, group, half, pair.shuffle)
+
+        rows, cols = canonical_shape
+        if pair.scale_image == "cutedsl" and suffix == "weight_scale":
+            if canonical_dtype != fmt.scale:
+                raise _DtypeMismatch(
+                    f"checkpoint={canonical_dtype}; NVFP4 block scales require canonical F8_E4M3 bytes"
+                )
+            images = _cutedsl_scale_images(layer, stem, local_expert, pair.scale_served)
+            primary = images[0]
+            if primary.ndim != 2 or any(
+                not image.is_contiguous() or image.numel() != primary.numel() for image in images
+            ):
+                raise ValueError("unexpected CuTe DSL block-scale padding geometry")
+            padded_rows, padded_cols = primary.shape
+            if padded_rows % 128 or padded_cols % 4 or cols > padded_cols:
+                raise ValueError("unexpected CuTe DSL block-scale padding geometry")
+            if rows > (padded_rows // 2 if group else padded_rows):
+                raise ValueError("canonical scale projection exceeds FlashInfer row storage")
+            return _blocked_scale_segments(images, rows, cols, padded_cols, mapped)
+
+        weight, physical_rows, physical_cols = _weight_image(layer, stem, local_expert, self)
+        if suffix == "weight":
+            _check_served(weight, fmt.weight_served, f"{self.format} weight")
+        if not weight.is_contiguous():
+            raise ValueError("unexpected noncontiguous FlashInfer physical storage")
+        half_rows = physical_rows // (2 if self.gated and projection != "down" else 1)
         if rows > half_rows:
-            raise ValueError("block-128 scale projection exceeds its half")
-        target = target[start : start + rows]
-    if rows > target.shape[0] or cols > target.shape[1]:
-        raise ValueError("block-128 scale projection exceeds live storage")
-    return target[:rows, :cols]
+            raise ValueError("canonical projection exceeds FlashInfer row storage")
+        if group and half_rows % group:
+            raise ValueError("invalid FlashInfer gate/up group alignment")
+        if pair.shuffle and physical_rows % 32:
+            raise ValueError("TRTLLM weight row shuffle requires a multiple of 32")
+        if suffix == "weight":
+            if canonical_dtype != fmt.weight:
+                raise _DtypeMismatch(
+                    f"checkpoint={canonical_dtype}; {self.format} weights require canonical {fmt.weight}, "
+                    f"served={weight.dtype}"
+                )
+            # _weight_image admitted this width for the layout's orientation.
+            element_size = weight.element_size()
+            if cols * element_size > physical_cols:
+                raise ValueError("canonical weight exceeds FlashInfer column storage")
+            if self.format == "fp8-block128-ue8m0":
+                start = half_rows if self.gated and projection == "up" else 0
+                return (
+                    DestinationSegment(((0, rows), (0, cols)), (_byte_view(weight[start : start + rows, :cols]),)),
+                )
+            # Physical byte strides of one canonical row, column and column block.
+            if pair.weight == "blocked":
+                row_stride, block, stride, block_stride = 128, 128, 1, physical_rows * 128
+            elif pair.weight == "k_major":
+                row_stride, block, stride, block_stride = 1, 1, physical_rows, physical_rows
+            elif pair.weight in {"rows", "transposed"}:
+                row_stride, block, stride, block_stride = physical_cols, 1, 1, 1
+            else:
+                raise ValueError(f"unsupported FlashInfer weight orientation: {pair.weight}")
 
+            def row_offset(row):
+                return mapped(row) * row_stride
 
-def expert_slices(layer, layout, projection, suffix, shape):
-    """Canonical projection owned by the ordinary expert loader's TP rank.
-
-    CuTe DSL and MegaMoE partition checkpoint extents before padding. TRTLLM's
-    padded loader instead uses its physical intermediate extent as the rank
-    stride. Keep that distinction at admission; apply sees only byte strides.
-    """
-    slices = [[0, extent] for extent in shape]
-    if layer.moe_tp_size != 1:
-        if projection == "down":
-            axis = 1
-        elif projection in {"gate", "up"}:
-            axis = 0
-        else:
-            raise ValueError(f"unsupported FlashInfer expert projection: {projection}")
-        extent = shape[axis]
-        if layer.use_padded_loading:
-            divisor = 1
-            if suffix in {"weight_scale", "weight_scale_inv"}:
-                if layout.format == "fp8-block128-ue8m0":
-                    divisor = 128
-                elif axis == 1 and layout.format == "nvfp4":
-                    divisor = 16
-                elif axis == 1 and layout.format in {"mxfp4", "mxfp8"}:
-                    divisor = 32
-                elif axis == 1:
-                    raise ValueError(f"unsupported FlashInfer padded scale format: {layout.format}")
-            elif axis == 1 and layout.format in {"nvfp4", "mxfp4"}:
-                divisor = 2
-            width = (layer.intermediate_size_per_partition + divisor - 1) // divisor
-        else:
-            width, remainder = divmod(extent, layer.moe_tp_size)
-            if remainder:
-                raise ValueError("canonical expert extent must divide its TP group")
-        start = min(layer.moe_tp_rank * width, extent)
-        slices[axis] = [start, min(start + width, extent)]
-    return slices
-
-
-def expert_destinations(layer, layout, local_expert, projection, suffix, canonical_shape, canonical_dtype):
-    """Return disjoint canonical rectangles and live bit-preserving views.
-
-    Canonical shapes are the local logical projection, excluding padding.
-    Scalar calibration and FP32 scale expansion use separately prepared physical
-    XOR masks; they cannot use the canonical mask's byte-layout destinations.
-    """
-    pair, fmt = layout.pair, _FORMATS[layout.format]
-    stem = _stem(projection)
-    if projection == "down" or not layout.gated:
-        group, half = 0, 0
-    else:
-        group, half = pair.group, int((projection == "up") != layout.up_first)
-
-    def mapped(row):
-        return _row_map(row, group, half, pair.shuffle)
-
-    rows, cols = canonical_shape
-    if pair.scale_image == "cutedsl" and suffix == "weight_scale":
+            return _factored_segments([weight], rows, cols, element_size, row_offset, block, stride, block_stride)
+        if suffix != "weight_scale":
+            raise ValueError(f"unsupported FlashInfer expert suffix: {suffix}")
+        if fmt.scale is None:
+            raise ValueError(f"unsupported FlashInfer block-scale format: {self.format}")
         if canonical_dtype != fmt.scale:
-            raise _DtypeMismatch(f"checkpoint={canonical_dtype}; NVFP4 block scales require canonical F8_E4M3 bytes")
-        images = _cutedsl_scale_images(layer, stem, local_expert, pair.scale_served)
-        primary = images[0]
-        if primary.ndim != 2 or any(not image.is_contiguous() or image.numel() != primary.numel() for image in images):
-            raise ValueError("unexpected CuTe DSL block-scale padding geometry")
-        padded_rows, padded_cols = primary.shape
-        if padded_rows % 128 or padded_cols % 4 or cols > padded_cols:
-            raise ValueError("unexpected CuTe DSL block-scale padding geometry")
-        if rows > (padded_rows // 2 if group else padded_rows):
-            raise ValueError("canonical scale projection exceeds FlashInfer row storage")
-        return _blocked_scale_segments(images, rows, cols, padded_cols, mapped)
-
-    weight, physical_rows, physical_cols = _weight_image(layer, stem, local_expert, layout)
-    if suffix == "weight":
-        _check_served(weight, fmt.weight_served, f"{layout.format} weight")
-    if not weight.is_contiguous():
-        raise ValueError("unexpected noncontiguous FlashInfer physical storage")
-    half_rows = physical_rows // (2 if layout.gated and projection != "down" else 1)
-    if rows > half_rows:
-        raise ValueError("canonical projection exceeds FlashInfer row storage")
-    if group and half_rows % group:
-        raise ValueError("invalid FlashInfer gate/up group alignment")
-    if pair.shuffle and physical_rows % 32:
-        raise ValueError("TRTLLM weight row shuffle requires a multiple of 32")
-    if suffix == "weight":
-        if canonical_dtype != fmt.weight:
             raise _DtypeMismatch(
-                f"checkpoint={canonical_dtype}; {layout.format} weights require canonical {fmt.weight}, "
-                f"served={weight.dtype}"
+                f"checkpoint={canonical_dtype}; {self.format} block scales require canonical {fmt.scale}"
             )
-        # _weight_image admitted this width for the layout's orientation.
-        element_size = weight.element_size()
-        if cols * element_size > physical_cols:
-            raise ValueError("canonical weight exceeds FlashInfer column storage")
-        if layout.format == "fp8-block128-ue8m0":
-            start = half_rows if layout.gated and projection == "up" else 0
-            return (DestinationSegment(((0, rows), (0, cols)), (_byte_view(weight[start : start + rows, :cols]),)),)
-        # Physical byte strides of one canonical row, column and column block.
-        if pair.weight == "blocked":
-            row_stride, block, stride, block_stride = 128, 128, 1, physical_rows * 128
-        elif pair.weight == "k_major":
-            row_stride, block, stride, block_stride = 1, 1, physical_rows, physical_rows
-        elif pair.weight in {"rows", "transposed"}:
-            row_stride, block, stride, block_stride = physical_cols, 1, 1, 1
+        if physical_cols % fmt.scale_divisor:
+            raise ValueError("weight columns do not cover complete scale groups")
+        scale_cols = physical_cols // fmt.scale_divisor
+        if cols > scale_cols:
+            raise ValueError("canonical scales exceed FlashInfer column storage")
+        scale = _scale_parameter(layer, stem, self)[local_expert]
+        _check_served(scale, pair.scale_served, f"{self.format} block scale")
+        if pair.scale_image == "deepgemm":
+            # DeepGEMM packs four UE8M0 bytes per int32 in MN-major storage;
+            # MegaMoE then transposes each [4,32] row group for UTCCP.
+            if (
+                scale.ndim != 2
+                or tuple(scale.shape) != (physical_rows, (scale_cols + 3) // 4)
+                or scale.stride() != (1, physical_rows)
+                or physical_rows % 128
+            ):
+                raise ValueError("unexpected DeepGEMM packed UE8M0 scale geometry")
+
+            def packed_row_offset(row):
+                row = mapped(row)
+                return (row // 128 * 128 + row % 32 * 4 + row % 128 // 32) * 4
+
+            return _factored_segments(
+                [scale.transpose(0, 1)], rows, cols, 1, packed_row_offset, 4, 1, physical_rows * 4
+            )
+        elif pair.scale_image == "blocked":
+            padded_cols = (scale_cols + 3) // 4 * 4
+            if not scale.is_contiguous() or scale.numel() != (physical_rows + 127) // 128 * 128 * padded_cols:
+                raise ValueError("unexpected FlashInfer block-scale padding geometry")
+            return _blocked_scale_segments([scale], rows, cols, padded_cols, mapped)
         else:
-            raise ValueError(f"unsupported FlashInfer weight orientation: {pair.weight}")
+            raise ValueError(f"unsupported FlashInfer block-scale image: {pair.scale_image}")
 
-        def row_offset(row):
-            return mapped(row) * row_stride
-
-        return _factored_segments([weight], rows, cols, element_size, row_offset, block, stride, block_stride)
-    if suffix != "weight_scale":
-        raise ValueError(f"unsupported FlashInfer expert suffix: {suffix}")
-    if fmt.scale is None:
-        raise ValueError(f"unsupported FlashInfer block-scale format: {layout.format}")
-    if canonical_dtype != fmt.scale:
-        raise _DtypeMismatch(
-            f"checkpoint={canonical_dtype}; {layout.format} block scales require canonical {fmt.scale}"
-        )
-    if physical_cols % fmt.scale_divisor:
-        raise ValueError("weight columns do not cover complete scale groups")
-    scale_cols = physical_cols // fmt.scale_divisor
-    if cols > scale_cols:
-        raise ValueError("canonical scales exceed FlashInfer column storage")
-    scale = _scale_parameter(layer, stem, layout)[local_expert]
-    _check_served(scale, pair.scale_served, f"{layout.format} block scale")
-    if pair.scale_image == "deepgemm":
-        # DeepGEMM packs four UE8M0 bytes per int32 in MN-major storage;
-        # MegaMoE then transposes each [4,32] row group for UTCCP.
-        if (
-            scale.ndim != 2
-            or tuple(scale.shape) != (physical_rows, (scale_cols + 3) // 4)
-            or scale.stride() != (1, physical_rows)
-            or physical_rows % 128
-        ):
-            raise ValueError("unexpected DeepGEMM packed UE8M0 scale geometry")
-
-        def packed_row_offset(row):
-            row = mapped(row)
-            return (row // 128 * 128 + row % 32 * 4 + row % 128 // 32) * 4
-
-        return _factored_segments([scale.transpose(0, 1)], rows, cols, 1, packed_row_offset, 4, 1, physical_rows * 4)
-    elif pair.scale_image == "blocked":
-        padded_cols = (scale_cols + 3) // 4 * 4
-        if not scale.is_contiguous() or scale.numel() != (physical_rows + 127) // 128 * 128 * padded_cols:
-            raise ValueError("unexpected FlashInfer block-scale padding geometry")
-        return _blocked_scale_segments([scale], rows, cols, padded_cols, mapped)
-    else:
-        raise ValueError(f"unsupported FlashInfer block-scale image: {pair.scale_image}")
-
-
-def consumer_objects(layer, layout):
-    """Snapshot selected consumer objects and non-parameter tensor identities."""
-    method = layer.quant_method
-    pair = layout.pair
-    objects = [
-        method,
-        method.runner,
-        layer.moe_runner_config,
-        layer.moe_runner_config.is_gated,
-        layer.w13_weight,
-        layer.w2_weight,
-    ]
-    if pair.scale is not None:
-        objects.extend(
-            (
-                _scale_parameter(layer, "w13", layout),
-                _scale_parameter(layer, "w2", layout),
-            )
-        )
-    if layout.format == "nvfp4":
-        objects.extend(
-            (
-                layer.g1_alphas,
-                layer.g1_alphas_up,
-                layer.g2_alphas,
-                layer.w13_input_scale_quant,
-                layer.w2_input_scale_quant,
-            )
-        )
-    if layout.backend == "cutedsl":
-        objects.extend(
-            (
-                layer._cutedsl_wrapper,
-                layer._cutedsl_wrapper.quant_mode,
-                layer._cutedsl_scales,
-                *layer._cutedsl_scales,
-                layer._cutedsl_input_scale,
-                layer.w13_blockscale_swizzled,
-                layer.w2_blockscale_swizzled,
-            )
-        )
-        # MMA images are created by the standard v2 path when required.
-        objects.extend(
-            (
-                getattr(
-                    layer, "w13_blockscale_mma", None
-                ),  # config-access-exempt: CuTe may retain a second gate/up MMA scale image.
-                getattr(
-                    layer, "w2_blockscale_mma", None
-                ),  # config-access-exempt: CuTe may retain a second down-projection MMA scale image.
-            )
-        )
-    elif layout.backend == "megamoe":
-        mega = layer._flashinfer_megamoe_layer
-        if mega is None:
-            raise ValueError("FlashInfer MegaMoE must be warmed before admission")
-        objects.extend(
-            (
-                mega,
-                mega._megakernel_config,
-                mega._kernel,
-                mega._transformed,
-                layer._flashinfer_megamoe_forward,
-            )
-        )
-        for weights, scales in mega._transformed:
-            objects.extend((weights, scales))
-        if layout.format == "nvfp4" and layout.quant_mode == "w4a4":
-            config = mega._megakernel_config
+    def consumer_objects(self, layer):
+        """Snapshot selected consumer objects and non-parameter tensor identities."""
+        method = layer.quant_method
+        pair = self.pair
+        objects = [
+            method,
+            method.runner,
+            layer.moe_runner_config,
+            layer.moe_runner_config.is_gated,
+            layer.w13_weight,
+            layer.w2_weight,
+        ]
+        if pair.scale is not None:
             objects.extend(
                 (
-                    config.input_norm_const,
-                    layer._flashinfer_megamoe_input_norm_const,
+                    _scale_parameter(layer, "w13", self),
+                    _scale_parameter(layer, "w2", self),
                 )
             )
-    elif layout.backend == "trtllm":
-        if layout.format == "nvfp4":
-            # TRTLLM activation-dependent optional tensors; absence is itself captured.
+        if self.format == "nvfp4":
             objects.extend(
-                getattr(
-                    layer, name, None
-                )  # config-access-exempt: Snapshot optional backend-owned consumer fields for identity checks.
-                for name in (
-                    "gemm1_alpha",
-                    "gemm1_beta",
-                    "gemm1_clamp_limit",
-                    "g1_scale_c",
+                (
+                    layer.g1_alphas,
+                    layer.g1_alphas_up,
+                    layer.g2_alphas,
+                    layer.w13_input_scale_quant,
+                    layer.w2_input_scale_quant,
                 )
             )
-    else:
-        raise ValueError(f"unsupported FlashInfer consumer backend: {layout.backend}")
-    objects.extend(_consumer_field(layer, name) for name in pair.consumers)
-    objects.extend(_consumer_field(method, name) for name in pair.method_consumers)
-    return tuple(objects)
+        if self.backend == "cutedsl":
+            objects.extend(
+                (
+                    layer._cutedsl_wrapper,
+                    layer._cutedsl_wrapper.quant_mode,
+                    layer._cutedsl_scales,
+                    *layer._cutedsl_scales,
+                    layer._cutedsl_input_scale,
+                    layer.w13_blockscale_swizzled,
+                    layer.w2_blockscale_swizzled,
+                )
+            )
+            # MMA images are created by the standard v2 path when required.
+            objects.extend(
+                (
+                    getattr(
+                        layer, "w13_blockscale_mma", None
+                    ),  # config-access-exempt: CuTe may retain a second gate/up MMA scale image.
+                    getattr(
+                        layer, "w2_blockscale_mma", None
+                    ),  # config-access-exempt: CuTe may retain a second down-projection MMA scale image.
+                )
+            )
+        elif self.backend == "megamoe":
+            mega = layer._flashinfer_megamoe_layer
+            if mega is None:
+                raise ValueError("FlashInfer MegaMoE must be warmed before admission")
+            objects.extend(
+                (
+                    mega,
+                    mega._megakernel_config,
+                    mega._kernel,
+                    mega._transformed,
+                    layer._flashinfer_megamoe_forward,
+                )
+            )
+            for weights, scales in mega._transformed:
+                objects.extend((weights, scales))
+            if self.format == "nvfp4" and self.quant_mode == "w4a4":
+                config = mega._megakernel_config
+                objects.extend(
+                    (
+                        config.input_norm_const,
+                        layer._flashinfer_megamoe_input_norm_const,
+                    )
+                )
+        elif self.backend == "trtllm":
+            if self.format == "nvfp4":
+                # TRTLLM activation-dependent optional tensors; absence is itself captured.
+                objects.extend(
+                    getattr(
+                        layer, name, None
+                    )  # config-access-exempt: Snapshot optional backend-owned consumer fields for identity checks.
+                    for name in (
+                        "gemm1_alpha",
+                        "gemm1_beta",
+                        "gemm1_clamp_limit",
+                        "g1_scale_c",
+                    )
+                )
+        else:
+            raise ValueError(f"unsupported FlashInfer consumer backend: {self.backend}")
+        objects.extend(_consumer_field(layer, name) for name in pair.consumers)
+        objects.extend(_consumer_field(method, name) for name in pair.method_consumers)
+        return tuple(objects)
+
+    def expert_derived_updates(self, layer):
+        """The derived calibration updates of one identified layer, by canonical format."""
+        if self.format == "nvfp4":
+            return (nvfp4_derived_update(layer, self),)
+        elif self.format in {"bf16", "mxfp4", "mxfp8", "fp8-block128-ue8m0"}:
+            # These formats carry no per-tensor scale, so no consumer value derives from one.
+            return ()
+        else:
+            raise ValueError(f"unsupported GPU delta expert format: {self.format}")
 
 
 def _normal_scale_helpers():
@@ -749,9 +719,7 @@ def nvfp4_derived_update(layer, layout):
     source_names = ["w13_weight_scale_2", "w2_weight_scale_2"]
     if not neutral_input:
         source_names.extend(("w13_input_scale", "w2_input_scale"))
-    sources = tuple(
-        getattr(layer, name) for name in source_names
-    )  # config-access-exempt: Resolve admitted named calibration buffers on the inference layer.
+    sources = tuple(_consumer_field(layer, name) for name in source_names)
     destinations = [layer.g1_alphas, layer.g1_alphas_up, layer.g2_alphas]
 
     # W4A16 already has neutral activation constants. Retain its direct-copy
@@ -770,9 +738,7 @@ def nvfp4_derived_update(layer, layout):
             getattr(layer, "gemm1_beta", None) is not None
         ):  # config-access-exempt: The selected TRTLLM inference path may retain a beta image.
             extra_names.append("gemm1_beta")
-        destinations.extend(
-            getattr(layer, name) for name in extra_names
-        )  # config-access-exempt: Resolve admitted named calibration buffers on the inference layer.
+        destinations.extend(_consumer_field(layer, name) for name in extra_names)
     if cute:
         scales = layer._cutedsl_scales
         input_scale = layer._cutedsl_input_scale
@@ -927,14 +893,3 @@ def nvfp4_derived_update(layer, layout):
         return tuple(predicates)
 
     return DerivedUpdate(sources, tuple(destinations), compute, checks if mega or tied_clamp else None)
-
-
-def expert_derived_updates(layer, layout):
-    """The derived calibration updates of one identified layer, by canonical format."""
-    if layout.format == "nvfp4":
-        return (nvfp4_derived_update(layer, layout),)
-    elif layout.format in {"bf16", "mxfp4", "mxfp8", "fp8-block128-ue8m0"}:
-        # These formats carry no per-tensor scale, so no consumer value derives from one.
-        return ()
-    else:
-        raise ValueError(f"unsupported GPU delta expert format: {layout.format}")
