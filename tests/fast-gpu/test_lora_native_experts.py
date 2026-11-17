@@ -113,8 +113,9 @@ def _case(gated, shared_outer):
     output = checkpoint(lambda inp: mlp(inp)[0], x, use_reentrant=False)
     output.float().square().sum().backward()
     assert torch.isfinite(output).all() and torch.isfinite(x.grad).all()
+    assert wrappers[0].routing_plan is wrappers[1].routing_plan
+    assert wrappers[0].routing_plan.get() is None
     for wrapper in wrappers:
-        assert sum(sum(row) for row in wrapper.routing.counts) == len(wrapper.routing.permutation)
         for parameter in wrapper.parameters():
             assert parameter.grad is not None and torch.isfinite(parameter.grad).all()
     with torch.no_grad():

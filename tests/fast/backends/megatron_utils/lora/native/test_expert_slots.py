@@ -1,5 +1,6 @@
 """Slot isolation on expert-major tokens, including empty slots and padded ranks."""
 
+from contextvars import ContextVar
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -48,7 +49,9 @@ def test_expert_major_forward_and_gradients_match_per_token_reference(monkeypatc
             )
         )
     )
-    adapter = NativeMultiLoRAExpertAdapter([build() for _ in counts], context)
+    adapter = NativeMultiLoRAExpertAdapter(
+        [build() for _ in counts], context, ContextVar("test_routing", default=None)
+    )
     for slot in range(3):
         adapter.init_slot(slot, slot + 1, 6)
         with torch.no_grad():
@@ -63,9 +66,13 @@ def test_expert_major_forward_and_gradients_match_per_token_reference(monkeypatc
     per_expert = [sum(counts), sum(counts)]
     monkeypatch.setattr(expert_slots, "_co_permute_slot_ids", lambda _d, ids, _n: ids[permutation])
     dispatcher = SimpleNamespace(hidden_shape_before_permute=(sum(counts), 6))
-    adapter.routing = expert_slots.build_expert_slot_routing(dispatcher, per_expert, counts, context, "cpu")
+    plan = expert_slots.build_expert_slot_routing(dispatcher, per_expert, counts, context, "cpu")
     x = torch.randn(len(permutation), 5 if projection == "down" else 6, requires_grad=True)
-    actual = adapter(x, nn.Identity())
+    token = adapter.routing_plan.set(plan)
+    try:
+        actual = adapter(x, nn.Identity())
+    finally:
+        adapter.routing_plan.reset(token)
     expected = []
     for row, slot, expert in zip(x, dispatched_slots.tolist(), [0] * sum(counts) + [1] * sum(counts), strict=True):
         single = adapter.adapters[slot]
@@ -103,3 +110,64 @@ def test_expert_routing_narrows_the_sequence_parallel_shard(monkeypatch):
     )
     assert seen == [1, 1, 1]
     assert routing.counts == ((0,), (3,), (0,))
+
+
+def test_routing_plan_restores_changed_width_and_gradients():
+    plan = expert_slots.ExpertSlotRouting(torch.tensor([2, 0, 3, 1]), ((1, 1), (1, 1)))
+    x = torch.randn(4, 3, requires_grad=True)
+    first, second = plan.group_by_slot(x)
+    restored = plan.restore_order(torch.cat([2 * first[:, :2], 3 * second[:, :2]]))
+    scales = torch.tensor([2.0, 3.0, 2.0, 3.0])[:, None]
+    torch.testing.assert_close(restored, x[:, :2] * scales)
+    restored.sum().backward()
+    torch.testing.assert_close(x.grad, torch.cat([scales.expand(4, 2), torch.zeros(4, 1)], dim=1))
+
+
+@pytest.mark.parametrize("exit_mode", ["normal", "exception", "nested"])
+def test_expert_forward_scopes_one_plan_and_restores_the_previous_binding(monkeypatch, exit_mode):
+    from megatron.core.transformer.moe import token_dispatcher
+
+    class Dispatcher:
+        tp_size = 1
+        hidden_shape_before_permute = (2, 6)
+
+    monkeypatch.setattr(token_dispatcher, "MoEAlltoAllTokenDispatcher", Dispatcher)
+    monkeypatch.setattr(expert_slots, "_co_permute_slot_ids", lambda _d, ids, _n: ids)
+    routing_plan = ContextVar("test_layer_routing", default=None)
+    previous = expert_slots.ExpertSlotRouting(torch.arange(2), ((2,),))
+    binding = routing_plan.set(previous)
+    seen = []
+
+    class Experts(nn.Module):
+        def forward(self, hidden, per_expert):
+            plan = routing_plan.get()
+            assert plan is not None and plan is not previous
+            seen.append(plan)
+            if exit_mode == "exception":
+                raise ValueError("expert failed")
+            if exit_mode == "nested" and len(seen) == 1:
+                hidden = self(hidden, per_expert)
+                assert routing_plan.get() is plan
+            return hidden * 2
+
+    experts = Experts()
+    mlp = SimpleNamespace(
+        experts=experts,
+        token_dispatcher=Dispatcher(),
+        config=SimpleNamespace(moe_permute_fusion=False, moe_expert_capacity_factor=None),
+    )
+    reference = SimpleNamespace(token_counts_by_slot=(1, 1, 0), context=_context(), routing_plan=routing_plan)
+    expert_slots.install_expert_slot_routing(mlp, reference)
+    assert not experts._forward_pre_hooks
+    try:
+        if exit_mode == "exception":
+            with pytest.raises(ValueError, match="expert failed"):
+                experts(torch.randn(2, 6), [2])
+        else:
+            experts(torch.randn(2, 6), [2])
+        assert routing_plan.get() is previous
+        assert len(seen) == (2 if exit_mode == "nested" else 1)
+        if exit_mode == "nested":
+            assert seen[0] is not seen[1]
+    finally:
+        routing_plan.reset(binding)

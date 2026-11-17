@@ -4,19 +4,29 @@
 Adapter-slot co-permutation adapted from Megatron-Bridge; see NOTICE.
 """
 
+from contextvars import ContextVar
 from dataclasses import dataclass
+from functools import wraps
 
 import torch
 import torch.nn as nn
 
-from miles.backends.megatron_utils.lora.native.modules.linear import NativeMultiLoRAAdapter
+from miles.backends.megatron_utils.lora.native.modules.linear import NativeMultiLoRASlots
 
 
 @dataclass(frozen=True)
 class ExpertSlotRouting:
     permutation: torch.Tensor
-    inverse: torch.Tensor
     counts: tuple[tuple[int, ...], ...]
+
+    def group_by_slot(self, x: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        """Group dispatched rows by slot, preserving expert order within each slot."""
+        rows = x.index_select(0, self.permutation)
+        return rows.split([sum(per_expert) for per_expert in self.counts])
+
+    def restore_order(self, deltas: torch.Tensor) -> torch.Tensor:
+        """Scatter grouped deltas back to the dispatcher's row order."""
+        return torch.empty_like(deltas).index_copy_(0, self.permutation, deltas)
 
 
 def _co_permute_slot_ids(dispatcher, slot_ids: torch.Tensor, num_experts: int) -> torch.Tensor:
@@ -57,38 +67,36 @@ def build_expert_slot_routing(dispatcher, per_expert, counts, context, device) -
     assert len(expert_ids) == len(slot_ids), "dispatched token and adapter-slot counts disagree"
     keys = slot_ids.long() * num_experts + expert_ids
     permutation = torch.argsort(keys, stable=True)
-    inverse = torch.empty_like(permutation)
-    inverse.scatter_(0, permutation, torch.arange(len(permutation), device=device))
     slot_counts = torch.bincount(keys, minlength=len(counts) * num_experts).view(len(counts), num_experts)
-    return ExpertSlotRouting(permutation, inverse, tuple(tuple(row) for row in slot_counts.tolist()))
+    return ExpertSlotRouting(permutation, tuple(tuple(row) for row in slot_counts.tolist()))
 
 
-class NativeMultiLoRAExpertAdapter(NativeMultiLoRAAdapter):
-    """Reuse native slot lifecycle and IO, with tokens grouped by both slot and expert."""
+class NativeMultiLoRAExpertAdapter(NativeMultiLoRASlots):
+    """Expert slots sharing the MoE layer's scoped routing plan."""
 
-    routing: ExpertSlotRouting | None = None
-
-    def _validate_adapter_types(self, adapters) -> None:
+    def __init__(self, adapters, context, routing_plan: ContextVar[ExpertSlotRouting | None]):
         assert all(type(adapter) is type(adapters[0]) for adapter in adapters)
+        super().__init__(adapters, context)
+        self.routing_plan = routing_plan
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
-        routing = self.routing
-        assert routing is not None, "routed expert adapters need the MoE slot-routing hook"
-        rows = x.index_select(0, routing.permutation)
-        segments = rows.split([sum(counts) for counts in routing.counts])
-        deltas = [
-            adapter(segment, base_module, counts) * (alpha / rank)
-            for adapter, segment, counts, alpha, rank in zip(
-                self.adapters, segments, routing.counts, self.lora_alphas_by_slot, self.lora_ranks_by_slot, strict=True
-            )
-        ]
-        return torch.cat(deltas).index_select(0, routing.inverse)
+        routing = self.routing_plan.get()
+        assert routing is not None, "expert adapters must run inside the routed expert forward"
+        segments = routing.group_by_slot(x)
+        assert len(segments) == len(self.adapters), "the routing plan must cover every adapter slot"
+        deltas = []
+        for slot, adapter in enumerate(self.adapters):
+            delta = adapter(segments[slot], base_module, routing.counts[slot])
+            scale = self.lora_alphas_by_slot[slot] / self.lora_ranks_by_slot[slot]
+            deltas.append(delta * scale)
+        return routing.restore_order(torch.cat(deltas))
 
     def add_delta(self, out: torch.Tensor, delta: torch.Tensor) -> torch.Tensor:
         return out + delta
 
 
-def install_expert_slot_routing(mlp: nn.Module, adapters: list[NativeMultiLoRAExpertAdapter]) -> None:
+def install_expert_slot_routing(mlp: nn.Module, reference: NativeMultiLoRAExpertAdapter) -> None:
+    """Bind one plan around the expert forward, shared by FC1/FC2 and reset even on recomputation exits."""
     # Dispatcher internals and kernels are available only in the Megatron runtime.
     from megatron.core.transformer.moe.token_dispatcher import MoEAlltoAllTokenDispatcher
 
@@ -98,13 +106,17 @@ def install_expert_slot_routing(mlp: nn.Module, adapters: list[NativeMultiLoRAEx
     assert dispatcher.tp_size == 1, "native multi-LoRA experts require expert tensor parallel size 1"
     assert not mlp.config.moe_expert_capacity_factor, "native multi-LoRA experts do not support capacity padding"
 
-    def route(_experts, inputs):
-        hidden, per_expert = inputs[:2]
-        reference = adapters[0]
+    expert_forward = mlp.experts.forward
+
+    @wraps(expert_forward)
+    def forward_with_routing(hidden, per_expert, *args, **kwargs):
         counts = reference.token_counts_by_slot
         assert counts is not None, "call AdapterSlots.route_tokens before the MoE forward"
-        routing = build_expert_slot_routing(dispatcher, per_expert, counts, reference.context, hidden.device)
-        for adapter in adapters:
-            adapter.routing = routing
+        plan = build_expert_slot_routing(dispatcher, per_expert, counts, reference.context, hidden.device)
+        token = reference.routing_plan.set(plan)
+        try:
+            return expert_forward(hidden, per_expert, *args, **kwargs)
+        finally:
+            reference.routing_plan.reset(token)
 
-    mlp.experts.register_forward_pre_hook(route)
+    mlp.experts.forward = forward_with_routing

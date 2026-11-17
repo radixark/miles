@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+from contextvars import ContextVar
 
 import torch
 import torch.nn as nn
@@ -58,6 +59,7 @@ class GroupedExpertsSpec:
         )
         count = 0
         slotted = []
+        routing_plan = ContextVar("expert_lora_routing", default=None)
         # the adapters take the hosts' compute dtype and logical widths: an MXFP4 host's weight0 is its packed bytes
         reference = torch.empty((), dtype=fc1.params_dtype, device=fc1.weight0.device)
         fc1_prefix = context.naming.block_prefix(layer, fc1.weight0, list(self.gate_up_hf_leaves))
@@ -77,7 +79,7 @@ class GroupedExpertsSpec:
                 width=fc1.in_features,
                 **common,
             )
-            experts.lora_fc1_adapter = _build_expert_adapter(build_fc1, context, slotted)
+            experts.lora_fc1_adapter = _build_expert_adapter(build_fc1, context, slotted, routing_plan)
             attach_adapter_forward(fc1, experts.lora_fc1_adapter)
             count += 1
         fc2_prefix = context.naming.block_prefix(layer, fc2.weight0, [self.down_hf_leaf])
@@ -91,12 +93,12 @@ class GroupedExpertsSpec:
                 width=fc2.out_features,
                 **common,
             )
-            experts.lora_fc2_adapter = _build_expert_adapter(build_fc2, context, slotted)
+            experts.lora_fc2_adapter = _build_expert_adapter(build_fc2, context, slotted, routing_plan)
             attach_adapter_forward(fc2, experts.lora_fc2_adapter)
             count += 1
 
         if slotted:
-            install_expert_slot_routing(mlp, slotted)
+            install_expert_slot_routing(mlp, slotted[0])
         shared = getattr(
             mlp, "shared_experts", None
         )  # absent on MoEs without shared experts  # config-access-exempt: MoE implementations may omit shared experts
@@ -154,9 +156,9 @@ def _sub_expert_delta(delta, index: int, x: torch.Tensor, host: nn.Module, *_hos
     return delta(x, host, index)
 
 
-def _build_expert_adapter(build, context, slotted):
+def _build_expert_adapter(build, context, slotted, routing_plan):
     if context.lora.num_slots is None:
         return build()
-    adapter = NativeMultiLoRAExpertAdapter([build() for _ in range(context.lora.num_slots)], context)
+    adapter = NativeMultiLoRAExpertAdapter([build() for _ in range(context.lora.num_slots)], context, routing_plan)
     slotted.append(adapter)
     return adapter
