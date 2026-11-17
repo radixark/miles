@@ -29,6 +29,7 @@ from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.rollout.reward_shaping import validate_length_penalty_args
 from miles.router.backend import RouterKind
+from miles.tinker.arguments import configure_tinker_mode
 from miles.utils.args.configs.data import DataConfig
 from miles.utils.args.configs.fault_tolerance import _DEFAULT_FT_API_SERVER_PORT
 from miles.utils.args.configs.router import RouterConfig
@@ -1142,6 +1143,11 @@ def miles_validate_args(args):
     if args.custom_config_path:
         logger.warning("--custom-config-path is deprecated; use the custom function's declared CLI arguments instead.")
         _apply_custom_config(args, yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {})
+
+    if args.entry == "serve":
+        configure_tinker_mode(args)
+    elif args.tinker_mode is not None:
+        raise ValueError("--tinker-mode requires serve_tinker.py")
 
     validate_length_penalty_args(args)
     mode = args.update_weight_transfer_mode

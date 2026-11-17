@@ -176,13 +176,13 @@ class MilesBackend:
     @property
     def trainer(self):
         if self._trainer is None:
-            raise UserInputError("Training is disabled by --debug-rollout-only")
+            raise UserInputError("Training is disabled in inference mode; use --tinker-mode training or combined")
         return self._trainer
 
     @property
     def router_url(self) -> str:
         if self._router_url is None:
-            raise UserInputError("Sampling is disabled by --debug-train-only")
+            raise UserInputError("Sampling is disabled in training mode; use --tinker-mode inference or combined")
         return self._router_url
 
     def lora_groups(self, target_modules) -> dict[str, bool]:

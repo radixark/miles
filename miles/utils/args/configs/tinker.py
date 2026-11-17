@@ -1,9 +1,19 @@
+from typing import Literal
+
 from miles.utils.args.schema import A, Arg, BaseConfig
 
 
 class TinkerConfig(BaseConfig):
     tinker_lora_groups: list[str] | None = None
 
+    tinker_mode: A[
+        Literal["combined", "training", "inference"] | None,
+        Arg(
+            choices=("combined", "training", "inference"),
+            type_parser=str,
+            help="Components to start in serve_tinker.py (default: combined; existing component flags remain supported)",
+        ),
+    ] = None
     tinker_server_host: A[str, Arg()] = "0.0.0.0"
     tinker_server_port: A[int, Arg()] = 10613
     tinker_base_model: A[

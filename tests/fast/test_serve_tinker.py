@@ -17,6 +17,7 @@ _ = tinker_startup
 
 class TestServe:
     async def test_training_only_skips_inference_startup(self, tinker_startup: SimpleNamespace) -> None:
+        tinker_startup.args.tinker_mode = "training"
         tinker_startup.args.starts_inference_engines = False
 
         await with_disposer(serve_tinker.serve, tinker_startup.args)
@@ -26,7 +27,7 @@ class TestServe:
         assert http_utils._client_concurrency == 0
 
     async def test_inference_only_skips_trainer_startup(self, tinker_startup: SimpleNamespace) -> None:
-        tinker_startup.args.debug_rollout_only = True
+        tinker_startup.args.tinker_mode = "inference"
 
         await with_disposer(serve_tinker.serve, tinker_startup.args)
 

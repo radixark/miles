@@ -75,7 +75,7 @@ async def serve(args, *, disposer: Disposer):
         router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
 
     trainer = None
-    if not args.debug_rollout_only:
+    if args.tinker_mode != "inference":
         trainer = create_trainer_handles(args, trainer_configs=trainer_configs, capability=capability)[
             actor_config.trainer_id
         ]
