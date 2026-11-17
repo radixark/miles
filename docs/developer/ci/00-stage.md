@@ -49,11 +49,19 @@ Both PR workflows expose reusable `workflow_call` entry points. Release CI calls
 
 **Image resolution (`resolve-ci-image`).** In `pr-test.yml`, a small `ubuntu-latest` job selects, in order: the called workflow's `image_tag`, the `ci_image_tag` dispatch input, a current `pr-<num>` image, the PR description's `ci-image-tag:`, then `dev`. It validates the result is a bare tag and outputs `radixark/miles:<tag>`. `release-branch-cut.yml` passes the prune-exempt `release-vX.Y.Z-ci` tag recorded in `release-lock.json`.
 
-The ROCm resolver in `tests/ci/rocm.py` selects, in order: the called workflow's `image_tag`, the `ci_image_tag` dispatch input, a current `pr-<num>-rocm10-mi35x` image, the PR description's `ci-rocm-image-tag:`, then `DEFAULT_IMAGE_TAG`, the undated `miles-rocm10-mi35x`. PR tags use `radixark/miles`; other ROCm tags use `rocm/sgl-dev`. It validates the result is a bare tag, and `ci-image-tag:` stays a CUDA directive.
+ROCm selects a test image only when GPU tests will run, using this priority:
 
-`_build-pr-ci-image.yml` builds or reuses the ROCm PR image whenever its inputs differ from the base, regardless of test selection. Image resolution runs only for selected ROCm stages or changed-file jobs. A failed build blocks image resolution and AMD execution. Changed-file jobs wait for this same resolved image. [Docker Build](/developer/ci/02-docker-build#rocm-pr-images) describes input hashing and trusted publication through a Spur compute-node build.
+| Priority | Image tag |
+|---|---|
+| 1 | `image_tag` from the calling workflow |
+| 2 | `ci_image_tag` from a manual run |
+| 3 | The PR image matching the current build inputs: `pr-<num>-rocm10-mi35x` |
+| 4 | `ci-rocm-image-tag:` in the PR description |
+| 5 | The default, `miles-rocm10-mi35x` |
 
-CUDA and ROCm image builds are independent of test selection. The `resolve-ci-image` job only runs when GPU tests need an image.
+Specify a tag without a repository prefix. PR tags use `radixark/miles`; other ROCm tags use `rocm/sgl-dev`. The `ci-image-tag:` directive applies only to CUDA.
+
+CUDA and ROCm check for image changes even when no GPU tests are selected. If a PR changes an image's inputs relative to the base, CI reuses a matching PR image or builds a new one. ROCm suites and changed-file tests use the same selected image; any required build must succeed before they run. See [Docker Build](/developer/ci/02-docker-build#rocm-pr-images) for the input mapping and build process.
 
 Distinct from image selection, the **`run-ci-image` label** selects the test scope — every enabled tag except `long`, `ft-short`, and `ft-long` — which validates an image bump without selecting those domains implicitly.
 
