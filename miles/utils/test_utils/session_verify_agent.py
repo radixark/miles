@@ -16,6 +16,11 @@ its prompt record:
   every continuation the spec refuses must get HTTP 400 and every one it
   accepts must succeed.  It also rolls back, appends a system message and
   injects assistant messages, which the session server must handle too.
+
+  Some steps need the model to call the tool, or to stop calling it.  A sample
+  whose model does not is recorded as unfinished and stops at that step; the
+  run fails only when too many spec samples are unfinished (the runner's
+  ``SPEC_UNFINISHED_RATIO_THRESHOLD``).
 """
 
 from __future__ import annotations
@@ -96,6 +101,8 @@ _GENERATE_STAGE = "session_verify_agent.generate"
 SESSION_VERIFY_KIND_KEY = "session_verify_kind"
 # Agent metadata key carrying a spec rollout's expected and actual statuses.
 EXPECTATIONS_KEY = "session_verify_expectations"
+# Agent metadata key carrying why a spec rollout stopped before its last step, or None.
+UNFINISHED_KEY = "session_verify_unfinished"
 
 # Mismatch tiers reported by the session-server's per-sample comparator.  Any
 # occurrence of these "hard" types in a sample's tito_session_mismatch
@@ -243,6 +250,13 @@ async def _chat_status(client, base_url, messages, request_kwargs, *, label) -> 
     return _REFUSED, None
 
 
+class _ModelBehaviorError(Exception):
+    """The model did not do what a spec rollout step needs: call the tool, or stop calling it.
+
+    The server did nothing wrong, so the sample stops at that step and stays valid.
+    """
+
+
 def _reply_head(message: dict) -> str:
     """The start of a reply's text, for the error that reports a rejected resample."""
     return (message.get("content") or message.get("reasoning_content") or "")[:100]
@@ -284,14 +298,19 @@ class _Driver:
         """Generate the next assistant message, resampling a length cut or, if asked, a reply without calls."""
         kwargs = {**self.request_kwargs, **(extra_kwargs or {})}
         rejected = []
+        complete_without_call = False
         for retry in range(_MAX_RESAMPLES + 1):
             response = await _chat(self.client, self.base_url, messages, _with_retry_seed(kwargs, retry), label=label)
             choice = response["choices"][0]
             message = choice["message"]
-            if choice.get("finish_reason") != "length" and (message.get("tool_calls") or not need_tool_call):
-                return self._accept(message)
+            if choice.get("finish_reason") != "length":
+                if message.get("tool_calls") or not need_tool_call:
+                    return self._accept(message)
+                complete_without_call = True
             rejected.append(f"{choice.get('finish_reason')}: {_reply_head(message)!r}")
-        raise AssertionError(
+        # A turn cut on every resample is no model choice; it fails the run like any other turn.
+        error = _ModelBehaviorError if complete_without_call else AssertionError
+        raise error(
             f"{label} exhausted {_MAX_RESAMPLES} resamples (finish_reason='length' or no tool call when one is "
             f"needed); replies: {rejected}"
         )
@@ -336,7 +355,8 @@ class _Driver:
                 return reply
             self.append_tool_results(messages, reply)
             reply = await self.chat(messages, label=f"tool round {round_index + 1}")
-        assert not reply.get("tool_calls"), f"the model still calls a tool after {_MAX_TOOL_ROUNDS} answered rounds"
+        if reply.get("tool_calls"):
+            raise _ModelBehaviorError(f"the model still calls a tool after {_MAX_TOOL_ROUNDS} answered rounds")
         return reply
 
 
@@ -441,7 +461,9 @@ def _session_verify_kind(metadata: dict) -> SessionVerifyKind:
 
 @_journal_verifier_assertions("session_verify_agent.run_agent")
 async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
-    """Custom-agent entry point.  Returns ``{"driver_events": [...], EXPECTATIONS_KEY: [...], **counters}``.
+    """Custom-agent entry point.
+
+    Returns ``{"driver_events": [...], EXPECTATIONS_KEY: [...], UNFINISHED_KEY: str | None, **counters}``.
 
     ``metadata`` must carry ``tito_model`` (the ``generate`` wrapper below
     injects it from ``args.tito_model``) and ``session_verify_kind`` (from the
@@ -459,13 +481,23 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     rk = {k: v for k, v in request_kwargs.items() if k not in ("tools",)}
     async with httpx.AsyncClient(timeout=180) as client:
         driver = _Driver(client=client, base_url=base_url, request_kwargs=rk)
+        unfinished = None
         if kind is SessionVerifyKind.SPEC:
-            await _run_spec(driver, fixed)
+            try:
+                await _run_spec(driver, fixed)
+            except _ModelBehaviorError as exc:
+                unfinished = str(exc)
+                logger.warning("Spec rollout unfinished after events=%s: %s", driver.events, unfinished)
         else:
             await _run_normal(driver, cycles=metadata.get("session_verify_cycles", DEFAULT_CYCLES))
 
     logger.info("Agent done: kind=%s events=%s expectations=%s", kind, driver.events, driver.expectations)
-    return {"driver_events": driver.events, EXPECTATIONS_KEY: driver.expectations, **driver.counters}
+    return {
+        "driver_events": driver.events,
+        EXPECTATIONS_KEY: driver.expectations,
+        UNFINISHED_KEY: unfinished,
+        **driver.counters,
+    }
 
 
 def _verify_tito_samples(samples, *, kind: SessionVerifyKind) -> None:
@@ -524,6 +556,7 @@ def _sample_record(index, sample, kind, mismatches, forbidden, expectations) -> 
         "kind": str(kind),
         "driver_events": sample.metadata.get("driver_events", []),
         "expectations": expectations,
+        "unfinished": sample.metadata.get(UNFINISHED_KEY),
         "had_assistant_mismatch": bool(assistant_mismatches),
         "total_mismatches": len(mismatches),
         "assistant_mismatch_count": len(assistant_mismatches),
@@ -578,10 +611,12 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     """Custom-generate wrapper that records each sample and checks rollout coverage.
 
     - The sample's prompt must be one of the planned ones (``_journal_unplanned_prompt``).
-    - Every sample must carry the agent's metadata: the agent returns it only
-      after its whole trajectory, and the base generate still collects the
-      samples of an agent that raised.
-    - Spec samples must carry one expectation per probe of the family, in order.
+    - Every sample must carry the agent's metadata: the base generate still
+      collects the samples of an agent that raised, and those carry none.
+    - Spec samples must carry one expectation per probe of the family, in order;
+      an unfinished one carries the probes up to the step it stopped at.  Without
+      a metrics sidecar an unfinished sample fails here (with one, the runner
+      gates how many there are across the run).
     - Without a metrics sidecar, at least one normal sample must have answered
       a tool call (with one, the runner checks this across the run).
     """
@@ -607,12 +642,15 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         if "driver_events" not in sample.metadata:
             _fail_sample(
                 f"Session multi-role e2e: {kind} sample {i} carries no agent metadata: "
-                "the agent did not finish its trajectory"
+                "the agent raised before it returned"
             )
         elif steps is not None:
             recorded = [e["step"] for e in sample.metadata.get(EXPECTATIONS_KEY) or []]
-            if recorded != steps:
+            unfinished = sample.metadata.get(UNFINISHED_KEY)
+            if recorded != (steps if unfinished is None else steps[: len(recorded)]):
                 _fail_sample(f"Session multi-role e2e: spec sample {i} recorded probes {recorded}, expected {steps}")
+            elif unfinished is not None and not os.environ.get("MILES_SESSION_VERIFY_METRICS_PATH"):
+                raise AssertionError(f"Session multi-role e2e: spec sample {i} is unfinished: {unfinished}")
     if (
         kind is SessionVerifyKind.NORMAL
         and not os.environ.get("MILES_SESSION_VERIFY_METRICS_PATH")

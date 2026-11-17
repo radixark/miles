@@ -17,6 +17,7 @@ from miles.utils.test_utils.session_verify_agent import (
     NO_TOOL_CALL_USER_TEXT,
     SESSION_VERIFY_KIND_KEY,
     SYSTEM_REMINDER_TEXT,
+    UNFINISHED_KEY,
     USER_FOLLOWUP_TEXTS,
     SessionVerifyKind,
     fixed_template,
@@ -235,6 +236,53 @@ def test_spec_rollout_resamples_a_turn_that_must_call_a_tool(monkeypatch):
     assert seeds == [7, 1_000_007]
 
 
+def test_spec_rollout_is_unfinished_when_the_model_never_stops_calling_the_tool(monkeypatch):
+    """The sample stops at that step and keeps the probes it sent; the agent does not raise."""
+    session = _FakeSession("qwen3")
+
+    async def chat(client, base_url, messages, request_kwargs, *, label):
+        if label == "Tool result" or label.startswith("tool round"):
+            call = {"id": f"again_{len(messages)}", "type": "function", "function": {"name": "get_weather"}}
+            message = {"role": "assistant", "content": "", "tool_calls": [call]}
+            return {"choices": [{"message": message, "finish_reason": "stop"}]}
+        return await _FakeSession.chat(session, client, base_url, messages, request_kwargs, label=label)
+
+    monkeypatch.setattr(session_verify_agent.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr(session_verify_agent, "_chat", chat)
+    monkeypatch.setattr(session_verify_agent, "_chat_status", session.chat_status)
+
+    result = asyncio.run(
+        run_agent(
+            "http://session",
+            prompt=None,
+            request_kwargs={},
+            metadata={"tito_model": "qwen3", SESSION_VERIFY_KIND_KEY: "spec"},
+        )
+    )
+
+    assert result[UNFINISHED_KEY] == "the model still calls a tool after 3 answered rounds"
+    steps = spec_probe_steps(fixed_template("qwen3"))
+    assert [e["step"] for e in result[EXPECTATIONS_KEY]] == steps[:-1]
+    assert "no_tool_call" not in result["driver_events"]
+
+
+def test_spec_rollout_is_unfinished_when_the_model_never_calls_the_tool(monkeypatch):
+    session = _FakeSession("qwen3")
+    session._reply = lambda messages: {"role": "assistant", "content": "It is sunny."}
+
+    result = _run(monkeypatch, session, SessionVerifyKind.SPEC, "qwen3")
+
+    assert result[UNFINISHED_KEY].startswith("Initial exhausted 4 resamples")
+    assert result[EXPECTATIONS_KEY] == []
+    assert result["driver_events"] == []
+
+
+def test_a_finished_spec_rollout_is_not_marked_unfinished(monkeypatch):
+    result = _run(monkeypatch, _FakeSession("qwen3"), SessionVerifyKind.SPEC, "qwen3")
+
+    assert result[UNFINISHED_KEY] is None
+
+
 def test_spec_rollout_needs_user_after_an_answer():
     fixed = session_verify_agent.FixedTemplate(
         allowed_append_roles=frozenset({"tool", "user"}), roles_after_no_tool_call=frozenset({"tool"})
@@ -271,6 +319,30 @@ def test_chat_retries_length_with_distinct_seed(monkeypatch):
     assert [kwargs["seed"] for kwargs in attempts] == [7, 1_000_007]
 
 
+def test_chat_fails_when_length_cuts_exhaust_the_resamples(monkeypatch):
+    """Only a turn that needs a tool call leaves a sample unfinished; a turn cut every time fails."""
+
+    async def fake_chat(client, base_url, messages, request_kwargs, *, label):
+        return {"choices": [{"finish_reason": "length", "message": {"role": "assistant", "content": "cut"}}]}
+
+    monkeypatch.setattr(session_verify_agent, "_chat", fake_chat)
+    driver = session_verify_agent._Driver(client=None, base_url="http://session", request_kwargs={})
+
+    with pytest.raises(AssertionError, match="turn exhausted 4 resamples"):
+        asyncio.run(driver.chat([], label="turn"))
+
+
+def test_chat_fails_when_a_turn_that_needs_a_tool_call_is_cut_every_time(monkeypatch):
+    async def fake_chat(client, base_url, messages, request_kwargs, *, label):
+        return {"choices": [{"finish_reason": "length", "message": {"role": "assistant", "content": "cut"}}]}
+
+    monkeypatch.setattr(session_verify_agent, "_chat", fake_chat)
+    driver = session_verify_agent._Driver(client=None, base_url="http://session", request_kwargs={})
+
+    with pytest.raises(AssertionError, match="Initial exhausted 4 resamples"):
+        asyncio.run(driver.chat([], label="Initial", need_tool_call=True))
+
+
 def test_chat_reports_every_rejected_reply_when_resamples_run_out(monkeypatch):
     async def fake_chat(client, base_url, messages, request_kwargs, *, label):
         return {"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "It is sunny."}}]}
@@ -278,21 +350,28 @@ def test_chat_reports_every_rejected_reply_when_resamples_run_out(monkeypatch):
     monkeypatch.setattr(session_verify_agent, "_chat", fake_chat)
     driver = session_verify_agent._Driver(client=None, base_url="http://session", request_kwargs={})
 
-    with pytest.raises(AssertionError, match="Tool call after system exhausted") as raised:
+    with pytest.raises(session_verify_agent._ModelBehaviorError, match="Tool call after system exhausted") as raised:
         asyncio.run(driver.chat([], label="Tool call after system", need_tool_call=True))
 
     attempts = session_verify_agent._MAX_RESAMPLES + 1
     assert str(raised.value).count("stop: 'It is sunny.'") == attempts
 
 
-def _verified_sample(mismatches, *, expectations=()):
+def _verified_sample(mismatches, *, expectations=(), unfinished=None):
     return Sample(
         metadata={
             "driver_events": ["initial", "append_tool", "append_user"],
             EXPECTATIONS_KEY: list(expectations),
+            UNFINISHED_KEY: unfinished,
             "tito_session_mismatch": mismatches,
         }
     )
+
+
+def _unfinished_spec_sample(tito_model="qwen3", *, probes: int | None = 1):
+    steps = spec_probe_steps(fixed_template(tito_model))[:probes]
+    expectations = [{"step": step, "expected_status": 200, "actual_status": 200} for step in steps]
+    return _verified_sample([], expectations=expectations, unfinished="Tool call after user exhausted 4 resamples")
 
 
 def _generate_input(kind: SessionVerifyKind, tito_model="qwen3", *, group_index=0, num_rollout=2):
@@ -372,6 +451,55 @@ def test_generate_records_spec_expectations(monkeypatch, tmp_path):
     assert metric["expectations"] == expectations
 
 
+@pytest.mark.parametrize("probes", [0, 1, None], ids=["before-any-probe", "after-one-probe", "after-every-probe"])
+def test_generate_records_an_unfinished_spec_sample_without_failing_the_run(monkeypatch, tmp_path, probes):
+    """The sample carries the probes up to the step it stopped at; the runner gates how many stop."""
+    metrics_path = tmp_path / "metrics.jsonl"
+    monkeypatch.setenv("MILES_SESSION_VERIFY_METRICS_PATH", str(metrics_path))
+    sample = _unfinished_spec_sample(probes=probes)
+
+    async def fake_base_generate(input):
+        return GenerateFnOutput(samples=[sample])
+
+    monkeypatch.setattr(session_verify_agent, "_base_generate", fake_base_generate)
+
+    asyncio.run(session_verify_agent.generate(_generate_input(SessionVerifyKind.SPEC)))
+
+    [metric] = [json.loads(line) for line in metrics_path.read_text().splitlines()]
+    assert metric["unfinished"] == "Tool call after user exhausted 4 resamples"
+    assert [e["step"] for e in metric["expectations"]] == spec_probe_steps(fixed_template("qwen3"))[:probes]
+
+
+def test_generate_journals_an_unfinished_spec_sample_whose_probes_are_out_of_order(monkeypatch, tmp_path):
+    metrics_path = tmp_path / "metrics.jsonl"
+    monkeypatch.setenv("MILES_SESSION_VERIFY_METRICS_PATH", str(metrics_path))
+    sample = _unfinished_spec_sample()
+    sample.metadata[EXPECTATIONS_KEY][0]["step"] = "tool after no tool call"
+
+    async def fake_base_generate(input):
+        return GenerateFnOutput(samples=[sample])
+
+    monkeypatch.setattr(session_verify_agent, "_base_generate", fake_base_generate)
+
+    asyncio.run(session_verify_agent.generate(_generate_input(SessionVerifyKind.SPEC)))
+
+    _, error_record = [json.loads(line) for line in metrics_path.read_text().splitlines()]
+    assert "recorded probes" in error_record["verification_error"]["message"]
+
+
+def test_generate_raises_for_an_unfinished_spec_sample_without_metrics_sidecar(monkeypatch):
+    """No run gate counts unfinished samples there, so the sample fails and its group is retried."""
+    monkeypatch.delenv("MILES_SESSION_VERIFY_METRICS_PATH", raising=False)
+
+    async def fake_base_generate(input):
+        return GenerateFnOutput(samples=[_unfinished_spec_sample()])
+
+    monkeypatch.setattr(session_verify_agent, "_base_generate", fake_base_generate)
+
+    with pytest.raises(AssertionError, match="spec sample 0 is unfinished: Tool call after user exhausted"):
+        asyncio.run(session_verify_agent.generate(_generate_input(SessionVerifyKind.SPEC)))
+
+
 def test_generate_journals_a_spec_sample_missing_probes(monkeypatch, tmp_path):
     metrics_path = tmp_path / "metrics.jsonl"
     monkeypatch.setenv("MILES_SESSION_VERIFY_METRICS_PATH", str(metrics_path))
@@ -437,7 +565,7 @@ def test_generate_keeps_a_prompt_past_the_planned_ones_without_metrics_sidecar(m
 
 
 @pytest.mark.parametrize("kind", [SessionVerifyKind.NORMAL, SessionVerifyKind.SPEC])
-def test_generate_journals_a_sample_whose_agent_did_not_finish(monkeypatch, tmp_path, kind):
+def test_generate_journals_a_sample_whose_agent_raised(monkeypatch, tmp_path, kind):
     """The base generate collects the samples of an agent that raised; they carry no agent metadata."""
     metrics_path = tmp_path / "metrics.jsonl"
     monkeypatch.setenv("MILES_SESSION_VERIFY_METRICS_PATH", str(metrics_path))
@@ -455,7 +583,7 @@ def test_generate_journals_a_sample_whose_agent_did_not_finish(monkeypatch, tmp_
     assert "carries no agent metadata" in error_record["verification_error"]["message"]
 
 
-def test_generate_raises_for_an_unfinished_agent_without_metrics_sidecar(monkeypatch):
+def test_generate_raises_for_a_sample_without_agent_metadata_without_metrics_sidecar(monkeypatch):
     monkeypatch.delenv("MILES_SESSION_VERIFY_METRICS_PATH", raising=False)
 
     async def fake_base_generate(input):

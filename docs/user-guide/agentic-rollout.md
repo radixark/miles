@@ -284,7 +284,10 @@ The GPU check runs two rollout steps:
   status the continuation roles decide, 200 or 400. It also rolls back twice,
   appends a `system` message and injects `assistant` messages where the family
   accepts them. Accepted turns must show no special-token or non-assistant
-  mismatch; assistant text is not checked.
+  mismatch; assistant text is not checked. Some steps need the model to call
+  the tool or to stop calling it; a sample whose model does not stops there,
+  and the run fails when too many spec samples stop early
+  (`SPEC_UNFINISHED_RATIO_THRESHOLD`).
 - **Normal rollout.** It answers a tool call with `tool` messages and an answer
   with the next `user` question, the two continuations agents send most. Its
   mismatch rates are the ones CI tracks across runs.

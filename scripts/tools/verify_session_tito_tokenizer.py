@@ -6,9 +6,11 @@ Boots the miles rollout pipeline (sglang + miles-router) under
 ``miles.utils.test_utils.session_verify_agent``): the spec rollout probes every
 continuation the selected family's ``FixedTemplate`` continuation roles accept
 or refuse, and the normal rollout answers tool calls with tool messages and
-answers with user questions.  PASS iff every sample completes without HTTP
-error from the server-side prefix check, every spec probe gets the status the
-spec decides, and the per-sample mismatch gates hold.
+answers with user questions.  PASS iff no sample hits an HTTP error from the
+server-side prefix check, every spec probe gets the status the spec decides,
+the per-sample mismatch gates hold, and few enough spec samples stop early
+because the model did not call the tool, or did not stop calling it, where a
+step needs that (``SPEC_UNFINISHED_RATIO_THRESHOLD``).
 
 This script is a thin entrypoint over miles' canonical ``parse_args``: all
 flags are miles' canonical flags (``--rollout-num-gpus-per-engine`` instead of

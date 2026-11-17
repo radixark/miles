@@ -571,6 +571,30 @@ def test_session_verify_metrics_rejects_an_unmet_spec_expectation(tmp_path):
         assert_session_verify_metrics(str(metrics_path), kinds=_SPEC_THEN_NORMAL, assistant_text_threshold=1.0)
 
 
+@pytest.mark.parametrize(("unfinished", "raises"), [(2, False), (3, True)], ids=["at-threshold", "above-threshold"])
+def test_session_verify_metrics_gates_the_share_of_unfinished_spec_samples(tmp_path, unfinished, raises):
+    """Of 10 spec samples, 2 may stop early (ratio 0.2); the probes they did send are still checked."""
+    metrics_path = tmp_path / "metrics.jsonl"
+    stopped = [_spec(_MET, unfinished="the model still calls a tool after 3 answered rounds")] * unfinished
+    finished = [_spec(_MET, unfinished=None)] * (10 - unfinished)
+    _write_metrics(metrics_path, [*stopped, *finished, _normal(driver_events=["append_tool"])])
+
+    if not raises:
+        assert_session_verify_metrics(str(metrics_path), kinds=_SPEC_THEN_NORMAL, assistant_text_threshold=1.0)
+        return
+    with pytest.raises(AssertionError, match="3/10 spec samples stopped before their last step.*still calls a tool"):
+        assert_session_verify_metrics(str(metrics_path), kinds=_SPEC_THEN_NORMAL, assistant_text_threshold=1.0)
+
+
+def test_session_verify_metrics_rejects_an_unmet_expectation_of_an_unfinished_spec_sample(tmp_path):
+    metrics_path = tmp_path / "metrics.jsonl"
+    entries = [_spec(_UNMET, unfinished="stopped"), *[_spec(_MET)] * 9, _normal(driver_events=["append_tool"])]
+    _write_metrics(metrics_path, entries)
+
+    with pytest.raises(AssertionError, match="spec probes got another status"):
+        assert_session_verify_metrics(str(metrics_path), kinds=_SPEC_THEN_NORMAL, assistant_text_threshold=1.0)
+
+
 def test_session_verify_metrics_gates_hard_mismatches_in_the_spec_rollout(tmp_path):
     metrics_path = tmp_path / "metrics.jsonl"
     hard = {"hard_mismatch_count": 1, "hard_mismatch_types": ["special_token_type"]}

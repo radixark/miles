@@ -31,6 +31,7 @@ from miles.utils.test_utils.session_verify_agent import (
     NO_TOOL_CALL_USER_TEXT,
     SENTINEL_TOOL_RESULT,
     SYSTEM_REMINDER_TEXT,
+    UNFINISHED_KEY,
     USER_FOLLOWUP_TEXTS,
     build_initial_messages,
 )
@@ -99,6 +100,7 @@ _EXPECTED_AGENT_METADATA = {
             "tool after no tool call",
         )
     ],
+    UNFINISHED_KEY: None,
     "rollback_count": 2,
     "user_count": 5,
     "system_count": 1,

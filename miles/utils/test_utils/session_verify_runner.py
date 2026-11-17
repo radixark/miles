@@ -48,6 +48,9 @@ ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD = 0.2
 # How many per-sample assistant_text examples a failed soft gate quotes, so a CI
 # log shows what drifted without the preserved sidecar file.
 _ASSISTANT_MISMATCH_EXAMPLES = 3
+# Share of spec samples that may stop early because the model did not call the tool, or did
+# not stop calling it, where a step needs that.  Measured on CI: up to 2 of 32.
+SPEC_UNFINISHED_RATIO_THRESHOLD = 0.2
 
 # Parser default only: every run writes and reads a prompt file of its own (``_ensure_prompt_data``).
 PROMPT_DATA_PATH = "/root/datasets/session_multi_role_verify.jsonl"
@@ -363,7 +366,8 @@ def assert_session_verify_metrics(
 
     A journaled verifier assertion, a rollout of *kinds* with no recorded
     sample, a spec sample whose probe got another status than the spec
-    decides, and a normal rollout that never answered a tool call (when
+    decides, more unfinished spec samples than ``SPEC_UNFINISHED_RATIO_THRESHOLD``
+    allows, and a normal rollout that never answered a tool call (when
     ``require_append_tool``) fail.  Both rollouts also fail on hard mismatches
     (samples whose only hard type is special_token_count are tolerated up to
     ``special_token_count_threshold``), and the normal rollout on an
@@ -393,6 +397,13 @@ def assert_session_verify_metrics(
                 f"(first={summary['unmet_expectations'][:3]})."
             )
         _assert_hard_mismatches(kind, summary, special_token_count_threshold=special_token_count_threshold)
+        if len(summary["unfinished"]) > SPEC_UNFINISHED_RATIO_THRESHOLD * summary["samples"]:
+            raise AssertionError(
+                f"Session multi-role e2e: {len(summary['unfinished'])}/{summary['samples']} {kind} samples "
+                f"stopped before their last step, above the ratio {SPEC_UNFINISHED_RATIO_THRESHOLD}: the model "
+                f"did not call the tool, or did not stop calling it, where a step needs that "
+                f"(first={summary['unfinished'][:3]})."
+            )
 
     if SessionVerifyKind.NORMAL not in summaries:
         return
@@ -461,12 +472,15 @@ def _summarize(entries: list[dict]) -> dict[str, Any]:
         "hard_mismatch_example": None,
         "has_append_tool": False,
         "unmet_expectations": [],
+        "unfinished": [],
     }
     for entry in entries:
         summary["has_append_tool"] |= "append_tool" in entry.get("driver_events", [])
         summary["unmet_expectations"] += [
             e for e in entry.get("expectations", []) if e["actual_status"] != e["expected_status"]
         ]
+        if entry.get("unfinished") is not None:
+            summary["unfinished"].append(entry["unfinished"][:300])
         if entry.get("had_assistant_mismatch"):
             summary["with_assistant_mismatch"] += 1
             if len(summary["assistant_examples"]) < _ASSISTANT_MISMATCH_EXAMPLES and entry.get(

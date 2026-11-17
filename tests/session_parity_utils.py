@@ -27,7 +27,12 @@ from miles.rollout.session.server import SessionServer
 from miles.rollout.session.types import SessionServerInstance
 from miles.utils import http_utils
 from miles.utils.http_utils import find_available_port
-from miles.utils.test_utils.session_verify_agent import EXPECTATIONS_KEY, SESSION_VERIFY_KIND_KEY, SessionVerifyKind
+from miles.utils.test_utils.session_verify_agent import (
+    EXPECTATIONS_KEY,
+    SESSION_VERIFY_KIND_KEY,
+    UNFINISHED_KEY,
+    SessionVerifyKind,
+)
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 from miles.utils.types import Sample
 
@@ -175,6 +180,7 @@ def assert_agentic_retry_trajectory_parity(v1: SessionParityRun, v2: SessionPari
         assert nodes[leaf["node_id"]]["completion_span"][0] == kept_child["completion_span"][0]
 
     agent_metadata = v2.session_metadata["agent"]
+    assert agent_metadata[UNFINISHED_KEY] is None
     assert agent_metadata["rollback_count"] == 2
     assert [(e["expected_status"], e["actual_status"]) for e in agent_metadata[EXPECTATIONS_KEY]] == [(200, 200)] * 4
     for key, value in agent_metadata.items():
