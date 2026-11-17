@@ -155,6 +155,29 @@ class TestAbort:
         assert "Failed to abort worker at http://unresponsive: worker cannot answer" in caplog.text
 
 
+class TestGroupRewardModel:
+    async def test_a_partial_group_scores_only_its_completed_samples(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An aborted sample cannot train, so the group reward model never sees it."""
+        args = _make_generate_args()
+        args.group_rm = True
+        args.use_partial_groups_on_abort = True
+
+        async def generate_and_rm(_args, sample, _sampling_params, evaluation=False):
+            sample.status = Sample.Status.ABORTED if sample.index == 3 else Sample.Status.COMPLETED
+            return sample
+
+        async def batched_async_rm(_args, samples):
+            return [float(sample.index) for sample in samples]
+
+        monkeypatch.setattr(sglang_rollout, "GenerateState", lambda _args: SimpleNamespace(aborted=False))
+        monkeypatch.setattr(sglang_rollout, "generate_and_rm", generate_and_rm)
+        monkeypatch.setattr(sglang_rollout, "batched_async_rm", batched_async_rm)
+
+        group = await sglang_rollout.generate_and_rm_group(args, [Sample(index=index) for index in range(4)], {})
+
+        assert [sample.reward for sample in group] == [0.0, 1.0, 2.0, None]
+
+
 class TestGenerationStateReuse:
     def test_changed_configuration_is_rejected_without_replacing_the_active_state(
         self, monkeypatch: pytest.MonkeyPatch
