@@ -311,6 +311,7 @@ class PackedSlices:
             qkv_format=args.qkv_format,
             max_seq_lens=batch.get("max_seq_lens"),
             calculate_per_token_loss=args.backend.calculate_per_token_loss,
+            denominators=batch.get("rollout_mask_sums"),
         )
 
     def forward_log_probs(self, logits, *, with_entropy, use_sampling_mask):
@@ -443,18 +444,28 @@ class PaddedRows:
 
     def ess_ratio(self, ppo_kl):
         """`compute_ess_ratio_contribution` on rows: per-sample sums land in a `[T]` buffer indexed by sample."""
+        num_samples = len(self.response_lengths)
         sample_ids = self.rows([torch.full((length,), i) for i, length in enumerate(self.response_lengths)])
-        num_valid = torch.ones(self.num_rows)
-        num_valid[: len(self.response_lengths)] = torch.stack(
+        valid_counts = torch.stack(
             [torch.clamp_min(mask.to("cpu", torch.float32).sum(), 1) for mask in self.batch["loss_masks"]]
         )
+        num_valid = torch.ones(self.num_rows)
+        num_valid[:num_samples] = valid_counts
         num_valid = num_valid.to(self.device)
 
         is_weights = _safe_exp_neg_ppo_kl(ppo_kl.detach()) * self._loss_masks
         sum_w = torch.zeros_like(is_weights).index_add_(0, sample_ids, is_weights)
         sum_w2 = torch.zeros_like(is_weights).index_add_(0, sample_ids, is_weights * is_weights)
         ess_ratio = (sum_w * sum_w) / (num_valid * torch.clamp_min(sum_w2, 1e-8))
-        return (ess_ratio * num_valid).sum() if self.args.backend.calculate_per_token_loss else ess_ratio.sum()
+
+        sample_weights = torch.ones(self.num_rows)
+        rollout_totals = self.batch.get("rollout_mask_sums")
+        if self.args.backend.calculate_per_token_loss:
+            sample_weights[:num_samples] = valid_counts
+        elif rollout_totals is not None:
+            totals = torch.stack([torch.as_tensor(total).to("cpu", torch.float32) for total in rollout_totals])
+            sample_weights[:num_samples] = valid_counts / torch.clamp_min(totals, 1)
+        return (ess_ratio * sample_weights.to(self.device)).sum()
 
     def forward_log_probs(self, logits, *, with_entropy, use_sampling_mask):
         assert not use_sampling_mask, "validate_response_layout_args refuses sampling-support replay"
