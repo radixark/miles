@@ -62,6 +62,7 @@ class TestSglangOpdRequestContract:
         assert len(payloads) == 1
         assert payloads[0]["return_indexer_topk"] is True
         assert ("top_logprobs_num" in payloads[0]) is expected
+        assert "return_flat_raw_output_top_logprobs" not in payloads[0]
         assert sample.metadata["preserved"] is True
         if expected:
             assert payloads[0]["top_logprobs_num"] == 3
