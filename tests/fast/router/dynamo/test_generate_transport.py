@@ -1,10 +1,13 @@
 import asyncio
 import json
+import traceback
+from types import SimpleNamespace
 
 import httpx
 import pytest
+from ray.exceptions import RayTaskError
 
-from miles.router.dynamo.api_client import GenerateProtocolError, _generate_events
+from miles.router.dynamo.api_client import GenerateProtocolError, RetryableGenerateError, _generate_events
 from miles.utils import http_utils
 
 pytestmark = pytest.mark.asyncio
@@ -82,6 +85,146 @@ class _EventStream(httpx.AsyncByteStream):
 
 async def _decode_events(response):
     return [event async for event in _generate_events(response.aiter_bytes(), max_event_bytes=1024)]
+
+
+async def _request_events(client, monkeypatch, *, distributed, max_retries=3):
+    if not distributed:
+        return await http_utils._post(
+            client, "http://engine/generate", {}, max_retries=max_retries, response_decoder=_decode_events
+        )
+
+    async def remote(*args, **kwargs):
+        try:
+            return await http_utils._post(client, *args, **kwargs)
+        except Exception as error:
+            raise RayTaskError("do_post", traceback.format_exc(), error).as_instanceof_cause() from error
+
+    def no_fallback():
+        pytest.fail("a decoder failure must not replay generation through the local fallback")
+
+    monkeypatch.setattr(http_utils, "_distributed_post_enabled", True)
+    monkeypatch.setattr(http_utils, "_post_actors", [SimpleNamespace(do_post=SimpleNamespace(remote=remote))])
+    monkeypatch.setattr(http_utils, "_rollout_client", no_fallback)
+    return await http_utils.post(
+        "http://engine/generate", {}, max_retries=max_retries, response_decoder=_decode_events
+    )
+
+
+@pytest.mark.parametrize("distributed", [False, True])
+@pytest.mark.parametrize(
+    "body,message",
+    [
+        (_wire({"error": {"message": "input too long", "code": 400, "retryable": False}}), "input too long"),
+        (
+            _wire({"error": {"message": "permanent backend failure", "code": 503, "retryable": False}}),
+            "permanent backend failure",
+        ),
+        (b'event: error\ndata: {"error":{"message":"invalid prompt","code":400}}\n\n', "invalid prompt"),
+        (b"event: error\ndata: unknown engine failure\n\n", "unknown engine failure"),
+        (b"data: broken\n\n", "invalid SSE JSON"),
+        (b"data: [DONE]\n\n", "without a terminal response"),
+        (
+            _wire(
+                {"meta_info": {"finish_reason": {"type": "abort", "status_code": 400, "message": "invalid sampling"}}}
+            ),
+            "invalid sampling",
+        ),
+    ],
+)
+async def test_permanent_stream_errors_fail_once_with_original_reason(monkeypatch, distributed, body, message):
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, stream=_EventStream([body]))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(GenerateProtocolError, match=message):
+            await _request_events(client, monkeypatch, distributed=distributed)
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("distributed", [False, True])
+@pytest.mark.parametrize(
+    "error",
+    [
+        {"message": "worker unavailable", "code": 503},
+        {"message": "overloaded", "code": 429},
+        {"message": "request timed out", "code": 408},
+        {"message": "explicit retry", "retryable": True},
+    ],
+)
+async def test_explicit_transient_stream_errors_retry(monkeypatch, distributed, error):
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        body = _wire({"error": error}) if len(requests) == 1 else _wire(_event(terminal=True)) + b"data: [DONE]\n\n"
+        return httpx.Response(200, stream=_EventStream([body]))
+
+    async def no_wait(_):
+        pass
+
+    monkeypatch.setattr(http_utils.asyncio, "sleep", no_wait)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        assert await _request_events(client, monkeypatch, distributed=distributed) == [_event(terminal=True)]
+    assert len(requests) == 2
+
+
+async def test_exhausted_decoder_retries_do_not_restart_locally(monkeypatch):
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, stream=_EventStream([_wire(_event())]))
+
+    async def no_wait(_):
+        pass
+
+    monkeypatch.setattr(http_utils.asyncio, "sleep", no_wait)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(RetryableGenerateError, match="before \\[DONE\\]"):
+            await _request_events(client, monkeypatch, distributed=True)
+    assert len(requests) == 3
+
+
+async def test_actor_outage_still_falls_back_to_local_transport(monkeypatch):
+    async def unavailable(*args, **kwargs):
+        raise RuntimeError("poster actor unavailable")
+
+    monkeypatch.setattr(http_utils, "_distributed_post_enabled", True)
+    monkeypatch.setattr(http_utils, "_post_actors", [SimpleNamespace(do_post=SimpleNamespace(remote=unavailable))])
+    body = _wire(_event(terminal=True)) + b"data: [DONE]\n\n"
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=_EventStream([body])))
+    ) as client:
+        monkeypatch.setattr(http_utils, "_rollout_client", lambda: client)
+        assert await http_utils.post("http://engine/generate", {}, response_decoder=_decode_events) == [
+            _event(terminal=True)
+        ]
+
+
+@pytest.mark.parametrize("action", ["get", "delete", "put"])
+async def test_streaming_rejects_non_post_before_sending(action):
+    def refuse_request(request):
+        pytest.fail("invalid streaming methods must be rejected before sending")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(refuse_request)) as client:
+        with pytest.raises(http_utils.ResponseDecodeError, match="only action='post'"):
+            await http_utils._post(
+                client, "http://engine/generate", {}, action=action, response_decoder=_decode_events
+            )
+
+
+async def test_streamed_redirect_preserves_http_error_body():
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(302, stream=_EventStream([b"wrong endpoint"])))
+    ) as client:
+        with pytest.raises(httpx.HTTPStatusError) as error:
+            await http_utils._post(
+                client, "http://engine/generate", {}, max_retries=1, response_decoder=_decode_events
+            )
+    assert error.value.response.text == "wrong endpoint"
 
 
 async def test_retry_discards_partial_generation(monkeypatch):
