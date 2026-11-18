@@ -233,6 +233,7 @@ Sections mirror the launch-script argument groups.
 | `--sequence-parallel` | flag | off | Enable Megatron sequence parallel. |
 | `--use-dynamic-batch-size` | flag | off | Pack varlen samples. Recommended for varlen workloads. |
 | `--max-tokens-per-gpu` | int | – | Token budget per micro-batch per GPU. Required when dynamic batching is on. |
+| `--pad-steps-for-dp-alignment` | flag | off | Add zero-loss two-token samples to the optimizer steps the rollout-side schedule cannot split into a multiple of the DP size (every sample over half of `--max-tokens-per-gpu`). Needs dynamic batching; refused with `--calculate-per-token-loss` or `--use-output-store`. |
 | `--micro-batch-size` | int | `1` | Ignored when dynamic batching is on. |
 | `--recompute-granularity` | enum | Megatron default | `full` or `selective`. |
 | `--recompute-method` | enum | Megatron default | `uniform` or `block`. |

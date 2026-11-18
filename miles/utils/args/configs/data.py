@@ -212,6 +212,18 @@ class DataConfig(BaseConfig):
             )
         ),
     ] = False
+    pad_steps_for_dp_alignment: A[
+        bool,
+        Arg(
+            help=(
+                "Give each optimizer step the rollout-side schedule cannot split into a multiple of the DP size "
+                "the zero-loss two-token samples it needs, on its first rollout. When every sample in a step "
+                "exceeds half of --max-tokens-per-gpu, each micro-batch holds one sample and the schedule "
+                "otherwise refuses the step. Needs --use-dynamic-batch-size; incompatible with "
+                "--calculate-per-token-loss and --use-output-store."
+            )
+        ),
+    ] = False
     use_dynamic_batch_size: A[
         bool,
         Arg(

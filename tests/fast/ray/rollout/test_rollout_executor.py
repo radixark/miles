@@ -406,7 +406,7 @@ class TestOutputSnapshotReplay:
         monkeypatch.setattr(rollout_executor_module.object_store, "get_instance", Store)
         monkeypatch.setattr(
             "miles.ray.rollout.train_data_conversion.build_dp_schedule",
-            lambda *args, **kwargs: ([[0]], [[[0]]], 1, 1),
+            lambda *args, **kwargs: ([[0]], [[[0]]], 1, 1, []),
         )
         event_logger = EventLogger(log_dir=event_dir, source=SimpleProcessIdentity(component="rollout_executor"))
         set_event_logger(event_logger)
