@@ -466,7 +466,10 @@ class TestWorkflowScopeSeam:
         assert "github.event.pull_request.head.repo.full_name == github.repository" in reusable
         # The architecture picks the variant and tag from docker/image_inputs.py.
         assert 'python3 docker/image_inputs.py --pr "$PR_NUMBER" --arch "$ARCH"' in reusable
-        assert 'python3 docker/build.py --variant "$VARIANT" --image-tag custom --custom-tag "$TAG" --image-repo "$GITHUB_REPOSITORY" --push' in reusable
+        assert (
+            'python3 docker/build.py --variant "$VARIANT" --image-tag custom --custom-tag "$TAG" --image-repo "$GITHUB_REPOSITORY" --push'
+            in reusable
+        )
 
     def test_docker_decision_logs_in_only_for_tag_inspection(self):
         reusable = self._reusable_workflow("_build-pr-ci-image.yml")
