@@ -115,6 +115,11 @@ computer-1's generic provider reads pixels, so set `HARBOR_CUA_COORDINATE_SPACE=
 which patches that provider to prompt for and rescale a 0-999 grid. Other computer-1 settings,
 such as the desktop size, go in `HARBOR_AGENT_KWARGS`.
 
+On B300, also pass `--sglang-mm-feature-transport cuda_ipc`. SGLang picks it by default only on Hopper, and
+without it every call's pixels are copied through host memory on the engine's tokenizer event loop, the loop
+that also answers `/health`; under desktop load the Miles router can then stop routing to the engine. For the
+same reason, run desktop trials in worker mode (section 5) so the harness's CPU load stays off the GPU host.
+
 ## 5. Optional: run the trials on a CPU box
 
 Host-process harnesses (`computer-1`, `terminus-2`) and their verifiers use the rollout host's CPUs, one Python
