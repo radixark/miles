@@ -24,6 +24,12 @@ _CONNECT_ATTEMPT_TIMEOUT_SECONDS = 1.0
 _CONNECT_RETRY_INTERVAL_SECONDS = 0.5
 
 
+class ResponseDecodeError(ValueError):
+    """Decoder failures are permanent unless the decoder explicitly allows retry."""
+
+    retryable = False
+
+
 def find_available_port(base_port: int):
     port = base_port + random.randint(100, 1000)
     while True:
@@ -219,13 +225,15 @@ def _next_actor():
 async def _post(
     client, url, payload, max_retries=60, action="post", headers=None, response_decoder=None, response_timeout=None
 ):
+    if response_decoder is not None and action != "post":
+        raise ResponseDecodeError("response_decoder supports only action='post'")
     retry_count = 0
     while retry_count < max_retries:
         try:
             if response_decoder is not None:
                 async with asyncio.timeout(response_timeout):
                     async with client.stream(action.upper(), url, json=payload or {}, headers=headers) as response:
-                        if response.is_error:
+                        if not response.is_success:
                             # Buffer error bodies within the attempt deadline for the existing HTTP diagnostics.
                             await response.aread()
                         response.raise_for_status()
@@ -245,10 +253,12 @@ async def _post(
             except json.JSONDecodeError:
                 output = response.text
         except Exception as e:
+            if isinstance(e, ResponseDecodeError) and not e.retryable:
+                raise
             retry_count += 1
 
             if isinstance(e, httpx.HTTPStatusError):
-                response_text = e.response.text if e.response.is_stream_consumed else None
+                response_text = e.response.text
                 if 400 <= e.response.status_code < 500 and e.response.status_code not in (408, 429):
                     # The server's reply says what was wrong with the request (e.g. an expanded multimodal prompt
                     # past the engine's context length); the status line alone does not.
@@ -482,6 +492,9 @@ async def post(
                     response_decoder=response_decoder,
                     response_timeout=response_timeout,
                 )
+        except ResponseDecodeError:
+            # A completed decoder failure is not an actor outage; do not replay it locally.
+            raise
         except Exception as e:
             logger.info(f"[http_utils] Distributed POST failed, falling back to local: {e} (url={url})")
             # fall through to local
