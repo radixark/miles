@@ -307,6 +307,11 @@ def rocm_build_args(source):
     return _rocm_recipe(text)[0]
 
 
+def base_driver(source):
+    # The driver the fork edited: its merge's first parent, not the newer trusted one.
+    return subprocess.check_output(["git", "show", "HEAD^1:docker/build.py"], cwd=source, text=True)
+
+
 def build_command(request, source, arch):
     variant, tag = image_inputs.pr_image(arch, request["pr"])
     command = [
@@ -325,9 +330,11 @@ def build_command(request, source, arch):
     ]
     if variant == "rocm10-mi35x-pr":
         arguments = rocm_build_args(source)
-        # CLI overrides cannot remove a trusted default. Refuse that unsupported
-        # edit instead of silently building a recipe different from the fork's.
-        require(rocm_build_args(ROOT).keys() <= arguments.keys(), "Fork ROCm build_args cannot remove driver defaults")
+        # CLI overrides cannot remove a trusted default, so refuse a key the fork removed
+        # from its base while the trusted driver still passes it. A key main added or
+        # dropped after the merge was computed is not the fork's edit.
+        removed = (rocm_build_args(ROOT).keys() & _rocm_recipe(base_driver(source))[0].keys()) - arguments.keys()
+        require(not removed, f"Fork ROCm build_args cannot remove driver defaults: {', '.join(sorted(removed))}")
         for key, value in arguments.items():
             command += ["--build-arg", f"{key}={value}"]
     return command
@@ -390,11 +397,11 @@ def validate_source(request, pr, source):
         current == image_inputs.compute(root=source, variant=variant), "Build context differs from the frozen inputs"
     )
     if variant == "rocm10-mi35x-pr":
-        base_driver = subprocess.check_output(["git", "show", "HEAD^1:docker/build.py"], cwd=source, text=True)
+        base = base_driver(source)
         driver = (source / "docker/build.py").read_text()
-        if driver != base_driver:
+        if driver != base:
             require(
-                _rocm_recipe(driver)[1] == _rocm_recipe(base_driver)[1],
+                _rocm_recipe(driver)[1] == _rocm_recipe(base)[1],
                 "Fork ROCm images only honor literal build_args edits in docker/build.py",
             )
 

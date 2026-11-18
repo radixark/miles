@@ -892,16 +892,43 @@ def test_fork_rocm_rejects_nonliteral_or_nonstring_arguments(tmp_path, recipe):
         HANDLER.rocm_build_args(tmp_path)
 
 
-def test_fork_rocm_cannot_silently_keep_removed_driver_defaults(identity, monkeypatch, tmp_path):
-    (tmp_path / "docker").mkdir()
-    (tmp_path / "docker/build.py").write_text("VARIANTS = {'rocm10-mi35x': {'build_args': {}}}\n")
-    request, _, _ = identity
+def rocm_driver_merge(root, base_arguments, fork_arguments):
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=root, text=True, stderr=subprocess.DEVNULL).strip()
+
+    (root / "docker").mkdir(parents=True)
+    git("init", "-q")
+    git("config", "user.name", "Test")
+    git("config", "user.email", "test@example.invalid")
+    driver = root / "docker/build.py"
+    driver.write_text(f"VARIANTS = {{'rocm10-mi35x': {{'build_args': {base_arguments!r}}}}}\n")
+    git("add", "docker")
+    git("commit", "-qm", "base")
+    base = git("rev-parse", "HEAD")
+    driver.write_text(f"VARIANTS = {{'rocm10-mi35x': {{'build_args': {fork_arguments!r}}}}}\n")
+    git("commit", "-qam", "fork", "--allow-empty")
+    head = git("rev-parse", "HEAD")
+    git("checkout", "-q", "--detach", git("commit-tree", "HEAD^{tree}", "-p", base, "-p", head, "-m", "merge"))
+
+
+@pytest.mark.parametrize("main_added", [False, True], ids=["fork-removes-a-default", "main-added-a-default"])
+def test_fork_rocm_removal_is_judged_against_its_own_base(identity, monkeypatch, tmp_path, main_added):
+    trusted = HANDLER.rocm_build_args(ROOT)
+    key = sorted(trusted)[0]
+    narrowed = {name: value for name, value in trusted.items() if name != key}
+    root = tmp_path / "source"
+    # The fork lacks the key either way; only its own base says whether it removed it.
+    rocm_driver_merge(root, narrowed if main_added else trusted, narrowed)
+    request, _, _ = copy.deepcopy(identity)
     request["arch"] = "rocm10-mi35x"
     monkeypatch.setenv("OCI_OUTPUT", str(tmp_path / "oci"))
-    monkeypatch.setattr(HANDLER, "require_active_source", lambda *args: None)
-    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: pytest.fail("Docker build must not start"))
-    with pytest.raises(ValueError, match="cannot remove driver defaults"):
-        HANDLER.build_image(request, REPOSITORY, tmp_path, "rocm10-mi35x")
+    if main_added:
+        command = HANDLER.build_command(request, root, "rocm10-mi35x")
+        arguments = dict(command[i + 1].split("=", 1) for i, word in enumerate(command) if word == "--build-arg")
+        assert arguments == narrowed
+    else:
+        with pytest.raises(ValueError, match=f"cannot remove driver defaults: {key}"):
+            HANDLER.build_command(request, root, "rocm10-mi35x")
 
 
 def test_cuda_request_artifact_still_parses_with_the_legacy_publisher(tmp_path):
