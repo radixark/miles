@@ -30,11 +30,12 @@ concurrency:
 jobs:
   plan:
     # a close only cancels the running TPU run; another label's event does nothing
+    # the TPU cluster and the dev-tpu / pr-<number>-tpu images belong to radixark/miles
     if: >-
       github.event.action != 'closed' &&
       ((github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
         github.event.label.name == 'run-ci-tpu') &&
-      (github.event_name != 'schedule' || github.repository == 'radixark/miles')
+      github.repository == 'radixark/miles'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
