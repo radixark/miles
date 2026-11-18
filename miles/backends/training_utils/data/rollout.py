@@ -1,3 +1,4 @@
+import functools
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Sequence
@@ -119,6 +120,7 @@ def prepare_rollout_data(
             with_sglang_placement=args.train_backend == "megatron" and args.megatron_to_hf_mode == "raw",
             device=current_platform.current_device(),
             dtype=_media_dtype(args),
+            start=args.trainer_mm_build_whole_round,
         )
         rollout_data["multimodal_train_inputs"] = token_space_train_inputs.multimodal_train_inputs
         if token_space_train_inputs.mrope_position_ids is not None:
@@ -274,6 +276,7 @@ def get_batch(
             batch[unit_key] = data_iterator.rollout_data[unit_key]
 
     # Token-space train inputs rebuild in the background; wait for this micro-batch's samples.
+    _start_token_space_builds(data_iterator, batch)
     if (multimodal_train_inputs := batch.get("multimodal_train_inputs")) is not None:
         batch["multimodal_train_inputs"] = resolved_multimodal_train_inputs(multimodal_train_inputs)
 
@@ -463,6 +466,26 @@ def get_batch(
     return batch
 
 
+def _start_token_space_builds(data_iterator: "DataIterator", batch: dict) -> None:
+    keys = [key for key in ("multimodal_train_inputs", "mrope_position_ids") if batch.get(key) is not None]
+    if not any(isinstance(entry, functools.partial) for key in keys for entry in batch[key]):
+        return
+    started = data_iterator.media_builds_ahead
+    for key in keys:
+        batch[key] = [_started_build(entry, started) for entry in batch[key]]
+    data_iterator.media_builds_ahead = {}
+    for entry in data_iterator.peek("multimodal_train_inputs") or data_iterator.peek("mrope_position_ids") or ():
+        _started_build(entry, data_iterator.media_builds_ahead)
+
+
+def _started_build(entry, started: dict):
+    if not isinstance(entry, functools.partial):
+        return entry
+    if entry not in started:
+        started[entry] = entry()
+    return started[entry]
+
+
 def _pack_natural_position_ids(sample_positions: list[torch.Tensor], cu_seqlens_host: tuple[int, ...]) -> torch.Tensor:
     """Pack each sample's [num_tokens, 3] positions into the [3, 1, T] natural (not CP-sliced) packed row.
 
@@ -503,6 +526,7 @@ class DataIterator:
         self.micro_batch_indices = micro_batch_indices
         assert micro_batch_size is None or micro_batch_indices is None
         self.offset = 0
+        self.media_builds_ahead = {}
 
     def get_next(self, keys: Sequence[str]) -> dict[str, list[object] | None]:
         """Return the next micro-batch for the requested keys.
@@ -535,9 +559,21 @@ class DataIterator:
             self.offset += self.micro_batch_size
         return batch
 
+    def peek(self, key: str) -> list[object] | None:
+        """The values of `key` in the micro-batch `get_next` returns next, or None past the last one."""
+        vals = self.rollout_data.get(key)
+        if vals is None:
+            return None
+        if self.micro_batch_indices is not None:
+            if self.offset >= len(self.micro_batch_indices):
+                return None
+            return [vals[i] for i in self.micro_batch_indices[self.offset]]
+        return vals[self.offset : self.offset + self.micro_batch_size] or None
+
     def reset(self) -> "DataIterator":
         """Reset internal offset to the start and return self."""
         self.offset = 0
+        self.media_builds_ahead = {}
         return self
 
 

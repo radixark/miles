@@ -135,6 +135,12 @@ class DataConfig(BaseConfig):
         int,
         Arg(help="Media I/O threads (decoding) of each trainer rank's SGLang processor; 0 lets SGLang choose."),
     ] = 0
+    trainer_mm_build_whole_round: A[
+        bool,
+        Arg(
+            help="Start every sample's token-space rebuild when the rollout arrives and keep its tensors for the whole step. By default each micro-batch is built while the one before it runs and freed once assembled."
+        ),
+    ] = False
     shared_media_dir: A[
         str | None,
         Arg(

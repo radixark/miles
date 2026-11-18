@@ -13,15 +13,17 @@ expanded tokens:
 - its mRoPE positions, [num_tokens, 3], text-only samples included. They are not multimodal inputs but the
   model's ``position_ids``, so they travel apart; ``get_batch`` packs them like the tokens.
 
-The rebuild runs on a background thread from the moment the rollout data arrives. Until a sample's rebuild
-finishes, its entries are ``Future`` objects; ``get_batch`` resolves the entries of the micro-batch it assembles
-and waits only for those.
+The rebuild runs on a background thread. By default ``get_batch`` starts each micro-batch's builds when it
+assembles the micro-batch before, and the step keeps no built tensors once a micro-batch is assembled; with
+``--trainer-mm-build-whole-round`` every build starts when the rollout data arrives and is kept for the step.
+Until a sample's rebuild finishes, its entries are ``Future`` objects; ``get_batch`` resolves the entries of the
+micro-batch it assembles and waits only for those.
 """
 
 import asyncio
 import functools
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, NamedTuple
@@ -41,10 +43,10 @@ class _SampleBuild(NamedTuple):
 class TokenSpaceTrainInputs(NamedTuple):
     # Each sample's build future, or its finished processor tensors with the tower row placement; None for a
     # text-only sample.
-    multimodal_train_inputs: list[Future | dict[str, torch.Tensor] | None]
+    multimodal_train_inputs: list[Callable[[], Future] | Future | dict[str, torch.Tensor] | None]
     # The same build futures, read for each sample's [num_tokens, 3] positions; None for a model that computes
     # its own.
-    mrope_position_ids: list[Future | torch.Tensor] | None
+    mrope_position_ids: list[Callable[[], Future] | Future | torch.Tensor] | None
 
 
 def resolved_multimodal_train_inputs(
@@ -121,6 +123,7 @@ def compute_multimodal_train_inputs(
     with_sglang_placement: bool,
     device: torch.device,
     dtype: torch.dtype | None = None,
+    start: bool = True,
 ) -> TokenSpaceTrainInputs:
     """Start rebuilding each sample's processor tensors and mRoPE positions on the trainer from its media references.
 
@@ -132,13 +135,15 @@ def compute_multimodal_train_inputs(
         with_sglang_placement: Also return the tower row placement and the mRoPE positions SGLang computes.
         device: This rank's device; the tensors land here, and it stands in for the engine's GPU.
         dtype: The training dtype the floating tensors are cast to, or None to keep the processor's.
+        start: Queue every build now; otherwise each entry is a ``functools.partial`` that queues it when called.
 
     Returns:
         Each sample's build future, which resolves to its processor tensors and, with SGLang's placement, its
         positions once the background rebuild reaches the sample.
     """
     builds = [
-        _submit_sample_build(
+        functools.partial(
+            _submit_sample_build,
             trainer_processor,
             sample_multimodal_inputs,
             sample_tokens,
@@ -149,6 +154,8 @@ def compute_multimodal_train_inputs(
         )
         for sample_multimodal_inputs, sample_tokens in zip(multimodal_inputs, tokens, strict=True)
     ]
+    if start:
+        builds = [build() for build in builds]
     return TokenSpaceTrainInputs(builds, list(builds) if with_sglang_placement else None)
 
 

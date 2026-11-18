@@ -1,8 +1,11 @@
+import gc
+import weakref
 from argparse import Namespace
 
 import pytest
 import torch
 
+from miles.backends.training_utils.data import context_parallel
 from miles.backends.training_utils.data import rollout as data_utils
 from miles.backends.training_utils.data import token_space_media_process
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState
@@ -216,6 +219,7 @@ class TestGetRolloutDataMediaRebuild:
             multimodal_token_space_processing=True,
             debug_rollout_only=False,
             trainer_mm_processor_worker_num=1,
+            trainer_mm_build_whole_round=False,
             train_backend="megatron",
             megatron_to_hf_mode="bridge",
             backend=Namespace(bf16=bf16, fp16=fp16),
@@ -229,8 +233,101 @@ class TestGetRolloutDataMediaRebuild:
         )
 
         rebuilt, text_only = token_space_media_process.resolved_multimodal_train_inputs(
-            rollout["multimodal_train_inputs"]
+            [start() for start in rollout["multimodal_train_inputs"]]
         )
         assert rebuilt["pixel_values"].dtype == expected
         assert rebuilt["image_grid_thw"].dtype == torch.int64
         assert text_only is None
+
+
+class TestTokenSpaceMediaWindow:
+    def _run(self, monkeypatch: pytest.MonkeyPatch, *, whole_round: bool, schedule: list[list[int]] | None):
+        num_samples, micro_batch_size = 6, 2
+        scheduled = {} if schedule is None else {"micro_batch_indices": schedule, "num_microbatches": [len(schedule)]}
+        built = []
+
+        def process(args, rollout_data_ref, **kwargs):
+            return {
+                "tokens": [[1, 9, 9, 2] for _ in range(num_samples)],
+                "loss_masks": [[1] for _ in range(num_samples)],
+                "total_lengths": [4] * num_samples,
+                "response_lengths": [1] * num_samples,
+                "multimodal_inputs": [{"images": [f"/shared/{i}.png"]} for i in range(num_samples)],
+                **scheduled,
+            }, None
+
+        class Processor:
+            async def process(self, image_data, **kwargs):
+                pixel_values = torch.full((2, 3), float(image_data[0].split("/")[-1].split(".")[0]))
+                built.append(weakref.ref(pixel_values))
+                return {
+                    "pixel_values": pixel_values,
+                    "image_grid_thw": torch.tensor([[1, 1, 2]]),
+                    "mm_modalities": [],
+                    "mm_spans": [],
+                }
+
+        def live() -> int:
+            gc.collect()
+            return sum(ref() is not None for ref in built)
+
+        monkeypatch.setattr(data_utils, "get_parallel_state", lambda: _parallel_state(dp_size=1))
+        monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: _parallel_state(dp_size=1))
+        monkeypatch.setattr(data_utils, "process_rollout_data", process)
+        monkeypatch.setattr(data_utils.current_platform, "current_device", lambda: torch.device("cpu"))
+        args = Namespace(
+            enable_witness=False,
+            qkv_format="thd",
+            multimodal_token_space_processing=True,
+            debug_rollout_only=False,
+            trainer_mm_processor_worker_num=1,
+            trainer_mm_build_whole_round=whole_round,
+            train_backend="megatron",
+            megatron_to_hf_mode="bridge",
+            use_dynamic_global_batch_size=False,
+            use_dynamic_batch_size=False,
+            backend=Namespace(
+                bf16=False, fp16=False, global_batch_size=num_samples, micro_batch_size=micro_batch_size
+            ),
+        )
+        rollout, _ = data_utils.get_rollout_data(
+            args=args,
+            rollout_data_ref=object(),
+            train_parallel_config=_parallel_state(dp_size=1).train_parallel_config(supports_precomputed_schedule=True),
+            token_space_processor=token_space_media_process.TrainerProcessor(core=Processor(), image_device=None),
+        )
+        (data_iterator,), (num_microbatches,) = data_utils.get_data_iterator(args, None, rollout)
+        keys = ["tokens", "multimodal_train_inputs", "mrope_position_ids", "loss_masks"]
+        keys += ["total_lengths", "response_lengths"]
+
+        live_after_forward, pixels = [], []
+        for _ in range(2):
+            data_iterator.reset()
+            for _ in range(num_microbatches):
+                batch = data_utils.get_batch(data_iterator, keys)
+                pixels.append(batch["multimodal_train_inputs"]["pixel_values"][::2, 0].tolist())
+                del batch
+                live_after_forward.append(live())
+        return live_after_forward, pixels, micro_batch_size
+
+    @pytest.mark.parametrize(
+        ("schedule", "expected"),
+        [
+            (None, [[0.0, 1.0], [2.0, 3.0], [4.0, 5.0]]),
+            ([[4, 1], [0, 5], [3, 2]], [[4.0, 1.0], [0.0, 5.0], [3.0, 2.0]]),
+        ],
+    )
+    def test_each_micro_batch_is_built_just_ahead_and_freed_after_use(
+        self, monkeypatch: pytest.MonkeyPatch, schedule: list[list[int]] | None, expected: list[list[float]]
+    ) -> None:
+        live_after_forward, pixels, micro_batch_size = self._run(monkeypatch, whole_round=False, schedule=schedule)
+
+        assert pixels == expected * 2
+        assert max(live_after_forward) <= micro_batch_size
+        assert live_after_forward[2] == 0
+
+    def test_whole_round_keeps_every_build_for_the_step(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        live_after_forward, pixels, _ = self._run(monkeypatch, whole_round=True, schedule=None)
+
+        assert pixels == [[0.0, 1.0], [2.0, 3.0], [4.0, 5.0]] * 2
+        assert live_after_forward[2:] == [6] * 4
