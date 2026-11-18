@@ -58,11 +58,11 @@ def _rope_config(**overrides):
     )
 
 
-def _engines(*, num_gpus_per_engine, **base_args):
+def _engines(*, num_gpus_per_engine, pp_size=1, **base_args):
     group = ServerGroupConfig(
         worker_type=WorkerType.REGULAR,
         num_gpus_per_engine=num_gpus_per_engine,
-        pp_size=1,
+        pp_size=pp_size,
         needs_offload=False,
         overrides={"model_path": "/ckpt"},
     )
@@ -97,4 +97,5 @@ def test_tensor_parallel_engines_without_the_dp_encoder_are_warned_about(caplog)
     with caplog.at_level("WARNING"):
         check_multimodal_setup(_rope_config(), _engines(num_gpus_per_engine=2, mm_enable_dp_encoder=True))
         check_multimodal_setup(_rope_config(), _engines(num_gpus_per_engine=1, mm_enable_dp_encoder=None))
+        check_multimodal_setup(_rope_config(), _engines(num_gpus_per_engine=2, pp_size=2, mm_enable_dp_encoder=None))
     assert "dp-encoder" not in caplog.text
