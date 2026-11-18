@@ -37,8 +37,8 @@ class TitanTpuModel:
     # how rollouts are prompted and scored; math grades the last \boxed{}, deepscaler only after </think>, which a
     # thinking-off response lacks
     rollout_args: str = "--rm-type math "
-    # the AIME eval's grader, when the rollouts' cannot read its answers
-    eval_rm_type: str = ""
+    # the AIME eval set's directory under --data-dir, graded like the rollouts
+    eval_data: str = "aime-2024"
     train_args: str = ""
     # MoE: replay the engine's expert routing (R3)
     routing_replay: bool = False
@@ -173,23 +173,25 @@ def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
     )
 
 
-def prepare_model_and_data(args: ScriptArgs, model_commands: Sequence[str]) -> None:
-    """Make the checkpoint with `model_commands` (each skips what is already there), then fetch the datasets."""
+def prepare_model_and_data(
+    args: ScriptArgs, model_commands: Sequence[str], dataset_commands: Sequence[str] = ()
+) -> None:
+    """Make the checkpoint with `model_commands`, fetch the datasets, then derive any with `dataset_commands`.
+
+    Each command skips what is already there.
+    """
     U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     for command in model_commands:
         U.exec_command_cpu(command)
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
+    for command in dataset_commands:
+        U.exec_command_cpu(command)
 
 
 def _aime_eval_data(args: ScriptArgs, model: TitanTpuModel) -> str:
-    path = f"{args.data_dir}/aime-2024/aime-2024.jsonl"
-    if not model.eval_rm_type:
-        return f"--eval-prompt-data aime {path} "
-    # a per-dataset grader needs --eval-config; the other eval settings stay flags
-    config = f"eval:\n  datasets:\n    - name: aime\n      path: {path}\n      rm_type: {model.eval_rm_type}\n"
-    return f"--eval-config {command_utils.encode_pseudo_file(config)} "
+    return f"--eval-prompt-data aime {args.data_dir}/{model.eval_data}/{model.eval_data}.jsonl "
 
 
 def _trainer_env(args: ScriptArgs) -> dict[str, str]:

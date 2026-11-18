@@ -10,7 +10,8 @@ Args:
   --model-name: Qwen3.5-4B, Qwen3.5-27B, Qwen3.6-35B-A3B or Qwen3.8-27B; also the checkpoint's directory under
     --model-dir.
   --recipe: smoke (3 short rollouts), bench (4 full-shape rollouts, no eval) or full.
-  --model-dir / --data-dir: directories holding the model / dapo-math-17k and aime-2024.
+  --model-dir / --data-dir: directories holding the model / dapo-math-17k, aime-2024 and the aime-2024-dapo
+    copy `prepare` derives from it.
   --sglang-port: port of the sglang server `train` connects to.
   --kv-cache-dtype: the engine's KV cache dtype; bfloat16 (default) or fp8_e4m3 for capacity.
   --sglang-env-script: sglang-torchtpu's environment script, sourced before the server starts.
@@ -45,8 +46,9 @@ _ENGINE_ENV = "SGLANG_TPU_VIT_PRECOMPILE_SIZES='' "
 # dapo grades the "Answer:" line the dapo-math prompts ask for; --rollout-max-prompt-len drops prompts sglang would
 # refuse (context minus the response budget)
 _ROLLOUT_ARGS = "--rm-type dapo --reward-key score --eval-reward-key acc --rollout-max-prompt-len 1024 "
-# AIME prompts ask for no "Answer:" line, so the eval grades the last \boxed{}
-_EVAL_RM_TYPE = "boxed_dapo"
+# AIME with the dapo-math prompts' "Answer:" instruction (tools/add_dapo_answer_instruction.py): thinking-off
+# answers end in a bare "Answer: N" line, never a \boxed{}
+_EVAL_DATA = "aime-2024-dapo"
 # fp32 params, grads and Adam state of a 27B model (~437 GB) exceed the four trainer devices
 _HOST_OPTIMIZER = "--optimizer-cpu-offload "
 
@@ -59,7 +61,7 @@ _MODELS: dict[str, TitanTpuModel] = {
         sglang_args=_ENGINE_ARGS,
         sglang_env=_ENGINE_ENV,
         rollout_args=_ROLLOUT_ARGS,
-        eval_rm_type=_EVAL_RM_TYPE,
+        eval_data=_EVAL_DATA,
         train_args="--titan-fsdp-gather-once ",
     ),
     "Qwen3.5-27B": TitanTpuModel(
@@ -69,7 +71,7 @@ _MODELS: dict[str, TitanTpuModel] = {
         sglang_args=_ENGINE_ARGS,
         sglang_env=_ENGINE_ENV,
         rollout_args=_ROLLOUT_ARGS,
-        eval_rm_type=_EVAL_RM_TYPE,
+        eval_data=_EVAL_DATA,
         train_args=_HOST_OPTIMIZER,
     ),
     # as Qwen3-30B-A3B: sglang serves EP 4, the trainer keeps every expert on each rank (EP 1) with Adam on the host;
@@ -81,7 +83,7 @@ _MODELS: dict[str, TitanTpuModel] = {
         sglang_args=_ENGINE_ARGS + "--ep-size 4 ",
         sglang_env=_ENGINE_ENV,
         rollout_args=_ROLLOUT_ARGS,
-        eval_rm_type=_EVAL_RM_TYPE,
+        eval_data=_EVAL_DATA,
         train_args=_HOST_OPTIMIZER + "--sglang-ep-size 4 ",
         routing_replay=True,
     ),
@@ -92,7 +94,7 @@ _MODELS: dict[str, TitanTpuModel] = {
         sglang_args=_ENGINE_ARGS,
         sglang_env=_ENGINE_ENV,
         rollout_args=_ROLLOUT_ARGS,
-        eval_rm_type=_EVAL_RM_TYPE,
+        eval_data=_EVAL_DATA,
         train_args=_HOST_OPTIMIZER,
     ),
 }
@@ -118,8 +120,14 @@ def sglang(args: Qwen35ScriptArgs):
 
 
 def _prepare(args: Qwen35ScriptArgs) -> None:
+    eval_file = f"{args.data_dir}/{_EVAL_DATA}/{_EVAL_DATA}.jsonl"
     prepare_model_and_data(
-        args, [f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"]
+        args,
+        [f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"],
+        [
+            f"[ -f {eval_file} ] || python3 tools/add_dapo_answer_instruction.py "
+            f"--src {args.data_dir}/aime-2024/aime-2024.jsonl --dst {eval_file}"
+        ],
     )
 
 

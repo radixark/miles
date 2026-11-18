@@ -14,3 +14,8 @@ hf download
 hf download
   --repo-type dataset zhuzilin/aime-2024
   --local-dir /root/datasets/aime-2024
+
+### 4
+[ -f /root/datasets/aime-2024-dapo/aime-2024-dapo.jsonl ] || python3 tools/add_dapo_answer_instruction.py
+  --src /root/datasets/aime-2024/aime-2024.jsonl
+  --dst /root/datasets/aime-2024-dapo/aime-2024-dapo.jsonl

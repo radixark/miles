@@ -65,8 +65,8 @@ smoke recipe end to end on one v7x 2x2x1 host (cold compile caches; steps 1-2): 
 with 14 s weight syncs, GLM-4.7-Flash 4-layer at 80-82 s with 0.6-0.9 s syncs. The GLM engine traces with dynamo:
 the direct tracer aborts the MLA backend at startup. Model and data
 default to `/root/models` and `/root/datasets` (`--model-dir`, `--data-dir`); `prepare` (and `train`, which runs
-it first) downloads the model, dapo-math-17k and aime-2024 there if missing, and the GLM launcher's cuts the
-checkpoint it serves. The steps below use Qwen3-4B.
+it first) downloads the model, dapo-math-17k and aime-2024 there if missing, the GLM launcher's cuts the
+checkpoint it serves, and the Qwen3.5 launcher's adds dapo-math's "Answer:" instruction to AIME for its eval. The steps below use Qwen3-4B.
 
 1. Fetch the model and datasets:
 
