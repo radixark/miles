@@ -48,7 +48,7 @@ SessionWireFormat = Literal["openai", "anthropic"]
 # Soft cap on how many normal-rollout samples may report any assistant_text
 # mismatch.  Hard mismatch types (special_token_count / special_token_type /
 # non_assistant_text) are journaled per sample and rejected by the run-level
-# gate in both rollouts — those must be 0.
+# gate in every rollout — those must be 0.
 ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD = 0.2
 # How many per-sample assistant_text examples a failed soft gate quotes, so a CI
 # log shows what drifted without the preserved sidecar file.
@@ -271,6 +271,11 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
         parts.append("--no-enable-sample-ownership-checker")
     if ns.colocate:
         parts.append("--colocate")
+    allow_truncated_continuation = getattr(
+        ns, "allow_truncated_continuation", None
+    )  # config-access-exempt: launcher helper accepts namespaces from different CLI providers
+    if allow_truncated_continuation is not None:
+        parts.append(f"--{'' if allow_truncated_continuation else 'no-'}allow-truncated-continuation")
     return " ".join(parts) + " "
 
 
@@ -382,7 +387,7 @@ def assert_session_verify_metrics(
     and a normal rollout that never answered a tool call (when
     ``require_append_tool``) fail.  A truncate rollout also fails when a
     continued cut turn was not closed by the family's closer, or, in a run that
-    continues truncated turns, when a cut kind was never continued.  Every
+    continues truncated turns, when a planned cut kind was never continued.  Every
     rollout fails on hard mismatches (samples whose only hard type is
     special_token_count are tolerated up to ``special_token_count_threshold``),
     and the normal rollout on an assistant_text ratio above
@@ -488,6 +493,7 @@ def _summarize(entries: list[dict]) -> dict[str, Any]:
         "has_append_tool": False,
         "unmet_expectations": [],
         "expects_acceptance": False,
+        "planned_cut_kinds": set(),
         "continued_cut_kinds": set(),
         "cut_problems": [],
         "unfinished": [],
@@ -498,6 +504,8 @@ def _summarize(entries: list[dict]) -> dict[str, Any]:
             e for e in entry.get("expectations", []) if e["actual_status"] != e["expected_status"]
         ]
         summary["expects_acceptance"] |= any(e["expected_status"] == 200 for e in entry.get("expectations", []))
+        if entry.get("cut_kind") is not None:
+            summary["planned_cut_kinds"].add(entry["cut_kind"])
         for cut in entry.get("cuts", []):
             summary["continued_cut_kinds"].add(cut["kind"])
             summary["cut_problems"] += cut["problems"]
@@ -539,7 +547,8 @@ def _assert_continued_cuts(kind: SessionVerifyKind, summary: dict[str, Any]) -> 
             f"Session multi-role e2e: {len(summary['cut_problems'])} continued cut turns were not closed by the "
             f"family's closer (first={summary['cut_problems'][:3]})."
         )
-    missing = [cut_kind for cut_kind in CUT_KINDS if cut_kind not in summary["continued_cut_kinds"]]
+    # A batch smaller than CUT_KINDS plans only some of them.
+    missing = sorted(summary["planned_cut_kinds"] - summary["continued_cut_kinds"], key=CUT_KINDS.index)
     if summary["expects_acceptance"] and missing:
         raise AssertionError(
             f"Session multi-role e2e: no truncate sample continued a turn cut in {missing}; "

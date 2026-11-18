@@ -139,6 +139,7 @@ def _runner_namespace(
         session_verify_cycles=generate_values["session_verify_cycles"],
         session_verify_spec_trajectory=session_verify_spec_trajectory,
         tito_model=config.tito_model,
+        allow_truncated_continuation=config.allow_truncated_continuation,
         session_message_matcher=config.session_message_matcher,
         rollout_num_gpus_per_engine=config.rollout_num_gpus_per_engine,
         rollout_num_gpus=config.rollout_num_gpus,
@@ -170,7 +171,7 @@ def _runner_namespace(
     )
 
 
-def _print_rollout_table(tito_model: str, *, spec_trajectory: bool) -> None:
+def _print_rollout_table(tito_model: str, *, spec_trajectory: bool, allow_truncated_continuation: bool) -> None:
     fixed = fixed_template(tito_model)
     print("Rollout steps:")
     for step, kind in enumerate(session_verify_kinds(spec_trajectory)):
@@ -182,8 +183,8 @@ def _print_rollout_table(tito_model: str, *, spec_trajectory: bool) -> None:
         print("Spec probes (200 if the spec accepts the role there, else 400):")
         for step in spec_probe_steps(fixed):
             print(f"  - {step}")
-        closes = "declares a closer" if fixed.truncation_closer is not None else "declares no closer"
-        print(f"Truncate probe (200 if the run continues truncated turns, else 409; the family {closes}):")
+        status = "200: the run continues truncated turns" if allow_truncated_continuation else "409: it does not"
+        print(f"Truncate probe ({status}):")
         print(f"  - {CONTINUE_CUT_STEP}")
     print()
 
@@ -215,7 +216,11 @@ def main() -> int:
     print(f"Spec rollout:           {args.session_verify_spec_trajectory}")
     print()
 
-    _print_rollout_table(args.tito_model, spec_trajectory=args.session_verify_spec_trajectory)
+    _print_rollout_table(
+        args.tito_model,
+        spec_trajectory=args.session_verify_spec_trajectory,
+        allow_truncated_continuation=args.allow_truncated_continuation,
+    )
 
     try:
         run_session_verify(args=args)

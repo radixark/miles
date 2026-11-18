@@ -17,9 +17,9 @@ its prompt record:
   accepts must succeed.  It also rolls back, appends a system message and
   injects assistant messages, which the session server must handle too.
 
-- ``truncate`` cuts one reply with ``max_tokens`` inside its reasoning, a tool
-  call or its answer (``session_verify_cut_kind`` of the prompt record) and
-  continues the cut turn.  The continuation must succeed exactly when the run
+- ``truncate`` generates one reply greedily, regenerates it with ``max_tokens``
+  so that it stops inside its reasoning, a tool call or its answer
+  (``session_verify_cut_kind`` of the prompt record), and continues the cut turn.  The continuation must succeed exactly when the run
   continues truncated turns (``--allow-truncated-continuation``), and then the
   next prompt must close the cut turn with the family's closer.
 
@@ -143,6 +143,10 @@ _TRUNCATED_REFUSED = 409
 CONTINUE_CUT_STEP = "continue cut turn"
 # Where a truncate rollout cuts when the family declares no closer to place the cut by.
 _BLIND_CUT_TOKENS = 8
+# Sampling for the reply a truncate rollout generates twice: the top token at every step, so the
+# regeneration repeats the probed reply up to the cut.  A seed would not do: the verifier's requests
+# carry none, and SGLang honours one only under deterministic inference.
+REPRODUCIBLE_REQUEST_ARGS = {"top_k": 1}
 
 
 def fixed_template(tito_model: TITOTokenizerType | str) -> FixedTemplate:
@@ -236,7 +240,7 @@ def spec_probe_steps(fixed: FixedTemplate) -> list[str]:
 
 
 def build_initial_messages() -> list[dict]:
-    """The fixed (system, user) prompt both rollouts start from."""
+    """The fixed (system, user) prompt every rollout starts from."""
     return [
         {"role": "system", "content": INITIAL_SYSTEM_PROMPT},
         {"role": "user", "content": INITIAL_USER_PROMPT},
@@ -502,7 +506,8 @@ async def _run_truncate(driver: _Driver, fixed: FixedTemplate, tito, *, cut_kind
         call = await driver.chat(messages, label="Initial", need_tool_call=True)
         driver.events.append("initial")
         driver.append_tool_results(messages, call)
-    await driver.chat(messages, label="Probe", need_tool_call=cut_kind == "tool_call")
+    # No resample for a missing tool call: a greedy reply comes out the same every time.
+    await driver.chat(messages, label="Probe", extra_kwargs=REPRODUCIBLE_REQUEST_ARGS)
     driver.events.append("probe")
     if tito is None:
         max_tokens = _BLIND_CUT_TOKENS
@@ -513,6 +518,7 @@ async def _run_truncate(driver: _Driver, fixed: FixedTemplate, tito, *, cut_kind
     cut = await driver.cut(messages, max_tokens=max_tokens, label=f"Cut in {cut_kind}")
     driver.events.append("cut")
 
+    probed_messages = list(messages)
     # The continuation follows the normal rollout: answer the cut turn's complete calls, else ask on.
     if cut.get("tool_calls"):
         driver.append_tool_results(messages, cut)
@@ -521,7 +527,12 @@ async def _run_truncate(driver: _Driver, fixed: FixedTemplate, tito, *, cut_kind
     reply = await driver.probe(
         messages, label=CONTINUE_CUT_STEP, expected_status=expected_status, refused_status=_TRUNCATED_REFUSED
     )
-    if reply is not None and tito is not None:
+    if reply is None:
+        # The refusal leaves the cut turn as the session's last one, and a turn nothing closed fails
+        # the mismatch check.  Re-sending the probed request replaces it with a complete turn.
+        await driver.chat(probed_messages, label="After refused cut")
+        driver.events.append("regenerate_refused_cut")
+    elif tito is not None:
         driver.events.append("continue_cut")
         driver.cuts.extend(check_continued_cuts(tito, await driver.records()))
 
@@ -600,13 +611,14 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     }
 
 
-def _verify_tito_samples(samples, *, kind: SessionVerifyKind) -> None:
+def _verify_tito_samples(samples, *, kind: SessionVerifyKind, cut_kind: str | None = None) -> None:
     """Record every sample and defer hard failures to the run-level gate.
 
     The rollout loop treats custom-generate exceptions as retryable sample
-    failures.  With a metrics sidecar, hard TITO mismatches and unmet spec
-    expectations must therefore be persisted instead of raised here and
-    discarded with the sample.  Direct callers without a sidecar retain the
+    failures.  With a metrics sidecar, hard TITO mismatches, unmet
+    expectations and cut turns the closer did not close must therefore be
+    persisted instead of raised here and discarded with the sample.  *cut_kind*
+    is where a truncate sample was told to cut.  Direct callers without a sidecar retain the
     immediate-failure behavior.
     """
     metrics_path = os.environ.get("MILES_SESSION_VERIFY_METRICS_PATH")
@@ -624,12 +636,15 @@ def _verify_tito_samples(samples, *, kind: SessionVerifyKind) -> None:
             logger.error("Hard TITO mismatch: leaf=%r mismatches=%r", sample.metadata.get("leaf"), forbidden)
         expectations = sample.metadata.get(EXPECTATIONS_KEY) or []
         unmet = [e for e in expectations if e["actual_status"] != e["expected_status"]]
+        cut_problems = [problem for cut in sample.metadata.get(CUTS_KEY) or [] for problem in cut["problems"]]
         if metrics_path:
-            _append_session_verify_record(_sample_record(i, sample, kind, mismatches, forbidden, expectations))
-        elif forbidden or unmet:
+            record = _sample_record(i, sample, kind, mismatches, forbidden, expectations)
+            _append_session_verify_record({**record, "cut_kind": cut_kind})
+        elif forbidden or unmet or cut_problems:
             raise AssertionError(
-                f"Session multi-role e2e: {kind} sample {i} has forbidden mismatches {forbidden} "
-                f"and unmet spec expectations {unmet}.  Both must be empty for any TITO-correct setup."
+                f"Session multi-role e2e: {kind} sample {i} has forbidden mismatches {forbidden}, "
+                f"unmet expectations {unmet} and cut turns the closer did not close {cut_problems}.  "
+                "All must be empty for any TITO-correct setup."
             )
 
 
@@ -739,7 +754,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     samples = output.samples if isinstance(output.samples, list) else [output.samples]
     if not samples:
         raise AssertionError("Session multi-role e2e: generate returned no samples")
-    _verify_tito_samples(samples, kind=kind)
+    _verify_tito_samples(samples, kind=kind, cut_kind=input.sample.metadata.get(SESSION_VERIFY_CUT_KIND_KEY))
 
     steps = {
         SessionVerifyKind.SPEC: spec_probe_steps(fixed_template(tito_model)),

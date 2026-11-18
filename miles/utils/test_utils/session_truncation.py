@@ -2,8 +2,9 @@
 
 A cut is placed by a probe. The verifier first generates a turn in full, finds
 where its reasoning, tool call or answer lies, and re-sends the same request
-(same seed) with ``max_tokens`` ending there. Sampling may still drift, so the
-kind of a cut is read from the cut turn's tokens, not from the plan.
+with ``max_tokens`` ending there. Both requests sample greedily so the second
+repeats the first; it may still drift, so the kind of a cut is read from the
+cut turn's tokens, not from the plan.
 """
 
 from __future__ import annotations
@@ -31,12 +32,6 @@ def prompt_ids(record: dict) -> list[int]:
 def sampled_ids(record: dict) -> list[int]:
     """Sampled token IDs of one session record (each ``output_token_logprobs`` entry starts ``logprob, id``)."""
     return [entry[1] for entry in record["response"]["choices"][0]["meta_info"]["output_token_logprobs"]]
-
-
-def record_cut_kind(tito: TITOTokenizer, record: dict) -> str:
-    """Which of ``CUT_KINDS`` the record's reply stops in."""
-    prompt = prompt_ids(record)
-    return tito.cut_kind(prompt + sampled_ids(record), len(prompt))
 
 
 def cut_length(tito: TITOTokenizer, record: dict, kind: str) -> int | None:

@@ -212,6 +212,15 @@ def test_namespace_to_train_args_emits_model_mamba_cache_config():
     assert "--sglang-mamba-full-memory-ratio 4.59" in train_args
 
 
+@pytest.mark.parametrize(
+    ("allowed", "flag"),
+    [(True, "--allow-truncated-continuation"), (False, "--no-allow-truncated-continuation")],
+)
+def test_namespace_to_train_args_forwards_truncated_continuation(allowed, flag):
+    assert f" {flag} " in " " + _build_args(allow_truncated_continuation=allowed)
+    assert "truncated-continuation" not in _build_args()
+
+
 def test_namespace_to_train_args_emits_cuda_graph_max_batch_size():
     train_args = _build_args(sglang_cuda_graph_max_bs_decode=8)
 
@@ -219,11 +228,12 @@ def test_namespace_to_train_args_emits_cuda_graph_max_batch_size():
 
 
 def test_rollout_table_lists_the_spec_probes(capsys):
-    _print_rollout_table("deepseekv4", spec_trajectory=True)
+    _print_rollout_table("deepseekv4", spec_trajectory=True, allow_truncated_continuation=True)
 
     output = capsys.readouterr().out
     assert "0. spec" in output and "1. truncate" in output and "2. normal" in output
-    assert f"  - {CONTINUE_CUT_STEP}" in output and "the family declares a closer" in output
+    assert "Truncate probe (200: the run continues truncated turns):" in output
+    assert f"  - {CONTINUE_CUT_STEP}" in output
     assert "Roles after a tool call:     ['tool']" in output
     assert "  - user after tool call" in output
     assert "  - tool after no tool call" in output
@@ -585,6 +595,8 @@ def _truncate(*cut_kinds, expected_status=200, actual_status=None, problems=(), 
     status = expected_status if actual_status is None else actual_status
     return {
         "kind": "truncate",
+        # Planned as cut; a sample that names no cut was refused before any cut was continued.
+        "cut_kind": cut_kinds[0] if cut_kinds else "reasoning",
         "expectations": [{"step": CONTINUE_CUT_STEP, "expected_status": expected_status, "actual_status": status}],
         "cuts": [{"kind": kind, "problems": list(problems)} for kind in cut_kinds],
         **entry,
@@ -601,9 +613,15 @@ def test_session_verify_metrics_accepts_a_truncate_rollout_that_continued_every_
     _assert_truncate_metrics(tmp_path, _truncate("reasoning"), _truncate("tool_call"), _truncate("answer"))
 
 
-def test_session_verify_metrics_rejects_a_cut_kind_no_sample_continued(tmp_path):
+def test_session_verify_metrics_rejects_a_planned_cut_kind_no_sample_continued(tmp_path):
+    # The sample planned a tool_call cut, but its regeneration drifted into reasoning.
+    drifted = _truncate("reasoning", cut_kind="tool_call")
     with pytest.raises(AssertionError, match=r"no truncate sample continued a turn cut in \['tool_call'\]"):
-        _assert_truncate_metrics(tmp_path, _truncate("reasoning"), _truncate("answer"))
+        _assert_truncate_metrics(tmp_path, _truncate("reasoning"), drifted, _truncate("answer"))
+
+
+def test_session_verify_metrics_asks_only_for_the_cut_kinds_a_small_batch_planned(tmp_path):
+    _assert_truncate_metrics(tmp_path, _truncate("reasoning"), _truncate("tool_call"))
 
 
 def test_session_verify_metrics_rejects_a_cut_turn_the_closer_did_not_close(tmp_path):

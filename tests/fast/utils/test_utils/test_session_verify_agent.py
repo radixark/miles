@@ -19,6 +19,7 @@ from miles.utils.test_utils.session_verify_agent import (
     EXPECTATIONS_KEY,
     NO_TOOL_CALL_REQUEST_ARGS,
     NO_TOOL_CALL_USER_TEXT,
+    REPRODUCIBLE_REQUEST_ARGS,
     SESSION_VERIFY_CUT_KIND_KEY,
     SESSION_VERIFY_KIND_KEY,
     SYSTEM_REMINDER_TEXT,
@@ -750,7 +751,8 @@ def _run_truncate(monkeypatch, session, cut_kind, *, tito_model="qwen3", allowed
         run_agent(
             "http://session",
             prompt=None,
-            request_kwargs={"temperature": 1.0, "seed": 7},
+            # As the rollout sends them: no seed, so nothing but the request itself makes a reply repeatable.
+            request_kwargs={"temperature": 0.7},
             metadata={
                 "tito_model": tito_model,
                 SESSION_VERIFY_KIND_KEY: str(SessionVerifyKind.TRUNCATE),
@@ -772,11 +774,16 @@ def test_truncate_rollout_continues_a_turn_cut_in_each_kind(monkeypatch, qwen3_t
     assert result[CUTS_KEY] == [{"kind": cut_kind, "problems": []}]
     assert result[UNFINISHED_KEY] is None
     assert result["driver_events"][-1] == "continue_cut"
-    # The cut regenerates the probed reply: the same request, stopped by max_tokens.
+    # The cut regenerates the probed reply: the same greedy request, stopped by max_tokens.
     (probe_kwargs,) = [kwargs for label, kwargs in session.requests if label == "Probe"]
     (cut_kwargs,) = [kwargs for label, kwargs in session.requests if label == f"Cut in {cut_kind}"]
-    assert {**cut_kwargs, "max_tokens": None} == {**probe_kwargs, "max_tokens": None}
-    assert 0 < cut_kwargs["max_tokens"] < len(session.reply_ids)
+    assert probe_kwargs == {"temperature": 0.7, **REPRODUCIBLE_REQUEST_ARGS}
+    assert 0 < cut_kwargs.pop("max_tokens") < len(session.reply_ids)
+    assert cut_kwargs == probe_kwargs
+    # Every other turn samples as the run does.
+    assert all(
+        "top_k" not in kwargs for label, kwargs in session.requests if label not in ("Probe", f"Cut in {cut_kind}")
+    )
 
 
 def test_truncate_rollout_reports_a_cut_turn_the_server_did_not_close(monkeypatch, qwen3_tito):
@@ -797,6 +804,9 @@ def test_truncate_rollout_expects_409_from_a_run_that_does_not_continue_truncate
     assert result[EXPECTATIONS_KEY] == [{"step": CONTINUE_CUT_STEP, "expected_status": 409, "actual_status": 409}]
     assert result[CUTS_KEY] == []
     assert result[UNFINISHED_KEY] is None
+    # The refused cut turn is regenerated in full, so the session does not end on a turn nothing closed.
+    assert result["driver_events"][-1] == "regenerate_refused_cut"
+    assert session.records[-1]["response"]["choices"][0]["finish_reason"] == "stop"
 
 
 def test_truncate_rollout_cuts_blind_for_a_family_without_a_closer(monkeypatch, qwen3_tito):
@@ -818,10 +828,20 @@ def test_truncate_rollout_is_unfinished_when_the_reply_has_nothing_to_cut_there(
     assert result[EXPECTATIONS_KEY] == [] and result[CUTS_KEY] == []
 
 
+def test_a_cut_turn_the_closer_did_not_close_raises_without_metrics_sidecar(monkeypatch):
+    monkeypatch.delenv("MILES_SESSION_VERIFY_METRICS_PATH", raising=False)
+    sample = _verified_sample([])
+    sample.metadata[CUTS_KEY] = [{"kind": "tool_call", "problems": ["truncation_closer: expected 'x', got ''"]}]
+
+    with pytest.raises(AssertionError, match="cut turns the closer did not close.*truncation_closer"):
+        session_verify_agent._verify_tito_samples([sample], kind=SessionVerifyKind.TRUNCATE)
+
+
 def test_generate_gives_a_truncate_sample_what_its_agent_needs(monkeypatch, tmp_path):
     metrics_path = tmp_path / "metrics.jsonl"
     monkeypatch.setenv("MILES_SESSION_VERIFY_METRICS_PATH", str(metrics_path))
     generate_input = _generate_input(SessionVerifyKind.TRUNCATE)
+    generate_input.sample.metadata[SESSION_VERIFY_CUT_KIND_KEY] = "answer"
     generate_input.args.hf_checkpoint = "/models/qwen3"
     generate_input.args.allow_truncated_continuation = True
     expectation = {"step": CONTINUE_CUT_STEP, "expected_status": 200, "actual_status": 200}
@@ -840,3 +860,4 @@ def test_generate_gives_a_truncate_sample_what_its_agent_needs(monkeypatch, tmp_
 
     (record,) = [json.loads(line) for line in metrics_path.read_text().splitlines()]
     assert record["kind"] == "truncate" and record["cuts"] == cuts and record["expectations"] == [expectation]
+    assert record["cut_kind"] == "answer"
