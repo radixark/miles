@@ -36,8 +36,8 @@ ARG TARGETARCH
 # ====================================== Install sglang-torchtpu ============================================
 
 # The base image's /sgl-workspace/sglang is a source tree without git history, installed editable. The commit
-# pins the release's torch_tpu and libtpu but a newer jax, so the reinstall needs no dependencies beyond the
-# python/pyproject_tpu.toml jax and jaxlib pins.
+# pins the release's torch_tpu and libtpu but a newer jax, so the reinstall takes no dependencies except the
+# python/pyproject_tpu.toml jax and jaxlib pins, installed with their own dependencies.
 RUN SGLANG_VERSION=$(python3 -c 'import importlib.metadata as m; print(m.version("sglang"))') && \
     SGLANG_TPU_VERSION=$(python3 -c 'import importlib.metadata as m; print(m.version("sglang-tpu"))') && \
     rm -rf /sgl-workspace/sglang && git init -q /sgl-workspace/sglang && cd /sgl-workspace/sglang && \
