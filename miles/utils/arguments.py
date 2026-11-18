@@ -110,11 +110,6 @@ def _resolve_rollout_functions(args) -> None:
         logger.info("--rollout-function-path selects FullyAsyncRolloutFn: enabling --fully-async")
         args.fully_async = True
         args.rollout_function_path = None
-    if args.partial_rollout and args.mask_offpolicy_in_partial_rollout and not use_legacy_rollout_v1():
-        raise ValueError(
-            "--mask-offpolicy-in-partial-rollout does not re-extend the loss mask on the "
-            "class-based rollout path yet; set MILES_USE_LEGACY_ROLLOUT_V1=1"
-        )
     if args.fully_async:
         assert (
             not use_legacy_rollout_v1()
