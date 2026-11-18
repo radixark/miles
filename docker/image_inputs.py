@@ -12,6 +12,7 @@ is installed.
 Usage:
     python docker/image_inputs.py                 # hash the working tree
     python docker/image_inputs.py --rev HEAD^1    # hash a git revision
+    python docker/image_inputs.py --pr 123 --arch arm64   # PR image variant and tag
 """
 
 import argparse
@@ -38,6 +39,10 @@ INPUT_GLOBS = (
 )
 
 LABEL_KEY = "miles.image-inputs"
+
+# A PR image is one tag per architecture, each stamped with LABEL_KEY so it is reused
+# independently.
+PR_IMAGE_ARCHES = {"amd64": ("cu13-x86", ""), "arm64": ("cu13-aarch64", "-arm64")}
 
 
 def _matches(path: str) -> bool:
@@ -101,6 +106,12 @@ def read_label(manifest: str) -> str:
         return ""
 
 
+def pr_image(arch: str, pr: int) -> tuple[str, str]:
+    """Return the ``build.py`` variant and the tag of one architecture's PR image."""
+    variant, suffix = PR_IMAGE_ARCHES[arch]
+    return variant, f"pr-{pr}{suffix}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rev", default=None, help="Git revision to hash (default: working tree).")
@@ -109,8 +120,15 @@ def main() -> int:
         action="store_true",
         help="Read imagetools inspect JSON on stdin and print the hash it recorded.",
     )
+    parser.add_argument("--pr", type=int, help="Print the variant and tag of this PR's image for --arch.")
+    parser.add_argument("--arch", choices=sorted(PR_IMAGE_ARCHES))
     args = parser.parse_args()
-    print(read_label(sys.stdin.read()) if args.read_label else compute(args.rev))
+    if args.pr is not None:
+        if args.arch is None:
+            parser.error("--pr requires --arch")
+        print(*pr_image(args.arch, args.pr))
+    else:
+        print(read_label(sys.stdin.read()) if args.read_label else compute(args.rev))
     return 0
 
 
