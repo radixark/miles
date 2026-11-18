@@ -5,6 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 from miles.utils.chat_template_utils.tito_tokenizer.base import FixedTemplate, TITOTokenizer
+from miles.utils.chat_template_utils.truncation import MarkerPair, TruncationGrammar
+
+
+_QWEN_TRUNCATION = TruncationGrammar(
+    think=MarkerPair("<think>", "\n</think>\n\n"),
+    tool_blocks=(MarkerPair("<tool_call>", "\n</tool_call>"),),
+    end_of_turn="<|im_end|>",
+)
 
 
 class Qwen3TITOTokenizer(TITOTokenizer):
@@ -22,6 +30,7 @@ class Qwen3TITOTokenizer(TITOTokenizer):
     FIXED_TEMPLATE = FixedTemplate(
         template="qwen3_fixed.jinja",
         extra_kwargs={"clear_thinking": False},
+        truncation_closer=_QWEN_TRUNCATION,
     )
 
     _default_assistant_start_str: str = "<|im_start|>assistant"
@@ -76,6 +85,7 @@ class Qwen35TITOTokenizer(Qwen3TITOTokenizer):
         extra_kwargs={"preserve_thinking": True},
         allowed_append_roles=frozenset({"tool", "user", "assistant"}),
         consistant_kwargs=["add_vision_id"],
+        truncation_closer=_QWEN_TRUNCATION,
     )
 
 
@@ -89,6 +99,7 @@ class Qwen36TITOTokenizer(Qwen3TITOTokenizer):
         extra_kwargs={"preserve_thinking": True},
         allowed_append_roles=frozenset({"tool", "user", "assistant"}),
         consistant_kwargs=["add_vision_id"],
+        truncation_closer=_QWEN_TRUNCATION,
     )
 
 
@@ -102,6 +113,7 @@ class Qwen38SmallTITOTokenizer(Qwen3TITOTokenizer):
         extra_kwargs={"preserve_thinking": True},
         allowed_append_roles=frozenset({"tool", "user", "assistant"}),
         consistant_kwargs=["add_vision_id", "enable_thinking", "reasoning_effort"],
+        truncation_closer=_QWEN_TRUNCATION,
     )
 
 
@@ -112,4 +124,5 @@ class QwenNextTITOTokenizer(Qwen3TITOTokenizer):
     FIXED_TEMPLATE = FixedTemplate(
         template="qwen3_thinking_2507_and_next_fixed.jinja",
         extra_kwargs={"clear_thinking": False},
+        truncation_closer=_QWEN_TRUNCATION,
     )

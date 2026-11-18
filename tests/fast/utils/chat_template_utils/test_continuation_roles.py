@@ -10,53 +10,14 @@ path, and one it refuses makes the renderer raise.
 
 import json
 from copy import deepcopy
-from functools import cache
 
 import pytest
-from huggingface_hub import snapshot_download
 from tests.ci.ci_register import register_cpu_ci
+from tests.fast.utils.chat_template_utils.tito_families import FAMILY_CHECKPOINTS, load_family_tito
 
-from miles.utils.chat_template_utils.tito_tokenizer import (
-    VALID_APPEND_ROLES,
-    TITOTokenizer,
-    TITOTokenizerType,
-    get_tito_tokenizer,
-    resolve_fixed_chat_template,
-)
-from miles.utils.processing_utils import load_tokenizer
+from miles.utils.chat_template_utils.tito_tokenizer import VALID_APPEND_ROLES, TITOTokenizer, TITOTokenizerType
 
 register_cpu_ci(est_time=120, suite="stage-b-cpu", labels=["rollout"])
-
-# One checkpoint per registered family class; the renderer is the class's.
-_FAMILY_CHECKPOINTS = {
-    TITOTokenizerType.QWEN3: "Qwen/Qwen3-0.6B",
-    TITOTokenizerType.QWEN35: "Qwen/Qwen3.5-0.8B",
-    TITOTokenizerType.QWEN36: "Qwen/Qwen3.6-35B-A3B",
-    TITOTokenizerType.QWEN38_SMALL: "Qwen/Qwen3.8-27B",
-    TITOTokenizerType.QWENNEXT: "Qwen/Qwen3-4B-Thinking-2507",
-    TITOTokenizerType.GLM47: "zai-org/GLM-4.7-Flash",
-    TITOTokenizerType.GLM53: "zai-org/GLM-5.3",
-    TITOTokenizerType.NEMOTRON3: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
-    TITOTokenizerType.KIMI25: "moonshotai/Kimi-K2.5",
-    TITOTokenizerType.KIMI26: "moonshotai/Kimi-K2.6",
-    TITOTokenizerType.MINIMAX_M25: "MiniMaxAI/MiniMax-M2.5",
-    TITOTokenizerType.MINIMAX_M27: "MiniMaxAI/MiniMax-M2.7",
-    TITOTokenizerType.DEEPSEEKV32: "deepseek-ai/DeepSeek-V3.2",
-    TITOTokenizerType.DEEPSEEKV4: "deepseek-ai/DeepSeek-V4-Flash",
-    TITOTokenizerType.DEEPSEEKV41: "deepseek-ai/DeepSeek-V4.1-Flash",
-    TITOTokenizerType.INKLING: "thinkingmachines/Inkling-Small",
-    TITOTokenizerType.MUSE_SPARK: "RadixArk/Muse-Spark-Open-last4-partial",
-}
-_TOKENIZER_FILES = [
-    "config.json",
-    "tokenizer*",
-    "special_tokens_map.json",
-    "chat_template*",
-    "*.py",
-    "*.model",
-    "*.tiktoken",
-    "tiktoken/*",
-]
 
 _TOOLS = [
     {
@@ -106,7 +67,7 @@ _APPENDED = {
 
 
 def _cases():
-    for family in _FAMILY_CHECKPOINTS:
+    for family in FAMILY_CHECKPOINTS:
         fixed = TITOTokenizerType.get_tokenizer_class(family).FIXED_TEMPLATE
         for context, assistant in _ASSISTANTS.items():
             for role in VALID_APPEND_ROLES:
@@ -114,14 +75,6 @@ def _cases():
                 if role in fixed.allowed_append_roles:
                     allowed = role in fixed.roles_after(assistant)
                     yield pytest.param(family, context, role, allowed, id=f"{family.value}-{context}-{role}")
-
-
-@cache
-def _tito(family: TITOTokenizerType) -> TITOTokenizer:
-    path = snapshot_download(_FAMILY_CHECKPOINTS[family], allow_patterns=_TOKENIZER_FILES)
-    chat_template_path, _ = resolve_fixed_chat_template(family)
-    tokenizer = load_tokenizer(path, chat_template_path=chat_template_path, trust_remote_code=True)
-    return get_tito_tokenizer(tokenizer, tokenizer_type=family)
 
 
 def _merge_appended(tito: TITOTokenizer, context: str, role: str) -> tuple[str, str]:
@@ -145,13 +98,13 @@ def _merge_appended(tito: TITOTokenizer, context: str, role: str) -> tuple[str, 
 
 def test_every_family_class_is_covered():
     registered = {TITOTokenizerType.get_tokenizer_class(family) for family in TITOTokenizerType} - {TITOTokenizer}
-    covered = {TITOTokenizerType.get_tokenizer_class(family) for family in _FAMILY_CHECKPOINTS}
+    covered = {TITOTokenizerType.get_tokenizer_class(family) for family in FAMILY_CHECKPOINTS}
     assert covered == registered
 
 
 @pytest.mark.parametrize("family,context,role,allowed", list(_cases()))
 def test_continuation_roles_match_the_renderer(family, context, role, allowed):
-    tito = _tito(family)
+    tito = load_family_tito(family)
     if allowed:
         merged, expected = _merge_appended(tito, context, role)
         assert merged == expected

@@ -7,8 +7,21 @@ from typing import Any
 
 from miles.rollout.session.errors import MessageValidationError
 from miles.utils.chat_template_utils.tito_tokenizer.base import FixedTemplate, TITOTokenizer
+from miles.utils.chat_template_utils.truncation import MarkerPair, TruncationGrammar
 
 logger = logging.getLogger(__name__)
+
+
+# No end-of-turn token: the next message's role token ends the turn.
+_GLM_TRUNCATION = TruncationGrammar(
+    think=MarkerPair("<think>", "</think>"),
+    tool_blocks=(
+        MarkerPair("<tool_call>", "</tool_call>"),
+        MarkerPair("<arg_key>", "</arg_key>"),
+        MarkerPair("<arg_value>", "</arg_value>"),
+    ),
+    end_of_turn=None,
+)
 
 
 class GLM47TITOTokenizer(TITOTokenizer):
@@ -39,6 +52,7 @@ class GLM47TITOTokenizer(TITOTokenizer):
     FIXED_TEMPLATE = FixedTemplate(
         template=None,
         extra_kwargs={"clear_thinking": False},
+        truncation_closer=_GLM_TRUNCATION,
     )
 
     max_trim_tokens: int = 1
@@ -95,4 +109,5 @@ class GLM53TITOTokenizer(GLM47TITOTokenizer):
         template=None,
         extra_kwargs={"clear_thinking": False, "enable_thinking": True},
         consistant_kwargs=["reasoning_effort"],
+        truncation_closer=_GLM_TRUNCATION,
     )
