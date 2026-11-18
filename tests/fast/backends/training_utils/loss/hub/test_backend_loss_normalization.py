@@ -81,11 +81,6 @@ class TestBackendLossNormalization:
 
         assert loss.item() == pytest.approx(expected)
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=RuntimeError,
-        reason="Existing single-response-token log-probability squeeze drops the token dimension",
-    )
     def test_single_response_token_preserves_a_concatenable_log_probability_dimension(
         self,
         native_backend_owner_state: None,
@@ -93,13 +88,9 @@ class TestBackendLossNormalization:
         single_token_policy_batch: dict,
     ) -> None:
         """A one-token response retains its token dimension through real policy log-probability concatenation."""
-        try:
-            policy_loss_function(
-                args=policy_backend_args,
-                batch=single_token_policy_batch,
-                logits=torch.zeros((1, 6, 2), requires_grad=True),
-                sum_of_sample_mean=torch.mean,
-            )
-        except RuntimeError as error:
-            assert str(error) == "zero-dimensional tensor (at position 0) cannot be concatenated"
-            raise
+        policy_loss_function(
+            args=policy_backend_args,
+            batch=single_token_policy_batch,
+            logits=torch.zeros((1, 6, 2), requires_grad=True),
+            sum_of_sample_mean=torch.mean,
+        )
