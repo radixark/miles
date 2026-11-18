@@ -464,7 +464,9 @@ def test_closing_marker_closes_structures_opened_inside_it():
 def test_inner_tool_marker_counts_only_inside_the_outer_block():
     arg = MarkerPair("<arg=", "\n</arg>")
     grammar = TruncationGrammar(think=_GRAMMAR.think, tool_blocks=(_TOOL_CALL, arg), end_of_turn="<e>")
-    assert grammar.scan("I will pass <arg=city> </arg> then <tool_call> <arg=city", ()) == ([_TOOL_CALL, arg], [])
+    # Outside the block an opener opens nothing and a closer is no misnesting.
+    assert grammar.scan("I will pass <arg=city then <tool_call> <arg=x", ()) == ([_TOOL_CALL, arg], [])
+    assert grammar.scan("see </arg> here", ()) == ([], [])
 
 
 def test_closing_marker_without_open_structure_is_ignored():
