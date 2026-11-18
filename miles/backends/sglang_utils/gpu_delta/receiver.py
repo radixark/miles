@@ -237,7 +237,6 @@ class PreparedDelta:
         self._gpu_complete = False
         self.raw_apply = None
         self.raw_apply_inputs = None
-        self.raw_apply_group = None
         self.raw_pointer_host = None
         self.cpu_storages, self.cpu_mirrors = {}, {}
         self.cpu_target_groups = []
@@ -360,6 +359,19 @@ class PreparedDelta:
             event = torch.cuda.Event()
             event.record(stream)
             ready.append(event)
+        apply_groups = [group for _, _, group in self.static_plans]
+        raw_metadata = 0
+        if self.raw_apply_inputs is not None:
+            apply_groups.append(backend.raw_plan[1])
+            raw_metadata = sum(t.numel() * t.element_size() for t in self.raw_apply_inputs[1:])
+        self.timings.update(
+            apply_metadata_h2d_bytes=self.apply_metadata.numel() * 8 + raw_metadata,
+            apply_descriptor_h2d_bytes=sum(group.metadata_size for group in apply_groups) * 8,
+            apply_groups=len(apply_groups),
+            apply_grid_ctas=sum(group.grid_ctas for group in apply_groups),
+            apply_contracts=sum(len(group.contracts) for group in apply_groups),
+            apply_word32_contracts=sum(group.word32_contracts for group in apply_groups),
+        )
         waiting = time.perf_counter()
         for event in ready:
             event.synchronize()
@@ -474,7 +486,6 @@ class PreparedDelta:
         metadata = torch.tensor(group.metadata_rows, dtype=torch.int64, device=self.device)
         self.raw_apply = group.bind_launch(pointers, metadata, self.error)
         self.raw_apply_inputs = masks, pointers, metadata
-        self.raw_apply_group = group
         return reused
 
     @profiling.annotate("gpu_delta.prepare.apply_bindings")
@@ -509,16 +520,14 @@ class PreparedDelta:
     @profiling.annotate("gpu_delta.pause.bind_apply_metadata")
     def _bind_apply_metadata(self):
         """Validate decoded slots, then patch only actual source bases."""
-        groups = []
         for index, (_, _, group) in enumerate(self.static_plans):
             group.bind(self.decoded[index % 2])
-            groups.append(group)
         for slot, (indices, offsets) in enumerate(self.apply_source_patches):
             if indices.size:
                 # Each group's constant-time bound check above proves no int64
                 # overflow before this vectorized patch. Targets are untouched.
                 self.apply_host_view[indices] = offsets + self.decoded[slot].data_ptr()
-        return groups, self.apply_bindings
+        return self.apply_bindings
 
     @profiling.annotate("gpu_delta.pause.cpu_mirrors")
     def _bind_cpu_mirrors(self):
@@ -556,43 +565,28 @@ class PreparedDelta:
     def _allocate_paused(self):
         """Allocate reusable decoded outputs, then bind their pointers."""
         started = time.perf_counter()
-        with torch.cuda.stream(self.stream):
-            self.decoded = (
-                [self.decoder.empty(self.max_decoded, torch.uint8) for _ in range(2)] if self.static_plans else []
-            )
-            decoders = self.decode_plan.bind_outputs(self.decoded) if self.decode_plan else []
-            apply_groups, apply_calls = self._bind_apply_metadata()
-            self.apply_metadata.copy_(self.apply_host_metadata, non_blocking=True)
-            for index, decode in enumerate(decoders):
-                scratch = self.decoded[index % 2]
-                apply = apply_calls[index]
-                self.batches.append(
-                    _PreparedBatch(
-                        decode,
-                        apply,
-                        [scratch[offset : offset + size] for offset, size in self.gaps[index]],
-                        self.status_checks[index],
-                    )
-                )
-        descriptor_bytes = sum(group.metadata_size * 8 for group in apply_groups)
-        if self.raw_apply_group is not None:
-            apply_groups.append(self.raw_apply_group)
-            descriptor_bytes += self.raw_apply_inputs[2].numel() * 8
-        raw_metadata = (
-            sum(t.numel() * t.element_size() for t in self.raw_apply_inputs[1:]) if self.raw_apply_inputs else 0
+        self.decoded = (
+            [self.decoder.empty(self.max_decoded, torch.uint8) for _ in range(2)] if self.static_plans else []
         )
+        decoders = self.decode_plan.bind_outputs(self.decoded) if self.decode_plan else []
+        apply_calls = self._bind_apply_metadata()
+        self.apply_metadata.copy_(self.apply_host_metadata, non_blocking=True)
+        for index, decode in enumerate(decoders):
+            scratch = self.decoded[index % 2]
+            self.batches.append(
+                _PreparedBatch(
+                    decode,
+                    apply_calls[index],
+                    [scratch[offset : offset + size] for offset, size in self.gaps[index]],
+                    self.status_checks[index],
+                )
+            )
         self.timings.update(
             paused_setup_host_s=time.perf_counter() - started,
             decoder_metadata_uploads=(2 if self.hardware else 3) * int(bool(decoders)),
             compressed_input_buffers=0 if self.hardware or not decoders else 2,
             compressed_input_capacity_bytes=(self.decode_plan.input_capacity_bytes if self.decode_plan else 0),
             compressed_input_h2d_bytes=(self.decode_plan.input_bytes if self.decode_plan else 0),
-            apply_metadata_h2d_bytes=self.apply_metadata.numel() * 8 + raw_metadata,
-            apply_descriptor_h2d_bytes=descriptor_bytes,
-            apply_groups=len(apply_groups),
-            apply_grid_ctas=sum(group.grid_ctas for group in apply_groups),
-            apply_contracts=sum(len(group.contracts) for group in apply_groups),
-            apply_word32_contracts=sum(group.word32_contracts for group in apply_groups),
             decoded_buffers=len(self.decoded),
             decoded_scratch_bytes=len(self.decoded) * self.max_decoded,
         )
@@ -734,7 +728,7 @@ class PreparedDelta:
     def _release_gpu(self):
         self.batches.clear()
         self.status_checks.clear()
-        self.raw_apply = self.raw_apply_inputs = self.raw_apply_group = None
+        self.raw_apply = self.raw_apply_inputs = None
         self.raw_pointer_host = None
         self.cpu_mirrors.clear()
         self.cpu_storages.clear()

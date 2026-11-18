@@ -15,6 +15,7 @@ import time
 import uuid
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -132,13 +133,8 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         if self.is_sender is None:
             replica_rank, _ = get_data_replica_rank_and_size(parallel_state, placement)
             self.is_sender = replica_rank == 0
-        error = None
-        try:
+        with _collective_phase("canonical plan"):
             self.get_export_plan()
-        except Exception as caught:
-            error = caught
-        # A rank-local failure, such as a missing local checkpoint, must not strand peers in a collective.
-        _collective_check(error, "canonical plan")
         # Recovery, checkpoint and eval payloads always use the initial-sync codec.
         self._encoder(self._initial_sync_codec)
 
@@ -158,15 +154,11 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
     def _encoder(self, codec):
         """Create each codec's encoder once; every rank caches it only after collective admission."""
         if codec not in self._gpu_encoders:
-            encoder, error = None, None
-            try:
+            with _collective_phase("nvCOMP producer admission"):
                 device = torch.device("cuda", torch.cuda.current_device())
                 encoder = gpu_delta_encoder.GpuBatchEncoder(
                     device, frame_bytes=gpu_delta_publication.FRAME_BYTES, codec=codec
                 )
-            except Exception as caught:
-                error = caught
-            _collective_check(error, "nvCOMP producer admission")
             self._gpu_encoders[codec] = encoder
         return self._gpu_encoders[codec]
 
@@ -244,7 +236,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             if not self.requires_export:
                 # A checkpoint already captured this target; encode it without another export.
                 self._seen = set(self._next_snapshot)
-                self._enqueue_ready_batches(self._seen)
+                self._enqueue_ready_batches(self._next_snapshot)
         except Exception as error:
             self._error = error
         try:
@@ -339,7 +331,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._error = self._error or error
 
     def send_bucket(self, bucket):
-        staged = []
+        staged = {}
         for name, tensor in bucket:
             if self._error is not None:
                 return
@@ -355,11 +347,11 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 if name not in self._snapshot:
                     raise ValueError(f"Canonical ownership changed for {name!r}")
                 flat = tensor.detach().contiguous().reshape(-1).view(torch.uint8)
-                host = self._next_snapshot.get(name)
-                if host is None:
-                    host = torch.empty(flat.numel(), dtype=torch.uint8, device="cpu", pin_memory=True)
-                    self._next_snapshot[name] = host
-                staged.append((name, host, flat))
+                if name not in self._next_snapshot:
+                    self._next_snapshot[name] = torch.empty(
+                        flat.numel(), dtype=torch.uint8, device="cpu", pin_memory=True
+                    )
+                staged[name] = flat
             except Exception as error:
                 self._error = error
                 return
@@ -369,20 +361,18 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 # One dependency covers the whole bucket; no per-tensor event.
                 self._staging_stream.wait_stream(torch.cuda.current_stream())
                 with torch.cuda.stream(self._staging_stream):
-                    for _, host, flat in staged:
-                        host.copy_(flat, non_blocking=True)
+                    for name, flat in staged.items():
+                        self._next_snapshot[name].copy_(flat, non_blocking=True)
                         # Keep each source allocation alive through its D2H read.
                         flat.record_stream(self._staging_stream)
                 if not self._capture_only:
-                    self._enqueue_ready_batches(
-                        [name for name, _, _ in staged], {name: flat for name, _, flat in staged}
-                    )
+                    self._enqueue_ready_batches(staged)
             except Exception as error:
                 self._error = error
 
-    def _enqueue_ready_batches(self, names, current_tensors=None):
+    def _enqueue_ready_batches(self, current_tensors):
         complete = []
-        for name in names:
+        for name in current_tensors:
             index = self._batch_by_name.get(name)
             if index is not None:
                 self._batch_remaining[index] -= 1
@@ -570,12 +560,8 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             target_version=target_version,
             plan_digest=self._plan_digest,
         )
-        shard, error = None, None
-        try:
+        with _collective_phase("recovery publication"):
             shard = self._recovery_payload.write(directory, metadata, dist.get_rank(), self._plan)
-        except Exception as caught:
-            error = caught
-        _collective_check(error, "recovery publication")
         shards = [None] * dist.get_world_size() if dist.get_rank() == 0 else None
         dist.gather_object(shard, shards, dst=0, group=get_gloo_group())
 
@@ -594,13 +580,9 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         """Run the post-write hook on every rank once a publication is complete, before any reader."""
         if self._post_write_hook is None:
             return
-        error = None
-        try:
+        with _collective_phase("publication visibility"):
             fn_args = compute_custom_function_config(self.args, self.args.custom_update_weight_post_write_path)
             self._post_write_hook(fn_args, str(directory), list(readers))
-        except Exception as caught:
-            error = caught
-        _collective_check(error, "publication visibility")
 
     def _recovery_descriptor(self):
         # A repeated model/step can reuse compressed bytes, but fresh receivers
@@ -652,13 +634,9 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             self._recovery_publication,
             self._recovery_encode_s,
         )
-        error = None
         try:
-            self._cache_recovery_payload(target, source_step)
-        except Exception as caught:
-            error = caught
-        try:
-            _collective_check(error, "snapshot compression")
+            with _collective_phase("snapshot compression"):
+                self._cache_recovery_payload(target, source_step)
         except Exception:
             # Every owner must retain the same cache identity after a peer
             # failure, or a retry could skip collectives on successful ranks.
@@ -762,12 +740,8 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
     def _publish(self):
         """Seal owner payloads independently of receiver activation."""
         seal_started = time.monotonic()
-        shard, error = None, None
-        try:
+        with _collective_phase("payload sealing"):
             shard = self._writer.finish_shard()
-        except Exception as caught:
-            error = caught
-        _collective_check(error, "payload sealing")
         shard["producer_metrics"] = {
             "owner_rank": dist.get_rank(),
             "codec": self.codec,
@@ -930,6 +904,17 @@ def _collective_check(error, phase):
     for rank, message in enumerate(errors):
         if message is not None:
             raise RuntimeError(f"GPU-delta {phase} failed on rank {rank}: {message}") from error
+
+
+@contextmanager
+def _collective_phase(phase):
+    """Report a rank-local failure to all peers before any rank advances."""
+    error = None
+    try:
+        yield
+    except Exception as caught:
+        error = caught
+    _collective_check(error, phase)
 
 
 def _on_root(action, broadcast_value=True):

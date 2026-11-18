@@ -120,9 +120,7 @@ def arena_inputs(path):
     )
 
 
-def prepare_snapshot(arena, path, digest, names, pool, timings, metadata, cancelled=None):
-    if arena._worker is not None:
-        arena._worker.builder.pool = pool
+def prepare_snapshot(arena, path, digest, names, timings, metadata, cancelled=None):
     publication = arena.prepare_publication(
         metadata | dict(manifest_path=str(path), manifest_sha256=digest),
         timings,
@@ -237,10 +235,9 @@ class TestHostSnapshot(unittest.TestCase):
             self.addCleanup(replacement.stop)
 
     def arena(self, engine="a", rank=0):
-        arenas = [host.HostArena(engine, 0, identity) for identity in shared_participants(engine)]
-        for arena in arenas:
-            self.addCleanup(arena.close)
-        return arenas[rank]
+        arena = host.HostArena(engine, 0, shared_participants(engine)[rank])
+        self.addCleanup(arena.close)
+        return arena
 
     def held_build(self, build, while_held=lambda: None, *, after_read=False):
         """Run build() while one payload read is held.
@@ -328,7 +325,7 @@ class TestHostSnapshot(unittest.TestCase):
             (path.parent / "owner-00000.bin").write_bytes(b"changed after retained read")
 
         (snapshot,) = self.held_build(
-            lambda: prepare_snapshot(arena, path, digest, expected, self.pool, metrics, metadata(engine="verified")),
+            lambda: prepare_snapshot(arena, path, digest, expected, metrics, metadata(engine="verified")),
             while_held,
             after_read=True,
         )
@@ -350,12 +347,12 @@ class TestHostSnapshot(unittest.TestCase):
         payload.write_bytes(corrupted)
         arena = self.arena("corrupt")
         outcome = self.held_build(
-            lambda: prepare_snapshot(arena, path, digest, expected, self.pool, {}, metadata(engine="corrupt"))
+            lambda: prepare_snapshot(arena, path, digest, expected, {}, metadata(engine="corrupt"))
         )
         self.assertEqual([str(error) for error in outcome], ["delta payload SHA256 mismatch"])
         # The child never retries a publication that failed before READY.
         with self.assertRaisesRegex(ValueError, "failed or already released"):
-            prepare_snapshot(arena, path, digest, expected, self.pool, {}, metadata(engine="corrupt"))
+            prepare_snapshot(arena, path, digest, expected, {}, metadata(engine="corrupt"))
 
     def test_payload_hash_policy_follows_publication_and_requires_peer_agreement(self):
         strict, peer = self.arena("strict"), self.arena("strict", rank=1)
@@ -369,7 +366,6 @@ class TestHostSnapshot(unittest.TestCase):
                     path,
                     digest,
                     expected,
-                    self.pool,
                     metrics,
                     metadata(version, "strict", validate),
                 )
@@ -383,7 +379,7 @@ class TestHostSnapshot(unittest.TestCase):
             # A peer requesting the other policy polls for its own token, never adopting this one.
             with self.assertRaisesRegex(RuntimeError, "aborted"):
                 prepare_snapshot(
-                    peer, path, digest, expected, self.pool, {}, metadata(version, "strict", not validate), one_poll()
+                    peer, path, digest, expected, {}, metadata(version, "strict", not validate), one_poll()
                 )
             snapshot.close(True)
 
@@ -396,7 +392,6 @@ class TestHostSnapshot(unittest.TestCase):
                 path,
                 digest,
                 expected,
-                self.pool,
                 metrics,
                 metadata(validate_payload_hash=False),
             )
@@ -415,7 +410,6 @@ class TestHostSnapshot(unittest.TestCase):
                 path,
                 digest,
                 expected,
-                self.pool,
                 {},
                 metadata(engine="require-checksum"),
             )
@@ -589,10 +583,10 @@ class TestHostSnapshot(unittest.TestCase):
     def test_followers_wait_for_shared_ready_without_blocking_other_engines(self):
         path, digest, _ = fixture(self.root / "v1")
         first, follower, other = self.arena(), self.arena(rank=1), self.arena("b")
-        previous = prepare_snapshot(first, path, digest, ["dense"], self.pool, {}, metadata())
+        previous = prepare_snapshot(first, path, digest, ["dense"], {}, metadata())
         previous.close(True)
         path, digest, expected = fixture(self.root / "v2", 2)
-        slow_pool = HostPayloadPool(2)
+        slow_pool = first._worker.builder.pool = HostPayloadPool(2)
         self.addCleanup(slow_pool.close)
         entered, release, follower_started, follower_finished = [threading.Event() for _ in range(4)]
         snapshots, errors, metrics = [], [], {}
@@ -621,7 +615,7 @@ class TestHostSnapshot(unittest.TestCase):
             assert release.wait(5)
             return decode(*args)
 
-        def build(arena, pool, selected, finished=None):
+        def build(arena, selected, finished=None):
             try:
                 if finished is not None:
                     follower_started.set()
@@ -631,7 +625,6 @@ class TestHostSnapshot(unittest.TestCase):
                         path,
                         digest,
                         selected,
-                        pool,
                         metrics if finished is not None else {},
                         metadata(2),
                         cancelled,
@@ -644,10 +637,10 @@ class TestHostSnapshot(unittest.TestCase):
                     finished.set()
 
         threads = [
-            threading.Thread(target=build, args=(first, slow_pool, ["dense"])),
+            threading.Thread(target=build, args=(first, ["dense"])),
             threading.Thread(
                 target=build,
-                args=(follower, self.pool, ["expert"], follower_finished),
+                args=(follower, ["expert"], follower_finished),
             ),
         ]
         with (
@@ -662,7 +655,7 @@ class TestHostSnapshot(unittest.TestCase):
                 self.assertNotIn((threads[1], "index.json"), reads)
                 threads[0].start()
                 self.assertTrue(entered.wait(5))
-                third = prepare_snapshot(other, path, digest, ["expert"], self.pool, {}, metadata(2, engine="b"))
+                third = prepare_snapshot(other, path, digest, ["expert"], {}, metadata(2, engine="b"))
                 self.assertEqual(bytes(third.get(TENSOR_IDS["expert"])), expected["expert"])
                 self.assertFalse(release.is_set())
                 self.assertFalse(follower_finished.is_set())
@@ -699,7 +692,7 @@ class TestHostSnapshot(unittest.TestCase):
         arena, first_metrics = self.arena(), {}
         # Every arena of this earlier cohort closed, so the owner's first preparation reclaims it.
         host._attach_namespace(arena.root, arena.root / "closed", reclaim=False).close()
-        first = prepare_snapshot(arena, path, digest, expected, self.pool, first_metrics, metadata())
+        first = prepare_snapshot(arena, path, digest, expected, first_metrics, metadata())
         self.assertFalse((arena.root / "closed").exists())
         original = arena.capacity.copy()
         self.assertEqual(
@@ -725,19 +718,19 @@ class TestHostSnapshot(unittest.TestCase):
             arena.prepare_publication(request, {})
         path, digest, _ = fixture(self.root / "v2", 2)
         warm = {}
-        second = prepare_snapshot(arena, path, digest, expected, self.pool, warm, metadata(2))
+        second = prepare_snapshot(arena, path, digest, expected, warm, metadata(2))
         self.assertEqual(arena.capacity, original)
         self.assertEqual(warm["host_rank_allocation_calls"], 0)
         self.assertEqual(warm["host_encoded_cache_allocation_calls"], 0)
         self.assertEqual(warm["host_rank_mapping_reused"], 1)
         first.close(True)
         with self.assertRaisesRegex(ValueError, "engine APPLIED release"):
-            prepare_snapshot(arena, path, digest, expected, self.pool, {}, metadata(3))
+            prepare_snapshot(arena, path, digest, expected, {}, metadata(3))
         second.close(True)
         large = hashlib.shake_256(b"growth").digest(original["capacity"] * 2 + 1)
         path, digest, expected = fixture(self.root / "v3", 3, dense=large)
         growth = {}
-        third = prepare_snapshot(arena, path, digest, expected, self.pool, growth, metadata(3))
+        third = prepare_snapshot(arena, path, digest, expected, growth, metadata(3))
         self.assertEqual(bytes(third.get(TENSOR_IDS["dense"])), large)
         self.assertEqual(arena.capacity["generation"], 2)
         self.assertEqual(growth["host_rank_allocation_calls"], 1)
@@ -751,7 +744,7 @@ class TestHostSnapshot(unittest.TestCase):
         )
         third.close()
         with self.assertRaisesRegex(ValueError, "engine APPLIED release"):
-            prepare_snapshot(arena, path, digest, expected, self.pool, {}, metadata(4))
+            prepare_snapshot(arena, path, digest, expected, {}, metadata(4))
         # A fork()ed descendant shares the .live open file description, as this dup does; close still unlocks it.
         self.addCleanup(os.close, os.dup(arena._live.fileno()))
         arena.close()

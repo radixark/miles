@@ -29,6 +29,7 @@ from miles.utils.gpu_delta.host_worker import (
     _map_cache,
     _metadata_views,
     _MetadataMapping,
+    arena_layout,
     configured_cpu_workers,
     copy_bytes,
     grown_capacity,
@@ -396,18 +397,15 @@ class HostArena(_MetadataMapping):
         self._attach_shared_arena(index["prepared"], timings, hardware)
         layout_started = time.perf_counter()
         selected = np.asarray(tensor_ids, dtype=np.int64)
-        sizes = tensors["prepared_nbytes"][selected]
-        size = int(sizes.sum())
         staging_bytes = 0
         offsets = tensors["prepared_offset"]
         if hardware:
             selected = selected[np.argsort(offsets[selected], kind="stable")]
-            sizes = tensors["prepared_nbytes"][selected]
-            aligned = (sizes + 15) // 16 * 16
-            positions = np.cumsum(aligned) - aligned
+            positions, size = arena_layout(tensors["prepared_nbytes"][selected])
             offsets = np.zeros(len(tensors), dtype=np.int64)
             offsets[selected] = positions
-            size = int(np.max((positions + sizes)[sizes != 0], initial=0))
+        else:
+            size = int(tensors["prepared_nbytes"][selected].sum())
         timings["host_rank_layout_s"] = time.perf_counter() - layout_started
         if hardware:
             self._reserve_rank_arena(size, timings)

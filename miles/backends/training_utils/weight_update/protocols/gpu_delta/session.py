@@ -9,8 +9,6 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from miles.backends.training_utils.weight_update.protocols.gpu_delta.client import update_weights_from_gpu_delta
-
 # Every descriptor carries its writer's launch-validated payload-hash policy.
 _VALIDATE_PAYLOAD_HASH = {"sha256": True, "none": False}
 
@@ -111,30 +109,22 @@ async def activate_engine(client, publication, participants, session_id, weight_
     }
     # Serving reports the actor's model version, while publication/receipt
     # versions retain their consecutive XOR-stream identity.
-    request.update(session_id=session_id, weight_version=weight_version)
+    request.update(session_id=session_id, participants=participants)
+    if weight_version is not None:
+        request["weight_version"] = weight_version
     request["validate_payload_hash"] = _VALIDATE_PAYLOAD_HASH[publication["payload_checksum_format"]]
     if pause_mode is not None:
         request["pause_mode"] = pause_mode
-    response = await asyncio.wait_for(
-        update_weights_from_gpu_delta(client, **request, participants=participants), timeout
-    )
-    check_resumed(response["participants"], participants, request)
-    return response
-
-
-def check_resumed(rows, participants, publication):
-    """Prove completed activation; all other outcomes require receiver replacement."""
-    _check_identities(rows, participants)
-    for receipt in rows:
-        if receipt["state"] != "RESUMED" or any(
-            receipt[key] != publication[key]
-            for key in ("session_id", "stream_id", "manifest_sha256", "target_version", "plan_digest")
-        ):
-            raise RuntimeError("GPU-delta receiver has no matching completed activation")
-
-
-def _check_identities(rows, participants):
-    actual = sorted((row["identity"] for row in rows), key=lambda identity: identity["rank_id"])
+    response = await asyncio.wait_for(client._make_request("update_weights_from_gpu_delta", request), timeout)
+    resumed = response["participants"]
+    actual = sorted((row["identity"] for row in resumed), key=lambda identity: identity["rank_id"])
     expected = sorted(participants, key=lambda identity: identity["rank_id"])
     if actual != expected:
         raise RuntimeError("GPU-delta receiver incarnation changed during activation")
+    for receipt in resumed:
+        if receipt["state"] != "RESUMED" or any(
+            receipt[key] != request[key]
+            for key in ("session_id", "stream_id", "manifest_sha256", "target_version", "plan_digest")
+        ):
+            raise RuntimeError("GPU-delta receiver has no matching completed activation")
+    return response

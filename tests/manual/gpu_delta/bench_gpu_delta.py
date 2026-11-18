@@ -661,31 +661,22 @@ def _resolve_fixture(arm_output):
     return Path(value["path"]), value
 
 
-async def _request(client, endpoint, payload=None, timeout=1200):
-    # Reuse the engine-scoped HTTP client and TLS context across updates.
-    http = client.http
-    response = await (
-        http.get(client.server_url + "/" + endpoint, timeout=timeout)
-        if payload is None
-        else http.post(client.server_url + "/" + endpoint, json=payload, timeout=timeout)
-    )
-    response.raise_for_status()
-    return response.json() if response.content else None
-
-
 class _BenchmarkClient:
-    """Direct HTTP facade for the standalone producer/receiver benchmark."""
+    """Engine-scoped HTTP client implementing the Miles GPU-delta request interface."""
 
     def __init__(self, server_url):
-        self.server_url = server_url
-        self.http = None
+        self.http = httpx.AsyncClient(base_url=server_url, trust_env=False, timeout=1200)
 
-    async def _make_request(self, endpoint, payload):
-        """The request helper that the GPU-delta controls (``protocols.gpu_delta.client``) post through."""
-        # Preparation has its own server deadline; a client read deadline must
-        # not turn a valid slow preparation into an uncertain update.
-        timeout = httpx.Timeout(1200.0, read=None) if endpoint == "update_weights_from_gpu_delta" else 1200
-        return await _request(self, endpoint, payload, timeout=timeout)
+    async def _make_request(self, endpoint, payload=None):
+        if payload is None:
+            response = await self.http.get(endpoint)
+        elif endpoint == "update_weights_from_gpu_delta":
+            # Preparation has a server-side deadline. A client read timeout would leave the update uncertain.
+            response = await self.http.post(endpoint, json=payload, timeout=httpx.Timeout(1200.0, read=None))
+        else:
+            response = await self.http.post(endpoint, json=payload)
+        response.raise_for_status()
+        return response.json() if response.content else None
 
 
 async def _ready(client, process, timeout):
@@ -694,7 +685,7 @@ async def _ready(client, process, timeout):
             if process.poll() is not None:
                 raise RuntimeError("Engine exited during startup; inspect retained server log")
             try:
-                response = await client.http.get(client.server_url + "/health", timeout=2)
+                response = await client.http.get("/health", timeout=2)
                 if response.status_code == 200:
                     return
             except httpx.HTTPError:
@@ -705,7 +696,7 @@ async def _ready(client, process, timeout):
 
 
 async def _freeze_gc(client):
-    response = await client.http.post(client.server_url + "/freeze_gc", timeout=60)
+    response = await client.http.post("/freeze_gc", timeout=60)
     response.raise_for_status()
 
 
@@ -776,9 +767,7 @@ async def _engines(args, model):
             )
             processes.append(process)
             logs.append(log)
-            client = _BenchmarkClient(f"http://127.0.0.1:{port}")
-            clients.append(client)
-            client.http = httpx.AsyncClient(trust_env=False, timeout=1200)
+            clients.append(_BenchmarkClient(f"http://127.0.0.1:{port}"))
             commands.append(spec | {"command": command, "pid": process.pid})
         _save(
             args.output / "launch.json",
@@ -803,7 +792,7 @@ async def _engines(args, model):
             args.output / "startup.json",
             {
                 "engine_startup_s": time.monotonic() - started,
-                "servers": await asyncio.gather(*[_request(c, "get_server_info") for c in clients]),
+                "servers": await asyncio.gather(*[c._make_request("get_server_info") for c in clients]),
             },
         )
         await asyncio.gather(*[_freeze_gc(client) for client in clients])
@@ -813,7 +802,7 @@ async def _engines(args, model):
         # Only the benchmark's own fresh process groups; the devbox is retained.
         try:
             results = await asyncio.gather(
-                *[client.http.aclose() for client in clients if client.http is not None],
+                *[client.http.aclose() for client in clients],
                 return_exceptions=True,
             )
             for result in results:
@@ -838,7 +827,7 @@ async def _generation(clients):
             "logprob_start_len": 0,
             "sampling_params": {"temperature": 0, "max_new_tokens": 32},
         }
-        values = await asyncio.gather(*[_request(client, "generate", payload) for client in clients])
+        values = await asyncio.gather(*[client._make_request("generate", payload) for client in clients])
         records.append({"dp_rank": dp_rank, "engine_ids": engine_ids, "engines": values})
     return records
 
@@ -1047,19 +1036,7 @@ def _owner_compression(metrics):
 def _compression(row):
     owners = [_owner_compression(value) for value in row["compression"]["owners"]]
     return {
-        "owner_max": {
-            key: _maximum(owners, key)
-            for key in (
-                "compression_and_publication_s",
-                "publication_write_s",
-                "batch_wall_s",
-                "finalization_wall_s",
-                "outer_wall_s",
-                "pack_d2h_wall_s",
-                "input_read_s",
-                "owner_elapsed_s",
-            )
-        },
+        "owner_max": {key: _maximum(owners, key) for key in owners[0] if key != "raw_metrics"},
         "seal_s": _seconds(row["seal_s"]),
         "owners": owners,
     }
@@ -1135,7 +1112,6 @@ def _arm_report(output, arm, oracle_records):
     fixture = _read(fixture_directory / "fixture.json")
     codec = arm["codec"]
     checksum = "none" if arm["skip_payload_hash"] else "sha256"
-    sender_owners = fixture["sender_owners"]
     inventory = _read(output / "receiver" / "inventory.json")
     if inventory["plan_digest"] != fixture["plan_digest"]:
         raise ValueError("Activation and fixture canonical digests differ")
@@ -1206,7 +1182,7 @@ def _arm_report(output, arm, oracle_records):
         "target_checkpoint": fixture["target_checkpoint"],
         "input_cache_id": fixture["input_cache_id"],
         "sender_count": fixture["sender_gpus"],
-        "sender_owners": sender_owners,
+        "sender_owners": fixture["sender_owners"],
         "comparison": comparison,
         "versions": versions,
     }

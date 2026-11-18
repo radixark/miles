@@ -32,6 +32,19 @@ class PrepareGpuDeltaReqInput(BaseReq, kw_only=True):
     participants: list[dict[str, Any]]
     validate_payload_hash: bool = True
 
+    def publication(self) -> dict:
+        return {
+            "session_id": self.session_id,
+            "manifest_path": self.manifest_path,
+            "manifest_sha256": self.manifest_sha256,
+            "stream_id": self.stream_id,
+            "base_version": self.base_version,
+            "target_version": self.target_version,
+            "plan_digest": self.plan_digest,
+            "participants": self.participants,
+            "validate_payload_hash": self.validate_payload_hash,
+        }
+
 
 class UpdateWeightsFromGpuDeltaReqInput(PrepareGpuDeltaReqInput, kw_only=True):
     release_state: bool = False

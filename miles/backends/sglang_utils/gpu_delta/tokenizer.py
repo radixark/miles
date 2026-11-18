@@ -141,19 +141,7 @@ class GpuDeltaTokenizerControl:
 
     async def _update(self, obj):
         started = time.monotonic()
-        prepare = PrepareGpuDeltaReqInput(
-            # Reuse the existing return route, including non-leader ranks.
-            http_worker_ipc=self.reply_endpoint,
-            session_id=obj.session_id,
-            manifest_path=obj.manifest_path,
-            manifest_sha256=obj.manifest_sha256,
-            stream_id=obj.stream_id,
-            base_version=obj.base_version,
-            target_version=obj.target_version,
-            plan_digest=obj.plan_digest,
-            participants=obj.participants,
-            validate_payload_hash=obj.validate_payload_hash,
-        )
+        prepare = PrepareGpuDeltaReqInput(http_worker_ipc=self.reply_endpoint, **obj.publication())
         # Preparation can fail safely while the engine still serves base weights.
         # After apply dispatch, neither cancellation nor failure may replay XOR
         # or reopen admission: a participant may already have modified weights.

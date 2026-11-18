@@ -1,48 +1,19 @@
-"""GPU-delta kernel backends (CUDA receiver only): the one place an SGLang kernel implementation plugs in.
+"""Map each supported SGLang MoE runner to its FlashInfer weight layout and dispatcher.
 
-Each module mirrors one kernel library's SGLang MoE runners and the quantization methods that prepare
-their weights, and is named after the library; every runner and format the library serves shares its
-module and helpers. To add one, write ``kernel_backends/<library>.py`` with an
-``identify_layout(layer, storage)`` returning layouts that satisfy ``ExpertLayout``
-(``kernel_backends/base.py``), and list each exact ``moe_runner_backend`` value it serves in
-``_MOE_RUNNER_BACKENDS`` with the storage family of its weights and the ``moe_a2a_backend`` values
-admitted beside it: the only list of admitted runners. Values match exactly, never by alias or prefix, and an unlisted runner is rejected:
-there is no generic layout, because a shape-compatible view can still address the wrong bytes. A
-backend module imports only ``byte_views``, ``derived`` and this package at module level, and loads
-SGLang and its kernel library lazily.
+The routed and MXFP4 TRTLLM runners use the same storage family as the ordinary TRTLLM runner.
+Additional kernel libraries must identify their own layouts before admission.
 """
-
-from __future__ import annotations
-
-from collections.abc import Callable
-from dataclasses import dataclass
-from types import MappingProxyType
-
-import torch
 
 from miles.backends.sglang_utils.gpu_delta.kernel_backends import flashinfer
 from miles.backends.sglang_utils.gpu_delta.kernel_backends.base import ExpertLayout
 
-
-@dataclass(frozen=True)
-class _RunnerRow:
-    # The serving module's identify_layout, called with this row's storage family.
-    identify: Callable[[torch.nn.Module, str], ExpertLayout]
-    # The storage family of the weights this runner consumes; the routed and MXFP4 runners consume TRTLLM's.
-    storage: str
-    # The only moe_a2a_backend values admitted beside this runner.
-    dispatchers: tuple[str, ...]
-
-
-_MOE_RUNNER_BACKENDS = MappingProxyType(
-    {
-        "flashinfer_trtllm": _RunnerRow(flashinfer.identify_layout, "trtllm", ("none",)),
-        "flashinfer_trtllm_routed": _RunnerRow(flashinfer.identify_layout, "trtllm", ("none",)),
-        "flashinfer_mxfp4": _RunnerRow(flashinfer.identify_layout, "trtllm", ("none",)),
-        "flashinfer_cutedsl": _RunnerRow(flashinfer.identify_layout, "cutedsl", ("none",)),
-        "flashinfer_megamoe": _RunnerRow(flashinfer.identify_layout, "megamoe", ("flashinfer_megamoe",)),
-    }
-)
+_MOE_RUNNER_BACKENDS = {
+    "flashinfer_trtllm": ("trtllm", "none"),
+    "flashinfer_trtllm_routed": ("trtllm", "none"),
+    "flashinfer_mxfp4": ("trtllm", "none"),
+    "flashinfer_cutedsl": ("cutedsl", "none"),
+    "flashinfer_megamoe": ("megamoe", "flashinfer_megamoe"),
+}
 
 
 def identify_expert_layout(layer, runner_backend: str) -> ExpertLayout:
@@ -50,9 +21,9 @@ def identify_expert_layout(layer, runner_backend: str) -> ExpertLayout:
         raise ValueError(
             f"unsupported GPU delta MoE runner backend: {runner_backend}; supported: {sorted(_MOE_RUNNER_BACKENDS)}"
         )
-    row = _MOE_RUNNER_BACKENDS[runner_backend]
-    return row.identify(layer, row.storage)
+    storage, _ = _MOE_RUNNER_BACKENDS[runner_backend]
+    return flashinfer.identify_layout(layer, storage)
 
 
 def admits_moe_dispatcher(runner_backend: str, a2a_backend: str) -> bool:
-    return runner_backend in _MOE_RUNNER_BACKENDS and a2a_backend in _MOE_RUNNER_BACKENDS[runner_backend].dispatchers
+    return runner_backend in _MOE_RUNNER_BACKENDS and a2a_backend == _MOE_RUNNER_BACKENDS[runner_backend][1]

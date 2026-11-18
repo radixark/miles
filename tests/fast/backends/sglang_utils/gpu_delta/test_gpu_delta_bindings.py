@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.layers.moe.utils import MoeA2ABackend, MoeRunnerBackend
 from sglang.srt.layers.quantization import mxfp4_flashinfer_trtllm_moe
 from tests.fast.fixtures.gpu_delta_fixtures import (
     apply_segments,
@@ -17,10 +18,12 @@ from tests.fast.fixtures.gpu_delta_fixtures import (
 from miles.backends.sglang_utils.gpu_delta.bindings import (
     ConsumerSnapshot,
     TensorBinding,
+    _identify_moe_layout,
     _moe_binding,
     prepare_raw_xor,
 )
 from miles.backends.sglang_utils.gpu_delta.byte_views import _DtypeMismatch
+from miles.backends.sglang_utils.gpu_delta.kernel_backends import admits_moe_dispatcher
 from miles.backends.sglang_utils.gpu_delta.kernel_backends import flashinfer as fi
 from miles.backends.sglang_utils.gpu_delta.kernel_backends import identify_expert_layout
 from miles.backends.sglang_utils.gpu_delta.kernel_backends.flashinfer import FlashInferLayout
@@ -458,6 +461,31 @@ def _nvfp4(gated=True):
         load_up_proj_weight_first=gated,
         quant_config=SimpleNamespace(is_checkpoint_nvfp4_serialized=True),
     )
+
+
+def test_runner_and_dispatcher_admission(monkeypatch):
+    allowed = {
+        ("flashinfer_trtllm", "none"),
+        ("flashinfer_trtllm_routed", "none"),
+        ("flashinfer_mxfp4", "none"),
+        ("flashinfer_cutedsl", "none"),
+        ("flashinfer_megamoe", "flashinfer_megamoe"),
+    }
+    for runner in MoeRunnerBackend:
+        for dispatcher in MoeA2ABackend:
+            pair = (runner.value, dispatcher.value)
+            assert admits_moe_dispatcher(*pair) == (pair in allowed), pair
+
+    layer = _nvfp4()
+    layer.quant_method.runner = SimpleNamespace(runner_backend=MoeRunnerBackend.FLASHINFER_CUTEDSL)
+    assert _identify_moe_layout(layer) == identify_expert_layout(layer, "flashinfer_cutedsl")
+    # Direct TRTLLM wrappers read the launch setting. Former aliases and unresolved runners must fail closed.
+    launch = SimpleNamespace(moe=SimpleNamespace())
+    monkeypatch.setattr("sglang.srt.runtime_context.get_exec", lambda: launch)
+    for runner in ("auto", "megamoe", "experimental_sgl_trtllm", "trtllm", "cutedsl"):
+        launch.moe.moe_runner_backend = runner
+        with pytest.raises(ValueError, match=f"unsupported GPU delta MoE runner backend: {runner}; supported: "):
+            _identify_moe_layout(_bf16())
 
 
 def _fp8(*, serialized=True, block128=False, **attrs):

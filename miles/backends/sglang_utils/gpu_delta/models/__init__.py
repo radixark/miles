@@ -13,25 +13,21 @@ shape-compatible binding can still address the wrong bytes.
 
 from __future__ import annotations
 
-from types import MappingProxyType
-
 from miles.backends.sglang_utils.gpu_delta.models.base import ModelMapping
 from miles.backends.sglang_utils.gpu_delta.models.deepseek_v2 import DeepseekV2Mapping
 from miles.backends.sglang_utils.gpu_delta.models.deepseek_v4 import DeepseekV4Mapping
 from miles.backends.sglang_utils.gpu_delta.models.kimi_k3 import KimiK3Mapping
 
-_MODEL_MAPPINGS = MappingProxyType(
-    {
-        "DeepseekV2ForCausalLM": DeepseekV2Mapping,
-        "DeepseekV3ForCausalLM": DeepseekV2Mapping,
-        "DeepseekV32ForCausalLM": DeepseekV2Mapping,
-        "GlmMoeDsaForCausalLM": DeepseekV2Mapping,
-        "KimiK3ForConditionalGeneration": KimiK3Mapping,
-        # SGLang serves DeepSeek-V4.1 checkpoints (DeepseekV41ForCausalLM) under this name; the mapping
-        # admits model type deepseek_v41 only.
-        "DeepseekV4ForCausalLM": DeepseekV4Mapping,
-    }
-)
+_MODEL_MAPPINGS = {
+    "DeepseekV2ForCausalLM": DeepseekV2Mapping,
+    "DeepseekV3ForCausalLM": DeepseekV2Mapping,
+    "DeepseekV32ForCausalLM": DeepseekV2Mapping,
+    "GlmMoeDsaForCausalLM": DeepseekV2Mapping,
+    "KimiK3ForConditionalGeneration": KimiK3Mapping,
+    # SGLang serves DeepSeek-V4.1 checkpoints (DeepseekV41ForCausalLM) under this name; the mapping
+    # admits model type deepseek_v41 only.
+    "DeepseekV4ForCausalLM": DeepseekV4Mapping,
+}
 
 
 def model_mapping(model, shadows) -> ModelMapping:

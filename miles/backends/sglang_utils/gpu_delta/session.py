@@ -119,34 +119,23 @@ class DeltaSession:
 
     @profiling.annotate("gpu_delta.prepare")
     def _prepare(self, transaction: _Transaction, released: Future | None) -> dict:
-        prepared = None
         try:
-            # The FIFO worker has finished the previous update. Propagate any
-            # failed release before reusing its persistent backend resources.
+            # Propagate a failed release before reusing persistent backend resources.
             if released is not None:
                 released.result()
             prepared = self.backend.prepare(transaction.request, transaction.cancelled)
-            with self._lock:
-                if transaction.state == "PREPARING":
-                    transaction.prepared = prepared
-                    transaction.state = "PREPARED"
-                    prepared = None
-                elif transaction.state == "ABORTED":
-                    # abort() settled this update; finally discards the late preparation.
-                    pass
-                else:
-                    raise ValueError(f"unexpected delta preparation state: {transaction.state}")
         except Exception as exc:
             with self._lock:
                 if transaction.state == "PREPARING":
                     transaction.state = "FAILED"
                     transaction.message = f"preparation failed: {type(exc).__name__}: {exc}"
-                elif transaction.state == "ABORTED":
-                    # abort() settled this update; a late failure must not replace ABORTED.
-                    pass
-                else:
-                    raise ValueError(f"unexpected delta preparation state: {transaction.state}") from exc
-        finally:
+        else:
+            with self._lock:
+                if transaction.state == "PREPARING":
+                    transaction.prepared = prepared
+                    transaction.state = "PREPARED"
+                    prepared = None
+            # Only abort can settle an in-flight preparation. Drain its late result off the scheduler.
             if prepared is not None:
                 self.backend.discard(prepared)
         return self.status()

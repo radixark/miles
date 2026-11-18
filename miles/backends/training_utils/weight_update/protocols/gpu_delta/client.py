@@ -14,43 +14,5 @@ async def get_gpu_delta_info(client, engine_id):
     return await client._make_request(**info_request(engine_id))
 
 
-async def update_weights_from_gpu_delta(
-    client,
-    session_id,
-    manifest_path,
-    manifest_sha256,
-    stream_id,
-    base_version,
-    target_version,
-    plan_digest,
-    participants,
-    release_state: bool | None = None,
-    pause_mode: str | None = None,
-    abort_all_requests: bool | None = None,
-    weight_version: str | None = None,
-    validate_payload_hash: bool | None = None,
-):
-    # Unset options stay out of the payload: the server's request schema owns their defaults.
-    options = {
-        "release_state": release_state,
-        "pause_mode": pause_mode,
-        "abort_all_requests": abort_all_requests,
-        "weight_version": weight_version,
-        "validate_payload_hash": validate_payload_hash,
-    }
-    payload = {
-        "session_id": session_id,
-        "manifest_path": manifest_path,
-        "manifest_sha256": manifest_sha256,
-        "stream_id": stream_id,
-        "base_version": base_version,
-        "target_version": target_version,
-        "plan_digest": plan_digest,
-        "participants": participants,
-        **{key: value for key, value in options.items() if value is not None},
-    }
-    return await client._make_request("update_weights_from_gpu_delta", payload)
-
-
 async def clear_gpu_delta_state(client):
     return await client._make_request("clear_gpu_delta_state", {})

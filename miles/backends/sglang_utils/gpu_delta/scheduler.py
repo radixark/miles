@@ -264,19 +264,7 @@ class GpuDeltaSchedulerControl:
     def handle(self, request):
         try:
             if isinstance(request, delta_io.PrepareGpuDeltaReqInput):
-                completion = self.session.prepare(
-                    {
-                        "session_id": request.session_id,
-                        "manifest_path": request.manifest_path,
-                        "manifest_sha256": request.manifest_sha256,
-                        "stream_id": request.stream_id,
-                        "base_version": request.base_version,
-                        "target_version": request.target_version,
-                        "plan_digest": request.plan_digest,
-                        "participants": request.participants,
-                        "validate_payload_hash": request.validate_payload_hash,
-                    }
-                )
+                completion = self.session.prepare(request.publication())
                 # The preparation worker replies once this transaction settles.
                 completion.add_done_callback(lambda future: self._prepare_completed(request, future))
                 return None

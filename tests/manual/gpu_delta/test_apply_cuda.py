@@ -300,7 +300,7 @@ def test_preplanned_slab_all_families_status_and_leases():
             target.bitwise_xor_(prepared.decoded[0][offset : offset + contract[0]].reshape(target.shape))
             expected.append(storage.clone())
             storage.fill_(0x5A)
-        _, calls = prepared._bind_apply_metadata()
+        calls = prepared._bind_apply_metadata()
         prepared.apply_metadata.copy_(prepared.apply_host_metadata, non_blocking=True)
         prepared.error.fill_(1)
         calls[0]()
@@ -336,7 +336,7 @@ def test_prebound_launch_graph_replay_keeps_status_gate_and_prepared_leases():
         group.prepare_metadata(source.device.index)
         prepared = owner([group], device="cuda")
         prepared.decoded = [source, source]
-        _, calls = prepared._bind_apply_metadata()
+        calls = prepared._bind_apply_metadata()
         prepared.apply_metadata.copy_(prepared.apply_host_metadata, non_blocking=True)
         prepared.error.zero_()
         calls[0]()

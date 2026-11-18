@@ -344,7 +344,7 @@ def owner(groups, device="cpu"):
     value.apply_metadata = torch.empty(size, dtype=torch.int64, device=device)
     value.error = torch.zeros(1, dtype=torch.int32, device=device)
     value.batches, value.status_checks = [], []
-    value.raw_apply = value.raw_apply_inputs = value.raw_apply_group = None
+    value.raw_apply = value.raw_apply_inputs = None
     value.raw_pointer_host = None
     value.cpu_storages, value.cpu_mirrors = {}, {}
     value.cpu_target_groups, value.cpu_derived = [], []
@@ -364,7 +364,7 @@ def test_slab_patch_rejects_bad_slots_and_rebinds_fresh_owners_from_cache(planne
     prebound = list(first.apply_bindings)
     for origin in (4096, 8192):
         first.decoded = [scratch(address=origin), scratch(address=origin + 4096)]
-        _, calls = first._bind_apply_metadata()
+        calls = first._bind_apply_metadata()
         assert calls == prebound
         position = 0
         for index, group in enumerate((g, h)):
@@ -402,7 +402,7 @@ def test_slab_patch_rejects_bad_slots_and_rebinds_fresh_owners_from_cache(planne
     assert all(ref() is None for ref in first_refs)
     prebound = list(second.apply_bindings)
     second.decoded = [scratch(address=8192), scratch()]
-    _, calls = second._bind_apply_metadata()
+    calls = second._bind_apply_metadata()
     assert calls == prebound
     middle = 2 * len(g.sources)
     assert second.apply_host_view[middle : middle + g.metadata_size].tolist() == list(template)
