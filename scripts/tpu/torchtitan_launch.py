@@ -40,7 +40,7 @@ class TitanTpuModel:
     # the AIME eval's grader, when the rollouts' cannot read its answers
     eval_rm_type: str = ""
     train_args: str = ""
-    # MoE: replay the engine's expert routing (R3); no compile warmup, whose synthetic batch has no routing to replay
+    # MoE: replay the engine's expert routing (R3)
     routing_replay: bool = False
 
 
@@ -273,7 +273,7 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
         "--micro-batch-size 1 "
         "--gradient-checkpointing "
         "--distributed-backend tpu_dist "
-        f"{'--compile-warmup ' if args.compile_warmup and not model.routing_replay else ''}"
+        f"{'--compile-warmup ' if args.compile_warmup else ''}"
         f"{'--use-rollout-routing-replay ' if model.routing_replay else ''}"
         "--use-dynamic-batch-size "
         f"--max-tokens-per-gpu {SEQ_LEN} "
