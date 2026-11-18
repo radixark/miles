@@ -63,6 +63,25 @@ Env vars (read on the rollout worker):
                          ``normalized_0_999`` makes Harbor's generic computer
                          provider prompt for, and rescale, clicks on a 0..999
                          grid; unset leaves Harbor as it is
+  HARBOR_CUA_DESKTOP     ``existing`` makes computer-1 drive the desktop its
+                         image already runs on ``:1``: no Xvfb, XFCE, VNC or
+                         Chromium, liveness from the X socket, PNG screenshots,
+                         and zoom and the browser actions refused; unset leaves
+                         Harbor as it is. With it:
+    HARBOR_CUA_SETTLE_SEC
+                         seconds to wait after each screen-changing action
+                         (default 2.0)
+    HARBOR_CUA_SCREENSHOT_SIZE
+                         ``WIDTHxHEIGHT`` the screenshot is resized to in the
+                         sandbox (default: the desktop's own size)
+    HARBOR_CUA_CAPTURE_COMMAND
+                         shell command run in the sandbox as ``<command> <png>
+                         [<width> <height>]`` to write the screenshot, the size
+                         passed only with HARBOR_CUA_SCREENSHOT_SIZE (default:
+                         ImageMagick's ``import`` and ``convert``)
+    HARBOR_CUA_KEEP_SCREENSHOTS
+                         most screenshots one request carries, the current
+                         one included (default: Harbor's own trimming)
 
 Failure semantics: a verdict is returned as-is. A trial the policy cannot have
 failed is discarded with ``InfraAbort``: one that failed before its agent
@@ -82,9 +101,11 @@ import logging
 import math
 import os
 import re
+import shlex
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 from typing import Any
 
 from miles.rollout.agentic.agent_function import InfraAbort
@@ -228,6 +249,168 @@ def apply_coordinate_space() -> None:
     GenericJsonProvider.from_agent = classmethod(from_agent_on_grid)
     GenericJsonProvider.parse = parse_on_grid
     _coordinate_space_applied = True
+
+
+_BROWSER_ACTIONS = frozenset({"zoom", "navigate", "go_back", "go_forward"})
+_BROWSER_PROMPT_LINES = (
+    " zoom, navigate,",
+    '\n    "url": <string, optional, used by navigate>,',
+    '\n    "zoom_region": <[x0, y0, x1, y1] in desktop pixels, optional, used by zoom>,',
+    '\n- For "zoom": provide "zoom_region" as [x0, y0, x1, y1] in desktop pixels.'
+    "\n  The NEXT screenshot is cropped (no resize) to that region, then auto-resets."
+    "\n  Use this to inspect a small UI area at native pixel density.",
+    '\n- For "navigate": provide the destination URL in "url".',
+)
+_desktop_applied = False
+
+
+def _screenshot_size() -> tuple[int, int] | None:
+    raw = os.getenv("HARBOR_CUA_SCREENSHOT_SIZE", "").strip()
+    if not raw:
+        return None
+    match = re.fullmatch(r"([1-9]\d*)x([1-9]\d*)", raw)
+    if match is None:
+        raise ValueError(f"HARBOR_CUA_SCREENSHOT_SIZE={raw!r}; expected WIDTHxHEIGHT")
+    return int(match[1]), int(match[2])
+
+
+def _images_in(prompt: Any) -> int:
+    turns = [prompt] if isinstance(prompt, dict) else prompt if isinstance(prompt, list) else []
+    return sum(
+        isinstance(part, dict) and part.get("type") == "image_url"
+        for turn in turns
+        if isinstance(turn, dict) and isinstance(turn.get("content"), list)
+        for part in turn["content"]
+    )
+
+
+def apply_existing_desktop() -> None:
+    """Patch Harbor's computer-1 to drive the desktop its image runs when ``HARBOR_CUA_DESKTOP=existing``."""
+    global _desktop_applied
+    desktop = os.getenv("HARBOR_CUA_DESKTOP", "").strip()
+    if not desktop or _desktop_applied:
+        return
+    if desktop != "existing":
+        raise ValueError(f"HARBOR_CUA_DESKTOP={desktop!r}; the only supported value is existing")
+    settle_sec = float(os.getenv("HARBOR_CUA_SETTLE_SEC", "2.0"))
+    size = _screenshot_size()
+    capture = os.getenv("HARBOR_CUA_CAPTURE_COMMAND", "").strip() or None
+    keep = _env_int("HARBOR_CUA_KEEP_SCREENSHOTS")
+    if keep is not None and keep < 1:
+        raise ValueError("HARBOR_CUA_KEEP_SCREENSHOTS must be at least 1: the request needs the current screen")
+    _patch_desktop_prompt()
+    _patch_desktop_session(settle_sec=settle_sec, size=size, capture=capture)
+    if keep is not None:
+        _patch_screenshot_history(keep=keep)
+    _desktop_applied = True
+
+
+def _patch_desktop_prompt() -> None:
+    from harbor.agents.computer_1.providers import generic
+
+    template = (generic._TEMPLATES_DIR / "computer-1-json.txt").read_text()
+    for line in _BROWSER_PROMPT_LINES:
+        if template.count(line) != 1:
+            raise ValueError(f"computer-1's prompt template no longer holds {line!r} exactly once")
+        template = template.replace(line, "")
+    from_agent = generic.GenericJsonProvider.from_agent.__func__
+
+    def from_agent_on_desktop(cls, agent):
+        provider = from_agent(cls, agent)
+        provider._prompt_template = template
+        provider.screenshot_format = "png"
+        return provider
+
+    generic.GenericJsonProvider.from_agent = classmethod(from_agent_on_desktop)
+
+
+def _patch_desktop_session(*, settle_sec: float, size: tuple[int, int] | None, capture: str | None) -> None:
+    from harbor.agents.computer_1 import runtime
+
+    session = runtime.Computer1Session
+    execute = session.execute
+    unchanged_screen = frozenset({"wait", "sleep", *runtime.TERMINAL_ACTION_TYPES})
+
+    async def start(self) -> None:
+        if self._started:
+            return
+        dirs = " ".join(shlex.quote(d) for d in (runtime._RUNTIME_DIR, runtime._SCREENSHOT_DIR, str(self._agent_dir)))
+        await self._exec(
+            runtime._bash_inline(f"mkdir -p {dirs}"), timeout_sec=60, label="mkdir runtime dirs", retries=2
+        )
+        await self._wait_for_x11()
+        self._started = True
+
+    async def is_session_alive(self) -> bool:
+        try:
+            result = await self._raw_exec("test -S /tmp/.X11-unix/X1 && echo ok || echo down", timeout_sec=5)
+        except Exception:
+            return False
+        return "ok" in (result.stdout or "")
+
+    async def reset(self) -> None:
+        raise RuntimeError("a desktop session has no browser to relaunch")
+
+    async def no_recovery(self, action_type: str, exc: Exception) -> None:
+        return None
+
+    async def execute_and_settle(self, action) -> dict[str, Any]:
+        if action.type in _BROWSER_ACTIONS:
+            raise runtime.RuntimeRequestError(action.type, 400, f"{action.type!r} is not available on this desktop")
+        result = await execute(self, action)
+        if action.type not in unchanged_screen and settle_sec > 0:
+            await asyncio.sleep(settle_sec)
+        return result
+
+    async def fetch_screenshot(self, env_path) -> str:
+        target = str(env_path)
+        if PurePosixPath(target).suffix.lower() != ".png":
+            raise ValueError(f"a desktop session writes PNG screenshots, not {target!r}")
+        png = shlex.quote(f"{runtime._SCREENSHOT_DIR}/latest.png")
+        if capture:
+            grab = f"{capture} {png}" + (f" {size[0]} {size[1]}" if size else "")
+        else:
+            resize = f"; convert {png} -resize {size[0]}x{size[1]}! {png}" if size else ""
+            grab = f"import -window root {png}{resize}"
+        script = (
+            f"set -e; export DISPLAY={runtime._DEFAULT_DISPLAY}; "
+            f"mkdir -p {shlex.quote(runtime._SCREENSHOT_DIR)} {shlex.quote(str(PurePosixPath(target).parent))}; "
+            f"{grab}; cp {png} {shlex.quote(target)}"
+        )
+        await self._exec(
+            runtime._bash_inline(script), timeout_sec=max(30, self._request_timeout_sec), label="screenshot"
+        )
+        return target
+
+    session.start = start
+    session.is_session_alive = is_session_alive
+    session.reset = reset
+    session._recover_chromium_if_needed = no_recovery
+    session.execute = execute_and_settle
+    session.fetch_screenshot = fetch_screenshot
+
+
+def _patch_screenshot_history(*, keep: int) -> None:
+    from harbor.agents.computer_1.computer_1 import Computer1
+
+    query = Computer1._query_litellm
+    fallback_history = Computer1._fallback_message_history
+
+    def trim(agent, messages: list[Any], prompt_images: int) -> None:
+        holder = SimpleNamespace(messages=messages)
+        agent._compactor._trim_old_screenshots(holder, keep_last=max(0, keep - prompt_images))
+
+    async def query_trimmed(self, chat, prompt, *args, **kwargs):
+        trim(self, chat.messages, _images_in(prompt))
+        return await query(self, chat, prompt, *args, **kwargs)
+
+    def fallback_history_trimmed(self):
+        history = fallback_history(self)
+        trim(self, history, int(self._enable_images and self._latest_screenshot_path is not None))
+        return history
+
+    Computer1._query_litellm = query_trimmed
+    Computer1._fallback_message_history = fallback_history_trimmed
 
 
 def _env_json_object(var: str) -> dict[str, Any]:
@@ -701,6 +884,7 @@ async def run(
     # rewards.
     _ensure_provider_key()
     apply_coordinate_space()
+    apply_existing_desktop()
     config = build_trial_config(metadata, session_url, request_kwargs)
 
     try:
