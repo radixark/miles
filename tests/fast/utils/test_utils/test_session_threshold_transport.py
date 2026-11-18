@@ -1,4 +1,5 @@
 import shlex
+from pathlib import Path
 
 import pytest
 from tests.fast.utils.test_utils.session_threshold_fixtures import SessionThresholdInputs, session_threshold_inputs
@@ -11,7 +12,7 @@ __all__ = ["session_threshold_inputs"]
 class TestSessionThresholdTransport:
     @pytest.mark.parametrize("threshold,passes", [(0.25, False), (0.5, True)])
     def test_the_runner_uses_the_parsed_nonzero_threshold_for_both_launch_and_actual_metrics_gate(
-        self, session_threshold_inputs: SessionThresholdInputs, threshold: float, passes: bool
+        self, session_threshold_inputs: SessionThresholdInputs, tmp_path: Path, threshold: float, passes: bool
     ) -> None:
         """The nonzero launch threshold also controls whether a half-mismatching metrics stream passes."""
         inputs = session_threshold_inputs
@@ -26,6 +27,10 @@ class TestSessionThresholdTransport:
         argv = shlex.split(call["train_args"])
         assert argv.count("--ci-tito-special-token-count-threshold") == 1
         assert float(argv[argv.index("--ci-tito-special-token-count-threshold") + 1]) == threshold
+        # The run reads a prompt file of its own, not the path the runners of a CI host share, and removes it.
+        prompt_data = Path(argv[argv.index("--prompt-data") + 1])
+        assert prompt_data.parent == tmp_path
+        assert not prompt_data.exists()
         assert inputs.backend.metrics_path is not None
         assert not inputs.backend.metrics_path.exists()
         assert inputs.backend.metrics_path.with_suffix(".jsonl.failed").exists() is not passes

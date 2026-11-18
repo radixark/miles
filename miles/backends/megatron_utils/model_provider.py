@@ -22,6 +22,7 @@ from miles.utils.args.runtime import TrainerConfig
 from miles.utils.audit_utils.witness.module import install_witness
 from miles.utils.function_registry import load_function
 from miles.utils.megatron_bridge_utils import load_auto_bridge
+from miles.utils.mxfp4_fake_qat import validate_moe_expert_fake_quant_config
 from miles.utils.replay_base import routing_replay_manager
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,11 @@ def _apply_bridge_runtime_config(provider, args: TrainerConfig) -> None:
     # The HF checkpoint can contain an MTP module even when this run trains only
     # the target model. An explicit runtime value, including None, overrides it.
     provider.mtp_num_layers = args.backend.mtp_num_layers
+
+    # TEGroupedLinear rounds the routed-expert weights onto this format's grid once per forward-backward pass.
+    provider.moe_expert_fake_quant = args.routed_expert_qat
+    if provider.moe_expert_fake_quant is not None:
+        validate_moe_expert_fake_quant_config(provider)
 
     # MoE token dispatcher (same-name, always present)
     provider.moe_token_dispatcher_type = args.backend.moe_token_dispatcher_type

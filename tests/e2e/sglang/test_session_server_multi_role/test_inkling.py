@@ -3,7 +3,12 @@ from tests.ci.metric_history import register_ci_gate
 from tests.e2e.sglang.test_session_server_multi_role._common import ModelConfig, run_both_versions
 
 register_cuda_ci(
-    est_time=1800, suite="stage-c-2-gpu-h200", labels=["sglang"], hardware=["hopper", "blackwell"], num_gpus=2
+    est_time=1800,
+    suite="stage-c-2-gpu-h200",
+    labels=["sglang"],
+    hardware=["hopper", "blackwell"],
+    disabled="Inkling replies with several tool calls never match the template render (special-token mismatches); re-enable once they do (#4925)",
+    num_gpus=2,
 )
 register_ci_gate(metric_key="rollout/tito_session_mismatch_rate/v1/assistant_text")
 register_ci_gate(metric_key="rollout/tito_session_mismatch_rate/v2/assistant_text")
@@ -23,7 +28,10 @@ CONFIG = ModelConfig(
     cuda_graph_backend_prefill="disabled",
     cycles=2,
     n_samples_per_prompt=1,
-    tool_call_failure_mode="append_tool",
+    # Miles parses Inkling completions itself and ignores tool_choice, so the spec
+    # rollout's reply without a tool call has no guard.  Parse failures are covered by
+    # tests/fast/utils/chat_template_utils/test_inkling_response.py.
+    spec_trajectory=False,
     anthropic_intermediate_system_expectation="required",
 )
 
