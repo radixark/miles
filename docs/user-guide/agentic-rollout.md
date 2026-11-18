@@ -302,7 +302,7 @@ python scripts/tools/verify_session_tito_tokenizer.py \
     --rollout-num-gpus-per-engine 1
 ```
 
-The GPU check runs two rollout steps:
+The GPU check runs three rollout steps:
 
 - **Spec rollout.** After a tool call, it appends each role the family can
   append; after a reply to a prompt that asks for no tool (sent with
@@ -313,12 +313,20 @@ The GPU check runs two rollout steps:
   mismatch; assistant text is not checked. Some steps need the model to call
   the tool or to stop calling it; a sample whose model does not stops there,
   and the run fails when too many spec samples stop early
-  (`SPEC_UNFINISHED_RATIO_THRESHOLD`).
+  (`UNFINISHED_RATIO_THRESHOLD`).
+- **Truncate rollout.** It generates one reply in full, regenerates it with
+  `max_tokens` so that it stops inside its reasoning, a tool call or its
+  answer, and continues the cut turn. In a run that continues truncated turns
+  the continuation must succeed, the next prompt must close the cut turn with
+  the family's closer, and every one of the three places must be covered;
+  otherwise the continuation must get HTTP 409. A sample whose reply has
+  nothing to cut there stops early and counts toward the same ratio.
 - **Normal rollout.** It answers a tool call with `tool` messages and an answer
   with the next `user` question, the two continuations agents send most. Its
   mismatch rates are the ones CI tracks across runs.
 
-Pass `--no-session-verify-spec-trajectory` to run the normal rollout alone.
+Pass `--no-session-verify-spec-trajectory` to run the normal rollout alone,
+without the spec and truncate rollouts.
 
 ### Choose replay matching
 

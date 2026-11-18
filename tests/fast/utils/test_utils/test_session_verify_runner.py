@@ -16,7 +16,12 @@ from tests.e2e.sglang.test_session_server_multi_role import _common
 
 from miles.utils.arguments import parse_args_train_backend
 from miles.utils.test_utils import session_verify_runner
-from miles.utils.test_utils.session_verify_agent import SESSION_VERIFY_KIND_KEY, SessionVerifyKind
+from miles.utils.test_utils.session_verify_agent import (
+    CONTINUE_CUT_STEP,
+    SESSION_VERIFY_CUT_KIND_KEY,
+    SESSION_VERIFY_KIND_KEY,
+    SessionVerifyKind,
+)
 from miles.utils.test_utils.session_verify_runner import (
     SESSION_VERIFY_INVARIANT_ARGS,
     assert_session_verify_metrics,
@@ -26,6 +31,7 @@ from miles.utils.test_utils.session_verify_runner import (
 
 _NORMAL = (SessionVerifyKind.NORMAL,)
 _SPEC_THEN_NORMAL = (SessionVerifyKind.SPEC, SessionVerifyKind.NORMAL)
+_TRUNCATE_THEN_NORMAL = (SessionVerifyKind.TRUNCATE, SessionVerifyKind.NORMAL)
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 
@@ -72,7 +78,7 @@ def test_namespace_to_train_args_allows_model_specific_rollout_max_response_len(
     assert "--rollout-max-response-len 16384" in train_args
 
 
-@pytest.mark.parametrize(("spec_trajectory", "num_rollout"), [(True, 2), (False, 1)])
+@pytest.mark.parametrize(("spec_trajectory", "num_rollout"), [(True, 3), (False, 1)])
 def test_namespace_to_train_args_runs_one_rollout_step_per_kind_in_file_order(spec_trajectory, num_rollout):
     train_args = _build_args(session_verify_spec_trajectory=spec_trajectory)
 
@@ -81,9 +87,31 @@ def test_namespace_to_train_args_runs_one_rollout_step_per_kind_in_file_order(sp
     assert "spec-trajectory" not in train_args
 
 
-def test_spec_rollout_runs_before_the_normal_rollout_the_history_gate_judges():
-    assert session_verify_kinds(True) == _SPEC_THEN_NORMAL
+def test_spec_and_truncate_rollouts_run_before_the_normal_rollout_the_history_gate_judges():
+    assert session_verify_kinds(True) == (
+        SessionVerifyKind.SPEC,
+        SessionVerifyKind.TRUNCATE,
+        SessionVerifyKind.NORMAL,
+    )
     assert session_verify_kinds(False) == _NORMAL
+
+
+def test_prompt_data_spreads_truncate_samples_over_the_cut_kinds(monkeypatch, tmp_path):
+    monkeypatch.setattr(session_verify_runner.tempfile, "tempdir", str(tmp_path))
+
+    path = Path(session_verify_runner._ensure_prompt_data(_TRUNCATE_THEN_NORMAL, rollout_batch_size=4))
+
+    metadata = [json.loads(line)["metadata"] for line in path.read_text().splitlines()]
+    assert [m.get(SESSION_VERIFY_CUT_KIND_KEY) for m in metadata] == [
+        "reasoning",
+        "tool_call",
+        "answer",
+        "reasoning",
+        None,
+        None,
+        None,
+        None,
+    ]
 
 
 def test_prompt_data_lays_out_one_rollout_step_per_kind(monkeypatch, tmp_path):
@@ -194,7 +222,8 @@ def test_rollout_table_lists_the_spec_probes(capsys):
     _print_rollout_table("deepseekv4", spec_trajectory=True)
 
     output = capsys.readouterr().out
-    assert "0. spec" in output and "1. normal" in output
+    assert "0. spec" in output and "1. truncate" in output and "2. normal" in output
+    assert f"  - {CONTINUE_CUT_STEP}" in output and "the family declares a closer" in output
     assert "Roles after a tool call:     ['tool']" in output
     assert "  - user after tool call" in output
     assert "  - tool after no tool call" in output
@@ -550,6 +579,46 @@ def test_session_verify_metrics_keeps_assistant_text_soft(tmp_path):
 
 _MET = {"step": "user after tool call", "expected_status": 400, "actual_status": 400}
 _UNMET = {"step": "tool after no tool call", "expected_status": 400, "actual_status": 200}
+
+
+def _truncate(*cut_kinds, expected_status=200, actual_status=None, problems=(), **entry) -> dict:
+    status = expected_status if actual_status is None else actual_status
+    return {
+        "kind": "truncate",
+        "expectations": [{"step": CONTINUE_CUT_STEP, "expected_status": expected_status, "actual_status": status}],
+        "cuts": [{"kind": kind, "problems": list(problems)} for kind in cut_kinds],
+        **entry,
+    }
+
+
+def _assert_truncate_metrics(tmp_path, *entries) -> None:
+    metrics_path = tmp_path / "metrics.jsonl"
+    _write_metrics(metrics_path, [*entries, _normal(driver_events=["append_tool"])])
+    assert_session_verify_metrics(str(metrics_path), kinds=_TRUNCATE_THEN_NORMAL, assistant_text_threshold=1.0)
+
+
+def test_session_verify_metrics_accepts_a_truncate_rollout_that_continued_every_cut_kind(tmp_path):
+    _assert_truncate_metrics(tmp_path, _truncate("reasoning"), _truncate("tool_call"), _truncate("answer"))
+
+
+def test_session_verify_metrics_rejects_a_cut_kind_no_sample_continued(tmp_path):
+    with pytest.raises(AssertionError, match=r"no truncate sample continued a turn cut in \['tool_call'\]"):
+        _assert_truncate_metrics(tmp_path, _truncate("reasoning"), _truncate("answer"))
+
+
+def test_session_verify_metrics_rejects_a_cut_turn_the_closer_did_not_close(tmp_path):
+    bad = _truncate("tool_call", problems=["truncation_closer: expected '\\n</tool_call>', got ''"])
+    with pytest.raises(AssertionError, match="1 continued cut turns were not closed.*truncation_closer"):
+        _assert_truncate_metrics(tmp_path, _truncate("reasoning"), bad, _truncate("answer"))
+
+
+def test_session_verify_metrics_rejects_a_continuation_with_another_status_than_expected(tmp_path):
+    with pytest.raises(AssertionError, match="truncate probes got another status"):
+        _assert_truncate_metrics(tmp_path, _truncate(expected_status=200, actual_status=409))
+
+
+def test_session_verify_metrics_needs_no_cut_kind_from_a_run_that_refuses_truncated_turns(tmp_path):
+    _assert_truncate_metrics(tmp_path, _truncate(expected_status=409))
 
 
 def test_session_verify_metrics_gates_each_rollout_on_its_own_samples(tmp_path):

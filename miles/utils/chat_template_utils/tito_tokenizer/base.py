@@ -357,6 +357,15 @@ class TITOTokenizer:
             message_boundary_ids=self._message_boundary_ids,
         )
 
+    def cut_kind(self, token_ids: list[int], completion_start: int) -> str:
+        """Which of ``truncation.CUT_KINDS`` the turn stops in; the session verifier places and names cuts by it."""
+        return self._require_truncation_closer().cut_kind(
+            token_ids,
+            completion_start,
+            tokenizer=self.tokenizer,
+            message_boundary_ids=self._message_boundary_ids,
+        )
+
     def _require_truncation_closer(self) -> TruncationCloser:
         closer = self.FIXED_TEMPLATE.truncation_closer
         if closer is None:

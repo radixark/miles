@@ -5,8 +5,9 @@ through ``run_both_versions(cfg)``. Each model runs OpenAI on session v1 and
 v2, then Anthropic Messages on v2 unless that model explicitly disables the
 unsupported endpoint. The runner applies the model-specific GPU topology centrally.
 
-An OpenAI run has two rollout steps: the spec rollout, then the normal rollout
-whose mismatch rates the metric-history gate judges (``steps="last"``).
+An OpenAI run has three rollout steps: the spec rollout, the truncate rollout,
+then the normal rollout whose mismatch rates the metric-history gate judges
+(``steps="last"``).
 """
 
 import argparse
@@ -68,7 +69,8 @@ class ModelConfig:
     # this expectation before issuing a request with an intermediate system.
     anthropic_intermediate_system_expectation: AnthropicIntermediateSystemExpectation | None = None
     # Run the spec rollout (every continuation the family's continuation roles
-    # accept or refuse) before the normal one on the OpenAI runs.
+    # accept or refuse) and the truncate rollout before the normal one on the
+    # OpenAI runs.
     spec_trajectory: bool = True
 
 

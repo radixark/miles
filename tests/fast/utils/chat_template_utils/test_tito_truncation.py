@@ -8,6 +8,7 @@ sampled output, and cuts it at every token.  At each cut:
   the structures open at the cut, then the end-of-turn token.  The expectation
   pairs the markers of the complete render, independently of the closer's scan
   of the truncated prefix;
+- ``cut_kind`` names the innermost kind of structure the template still has open;
 - the closed turn passes ``check_turn_structure``;
 - appending the messages the family accepts after the turn through
   ``merge_tokens`` keeps every sampled token, and the result matches the
@@ -268,6 +269,13 @@ def _expected_closing_markers(grammar: TruncationGrammar, spans: list[_Span], cu
     return [s.pair.close_marker for s in open_spans] + ([grammar.end_of_turn] if grammar.end_of_turn else [])
 
 
+def _expected_cut_kind(grammar: TruncationGrammar, spans: list[_Span], cut: int) -> str:
+    open_pairs = [s.pair for s in spans if s.open_end <= cut < s.close_end]
+    if any(pair in grammar.tool_blocks for pair in open_pairs):
+        return "tool_call"
+    return "reasoning" if open_pairs else "answer"
+
+
 def _closing_markers(grammar: TruncationGrammar, closer_text: str) -> list[str]:
     """The markers in *closer_text*, which must hold nothing else but whitespace."""
     markers = [pair.close_marker for pair in (grammar.think, *grammar.tool_blocks)]
@@ -310,8 +318,10 @@ def _close_every_cut(tito: TITOTokenizer, case: _Case, sampled: list[int]) -> li
         token_ids = case.prompt_ids + sampled[:cut]
         closer = tito.close_truncated_turn(token_ids, start)
 
-        expected = _expected_closing_markers(grammar, spans, len(case.generation_prompt) + len(sampled_text))
+        cut_offset = len(case.generation_prompt) + len(sampled_text)
+        expected = _expected_closing_markers(grammar, spans, cut_offset)
         assert _closing_markers(grammar, tito.tokenizer.decode(closer)) == expected, f"cut after {sampled_text!r}"
+        assert tito.cut_kind(token_ids, start) == _expected_cut_kind(grammar, spans, cut_offset), sampled_text
         closed = token_ids + closer
         assert tito.check_turn_structure(closed, (start, len(closed))) == [], f"cut after {sampled_text!r}"
         closed_turns.append(closed)

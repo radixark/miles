@@ -5,16 +5,21 @@ from types import SimpleNamespace
 
 import pytest
 from tests.e2e.sglang.test_session_server_multi_role._common import ModelConfig
+from tests.fast.utils.chat_template_utils.tito_families import load_family_tito
 
 from miles.rollout.base_types import GenerateFnOutput
-from miles.utils.chat_template_utils.tito_tokenizer import VALID_APPEND_ROLES
+from miles.utils.chat_template_utils.tito_tokenizer import VALID_APPEND_ROLES, TITOTokenizerType
+from miles.utils.chat_template_utils.truncation import CUT_KINDS
 from miles.utils.test_utils import session_verify_agent
 from miles.utils.test_utils.session_verify_agent import (
     ASSISTANT_INPUT_FOLLOWUP_TEXT,
     ASSISTANT_INPUT_TEXTS,
+    CONTINUE_CUT_STEP,
+    CUTS_KEY,
     EXPECTATIONS_KEY,
     NO_TOOL_CALL_REQUEST_ARGS,
     NO_TOOL_CALL_USER_TEXT,
+    SESSION_VERIFY_CUT_KIND_KEY,
     SESSION_VERIFY_KIND_KEY,
     SYSTEM_REMINDER_TEXT,
     UNFINISHED_KEY,
@@ -73,10 +78,10 @@ class _FakeSession:
         self.requests.append(("chat", deepcopy(messages), dict(request_kwargs)))
         return {"choices": [{"message": self._reply(messages), "finish_reason": "stop"}]}
 
-    async def chat_status(self, client, base_url, messages, request_kwargs, *, label):
+    async def chat_status(self, client, base_url, messages, request_kwargs, *, label, refused_status=400):
         self.requests.append(("probe", deepcopy(messages), dict(request_kwargs)))
         if self._refused(messages):
-            return 400, None
+            return refused_status, None
         return 200, {"choices": [{"message": self._reply(messages), "finish_reason": "stop"}]}
 
 
@@ -289,7 +294,7 @@ def test_spec_rollout_needs_user_after_an_answer():
     )
 
     with pytest.raises(ValueError, match="needs 'user' after an assistant without tool calls"):
-        session_verify_agent._assert_spec_rollout_supported("custom", fixed)
+        session_verify_agent._assert_rollout_supported(SessionVerifyKind.SPEC, "custom", fixed)
 
 
 def test_run_agent_requires_the_rollout_kind():
@@ -644,3 +649,194 @@ def test_run_agent_journals_assertion_before_retry(monkeypatch, tmp_path):
     [record] = [json.loads(line) for line in metrics_path.read_text().splitlines()]
     assert record["verification_error"]["stage"] == "session_verify_agent.run_agent"
     assert record["verification_error"]["message"] == "journal me"
+
+
+# ---------------------------------------------------------------------------
+# Truncate rollout
+# ---------------------------------------------------------------------------
+
+_QWEN3_PROMPT = "<|im_start|>user\nq<|im_end|>\n<|im_start|>assistant\n"
+_QWEN3_NEXT_TURN = "\n<|im_start|>user\nnext<|im_end|>\n<|im_start|>assistant\n"
+_QWEN3_REPLY = (
+    "<think>\nThe user asks for the weather, so I should call the weather tool.\n</think>\n\n"
+    "Let me look that up for you right now.\n"
+    '<tool_call>\n{"name": "get_weather", "arguments": {"location": "Beijing"}}\n</tool_call><|im_end|>'
+)
+
+
+class _FakeTruncatingSession:
+    """A session server over the real Qwen3 tokenizer whose model always writes one scripted turn.
+
+    A request with ``max_tokens`` gets the turn cut there.  Continuing a cut turn puts the family's
+    closer at the head of the next prompt unless *closes* is off, or is refused with *refuse_status*.
+    """
+
+    def __init__(self, tito, *, reply=_QWEN3_REPLY, closes=True, refuse_status=None):
+        self.tito = tito
+        self.reply_ids = self._encode(reply)
+        self.closes = closes
+        self.refuse_status = refuse_status
+        self.records = []
+        self.requests = []
+        self._last_messages = None
+
+    def _encode(self, text):
+        return self.tito.tokenizer.encode(text, add_special_tokens=False)
+
+    def _next_prompt(self) -> list[int]:
+        if not self.records:
+            return self._encode(_QWEN3_PROMPT)
+        previous = self.records[-1]
+        prompt = previous["request"]["input_ids"]
+        tokens = prompt + [
+            entry[1] for entry in previous["response"]["choices"][0]["meta_info"]["output_token_logprobs"]
+        ]
+        if self._cut(previous) and self.closes:
+            tokens = tokens + self.tito.close_truncated_turn(tokens, len(prompt))
+        return tokens + self._encode(_QWEN3_NEXT_TURN)
+
+    @staticmethod
+    def _cut(record) -> bool:
+        return record["response"]["choices"][0]["finish_reason"] == "length"
+
+    def _generate(self, messages, request_kwargs) -> dict:
+        # Re-sending the last request regenerates its reply, as a rollback does.
+        if messages == self._last_messages:
+            prompt = self.records.pop()["request"]["input_ids"]
+        else:
+            prompt = self._next_prompt()
+        self._last_messages = deepcopy(messages)
+        max_tokens = request_kwargs.get("max_tokens", len(self.reply_ids))
+        sampled = self.reply_ids[:max_tokens]
+        complete = len(sampled) == len(self.reply_ids)
+        message = {"role": "assistant", "content": self.tito.tokenizer.decode(sampled)}
+        if complete and "<tool_call>" in message["content"]:
+            call = {"name": "get_weather", "arguments": '{"location": "Beijing"}'}
+            message["tool_calls"] = [{"id": f"call_{len(self.requests)}", "type": "function", "function": call}]
+        choice = {
+            "message": message,
+            "finish_reason": "stop" if complete else "length",
+            "meta_info": {"output_token_logprobs": [(0.0, token_id) for token_id in sampled]},
+        }
+        self.records.append({"request": {"input_ids": prompt}, "response": {"choices": [choice]}})
+        return {"choices": [choice]}
+
+    async def chat(self, client, base_url, messages, request_kwargs, *, label):
+        self.requests.append((label, dict(request_kwargs)))
+        return self._generate(messages, request_kwargs)
+
+    async def chat_status(self, client, base_url, messages, request_kwargs, *, label, refused_status=400):
+        self.requests.append((label, dict(request_kwargs)))
+        if self.refuse_status is not None and self._cut(self.records[-1]):
+            return self.refuse_status, None
+        return 200, self._generate(messages, request_kwargs)
+
+    async def session_records(self, client, base_url):
+        return list(self.records)
+
+
+@pytest.fixture(scope="module")
+def qwen3_tito():
+    return load_family_tito(TITOTokenizerType.QWEN3)
+
+
+def _run_truncate(monkeypatch, session, cut_kind, *, tito_model="qwen3", allowed=True):
+    monkeypatch.setattr(session_verify_agent.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr(session_verify_agent, "_chat", session.chat)
+    monkeypatch.setattr(session_verify_agent, "_chat_status", session.chat_status)
+    monkeypatch.setattr(session_verify_agent, "_session_records", session.session_records)
+    monkeypatch.setattr(session_verify_agent, "load_tito_tokenizer", lambda hf_checkpoint, tito_model: session.tito)
+    return asyncio.run(
+        run_agent(
+            "http://session",
+            prompt=None,
+            request_kwargs={"temperature": 1.0, "seed": 7},
+            metadata={
+                "tito_model": tito_model,
+                SESSION_VERIFY_KIND_KEY: str(SessionVerifyKind.TRUNCATE),
+                SESSION_VERIFY_CUT_KIND_KEY: cut_kind,
+                "hf_checkpoint": "unused",
+                "allow_truncated_continuation": allowed,
+            },
+        )
+    )
+
+
+@pytest.mark.parametrize("cut_kind", CUT_KINDS)
+def test_truncate_rollout_continues_a_turn_cut_in_each_kind(monkeypatch, qwen3_tito, cut_kind):
+    session = _FakeTruncatingSession(qwen3_tito)
+
+    result = _run_truncate(monkeypatch, session, cut_kind)
+
+    assert result[EXPECTATIONS_KEY] == [{"step": CONTINUE_CUT_STEP, "expected_status": 200, "actual_status": 200}]
+    assert result[CUTS_KEY] == [{"kind": cut_kind, "problems": []}]
+    assert result[UNFINISHED_KEY] is None
+    assert result["driver_events"][-1] == "continue_cut"
+    # The cut regenerates the probed reply: the same request, stopped by max_tokens.
+    (probe_kwargs,) = [kwargs for label, kwargs in session.requests if label == "Probe"]
+    (cut_kwargs,) = [kwargs for label, kwargs in session.requests if label == f"Cut in {cut_kind}"]
+    assert {**cut_kwargs, "max_tokens": None} == {**probe_kwargs, "max_tokens": None}
+    assert 0 < cut_kwargs["max_tokens"] < len(session.reply_ids)
+
+
+def test_truncate_rollout_reports_a_cut_turn_the_server_did_not_close(monkeypatch, qwen3_tito):
+    session = _FakeTruncatingSession(qwen3_tito, closes=False)
+
+    result = _run_truncate(monkeypatch, session, "tool_call")
+
+    (cut,) = result[CUTS_KEY]
+    assert cut["kind"] == "tool_call"
+    assert cut["problems"] and cut["problems"][0].startswith("truncation_closer: expected '\\n</tool_call><|im_end|>'")
+
+
+def test_truncate_rollout_expects_409_from_a_run_that_does_not_continue_truncated_turns(monkeypatch, qwen3_tito):
+    session = _FakeTruncatingSession(qwen3_tito, refuse_status=409)
+
+    result = _run_truncate(monkeypatch, session, "reasoning", allowed=False)
+
+    assert result[EXPECTATIONS_KEY] == [{"step": CONTINUE_CUT_STEP, "expected_status": 409, "actual_status": 409}]
+    assert result[CUTS_KEY] == []
+    assert result[UNFINISHED_KEY] is None
+
+
+def test_truncate_rollout_cuts_blind_for_a_family_without_a_closer(monkeypatch, qwen3_tito):
+    session = _FakeTruncatingSession(qwen3_tito, refuse_status=409)
+
+    result = _run_truncate(monkeypatch, session, "tool_call", tito_model="default", allowed=False)
+
+    assert result[EXPECTATIONS_KEY] == [{"step": CONTINUE_CUT_STEP, "expected_status": 409, "actual_status": 409}]
+    (cut_kwargs,) = [kwargs for label, kwargs in session.requests if label.startswith("Cut in")]
+    assert cut_kwargs["max_tokens"] == session_verify_agent._BLIND_CUT_TOKENS
+
+
+def test_truncate_rollout_is_unfinished_when_the_reply_has_nothing_to_cut_there(monkeypatch, qwen3_tito):
+    session = _FakeTruncatingSession(qwen3_tito, reply="It is sunny in Beijing today.<|im_end|>")
+
+    result = _run_truncate(monkeypatch, session, "reasoning")
+
+    assert result[UNFINISHED_KEY] == "the probed reply has no reasoning to cut"
+    assert result[EXPECTATIONS_KEY] == [] and result[CUTS_KEY] == []
+
+
+def test_generate_gives_a_truncate_sample_what_its_agent_needs(monkeypatch, tmp_path):
+    metrics_path = tmp_path / "metrics.jsonl"
+    monkeypatch.setenv("MILES_SESSION_VERIFY_METRICS_PATH", str(metrics_path))
+    generate_input = _generate_input(SessionVerifyKind.TRUNCATE)
+    generate_input.args.hf_checkpoint = "/models/qwen3"
+    generate_input.args.allow_truncated_continuation = True
+    expectation = {"step": CONTINUE_CUT_STEP, "expected_status": 200, "actual_status": 200}
+    cuts = [{"kind": "answer", "problems": []}]
+
+    async def fake_base_generate(input):
+        assert input.sample.metadata["hf_checkpoint"] == "/models/qwen3"
+        assert input.sample.metadata["allow_truncated_continuation"] is True
+        sample = _verified_sample([], expectations=[expectation])
+        sample.metadata[CUTS_KEY] = cuts
+        return GenerateFnOutput(samples=[sample])
+
+    monkeypatch.setattr(session_verify_agent, "_base_generate", fake_base_generate)
+
+    asyncio.run(session_verify_agent.generate(generate_input))
+
+    (record,) = [json.loads(line) for line in metrics_path.read_text().splitlines()]
+    assert record["kind"] == "truncate" and record["cuts"] == cuts and record["expectations"] == [expectation]

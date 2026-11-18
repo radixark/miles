@@ -31,9 +31,14 @@ import tempfile
 from typing import Any, Literal
 
 from miles.utils.chat_template_utils import resolve_reasoning_and_tool_call_parser
+from miles.utils.chat_template_utils.truncation import CUT_KINDS
 from miles.utils.external_utils import command_utils
 from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
-from miles.utils.test_utils.session_verify_agent import SESSION_VERIFY_KIND_KEY, SessionVerifyKind
+from miles.utils.test_utils.session_verify_agent import (
+    SESSION_VERIFY_CUT_KIND_KEY,
+    SESSION_VERIFY_KIND_KEY,
+    SessionVerifyKind,
+)
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
@@ -48,9 +53,10 @@ ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD = 0.2
 # How many per-sample assistant_text examples a failed soft gate quotes, so a CI
 # log shows what drifted without the preserved sidecar file.
 _ASSISTANT_MISMATCH_EXAMPLES = 3
-# Share of spec samples that may stop early because the model did not call the tool, or did
-# not stop calling it, where a step needs that.  Measured on CI: up to 2 of 32.
-SPEC_UNFINISHED_RATIO_THRESHOLD = 0.2
+# Share of a spec or truncate rollout's samples that may stop early because the model did not
+# call the tool, did not stop calling it, or gave no reply to cut, where a step needs that.
+# Measured on CI for the spec rollout: up to 2 of 32.
+UNFINISHED_RATIO_THRESHOLD = 0.2
 
 # Parser default only: every run writes and reads a prompt file of its own (``_ensure_prompt_data``).
 PROMPT_DATA_PATH = "/root/datasets/session_multi_role_verify.jsonl"
@@ -90,11 +96,12 @@ SESSION_VERIFY_INVARIANT_ARGS: dict[str, Any] = {
 def session_verify_kinds(spec_trajectory: bool) -> tuple[SessionVerifyKind, ...]:
     """The rollouts of one verifier run, one per rollout step, in order.
 
-    The spec rollout runs first, so the run's last step is the normal rollout,
-    the one the metric-history gate judges (``steps="last"``).
+    The spec and truncate rollouts, which probe what the family declares, run
+    first, so the run's last step is the normal rollout, the one the
+    metric-history gate judges (``steps="last"``).
     """
     if spec_trajectory:
-        return (SessionVerifyKind.SPEC, SessionVerifyKind.NORMAL)
+        return (SessionVerifyKind.SPEC, SessionVerifyKind.TRUNCATE, SessionVerifyKind.NORMAL)
     return (SessionVerifyKind.NORMAL,)
 
 
@@ -125,8 +132,9 @@ def session_verify_extras(parser: argparse.ArgumentParser) -> argparse.ArgumentP
         default=True,
         help=(
             "Run the spec rollout (every continuation the family's continuation roles "
-            "accept or refuse) as a first rollout step before the normal rollout.  Turn "
-            "off to run the normal rollout alone."
+            "accept or refuse) and the truncate rollout (continuing a reply cut by "
+            "max_tokens) as rollout steps before the normal rollout.  Turn off to run "
+            "the normal rollout alone."
         ),
     )
     parser.set_defaults(**SESSION_VERIFY_INVARIANT_ARGS)
@@ -138,7 +146,8 @@ def _ensure_prompt_data(kinds: tuple[SessionVerifyKind, ...], *, rollout_batch_s
 
     The agent reads its rollout from each record's metadata; with
     ``--no-rollout-shuffle`` the data source hands the records out in file
-    order, ``rollout_batch_size`` per step.
+    order, ``rollout_batch_size`` per step.  A truncate record also names where
+    its sample cuts, cycling through ``CUT_KINDS``.
 
     The file belongs to one run: its records depend on *kinds*, and the runners
     of one CI host share ``/root/datasets``, so a fixed path lets a concurrent
@@ -147,8 +156,11 @@ def _ensure_prompt_data(kinds: tuple[SessionVerifyKind, ...], *, rollout_batch_s
     fd, path = tempfile.mkstemp(prefix="session_verify_prompts_", suffix=".jsonl")
     with os.fdopen(fd, "w") as f:
         for kind in kinds:
-            record = {"messages": _PLACEHOLDER_MESSAGES, "metadata": {SESSION_VERIFY_KIND_KEY: str(kind)}}
-            f.writelines(json.dumps(record) + "\n" for _ in range(rollout_batch_size))
+            for index in range(rollout_batch_size):
+                metadata = {SESSION_VERIFY_KIND_KEY: str(kind)}
+                if kind is SessionVerifyKind.TRUNCATE:
+                    metadata[SESSION_VERIFY_CUT_KIND_KEY] = CUT_KINDS[index % len(CUT_KINDS)]
+                f.write(json.dumps({"messages": _PLACEHOLDER_MESSAGES, "metadata": metadata}) + "\n")
     return path
 
 
@@ -365,14 +377,17 @@ def assert_session_verify_metrics(
     """Read per-sample JSONL metrics and apply the cross-sample gates per rollout kind.
 
     A journaled verifier assertion, a rollout of *kinds* with no recorded
-    sample, a spec sample whose probe got another status than the spec
-    decides, more unfinished spec samples than ``SPEC_UNFINISHED_RATIO_THRESHOLD``
-    allows, and a normal rollout that never answered a tool call (when
-    ``require_append_tool``) fail.  Both rollouts also fail on hard mismatches
-    (samples whose only hard type is special_token_count are tolerated up to
-    ``special_token_count_threshold``), and the normal rollout on an
-    assistant_text ratio above ``assistant_text_threshold``.  The spec
-    rollout's assistant_text is not gated.
+    sample, a probe that got another status than the family declares, more
+    unfinished samples in a rollout than ``UNFINISHED_RATIO_THRESHOLD`` allows,
+    and a normal rollout that never answered a tool call (when
+    ``require_append_tool``) fail.  A truncate rollout also fails when a
+    continued cut turn was not closed by the family's closer, or, in a run that
+    continues truncated turns, when a cut kind was never continued.  Every
+    rollout fails on hard mismatches (samples whose only hard type is
+    special_token_count are tolerated up to ``special_token_count_threshold``),
+    and the normal rollout on an assistant_text ratio above
+    ``assistant_text_threshold``.  The other rollouts' assistant_text is not
+    gated: a turn cut inside a tool call differs from its stored message by design.
     """
     entries = _read_sample_records(metrics_path)
     recorded_kinds = {entry.get("kind") for entry in entries}
@@ -392,16 +407,16 @@ def assert_session_verify_metrics(
             )
         if summary["unmet_expectations"]:
             raise AssertionError(
-                f"Session multi-role e2e: spec probes got another status than the family's continuation "
-                f"roles decide in {len(summary['unmet_expectations'])} cases "
-                f"(first={summary['unmet_expectations'][:3]})."
+                f"Session multi-role e2e: {kind} probes got another status than the family declares "
+                f"in {len(summary['unmet_expectations'])} cases (first={summary['unmet_expectations'][:3]})."
             )
+        _assert_continued_cuts(kind, summary)
         _assert_hard_mismatches(kind, summary, special_token_count_threshold=special_token_count_threshold)
-        if len(summary["unfinished"]) > SPEC_UNFINISHED_RATIO_THRESHOLD * summary["samples"]:
+        if len(summary["unfinished"]) > UNFINISHED_RATIO_THRESHOLD * summary["samples"]:
             raise AssertionError(
                 f"Session multi-role e2e: {len(summary['unfinished'])}/{summary['samples']} {kind} samples "
-                f"stopped before their last step, above the ratio {SPEC_UNFINISHED_RATIO_THRESHOLD}: the model "
-                f"did not call the tool, or did not stop calling it, where a step needs that "
+                f"stopped before their last step, above the ratio {UNFINISHED_RATIO_THRESHOLD}: the model "
+                f"did not do what a step needs (call the tool, stop calling it, or give a reply to cut) "
                 f"(first={summary['unfinished'][:3]})."
             )
 
@@ -472,6 +487,9 @@ def _summarize(entries: list[dict]) -> dict[str, Any]:
         "hard_mismatch_example": None,
         "has_append_tool": False,
         "unmet_expectations": [],
+        "expects_acceptance": False,
+        "continued_cut_kinds": set(),
+        "cut_problems": [],
         "unfinished": [],
     }
     for entry in entries:
@@ -479,6 +497,10 @@ def _summarize(entries: list[dict]) -> dict[str, Any]:
         summary["unmet_expectations"] += [
             e for e in entry.get("expectations", []) if e["actual_status"] != e["expected_status"]
         ]
+        summary["expects_acceptance"] |= any(e["expected_status"] == 200 for e in entry.get("expectations", []))
+        for cut in entry.get("cuts", []):
+            summary["continued_cut_kinds"].add(cut["kind"])
+            summary["cut_problems"] += cut["problems"]
         if entry.get("unfinished") is not None:
             summary["unfinished"].append(entry["unfinished"][:300])
         if entry.get("had_assistant_mismatch"):
@@ -507,6 +529,22 @@ def _summarize(entries: list[dict]) -> dict[str, Any]:
                 example = str(example)[:500]
             summary["hard_mismatch_example"] = example
     return summary
+
+
+def _assert_continued_cuts(kind: SessionVerifyKind, summary: dict[str, Any]) -> None:
+    if kind is not SessionVerifyKind.TRUNCATE:
+        return
+    if summary["cut_problems"]:
+        raise AssertionError(
+            f"Session multi-role e2e: {len(summary['cut_problems'])} continued cut turns were not closed by the "
+            f"family's closer (first={summary['cut_problems'][:3]})."
+        )
+    missing = [cut_kind for cut_kind in CUT_KINDS if cut_kind not in summary["continued_cut_kinds"]]
+    if summary["expects_acceptance"] and missing:
+        raise AssertionError(
+            f"Session multi-role e2e: no truncate sample continued a turn cut in {missing}; "
+            f"continued kinds={sorted(summary['continued_cut_kinds'])}."
+        )
 
 
 def _assert_hard_mismatches(
