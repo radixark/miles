@@ -84,6 +84,8 @@ jobs:
     timeout-minutes: ${{ inputs.timeout_minutes }}
     container:
       image: ${{ inputs.container_image }}
+      # A job sees only the shared caches below and its own runner's work directory: the runners of a
+      # host share /data/miles_ci.
       options: >
         --gpus all
         --env CUDA_VISIBLE_DEVICES
@@ -93,7 +95,8 @@ jobs:
         --ulimit stack=67108864
         --memory=0
         --memory-swap=0
-        -v /data/miles_ci:/data/miles_ci
+        -v /data/miles_ci/jit:/data/miles_ci/jit
+        -v /data/miles_ci/dumps:/data/miles_ci/dumps
         -v /data/miles_ci/models:/root/models
         -v /data/miles_ci/datasets:/root/datasets
         -v /data/miles_ci/hf_cache:/root/.cache/huggingface

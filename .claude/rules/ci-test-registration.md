@@ -27,10 +27,11 @@ do when a check goes red is in `ci-failure-triage.md`.
 ## Host caches
 
 A runner host keeps `/data/miles_ci` across jobs and shares it among its
-runners; the rest of the job container is discarded with it. It holds the
-models, datasets and HF cache (mounted at `/root/models`, `/root/datasets`,
-`/root/.cache/huggingface`) and the compiled-kernel caches under
-`/data/miles_ci/jit`, configured by `_run-ci.yml`. Later jobs can reuse matching
+runners; the rest of the job container is discarded with it. A job container
+mounts only its models, datasets and HF cache (at `/root/models`,
+`/root/datasets`, `/root/.cache/huggingface`), the compiled-kernel caches under
+`/data/miles_ci/jit` and the dumps under `/data/miles_ci/dumps`, configured by
+`_run-ci.yml`; any other path under `/data/miles_ci` does not exist in a job. Later jobs can reuse matching
 cache entries; library-specific isolation and the TileLang exception are
 listed in `tests/ci/README.md`.
 
