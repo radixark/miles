@@ -283,7 +283,7 @@ def _without_multimodal_encoders(model: BaseModel.Config) -> BaseModel.Config:
     recompiles every step and torch_remat's eager replay of its recompute aborts.
     """
     # TODO(multimodal on TPU): give the encoders' attention a TPU kernel and a replayable recompute, then keep them
-    model_cls = type(model)._owner  # the model class this config builds
+    model_cls = type(model)._owner
     if not issubclass(model_cls, MultimodalModel):
         return model
     language_model = copy.copy(model)

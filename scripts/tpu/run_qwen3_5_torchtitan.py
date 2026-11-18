@@ -42,10 +42,10 @@ from miles.utils.external_utils import command_utils
 _ENGINE_ARGS = "--tpu-compile-tokens 128 256 512 1024 2048 "
 # an empty ladder skips the vision tower's precompile (~14 of ~17 startup minutes); rollouts are text only
 _ENGINE_ENV = "SGLANG_TPU_VIT_PRECOMPILE_SIZES='' "
-# dapo grades the "Answer:" line the dapo-math prompts ask for, as run_qwen3_30b_a3b_fully_async.py trains; AIME asks
-# for none, so the eval grades its last \boxed{} (boxed_dapo) and reports "acc"
-# a prompt longer than the context minus the response budget makes sglang refuse the request
+# dapo grades the "Answer:" line the dapo-math prompts ask for; --rollout-max-prompt-len drops prompts sglang would
+# refuse (context minus the response budget)
 _ROLLOUT_ARGS = "--rm-type dapo --reward-key score --eval-reward-key acc --rollout-max-prompt-len 1024 "
+# AIME prompts ask for no "Answer:" line, so the eval grades the last \boxed{}
 _EVAL_RM_TYPE = "boxed_dapo"
 # fp32 params, grads and Adam state of a 27B model (~437 GB) exceed the four trainer devices
 _HOST_OPTIMIZER = "--optimizer-cpu-offload "
