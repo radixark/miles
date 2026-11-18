@@ -6,12 +6,25 @@ from typing import Any
 
 from miles.utils.chat_template_utils.tito_tokenizer.base import FixedTemplate, TITOTokenizer
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
+from miles.utils.chat_template_utils.truncation import MarkerPair, TruncationGrammar
 
 
 def _kimi_segment_special_token_ids(tokenizer: Any) -> set[int]:
     """Kimi specials minus ``<|im_middle|>`` (intra-turn role-name/body
     separator, not a role boundary; must not be a segment boundary)."""
     return TokenSeqComparator.collect_special_ids(tokenizer) - {tokenizer.convert_tokens_to_ids("<|im_middle|>")}
+
+
+# ``<|tool_call_argument_begin|>`` separates a call's id from its arguments and
+# closes nothing, so it is not tracked.
+_KIMI_TRUNCATION = TruncationGrammar(
+    think=MarkerPair("<think>", "</think>"),
+    tool_blocks=(
+        MarkerPair("<|tool_calls_section_begin|>", "<|tool_calls_section_end|>"),
+        MarkerPair("<|tool_call_begin|>", "<|tool_call_end|>"),
+    ),
+    end_of_turn="<|im_end|>",
+)
 
 
 class Kimi25TITOTokenizer(TITOTokenizer):
@@ -29,6 +42,7 @@ class Kimi25TITOTokenizer(TITOTokenizer):
         template="kimi_k25_fixed.jinja",
         extra_kwargs={"preserve_thinking": True},
         consistant_kwargs=["thinking", "tools_ts_str"],
+        truncation_closer=_KIMI_TRUNCATION,
     )
 
     _default_assistant_start_str: str = "<|im_assistant|>"
@@ -68,6 +82,7 @@ class Kimi26TITOTokenizer(TITOTokenizer):
         template=None,
         extra_kwargs={"preserve_thinking": True},
         consistant_kwargs=["tools_ts_str"],
+        truncation_closer=_KIMI_TRUNCATION,
     )
 
     _default_assistant_start_str: str = "<|im_assistant|>"

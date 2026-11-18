@@ -8,9 +8,26 @@ from typing import Any
 from miles.utils.chat_template_utils import deepseek
 from miles.utils.chat_template_utils.message_matcher_hub import assert_messages_append_only_with_allowed_role
 from miles.utils.chat_template_utils.tito_tokenizer.base import FixedTemplate, TITOTokenizer, _from_last_assistant
+from miles.utils.chat_template_utils.truncation import MarkerPair, TruncationGrammar
 
 
 _DEEPSEEK_MODE_KWARG_ALIASES = frozenset({"thinking_mode", "enable_thinking", "thinking"})
+
+
+def _dsml_truncation(block: str, invoke: str, parameter: str) -> TruncationGrammar:
+    """DeepSeek closing grammar; DSML tool-call tags are fixed text around ``｜DSML｜``.
+
+    The invoke and parameter openers are tag prefixes: their attributes follow.
+    """
+    return TruncationGrammar(
+        think=MarkerPair("<think>", "</think>"),
+        tool_blocks=(
+            MarkerPair(f"<｜DSML｜{block}>", f"\n</｜DSML｜{block}>"),
+            MarkerPair(f"<｜DSML｜{invoke}", f"\n</｜DSML｜{invoke}>"),
+            MarkerPair(f"<｜DSML｜{parameter}", f"</｜DSML｜{parameter}>"),
+        ),
+        end_of_turn="<｜end▁of▁sentence｜>",
+    )
 
 
 class DeepSeekV32TITOTokenizer(TITOTokenizer):
@@ -39,6 +56,7 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
         extra_kwargs={"drop_thinking": False},
         consistant_kwargs=["add_default_bos_token", "context"],
         roles_after_no_tool_call=frozenset({"user", "system", "assistant"}),
+        truncation_closer=_dsml_truncation("function_calls", "invoke", "parameter"),
     )
 
     _DEFAULT_ASSISTANT_START = "<｜Assistant｜>"
@@ -126,6 +144,7 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
         consistant_kwargs=["reasoning_effort"],
         roles_after_tool_call=frozenset({"tool"}),
         roles_after_no_tool_call=frozenset({"user", "assistant"}),
+        truncation_closer=_dsml_truncation("tool_calls", "invoke", "parameter"),
     )
     SERVER_MESSAGE_KEYS = (deepseek.CONTENT_LEADING_WHITESPACE_KEY,)
 
@@ -274,6 +293,8 @@ class DeepSeekV41TITOTokenizer(DeepSeekV4TITOTokenizer):
         consistant_kwargs=["reasoning_effort"],
         roles_after_tool_call=frozenset({"tool"}),
         roles_after_no_tool_call=frozenset({"user", "system", "assistant"}),
+        # V4.1 tag names carry a leading space.
+        truncation_closer=_dsml_truncation(" calls", " invoke", " parameter"),
     )
 
     def __init__(

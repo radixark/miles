@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -14,6 +15,7 @@ from miles.utils.chat_template_utils.message_matcher_hub import (
     strict_message_matches,
 )
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
+from miles.utils.chat_template_utils.truncation import TruncationCloser
 
 # Bundled fixed-template files live under this directory; ``FixedTemplate.template``
 # values are filenames relative to it.
@@ -58,6 +60,10 @@ class FixedTemplate:
     server accepts when a request appends to a stored history, which can be
     wider than what the model was trained on; a from-scratch render is left to
     the renderer.
+
+    ``truncation_closer`` closes an assistant turn cut by
+    ``finish_reason='length'`` so the next message can follow it; ``None`` means
+    the family cannot continue such a turn.
     """
 
     template: str | None = None
@@ -66,6 +72,7 @@ class FixedTemplate:
     consistant_kwargs: list[str] = field(default_factory=list)
     roles_after_tool_call: frozenset[str] | None = None
     roles_after_no_tool_call: frozenset[str] | None = None
+    truncation_closer: TruncationCloser | None = None
 
     def __post_init__(self) -> None:
         roles = frozenset(self.allowed_append_roles)
@@ -322,6 +329,44 @@ class TITOTokenizer:
             ):
                 preserved[index] = {**request_message, **sidecars}
         return preserved
+
+    def close_truncated_turn(self, token_ids: list[int], completion_start: int) -> list[int]:
+        """Return the tokens that close a turn cut by ``finish_reason='length'``.
+
+        *token_ids* is the prompt followed by the turn's sampled tokens, which
+        start at *completion_start*.  Callers append the result before
+        ``merge_tokens``; earlier tokens never change.
+        """
+        return self._require_truncation_closer().close_truncated_turn(
+            token_ids,
+            completion_start,
+            tokenizer=self.tokenizer,
+            message_boundary_ids=self._message_boundary_ids,
+        )
+
+    def check_turn_structure(self, token_ids: list[int], span: tuple[int, int]) -> list[str]:
+        """Report the structure problems of the assistant turn at *span*, ``(completion_start, turn_end)``.
+
+        Empty for a turn that closes every reasoning and tool-call structure it
+        opens and ends the way the family ends a turn.
+        """
+        return self._require_truncation_closer().check_turn_structure(
+            token_ids,
+            span,
+            tokenizer=self.tokenizer,
+            message_boundary_ids=self._message_boundary_ids,
+        )
+
+    def _require_truncation_closer(self) -> TruncationCloser:
+        closer = self.FIXED_TEMPLATE.truncation_closer
+        if closer is None:
+            raise ValueError(f"{type(self).__name__} cannot close a truncated turn")
+        return closer
+
+    @functools.cached_property
+    def _message_boundary_ids(self) -> set[int]:
+        """Token IDs that delimit messages: the comparator's segment boundaries."""
+        return TokenSeqComparator.resolve_special_ids(self.tokenizer, self.special_token_ids)
 
     def _encode_text(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False)
