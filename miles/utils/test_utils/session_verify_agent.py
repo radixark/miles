@@ -495,7 +495,7 @@ async def _run_spec(driver: _Driver, fixed: FixedTemplate) -> None:
         await driver.chat(messages, label="Assistant input")
 
 
-async def _run_truncate(driver: _Driver, fixed: FixedTemplate, tito, *, cut_kind: str, expected_status: int) -> None:
+async def _run_truncate(driver: _Driver, tito, *, cut_kind: str, expected_status: int) -> None:
     """Cut one reply inside *cut_kind*, continue the cut turn, and check what the server did with it.
 
     *tito* is the family's TITO tokenizer, or ``None`` for a family without a closer.
@@ -596,7 +596,6 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
             elif kind is SessionVerifyKind.TRUNCATE:
                 await _run_truncate(
                     driver,
-                    fixed,
                     (
                         None
                         if fixed.truncation_closer is None
