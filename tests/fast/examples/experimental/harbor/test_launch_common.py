@@ -91,6 +91,23 @@ def test_env_kwargs_and_server_knobs_are_forwarded_when_set(monkeypatch):
     assert "HARBOR_MAX_SEQ_LEN" not in env
 
 
+def test_agent_and_verifier_classes_are_forwarded_with_their_kwargs(monkeypatch):
+    monkeypatch.setenv("E2B_API_KEY", "e2b_x")
+    knobs = {
+        "HARBOR_AGENT_IMPORT_PATH": "pkg.agent:MyComputer1",
+        "HARBOR_CUA_COORDINATE_SPACE": "normalized_0_999",
+        "HARBOR_AGENT_KWARGS": '{"coordinate_space": "normalized_0_999"}',
+        "HARBOR_VERIFIER_IMPORT_PATH": "pkg.verify:HostVerifier",
+        "HARBOR_VERIFIER_KWARGS": '{"read_limit_mb": 64}',
+    }
+    for var, value in knobs.items():
+        monkeypatch.setenv(var, value)
+
+    env = launch_common.harbor_env_vars(_args())
+
+    assert {var: env[var] for var in knobs} == knobs
+
+
 def test_agentic_wiring_is_the_shipped_wiring():
     """One shared copy: the flags the GPU e2e exercises are the flags the recipes ship."""
     args = launch_common.agentic_train_args(tito_model="qwen3", session_server_workers=4)
@@ -105,6 +122,16 @@ def test_agentic_wiring_is_the_shipped_wiring():
 
     for d in launch_common.agentic_pythonpath_dirs():
         assert Path(d).is_dir(), d
+
+
+def test_session_images_select_the_tree_server():
+    args = launch_common.agentic_train_args(tito_model="qwen3_vl", session_server_workers=4, session_images=True)
+    assert "--use-session-server v2 --multimodal-token-space-processing " in args
+    assert args.count("--use-session-server") == 1
+
+    assert "--use-session-server --session-server-port" in launch_common.agentic_train_args(
+        tito_model="qwen3", session_server_workers=4
+    )
 
 
 def test_with_an_agent_worker_no_local_provider_key_is_needed(monkeypatch):

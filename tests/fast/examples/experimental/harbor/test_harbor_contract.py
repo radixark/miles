@@ -9,15 +9,31 @@ default extra="ignore" means a RENAMED optional field can still slip through;
 required-field and enum drift is caught.)
 """
 
+import asyncio
+import base64
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 import pytest
 
 harbor = pytest.importorskip("harbor")
 
 import harbor_agent_function as haf  # noqa: E402
+from harbor.agents.computer_1.computer_1 import Computer1, Computer1Chat, EpisodeLoggingPaths  # noqa: E402
+from harbor.agents.computer_1.providers.base import image_url_part  # noqa: E402
+from harbor.agents.computer_1.providers.generic import GenericJsonProvider  # noqa: E402
+from harbor.agents.computer_1.runtime import DisplayGeometry, normalize_completion_action  # noqa: E402
+from harbor.agents.factory import AgentFactory  # noqa: E402
+from harbor.llms.base import LLMResponse  # noqa: E402
 from harbor.models.agent.name import AgentName  # noqa: E402
 from harbor.models.environment_type import EnvironmentType  # noqa: E402
 from harbor.models.trial.config import TrialConfig  # noqa: E402
 from harbor.trial.trial import Trial  # noqa: E402
+
+from miles.utils.media_refs import collect_media_refs  # noqa: E402
+
+_SESSION_SAMPLING = {"temperature": 1.0, "top_p": 1.0, "top_k": -1, "max_tokens": 512}
 
 
 @pytest.fixture
@@ -26,6 +42,208 @@ def tasks_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("HARBOR_TASKS_DIR", str(tmp_path))
     monkeypatch.setenv("HARBOR_ENV_TYPE", "e2b")
     return tmp_path
+
+
+@pytest.fixture
+def chat_server():
+    requests: list[tuple[str, dict, dict]] = []
+    reply = json.dumps(
+        {
+            "id": "r",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "model",
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": "stop",
+                    "message": {
+                        "role": "assistant",
+                        "content": '{"analysis": "", "plan": "", "action": {"type": "wait"}}',
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+    ).encode()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+            requests.append((self.path, {k.lower(): v for k, v in self.headers.items()}, body))
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(reply)))
+            self.end_headers()
+            self.wfile.write(reply)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_port}", requests
+    server.shutdown()
+
+
+def _computer_1(session_url: str, logs_dir, monkeypatch):
+    monkeypatch.setenv("HARBOR_AGENT_IMPORT_PATH", f"{Computer1.__module__}:{Computer1.__name__}")
+    cfg = haf.build_trial_config(
+        {"instance_id": "task-1", "agent_name": "computer-1", "max_seq_len": 4096}, session_url, _SESSION_SAMPLING
+    )
+    return AgentFactory.create_agent_from_config(cfg.agent, logs_dir=logs_dir)
+
+
+@pytest.fixture
+def full_hd_computer_1(tasks_dir, tmp_path, monkeypatch):
+    monkeypatch.setattr(GenericJsonProvider, "from_agent", GenericJsonProvider.__dict__["from_agent"])
+    monkeypatch.setattr(GenericJsonProvider, "parse", GenericJsonProvider.parse)
+    monkeypatch.setattr(haf, "_coordinate_space_applied", False, raising=False)
+    monkeypatch.setenv("HARBOR_AGENT_KWARGS", json.dumps({"desktop_width": 1920, "desktop_height": 1080}))
+
+    def build():
+        haf.apply_coordinate_space()
+        return GenericJsonProvider.from_agent(_computer_1("http://s/sessions/s1/v1", tmp_path, monkeypatch))
+
+    return build
+
+
+def _click(provider, x: int, y: int):
+    reply = json.dumps({"analysis": "", "plan": "", "action": {"type": "click", "x": x, "y": y}})
+    action = provider.parse(LLMResponse(content=reply)).action
+    return normalize_completion_action(action, DisplayGeometry(desktop_width=1920, desktop_height=1080))
+
+
+def test_the_coordinate_space_maps_grid_clicks_onto_the_desktop(full_hd_computer_1, monkeypatch):
+    monkeypatch.setenv("HARBOR_CUA_COORDINATE_SPACE", "normalized_0_999")
+    provider = full_hd_computer_1()
+
+    assert "1000x1000 pixels" in provider.record_text("task")
+    action = _click(provider, 999, 500)
+    assert (action.x, action.y) == (1919, 540)
+
+
+def test_without_a_coordinate_space_clicks_stay_desktop_pixels(full_hd_computer_1, monkeypatch):
+    monkeypatch.delenv("HARBOR_CUA_COORDINATE_SPACE", raising=False)
+    provider = full_hd_computer_1()
+
+    assert "1920x1080 pixels" in provider.record_text("task")
+    action = _click(provider, 999, 500)
+    assert (action.x, action.y) == (999, 500)
+
+
+def _reply(action: dict) -> LLMResponse:
+    return LLMResponse(content=json.dumps({"analysis": "", "plan": "", "action": action}))
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        {"type": "click", "x": [499, 284]},
+        {"type": "click", "x": [499], "y": [284]},
+        {"type": "click", "x": [499, 284], "y": [499, 284]},
+        {"type": "click", "coordinate": [499, 284]},
+        {"type": "click", "x": ["499", 284.0]},
+    ],
+)
+def test_a_point_written_as_a_list_lands_where_it_pointed(full_hd_computer_1, monkeypatch, action):
+    monkeypatch.setenv("HARBOR_CUA_COORDINATE_SPACE", "normalized_0_999")
+    provider = full_hd_computer_1()
+
+    step = provider.parse(_reply(action))
+    click = normalize_completion_action(step.action, DisplayGeometry(desktop_width=1920, desktop_height=1080))
+    assert (click.x, click.y) == (959, 307)
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        {"type": "drag", "x": [133, 29], "end_x": [700, 400]},
+        {"type": "drag", "x": [133], "y": [29], "end_x": [700], "end_y": [400]},
+    ],
+)
+def test_a_drag_written_as_lists_moves_between_both_points(full_hd_computer_1, monkeypatch, action):
+    monkeypatch.setenv("HARBOR_CUA_COORDINATE_SPACE", "normalized_0_999")
+    provider = full_hd_computer_1()
+
+    step = provider.parse(_reply(action))
+    drag = normalize_completion_action(step.action, DisplayGeometry(desktop_width=1920, desktop_height=1080))
+    assert (drag.x, drag.y, drag.end_x, drag.end_y) == (255, 31, 1345, 432)
+
+
+@pytest.mark.parametrize(
+    ("action", "missing"),
+    [
+        ({"type": "click", "x": 992}, '"x" and "y"'),
+        ({"type": "click"}, '"x" and "y"'),
+        ({"type": "right_click", "x": [1, 2, 3]}, '"x" and "y"'),
+        ({"type": "click", "x": [499, 284], "y": [500, 300]}, '"x" and "y"'),
+        ({"type": "drag", "x": 133, "y": 29}, '"end_x" and "end_y"'),
+        ({"type": "drag", "x": 133, "y": 29, "end_x": [1, 2, 3]}, '"end_x" and "end_y"'),
+    ],
+)
+def test_a_pointer_action_with_no_readable_point_is_retried_not_clicked_at_the_corner(
+    full_hd_computer_1, monkeypatch, action, missing
+):
+    monkeypatch.setenv("HARBOR_CUA_COORDINATE_SPACE", "normalized_0_999")
+    provider = full_hd_computer_1()
+
+    reply = _reply(action)
+    step = provider.parse(reply)
+    assert step.needs_retry and step.action is None
+    assert missing in step.feedback
+    assert step.llm_response is reply
+
+
+def test_actions_without_a_point_and_scalar_points_parse_as_before(full_hd_computer_1, monkeypatch):
+    monkeypatch.setenv("HARBOR_CUA_COORDINATE_SPACE", "normalized_0_999")
+    provider = full_hd_computer_1()
+
+    key = provider.parse(_reply({"type": "key", "keys": ["ctrl", "s"]}))
+    assert not key.needs_retry and key.action.keys == ["ctrl", "s"]
+    scroll = provider.parse(_reply({"type": "scroll", "scroll_y": 300}))
+    assert not scroll.needs_retry and (scroll.action.x, scroll.action.y) == (None, None)
+    reply = _reply({"type": "click", "x": 999, "y": 500})
+    click = provider.parse(reply)
+    assert click.message == reply.content and click.llm_response is reply
+
+
+def test_an_unknown_coordinate_space_stops_the_run(monkeypatch):
+    monkeypatch.setattr(haf, "_coordinate_space_applied", False, raising=False)
+    monkeypatch.setenv("HARBOR_CUA_COORDINATE_SPACE", "pixels")
+
+    with pytest.raises(ValueError, match="normalized_0_999"):
+        haf.apply_coordinate_space()
+
+
+def test_harbor_builds_computer_1_from_the_import_path_with_max_seq_len_set(tasks_dir, tmp_path, monkeypatch):
+    agent = _computer_1("http://trainer:30000/sessions/s1/v1", tmp_path, monkeypatch)
+
+    assert type(agent) is Computer1
+    assert agent._enable_images is True
+
+
+def test_every_call_computer_1_makes_carries_miles_sampling(tasks_dir, tmp_path, monkeypatch, chat_server):
+    base_url, requests = chat_server
+    agent = _computer_1(f"{base_url}/sessions/s1/v1", tmp_path, monkeypatch)
+    agent._chat = chat = Computer1Chat(agent._llm)
+    screenshot = f"data:image/png;base64,{base64.b64encode(b'screen').decode()}"
+
+    async def every_kind_of_call():
+        prompt = [{"role": "user", "content": [{"type": "text", "text": "Begin."}, image_url_part(screenshot)]}]
+        await agent._query_litellm(chat, prompt, EpisodeLoggingPaths(None, None, None))
+        assert await agent._compactor._build_summary_from_history(chat, "the task") is not None
+        assert await agent._compactor._build_short_summary("the task", "the screen") is not None
+        await agent._litellm_extract_text_fallback("the task")
+
+    asyncio.run(every_kind_of_call())
+
+    assert len(requests) == 4
+    for path, headers, body in requests:
+        assert path == "/sessions/s1/v1/chat/completions"
+        assert headers["authorization"] == "Bearer dummy"
+        assert {key: body.get(key) for key in _SESSION_SAMPLING} == _SESSION_SAMPLING
+    assert len(collect_media_refs(requests[0][2]["messages"], str(tmp_path / "media"))["images"]) == 1
 
 
 @pytest.mark.parametrize("env_type", ["docker", "daytona", "e2b", "modal"])
