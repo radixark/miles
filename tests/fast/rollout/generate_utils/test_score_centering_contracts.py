@@ -50,14 +50,27 @@ def test_observation_padding_retry_and_disabled_wire() -> None:
     )
 
 
+def test_native_request_keeps_nested_rows_for_opd() -> None:
+    # OPD's student top-k reads output_top_logprobs rows, which the flat arrays replace
+    request = {
+        "sampling_params": {},
+        "return_flat_raw_output_top_logprobs": True,
+        "return_flat_raw_top_logprobs_b64": True,
+    }
+    configure_rollout_topk_logprobs_request(_args(rollout_top_logprobs_num=128, use_opd=True), request)
+    assert request["top_logprobs_num"] == 128
+    assert "return_flat_raw_output_top_logprobs" not in request
+    assert "return_flat_raw_top_logprobs_b64" not in request
+
+
 @pytest.mark.parametrize("openai", [False, True])
 def test_request_candidates_and_sampler_contract(openai: bool) -> None:
     request = {} if openai else {"sampling_params": {}}
     configure_rollout_topk_logprobs_request(_args(rollout_top_logprobs_num=128), request, openai=openai)
     assert request["top_logprobs" if openai else "top_logprobs_num"] == 128
-    # Only the chat path asks for flat arrays; native /generate keeps the nested rows OPD reads.
-    assert request.get("return_flat_raw_output_top_logprobs", False) is openai
-    assert request.get("return_flat_raw_top_logprobs_b64", False) is openai
+    # Both paths ask for flat arrays; native /generate keeps the nested rows only for OPD (the test below).
+    assert request["return_flat_raw_output_top_logprobs"] is True
+    assert request["return_flat_raw_top_logprobs_b64"] is True
     sampling = request if openai else request["sampling_params"]
     assert sampling["temperature"] == 0.7
     sampling["top_p"] = 0.9

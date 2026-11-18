@@ -46,6 +46,15 @@ def configure_rollout_topk_logprobs_request(args: Namespace, request: dict[str, 
     else:
         request.pop("sampling_logprobs_mode", None)
         request["top_logprobs_num"] = k
+        if args.use_opd:
+            # OPD's student top-k reads the nested rows.
+            request.pop("return_flat_raw_output_top_logprobs", None)
+            request.pop("return_flat_raw_top_logprobs_b64", None)
+        else:
+            # The same base64 arrays as the chat path: k nested [logprob, id, text] entries per token are
+            # megabytes of JSON per response for the engine to build and the rollout worker to parse.
+            request["return_flat_raw_output_top_logprobs"] = True
+            request["return_flat_raw_top_logprobs_b64"] = True
 
 
 def append_rollout_topk_logprobs(
