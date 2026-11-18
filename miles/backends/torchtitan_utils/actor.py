@@ -151,7 +151,9 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         num_samples = self.args.backend.global_batch_size // get_parallel_state().effective_dp.size
         # the engine's rows: a stream per decoder layer (as rollout decodes them), top-k wide
         routed_experts_shape = (
-            (self.args.num_layers, router_top_k(self.model_parts)) if self.args.use_rollout_routing_replay else None
+            (self.args.backend.num_layers, router_top_k(self.model_parts))
+            if self.args.use_rollout_routing_replay
+            else None
         )
         self._compile_warmup_passes(warmup_shard(num_samples, routed_experts_shape=routed_experts_shape))
         logger.info(f"Compiled the first step's programs in {time.monotonic() - start:.1f} s")

@@ -211,6 +211,32 @@ def test_the_warmup_routing_row_is_top_k_wide():
     assert routing_replay.router_top_k([_Part(layer=1), _Part(layer=3)]) == 2
 
 
+def test_the_actor_sizes_the_warmup_routing_rows_from_its_trainer_args(monkeypatch):
+    """--num-layers lives on the trainer's backend args; the actor's warmup reads it there under routing replay."""
+    from types import SimpleNamespace
+
+    from tests.fast.fixtures.args_fixtures import make_trainer_args
+
+    from miles.backends.torchtitan_utils import actor as actor_module
+
+    monkeypatch.setattr(
+        actor_module, "get_parallel_state", lambda: SimpleNamespace(effective_dp=SimpleNamespace(size=2))
+    )
+    monkeypatch.setattr(actor_module, "router_top_k", lambda model_parts: 2)
+    shards = []
+    actor = object.__new__(actor_module.TorchtitanTrainRayActor)
+    actor.args = make_trainer_args(
+        train_backend="torchtitan", num_layers=3, global_batch_size=4, use_rollout_routing_replay=True
+    )
+    actor.model_parts = []
+    actor._compile_warmup_passes = shards.append
+
+    actor._compile_warmup()
+
+    [shard] = shards
+    assert [rows.shape for rows in shard["rollout_routed_experts"]] == [(1, 3, 2), (1, 3, 2)]
+
+
 if __name__ == "__main__":
     import sys
 
