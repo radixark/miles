@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 from tests.fast.backends.sglang_utils.conftest import make_engine_args
-from tests.fast.ray.rollout.conftest import make_args
+from tests.fast.fixtures.rollout_args_fixtures import make_args
 
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
