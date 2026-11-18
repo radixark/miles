@@ -92,6 +92,10 @@ def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
 
         return UpdateWeightFromDistributed(args)
     if mode == "disk-delta":
+        if args.update_weight_delta_encoding == "sparse-xor":
+            from miles.backends.training_utils.weight_update.protocols.sparse_delta import UpdateWeightFromSparseDelta
+
+            return UpdateWeightFromSparseDelta(args)
         from miles.backends.training_utils.weight_update.protocols.delta import UpdateWeightFromDiskDelta
 
         return UpdateWeightFromDiskDelta(args)
