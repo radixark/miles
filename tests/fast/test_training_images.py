@@ -70,3 +70,21 @@ def test_the_tpu_image_takes_the_cuda_images_torchtitan_and_router():
         "docker/Dockerfile", "TORCHTITAN_COMMIT"
     )
     assert _arg_default("docker/Dockerfile.tpu", "WHEELS_TAG") == _arg_default("docker/Dockerfile", "WHEELS_TAG_X86")
+
+
+@pytest.mark.parametrize("variant", list(build_module().VARIANTS))
+def test_each_build_variant_stamps_its_own_input_hash(tmp_path, monkeypatch, variant):
+    build = build_module()
+    assert variant in build.image_inputs.HARDWARE_BY_VARIANT
+    hashes = []
+    commands = []
+
+    def compute(*, root, variant):
+        hashes.append((root, variant))
+        return "fixture-hash"
+
+    monkeypatch.setattr(build.image_inputs, "compute", compute)
+    monkeypatch.setattr(build, "run", lambda command, dry_run: commands.append(command))
+    build.build_and_push(variant, "custom", True, DEFAULT_DOCKERFILE, custom_tag="fixture", context=tmp_path)
+    assert hashes == [(tmp_path, variant)]
+    assert "miles.image-inputs=fixture-hash" in commands[0]
