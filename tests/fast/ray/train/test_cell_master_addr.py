@@ -55,6 +55,9 @@ class _FailingConfigureWorkerHandle:
         self.kill_self_count: int = 0
         self.wait_dead_count: int = 0
 
+    def cell_handle_with(self, cell_worker_handles: list) -> None:
+        return None
+
     async def configure_master_addr_and_port(self, **_kwargs) -> None:
         self.calls.append("configure_master_addr_and_port")
         raise WorkerUnreachableError("worker died before rendezvous")

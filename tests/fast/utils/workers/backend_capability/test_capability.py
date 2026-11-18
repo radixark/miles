@@ -11,9 +11,9 @@ from miles.utils.workers.backend_capability.base import BackendCapability, Defer
 from miles.utils.workers.backend_capability.kubernetes import KubernetesBackendCapability
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
 from miles.utils.workers.connection_config import build_static_conn_config
+from miles.utils.workers.worker_manager.client import ManagerWorkerProvider
 from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesRunInfo, KubernetesWorkerProvider
 from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
-from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_provider.static import StaticWorkerProvider
 
 
@@ -76,14 +76,16 @@ class TestRayBackendCapability:
         """The manager launched every worker of the run, so it knows the observed and the addressed ones alike."""
         capability = RayBackendCapability(worker_manager_handle=object())
 
-        assert isinstance(capability.dynamic_worker_provider(pool_ids=["engine"]), RayWorkerProvider)
-        assert isinstance(capability.static_worker_provider(pool_id="inference-router-0"), RayWorkerProvider)
+        assert isinstance(capability.dynamic_worker_provider(pool_ids=["engine"]), ManagerWorkerProvider)
+        assert isinstance(capability.static_worker_provider(pool_id="inference-router-0"), ManagerWorkerProvider)
 
     def test_accepts_a_pool_no_watch_was_opened_for(self) -> None:
         """Ray resolves a name when it is asked, so nothing has to be declared up front the way a watch does."""
         capability = RayBackendCapability(worker_manager_handle=object())
 
-        assert isinstance(capability.dynamic_worker_provider(pool_ids=["a-pool-nobody-mentioned"]), RayWorkerProvider)
+        assert isinstance(
+            capability.dynamic_worker_provider(pool_ids=["a-pool-nobody-mentioned"]), ManagerWorkerProvider
+        )
 
 
 class TestDeferredBackendCapability:

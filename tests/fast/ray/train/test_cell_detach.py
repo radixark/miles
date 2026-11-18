@@ -64,9 +64,16 @@ class TestCellRemoval:
         pending_trainer_worker: PendingTrainerWorker,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Preparing a later worker call cannot leave an earlier RPC pending."""
+        """Preparing a later worker call cannot leave an earlier RPC pending: no call is made before every worker's
+        arguments are prepared."""
         submitted = asyncio.get_running_loop().create_future()
-        monkeypatch.setattr(pending_trainer_worker, "train", lambda: submitted)
+        calls = []
+
+        def train():
+            calls.append("train")
+            return submitted
+
+        monkeypatch.setattr(pending_trainer_worker, "train", train)
         pending_trainer_cell._get_worker_handles().append(pending_trainer_worker)
 
         def compute_kwargs(index: int) -> dict:
@@ -77,5 +84,5 @@ class TestCellRemoval:
         with pytest.raises(ValueError, match="Invalid worker arguments"):
             await pending_trainer_cell._execute_raw("train", compute_kwargs=compute_kwargs, kill_on_failure=False)
 
-        assert submitted.cancelled()
+        assert calls == []
         assert pending_trainer_worker.kill_count == 0

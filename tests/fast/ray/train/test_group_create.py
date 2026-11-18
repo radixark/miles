@@ -9,8 +9,9 @@ from tests.fast.ray.train.conftest import make_deployment_identity
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train.group import TrainerController
 from miles.ray.train.init_request import TrainerControllerInitRequest
+from miles.utils.workers.worker_manager.client import ManagerWorkerProvider
 from miles.utils.workers.worker_provider.base import CellInfo, CellReconcileFn, StopWatchFn
-from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+from miles.utils.workers.worker_provider.ray import RayWorkerManagerClient
 
 pytestmark = pytest.mark.asyncio
 
@@ -18,10 +19,10 @@ _POOL_ID = compute_trainer_pool_id("actor")
 _POLL_INTERVAL_SECONDS = 0.01
 
 
-class _RecordingWorkerProvider(RayWorkerProvider):
+class _RecordingWorkerProvider(ManagerWorkerProvider):
     def __init__(self, *, worker_manager_handle: object, pool_ids: list[str] | None = None) -> None:
         super().__init__(
-            worker_manager_handle=worker_manager_handle,
+            RayWorkerManagerClient(worker_manager_handle),
             pool_ids=pool_ids,
             poll_interval_seconds=_POLL_INTERVAL_SECONDS,
         )

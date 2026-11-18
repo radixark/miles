@@ -12,6 +12,7 @@ from tests.fast.fixtures.args_fixtures import parse_megatron_test_config
 from tests.fast.source_scan import REPO_ROOT
 
 from miles.ray import wiring
+from miles.utils.workers import ray_worker_manager
 from miles.utils.workers.backend_capability import factory
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
 from miles.utils.workers.types import ClusterBackend, WorkerCommBackend
@@ -25,16 +26,18 @@ class TestLaunchWorkerManager:
     def test_a_ray_run_launches_the_ray_worker_manager(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The Ray path is the one every existing run takes, and it must be untouched."""
         launched: list[Any] = []
-        monkeypatch.setattr(wiring, "_launch_ray_worker_manager", lambda args: launched.append(args))
+        monkeypatch.setattr(wiring, "compute_specs", lambda args: ["spec"])
+        monkeypatch.setattr(factory, "launch_ray_worker_manager", lambda args, specs: launched.append((args, specs)))
 
         args = SimpleNamespace(cluster_backend=ClusterBackend.RAY.value)
         wiring.launch_worker_manager(args)
 
-        assert launched == [args]
+        assert launched == [(args, ["spec"])]
 
     def test_a_kubernetes_run_launches_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Under Kubernetes the pods already exist, so launching actors would double the run."""
-        monkeypatch.setattr(wiring, "_launch_ray_worker_manager", _refuse_ray)
+        monkeypatch.setattr(wiring, "compute_specs", lambda args: [])
+        monkeypatch.setattr(factory, "launch_ray_worker_manager", _refuse_ray)
 
         assert wiring.launch_worker_manager(SimpleNamespace(cluster_backend=ClusterBackend.KUBERNETES.value)) is None
 
@@ -44,9 +47,9 @@ class TestShutdownWorkerManager:
         """The driver must release the exact manager it launched instead of sweeping processes by name."""
         events: list[object] = []
         manager = SimpleNamespace(shutdown=SimpleNamespace(remote=lambda: _resolved(events, "shutdown")))
-        monkeypatch.setattr(wiring.ray, "kill", lambda handle: events.append(("kill", handle)))
+        monkeypatch.setattr(ray_worker_manager.ray, "kill", lambda handle: events.append(("kill", handle)))
 
-        await wiring.shutdown_worker_manager(manager)
+        await wiring.shutdown_worker_manager(_launched_on_ray(monkeypatch, manager))
 
         assert events == ["shutdown", ("kill", manager)]
 
@@ -65,10 +68,10 @@ class TestShutdownWorkerManager:
 
         manager = SimpleNamespace(shutdown=SimpleNamespace(remote=fail_shutdown))
         killed: list[object] = []
-        monkeypatch.setattr(wiring.ray, "kill", killed.append)
+        monkeypatch.setattr(ray_worker_manager.ray, "kill", killed.append)
 
         with pytest.raises(RuntimeError) as exc_info:
-            await wiring.shutdown_worker_manager(manager)
+            await wiring.shutdown_worker_manager(_launched_on_ray(monkeypatch, manager))
 
         assert exc_info.value is error
         assert killed == [manager]
@@ -98,7 +101,7 @@ class TestShutdownWorkerManager:
 class TestComputeBackendCapability:
     def test_a_ray_run_is_answered_from_the_worker_manager(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The manager was launched by the driver's own first line; the capability only looks it up."""
-        monkeypatch.setattr(wiring, "_launch_ray_worker_manager", _refuse_ray)
+        monkeypatch.setattr(factory, "launch_ray_worker_manager", _refuse_ray)
         monkeypatch.setattr(factory.RayWorkerManager, "get_handle", staticmethod(lambda: object()))
 
         args = parse_megatron_test_config("--cluster-backend", ClusterBackend.RAY.value)
@@ -115,11 +118,13 @@ class TestComputeBackendCapability:
         assert stub.specs_computed_from == [args]
 
     def test_the_driver_is_only_reached_when_a_ray_run_needs_its_placement_groups(self) -> None:
-        """placement_group imports this module for the capability, so a top-level import back would deadlock both."""
+        """placement_group reaches the Ray worker manager for the capability, so a top-level import back would deadlock
+        both."""
         from miles.ray import placement_group
 
         assert placement_group.create_placement_groups is not None
         assert "create_placement_groups" not in vars(wiring)
+        assert "create_placement_groups" not in vars(ray_worker_manager)
 
 
 class TestTheWireTheWorkerManagerIsLaunchedWith:
@@ -131,16 +136,15 @@ class TestTheWireTheWorkerManagerIsLaunchedWith:
         from miles.ray import placement_group
 
         launched: list[WorkerCommBackend] = []
-        monkeypatch.setattr(wiring, "compute_specs", lambda args: [])
         monkeypatch.setattr(placement_group, "create_placement_groups", lambda args: {})
         monkeypatch.setattr(
-            wiring.RayWorkerManager,
+            ray_worker_manager.RayWorkerManager,
             "launch",
             staticmethod(lambda args, specs, pgs, *, comm_backend: launched.append(comm_backend)),
         )
 
         args = SimpleNamespace(cluster_backend=ClusterBackend.RAY.value, worker_comm_backend=resolved)
-        wiring._launch_ray_worker_manager(args)
+        ray_worker_manager.launch_ray_worker_manager(args, [])
 
         assert launched == [WorkerCommBackend(resolved)]
 
@@ -156,10 +160,18 @@ def stub_kubernetes_capability(monkeypatch: pytest.MonkeyPatch) -> KubernetesCap
 
     monkeypatch.setattr(wiring, "compute_specs", lambda args: stub.specs_computed_from.append(args) or [])
     monkeypatch.setattr(factory, "compute_helm_backend_capability", lambda **kwargs: stub.capability)
-    monkeypatch.setattr(wiring, "_launch_ray_worker_manager", _refuse_ray)
+    monkeypatch.setattr(factory, "launch_ray_worker_manager", _refuse_ray)
 
     return stub
 
 
-def _refuse_ray(args: Any) -> None:
+def _refuse_ray(args: Any, specs: list[Any]) -> None:
     raise AssertionError("the Kubernetes path must not launch Ray workers")
+
+
+def _launched_on_ray(monkeypatch: pytest.MonkeyPatch, handle: Any) -> factory.LaunchedWorkerManager:
+    monkeypatch.setattr(wiring, "compute_specs", lambda args: [])
+    monkeypatch.setattr(factory, "launch_ray_worker_manager", lambda args, specs: handle)
+    launched = wiring.launch_worker_manager(SimpleNamespace(cluster_backend=ClusterBackend.RAY.value))
+    assert launched is not None
+    return launched

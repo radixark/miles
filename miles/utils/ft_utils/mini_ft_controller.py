@@ -30,7 +30,7 @@ def maybe_start_mini_ft_controller(args: Any) -> None:
         api_server_url=f"http://127.0.0.1:{args.api_server_port}",
         poll_interval=args.mini_ft_controller_poll_interval,
         resume_delay=args.mini_ft_controller_resume_delay,
-        cells_auto_resume=ClusterBackend(args.cluster_backend) == ClusterBackend.KUBERNETES,
+        cells_auto_resume=ClusterBackend(args.cluster_backend).auto_resumes_cells(),
     )
 
     def _run() -> None:

@@ -15,7 +15,7 @@ from miles.ray.train import cell as cell_module
 from miles.utils.workers.rpc.client.misc import ServerRestartedError
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
-from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+from miles.utils.workers.worker_manager.client import ManagerWorkerProvider
 
 pytestmark = pytest.mark.asyncio
 
@@ -40,10 +40,10 @@ class TestInitialState:
     def test_a_cell_refuses_worker_infos_without_callable_handles(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Every described trainer rank must have a handle or the collective would silently omit it."""
 
-        def _no_handles(_provider: RayWorkerProvider, _infos: list[WorkerInfo]) -> dict[str, BaseWorkerHandle]:
+        def _no_handles(_provider: ManagerWorkerProvider, _infos: list[WorkerInfo]) -> dict[str, BaseWorkerHandle]:
             return {}
 
-        monkeypatch.setattr(RayWorkerProvider, "get_handles_of_worker_infos", _no_handles)
+        monkeypatch.setattr(ManagerWorkerProvider, "get_handles_of_worker_infos", _no_handles)
 
         with pytest.raises(AssertionError, match="holds workers that cannot be called"):
             make_cell(actor_count=2)
@@ -248,6 +248,9 @@ class _BarrierWorkerHandle:
     def __init__(self, barrier: _EntryBarrier) -> None:
         self._barrier = barrier
 
+    def cell_handle_with(self, cell_worker_handles: list) -> None:
+        return None
+
     async def train(self, **_kwargs) -> str:
         await self._barrier.enter()
         return "done"
@@ -421,6 +424,9 @@ class _HangingWorkerHandle:
         self._released = released
         self.killed = False
 
+    def cell_handle_with(self, cell_worker_handles: list) -> None:
+        return None
+
     async def update_weights(self, **_kwargs) -> str:
         await self._released.wait()
         return "done"
@@ -435,6 +441,9 @@ class _HangingWorkerHandle:
 class _SlowWorkerHandle:
     def __init__(self, delay: float) -> None:
         self._delay = delay
+
+    def cell_handle_with(self, cell_worker_handles: list) -> None:
+        return None
 
     async def update_weights(self, **_kwargs) -> str:
         await asyncio.sleep(self._delay)
