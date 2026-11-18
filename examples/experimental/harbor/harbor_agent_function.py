@@ -52,14 +52,15 @@ Env vars (read on the rollout worker):
   HARBOR_OVERRIDE_STORAGE_MB
                          per-sandbox disk, Harbor's ``override_storage_mb``
 
-Failure semantics: a verdict is returned as-is; every episode that ends
-without one scores 0 with a named ``exit_status`` (``TimeLimitExceeded``,
+Failure semantics: a verdict is returned as-is. A trial the policy cannot have
+failed is discarded with ``InfraAbort``: one that failed before its agent
+started (``SandboxUnavailable``, ``AgentSetupFailed``), or one whose in-process
+agent lost the model service (``ServerUnreachable``). Every other episode that ends
+without a verdict scores 0 with a named ``exit_status`` (``TimeLimitExceeded``,
 ``SequenceLengthLimitExceeded``, ``AgentError``), matching the agent-server
 path. Configuration errors (missing task dir, bad env vars) raise instead:
 they would fail every sample, and a loud stop beats training on silent
-all-zero rewards. Nothing is discarded here yet; see the tracking issue for
-wiring the platform-side Harbor exceptions to ``InfraAbort`` once that
-contract lands.
+all-zero rewards.
 """
 
 import asyncio
@@ -73,6 +74,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from miles.rollout.agentic.agent_function import InfraAbort
 from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, resolve_provider_api_key
 from miles.rollout.agentic.session import openai_session_url
 
@@ -84,6 +86,7 @@ _SAFE_INSTANCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 # Harbor exception class names -> the exit_status vocabulary the reward path reads.
 _TIMEOUT_EXCEPTIONS = {"AgentTimeoutError", "VerifierTimeoutError", "EnvironmentStartTimeoutError"}
 _OUTPUT_LIMIT_EXCEPTIONS = {"MaxSeqLenExceededError", "SingleTurnMaxSeqLenExceededError"}
+_MODEL_SERVICE_EXCEPTIONS = {"APIConnectionError", "ServiceUnavailableError"}
 
 
 def _trial_timeout_s() -> int:
@@ -479,6 +482,35 @@ def _failed(exit_status: str) -> dict[str, Any]:
     return {"reward": 0.0, "exit_status": exit_status, "eval_report": {}, "agent_metrics": {}}
 
 
+def _discard_cause(result) -> tuple[str, Any] | None:
+    steps = (
+        getattr(result, "step_results", None) or []
+    )  # config-access-exempt: only multi-step Harbor trials record step results
+    failures = [
+        exc
+        for exc in (
+            getattr(result, "exception_info", None),
+            *(getattr(step, "exception_info", None) for step in steps),
+        )
+        if exc is not None
+    ]  # config-access-exempt: Harbor results without an exception omit exception details
+    if not failures:
+        return None
+    if not _agent_started(result, steps):
+        setup = getattr(
+            result, "agent_setup", None
+        )  # config-access-exempt: Harbor results may omit timings for phases that did not run
+        return ("SandboxUnavailable" if setup is None else "AgentSetupFailed"), failures[0]
+    lost = next((exc for exc in failures if exc.exception_type in _MODEL_SERVICE_EXCEPTIONS), None)
+    return ("ServerUnreachable", lost) if lost is not None else None
+
+
+def _agent_started(result, steps: list) -> bool:
+    return getattr(result, "agent_execution", None) is not None or any(
+        getattr(step, "agent_execution", None) is not None for step in steps
+    )  # config-access-exempt: Harbor results may omit timings for phases that did not run
+
+
 # --- entry -----------------------------------------------------------------
 
 
@@ -516,6 +548,10 @@ async def run(
     except Exception as e:
         logger.error(f"Harbor trial for {instance_id} failed: {e}", exc_info=True)
         return _failed("AgentError")
+
+    if (discard := _discard_cause(result)) is not None:
+        cause, exc = discard
+        raise InfraAbort(cause, f"Harbor trial for {instance_id}: {exc.exception_type}: {exc.exception_message}")
 
     out = trial_result_to_metadata(result)
     out["trial_dir"] = str(trial.paths.trial_dir)

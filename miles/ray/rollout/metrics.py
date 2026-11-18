@@ -50,7 +50,7 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
             log_dict |= dict_add_prefix(
                 compute_pass_rate(
                     flat_rewards=rewards,
-                    group_size=args.n_samples_per_eval_prompt,
+                    group_size=_eval_samples_per_prompt(args, key),
                 ),
                 f"eval/{key}-",
             )
@@ -62,6 +62,13 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
     tracking.log(args, log_dict, step_key="eval/step")
 
     return log_dict
+
+
+def _eval_samples_per_prompt(args, key: str) -> int:
+    return next(
+        (cfg.n_samples_per_eval_prompt for cfg in args.eval_datasets or [] if cfg.name == key),
+        args.n_samples_per_eval_prompt,
+    )
 
 
 def log_eval_skip(rollout_id, args, reason: str):
@@ -317,6 +324,8 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
 
     def _is_zero_std(samples: list[Sample]):
         rewards = [sample.get_reward_value(args) for sample in samples]
+        if any(reward is None for reward in rewards):
+            return False
         return len(rewards) == 0 or all(rewards[0] == r for r in rewards)
 
     all_sample_groups = group_by(all_samples, lambda s: s.group_index)

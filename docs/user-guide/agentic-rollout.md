@@ -81,10 +81,35 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
 - `metadata` contains the sample metadata, session identifiers, and configured
   `max_seq_len`. Forward only the fields your environment needs.
 - Return a dictionary to merge rewards, reports, or metrics into each output
-  sample's metadata, or return `None` when there is nothing to add.
+  sample's metadata, or return `None` when there is nothing to add. Either way,
+  and also when the function raises, the recorded session becomes a sample the
+  reward model scores.
+- Raise `miles.rollout.agentic.agent_function.InfraAbort(exit_status)` to
+  discard the sample instead. Its group is dropped before any dynamic-sampling
+  filter runs and counted in
+  `rollout/dynamic_filter/drop_group_has_aborted_<exit_status>`. Evaluation
+  scores the attempt 0, like any other with no reward, and counts it in
+  `eval/<dataset>-none_reward_ratio`.
 
 For structured parsing, the payload may use SGLang's
 `ChatCompletionRequest`-compatible fields, which extend the OpenAI format.
+
+### Which failures to discard
+
+A discarded sample contributes no gradient, so the policy is never penalized for
+whatever led to it. Discard only what the policy cannot bring about; anything it
+can, it would learn to trigger to escape a low reward.
+
+| Outcome | Can the policy cause it? | Do |
+|---|---|---|
+| The sandbox was never ready, or the harness could not be set up, before the agent started | No | raise `InfraAbort` |
+| The model service or the environment host became unreachable | No | raise `InfraAbort` |
+| A wall-clock timeout after the agent started | Yes, by stalling | return `reward: 0` |
+| A step or turn limit, or `max_seq_len` | Yes | return `reward: 0` |
+| The sandbox was lost mid-episode, or the verifier crashed | Yes, the agent controls the sandbox | return `reward: 0` |
+
+Miles itself discards a session that recorded no model call (`NoModelCalls`) or
+whose samples could not be collected (`CollectFailed`).
 
 
 ### Where the agent runs
