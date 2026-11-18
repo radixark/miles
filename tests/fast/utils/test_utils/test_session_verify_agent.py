@@ -818,10 +818,23 @@ def test_truncate_rollout_continues_the_kind_it_got_when_no_regeneration_lands_a
     assert result[UNFINISHED_KEY] is None
 
 
-def test_truncate_rollout_is_unfinished_when_every_regeneration_ends_by_itself(monkeypatch, qwen3_tito):
+def test_truncate_rollout_places_the_next_cut_by_a_regeneration_that_ended_by_itself(monkeypatch, qwen3_tito):
+    """The regenerated reply is shorter than the first cut, so the second cut is placed inside it."""
     session = _FakeTruncatingSession(qwen3_tito, regenerated=["Sunny.<|im_end|>"])
 
     result = _run_truncate(monkeypatch, session, "answer")
+
+    first, second = _cut_requests(session)
+    assert second["max_tokens"] < first["max_tokens"]
+    assert result[CUTS_KEY] == [{"kind": "answer", "problems": []}]
+    assert result[UNFINISHED_KEY] is None
+
+
+def test_truncate_rollout_is_unfinished_when_every_regeneration_ends_by_itself(monkeypatch, qwen3_tito):
+    """The regenerated reply calls no tool, so it cannot place a cut inside a tool call either."""
+    session = _FakeTruncatingSession(qwen3_tito, regenerated=["Sunny.<|im_end|>"])
+
+    result = _run_truncate(monkeypatch, session, "tool_call")
 
     assert len(_cut_requests(session)) == session_verify_agent._MAX_CUT_ATTEMPTS
     assert "ended by itself within" in result[UNFINISHED_KEY]

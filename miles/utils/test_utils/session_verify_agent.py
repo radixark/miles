@@ -19,9 +19,10 @@ its prompt record:
 
 - ``truncate`` generates one reply in full, regenerates it with a ``max_tokens``
   that would stop it inside its reasoning, a tool call or its answer
-  (``session_verify_cut_kind`` of the prompt record), and continues the cut turn.  The continuation must succeed exactly when the run
-  continues truncated turns (``--allow-truncated-continuation``), and then the
-  next prompt must close the cut turn with the family's closer.
+  (``session_verify_cut_kind`` of the prompt record), and continues the cut
+  turn.  The continuation must succeed exactly when the run continues
+  truncated turns (``--allow-truncated-continuation``), and then the next
+  prompt must close the cut turn with the family's closer.
 
 Some spec and truncate steps need something of the model: a tool call, no tool
 call, or a reply that has the structure to cut.  A sample whose model does not
@@ -507,21 +508,24 @@ async def _run_truncate(driver: _Driver, fixed: FixedTemplate, tito, *, cut_kind
         driver.append_tool_results(messages, call)
     await driver.chat(messages, label="Probe", need_tool_call=cut_kind == "tool_call")
     driver.events.append("probe")
-    if tito is None:
-        max_tokens = _BLIND_CUT_TOKENS
-    else:
-        max_tokens = cut_length(tito, (await driver.records())[-1], cut_kind)
-        if max_tokens is None:
-            raise _ModelBehaviorError(f"the probed reply has no {cut_kind} to cut")
-    # The probe tells where such a reply has its reasoning, call and answer; a regeneration is another
-    # sample, so try a few until one stops in the planned place, and otherwise continue the last cut.
+    # A full reply tells where such a reply has its reasoning, call and answer: the probe places the
+    # first cut.  A regeneration is another sample, so try a few until one stops in the planned place;
+    # one that ends by itself is a full reply too and places the next cut.  Each attempt replaces the
+    # one before it in the session, so only the last one is left to continue, wherever it stopped.
+    max_tokens = _BLIND_CUT_TOKENS
+    cut = None
     for attempt in range(_MAX_CUT_ATTEMPTS):
+        if tito is not None and cut is None:
+            placed = cut_length(tito, (await driver.records())[-1], cut_kind)
+            if placed is None and attempt == 0:
+                raise _ModelBehaviorError(f"the probed reply has no {cut_kind} to cut")
+            max_tokens = placed or max_tokens
         cut = await driver.cut(messages, max_tokens=max_tokens, label=f"Cut in {cut_kind}", retry=attempt)
         driver.events.append("cut")
         if cut is not None and (tito is None or record_cut_kind(tito, (await driver.records())[-1]) == cut_kind):
             break
     if cut is None:
-        raise _ModelBehaviorError(f"the regenerated reply ended by itself within {max_tokens} tokens")
+        raise _ModelBehaviorError(f"the last regenerated reply ended by itself within {max_tokens} tokens")
     driver.counters["tool_call_count"] += len(cut.get("tool_calls") or [])
 
     probed_messages = list(messages)

@@ -552,7 +552,8 @@ def _assert_continued_cuts(kind: SessionVerifyKind, summary: dict[str, Any]) -> 
     if summary["expects_acceptance"] and missing:
         raise AssertionError(
             f"Session multi-role e2e: no truncate sample continued a turn cut in {missing}; "
-            f"continued kinds={sorted(summary['continued_cut_kinds'])}."
+            f"continued kinds={sorted(summary['continued_cut_kinds'])}, "
+            f"unfinished samples={len(summary['unfinished'])}."
         )
 
 
