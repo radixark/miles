@@ -128,8 +128,9 @@ export async function renderMetrics(view, meta, signal) {
   // slots persist across refreshes; a chart repaints ONLY when its data
   // changed (signature check), so a live page sits visually still between
   // real updates instead of flickering on every poll
-  const slots = new Map(); // key -> {canvas, status, signature, lastSeries?}
+  const slots = new Map(); // key -> {canvas, status, signature, round, lastSeries?}
   let epoch = 0;
+  let round = 0;
 
   // sglang legend: one checkbox per engine, all on by default; unchecking
   // hides that engine's line in every chart (and drops it from the y-scale)
@@ -204,7 +205,7 @@ export async function renderMetrics(view, meta, signal) {
       ...keys.map((key) => {
         const canvas = el("canvas", { class: "chart" });
         const status = el("p", { class: "muted" }, ["loading…"]);
-        slots.set(key, { canvas, status, signature: null });
+        slots.set(key, { canvas, status, signature: null, round: 0 });
         const title = el("p", { class: "chart-title", title: describeMetric(key) }, [key]);
         return el("div", { class: "panel" }, [title, status, canvas]);
       }),
@@ -214,12 +215,15 @@ export async function renderMetrics(view, meta, signal) {
 
   function refresh() {
     const current = epoch;
+    const started = ++round;
     const requests = [];
     if (active === "sglang") {
       for (const [key, slot] of slots.entries()) {
         const request = api("/api/timeline/engine_series", { metric: key, max_points: 1000, per_dp_rank: perDpRank })
           .then(({ series }) => {
-            if (current !== epoch) return;
+            // a rebuild's refresh can overlap a poll round; a chart keeps the newer round's data
+            if (current !== epoch || started < slot.round) return;
+            slot.round = started;
             const signature = series.map((s) => `${seriesLabel(s)}:${s.ts.length}:${s.ts.at(-1)}`).join("|");
             if (signature === slot.signature) return;
             slot.signature = signature;
@@ -259,7 +263,8 @@ export async function renderMetrics(view, meta, signal) {
           if (current !== epoch) return; // category/filter changed meanwhile
           for (const key of keys) {
             const slot = slots.get(key);
-            if (!slot) continue;
+            if (!slot || started < slot.round) continue;
+            slot.round = started;
             const s = series[key] ?? { x: [], y: [] };
             const signature = `${s.x.length}:${s.x.at(-1)}:${s.y.at(-1)}`;
             if (signature === slot.signature) continue; // unchanged: no repaint
