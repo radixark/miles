@@ -15,7 +15,7 @@ from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanLoraCheckp
 from miles.backends.torchtitan_utils.optimizer_state_on_disk import setup_adam_state_on_disk
 from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallelism_context_from_config
 from miles.backends.torchtitan_utils.routing_replay import install as install_routing_replay
-from miles.backends.torchtitan_utils.routing_replay import routing_row_shape
+from miles.backends.torchtitan_utils.routing_replay import router_top_k
 from miles.backends.torchtitan_utils.trainer import TitanTrainer
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.replay.routing_replay import enable as enable_routing_replay
@@ -149,7 +149,10 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         """Compile the first step's programs on a synthetic batch, before the engines are up."""
         start = time.monotonic()
         num_samples = self.args.backend.global_batch_size // get_parallel_state().effective_dp.size
-        routed_experts_shape = routing_row_shape(self.model_parts) if self.args.use_rollout_routing_replay else None
+        # the engine's rows: a stream per decoder layer (as rollout decodes them), top-k wide
+        routed_experts_shape = (
+            (self.args.num_layers, router_top_k(self.model_parts)) if self.args.use_rollout_routing_replay else None
+        )
         self._compile_warmup_passes(warmup_shard(num_samples, routed_experts_shape=routed_experts_shape))
         logger.info(f"Compiled the first step's programs in {time.monotonic() - start:.1f} s")
 

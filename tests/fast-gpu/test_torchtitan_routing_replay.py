@@ -206,9 +206,9 @@ def test_the_reference_model_is_left_alone(part):
         pass
 
 
-def test_the_warmup_routing_row_covers_every_router():
-    """--compile-warmup's synthetic routing rows: a stream per decoder layer up to the last router, top-k wide."""
-    assert routing_replay.routing_row_shape([_Part(layer=1), _Part(layer=3)]) == (4, 2)
+def test_the_warmup_routing_row_is_top_k_wide():
+    """--compile-warmup's synthetic routing rows are as wide as the routers' shared top-k."""
+    assert routing_replay.router_top_k([_Part(layer=1), _Part(layer=3)]) == 2
 
 
 if __name__ == "__main__":

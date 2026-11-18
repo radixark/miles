@@ -44,11 +44,11 @@ def _part_routers(part: nn.Module) -> list[tuple[int, nn.Module]]:
     return sorted(routers, key=lambda pair: pair[0])
 
 
-def routing_row_shape(model_parts: list[nn.Module]) -> tuple[int, int]:
-    """`(streams, top_k)` of a token's routing row that covers every router here: a stream per decoder layer."""
-    routers = [pair for part in model_parts for pair in _part_routers(part)]
-    (top_k,) = {router.top_k for _, router in routers}
-    return max(layer for layer, _ in routers) + 1, top_k
+def router_top_k(model_parts: list[nn.Module]) -> int:
+    """The experts each token takes, shared by every router here."""
+    top_ks = {router.top_k for part in model_parts for _, router in _part_routers(part)}
+    assert len(top_ks) == 1, f"routers disagree on top-k: {sorted(top_ks)}"
+    return top_ks.pop()
 
 
 def _allow_forward_side_effects_in_compiled_checkpoints() -> None:
