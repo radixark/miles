@@ -3,7 +3,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Discriminator, Field
 
-from miles.backends.training_utils.types import TrainStepOutcome
+from miles.backends.training_utils.outcome import TrainStepOutcome
 from miles.utils.audit_utils.checksum_utils import InferenceEngineChecksumSnapshot
 from miles.utils.audit_utils.process_identity import ProcessIdentity
 from miles.utils.pydantic_utils import FrozenStrictBaseModel

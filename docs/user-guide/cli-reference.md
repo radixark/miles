@@ -325,7 +325,8 @@ contract, session behavior, and model-family selection.
 |---|---|---|---|
 | `--custom-generate-function-path` | `<module>.<fn>` | – | Set to `miles.rollout.generate_hub.agentic_tool_call.generate` for the built-in agentic wrapper. |
 | `--custom-agent-function-path` | `<module>.<fn>` | – | Async agent-environment loop. Registered after selecting the built-in agentic wrapper. |
-| `--custom-agent-function-mode` | `subproc` / `inline` | `subproc` | Where each agent call runs: a child process of its own, or the rollout's event loop. See [Where the agent runs](/user-guide/agentic-rollout#where-the-agent-runs). |
+| `--custom-agent-function-mode` | `subproc` / `inline` / `worker` | `subproc` | Where each agent call runs: a child process of its own, the rollout's event loop, or a child process on an agent worker. See [Where the agent runs](/user-guide/agentic-rollout#where-the-agent-runs). |
+| `--custom-agent-function-worker` | URL | – | The agent worker for `--custom-agent-function-mode worker`. |
 | `--use-session-server` | optional `v1` / `v2` | off | Bare flag (or `v1`) selects the linear append-only server; `v2` selects tree serving. Requires `--hf-checkpoint`. |
 | `--tito-model` | enum | `default` | TITO model family. Named families load their registered fixed template; `default` is best-effort with a checkpoint-native or custom template. |
 | `--allow-stop-token-replace` / `--no-allow-stop-token-replace` | bool | family default | Whether the session server may replace the sampled stop token with the first token of the appended render (GLM stopping at `<\|observation\|>` before a non-tool message). Allowed replacements log a warning; otherwise the request gets HTTP 400. Allowed by default only for `glm47` and `glm53`. Allowing it cannot be combined with `--sglang-enable-streaming-session`. |
