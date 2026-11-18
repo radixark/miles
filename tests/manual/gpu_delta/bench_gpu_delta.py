@@ -43,9 +43,9 @@ from miles.utils.gpu_delta.publication import (
     FRAME_BYTES,
     PublicationWriter,
     canonical_json,
+    checkpoint_plan_digest,
     configured_codec,
     configured_skip_payload_hash,
-    plan_digest,
     read_checkpoint_plan,
     read_publication_metadata,
     read_safetensors_headers,
@@ -260,7 +260,7 @@ def _prepare_inputs(args):
     settings = _prepared_settings(args)
     inventory_path = cache / "inventory" / "inventory.json"
     plan = read_checkpoint_plan(args.model)
-    digest = plan_digest(plan)
+    digest = checkpoint_plan_digest(args.model, plan)
     inventory_path.parent.mkdir()
     _save(inventory_path, {"tensors": plan, "plan_digest": digest})
     base_index, index, canonical_bytes = _tensor_index(args.model), {}, 0
@@ -332,7 +332,7 @@ def _load_prepared_inputs(args):
         if not path.is_file() or path.stat().st_size != file["nbytes"]:
             raise ValueError(f"Prepared input file is missing or has changed size: {path}")
     inventory = json.loads((cache / "inventory" / "inventory.json").read_text())
-    digest = plan_digest(inventory["tensors"])
+    digest = checkpoint_plan_digest(args.model, inventory["tensors"])
     if (
         digest != inventory["plan_digest"]
         or digest != manifest["plan_digest"]
@@ -985,7 +985,14 @@ def _rank_rows(update, publication, identities):
                 raise ValueError("Rank identity or apply/resume state differs")
             if row["session_id"] != receipt["session_id"]:
                 raise ValueError("Rank session differs")
-            for field in ("manifest_sha256", "stream_id", "base_version", "target_version", "plan_digest"):
+            for field in (
+                "manifest_sha256",
+                "stream_id",
+                "base_stream_id",
+                "base_version",
+                "target_version",
+                "plan_digest",
+            ):
                 if row[field] != publication[field]:
                     raise ValueError(f"Rank publication differs: {field}")
             if row["result"]["target_version"] != publication["target_version"]:

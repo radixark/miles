@@ -141,6 +141,11 @@ class WeightUpdater:
         return self.protocol.pop_metrics()
 
     @torch.no_grad()
+    def restore_gpu_delta_checkpoint(self, checkpoint_dir, rollout_id, publish_eval_stream):
+        self.protocol.initialize_export(self.parallel_state, self._hf_weight_iterator.placement)
+        self.protocol.restore_checkpoint(checkpoint_dir, rollout_id, self._iter_base_buckets, publish_eval_stream)
+
+    @torch.no_grad()
     def prepare_gpu_delta_checkpoint(self, checkpoint_dir: str, rollout_id: int, weight_version: int) -> None:
         if self._uses_gpu_delta:
             self.protocol.initialize_export(self.parallel_state, self._hf_weight_iterator.placement)

@@ -1,10 +1,10 @@
 """Ordered control plane for an exclusively owned GPU delta receiver.
 
 The tokenizer sends ordered controls for a Miles-owned update.
-Failed controls are not retried; Miles replaces the affected engine.
+The committed (stream, version) guards every directional XOR.
 Preparation owns immutable buffers; update sets the pause flag, fences readers, pauses generation in the
 requested mode (retracting by default), then mutates on the scheduler thread. Failed or ambiguous updates
-require restart, never XOR retry.
+that might have partially mutated weights require receiver replacement.
 """
 
 from __future__ import annotations
@@ -21,12 +21,22 @@ from typing import Any
 from miles.utils.gpu_delta import profiling
 
 # Request fields every transaction receipt repeats as provenance.
-_PROVENANCE = ("session_id", "manifest_sha256", "stream_id", "base_version", "target_version", "plan_digest")
+_PROVENANCE = (
+    "session_id",
+    "manifest_sha256",
+    "base_stream_id",
+    "base_version",
+    "stream_id",
+    "target_version",
+    "plan_digest",
+    "reverse",
+)
 
 
 @dataclass
 class _Transaction:
     request: dict
+    destination: tuple[str | None, int]
     release_future: Future | None = None
     cancelled: threading.Event = field(default_factory=threading.Event)
     state: str = "PREPARING"
@@ -54,8 +64,9 @@ class DeltaSession:
     def __init__(self, identity: dict, backend: Any, shadow_store: dict):
         self.identity = identity
         self.backend = backend
+        self.plan_digest = backend.plan_digest
         self.shadow_store = shadow_store
-        self.version = 0
+        self.committed: tuple[str | None, int] = (None, 0)
         self._update: _Transaction | None = None
         # The closed backend's shared cache directory, and whether its arena owns the removal.
         self._closed_cache = None
@@ -66,9 +77,10 @@ class DeltaSession:
     def status(self) -> dict:
         with self._lock:
             transaction = self._update
-            receipt = {"identity": self.identity}
+            stream_id, version = self.committed
+            receipt = {"identity": self.identity, "committed_stream_id": stream_id, "version": version}
             if transaction is None or transaction.state == "CLEARED":
-                receipt.update(state="IDLE" if self.backend is not None else "CLEARED", version=self.version)
+                receipt["state"] = "IDLE" if self.backend is not None else "CLEARED"
             else:
                 receipt["state"] = transaction.state
             if transaction is None:
@@ -97,13 +109,16 @@ class DeltaSession:
                     raise ValueError("unsettled delta session requires restart")
                 if request["session_id"] == previous.request["session_id"]:
                     raise ValueError("completed delta session must not be replayed")
-                if request["stream_id"] != previous.request["stream_id"]:
-                    raise ValueError("receiver incarnation belongs to another delta stream")
             if self.backend is None:
                 raise ValueError("cleared delta receiver must be described before its next update")
-            # Miles owns mask ordering, including explicit cancellation of a
-            # successfully applied mask. Descriptor versions are provenance.
-            transaction = _Transaction(request=request)
+            base = request["base_stream_id"], request["base_version"]
+            target = request["stream_id"], request["target_version"]
+            if (base[0] is None) != (base[1] == 0) or base[1] < 0 or not target[0] or target[1] <= base[1]:
+                raise ValueError(f"invalid GPU-delta publication endpoints: {base} -> {target}")
+            source, destination = (target, base) if request["reverse"] else (base, target)
+            if source != self.committed:
+                raise ValueError(f"GPU-delta source {source} differs from committed {self.committed}")
+            transaction = _Transaction(request=request, destination=destination)
             released = previous.release_future if previous is not None else None
             # Submit first: a rejected submission must not replace the settled record. The lock keeps
             # the worker from publishing this transaction's state before it becomes current.
@@ -207,12 +222,12 @@ class DeltaSession:
                 raise ValueError("delta resume requires an applied session")
             transaction.state = "RESUMING"
             try:
-                resume(transaction.request["target_version"])
+                resume(transaction.destination[1])
             except Exception as exc:
                 transaction.state = "POISONED"
                 transaction.message = f"resume failed: {type(exc).__name__}: {exc}; restart required"
                 raise
-            self.version = transaction.request["target_version"]
+            self.committed = transaction.destination
             # Version commit does not end a pause retained by the caller.
             if not keep_pause:
                 transaction.resumed_ns = time.monotonic_ns()
@@ -287,5 +302,9 @@ class DeltaSession:
         """
         if self._closed_cache is not None:
             raise ValueError("delta cache removal has not completed")
-        self.backend = make_backend(self.identity, self.shadow_store, self.version == 0)
+        backend = make_backend(self.identity, self.shadow_store, self.committed == (None, 0))
+        if backend.plan_digest != self.plan_digest:
+            backend.close()
+            raise ValueError("GPU-delta checkpoint changed since receiver admission; reload the engine")
+        self.backend = backend
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-delta")

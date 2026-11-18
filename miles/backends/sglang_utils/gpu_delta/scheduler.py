@@ -188,10 +188,13 @@ class GpuDeltaSchedulerControl:
             raise ValueError("receiver incarnation belongs to another engine")
         elif self.session.backend is None:
             self.session.reattach(make_backend)
+        stream_id, version = self.session.committed
         return {
             "identity": self.session.identity,
             "state": self.session.status()["state"],
-            "version": self.session.version,
+            "stream_id": stream_id,
+            "version": version,
+            "plan_digest": self.session.plan_digest,
         }
 
     def _pause_and_fence(self):

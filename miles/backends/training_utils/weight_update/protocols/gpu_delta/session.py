@@ -9,6 +9,10 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+import httpx
+
+from miles.backends.training_utils.weight_update.protocols.gpu_delta.client import get_gpu_delta_info
+
 # Every descriptor carries its writer's launch-validated payload-hash policy.
 _VALIDATE_PAYLOAD_HASH = {"sha256": True, "none": False}
 
@@ -53,8 +57,8 @@ async def activate_publication(
 
     Each engine owns preparation, all-rank apply acknowledgement and resume.
     An RPC failure settles every other engine request before returning an error.
-    A failed or ambiguous RPC is returned to the FT controller for quarantine
-    and replacement. A lost reply never triggers an XOR retry. Healthy engines
+    An unresolved RPC is returned to the FT controller for quarantine
+    and replacement. Lost replies are reconciled per engine. Healthy engines
     retain their completed activation independently. Only a rollout sync
     passes ``pause_mode`` (see ``activate_engine``).
     """
@@ -96,7 +100,24 @@ async def activate_publication(
     }
 
 
-async def activate_engine(client, publication, participants, session_id, weight_version, timeout, pause_mode=None):
+def committed_endpoint(description, participants, plan_digest):
+    """Read one settled version only when every original rank agrees."""
+    rows = description["participants"]
+    if sorted((row["identity"] for row in rows), key=lambda rank: rank["rank_id"]) != sorted(
+        participants, key=lambda rank: rank["rank_id"]
+    ):
+        raise RuntimeError("GPU-delta receiver incarnation changed")
+    if any(row["state"] not in {"IDLE", "CLEARED", "RESUMED"} or row["plan_digest"] != plan_digest for row in rows):
+        raise RuntimeError("GPU-delta receiver has unsettled weights or a different checkpoint")
+    endpoints = {(row["stream_id"], row["version"]) for row in rows}
+    if len(endpoints) != 1:
+        raise RuntimeError("GPU-delta receiver ranks disagree about committed weights")
+    return endpoints.pop()
+
+
+async def activate_engine(
+    client, publication, participants, session_id, weight_version, timeout, pause_mode=None, reverse=False
+):
     """Activate one engine; its receipts must prove this session's completed activation.
 
     A rollout sync passes its ``--pause-generation-mode`` as ``pause_mode``, which also decides the cache flush.
@@ -105,26 +126,69 @@ async def activate_engine(client, publication, participants, session_id, weight_
     """
     request = {
         key: publication[key]
-        for key in ("manifest_path", "manifest_sha256", "stream_id", "base_version", "target_version", "plan_digest")
+        for key in (
+            "manifest_path",
+            "manifest_sha256",
+            "stream_id",
+            "base_stream_id",
+            "base_version",
+            "target_version",
+            "plan_digest",
+        )
     }
     # Serving reports the actor's model version, while publication/receipt
     # versions retain their consecutive XOR-stream identity.
     request.update(session_id=session_id, participants=participants)
+    if reverse:
+        request["reverse"] = True
+    base = (request["base_stream_id"], request["base_version"])
+    target = (request["stream_id"], request["target_version"])
+    source, destination = (target, base) if reverse else (base, target)
     if weight_version is not None:
         request["weight_version"] = weight_version
     request["validate_payload_hash"] = _VALIDATE_PAYLOAD_HASH[publication["payload_checksum_format"]]
     if pause_mode is not None:
         request["pause_mode"] = pause_mode
-    response = await asyncio.wait_for(client._make_request("update_weights_from_gpu_delta", request), timeout)
+    for attempt in range(2):
+        try:
+            response = await asyncio.wait_for(client._make_request("update_weights_from_gpu_delta", request), timeout)
+            break
+        except (TimeoutError, httpx.TransportError, httpx.HTTPStatusError) as error:
+            rejected = isinstance(error, httpx.HTTPStatusError) and error.response.status_code < 500
+            if rejected and not (attempt and error.response.status_code == 409):
+                raise
+            # The tokenizer serializes this read with the complete update, including resume.
+            info = await asyncio.wait_for(
+                get_gpu_delta_info(client, participants[0]["engine_id"], session_id), timeout
+            )
+            current = committed_endpoint(info, participants, request["plan_digest"])
+            if current == destination and info.get("activation") is not None:
+                response = info["activation"]
+                break
+            if current != source or attempt or rejected:
+                raise
     resumed = response["participants"]
     actual = sorted((row["identity"] for row in resumed), key=lambda identity: identity["rank_id"])
     expected = sorted(participants, key=lambda identity: identity["rank_id"])
     if actual != expected:
         raise RuntimeError("GPU-delta receiver incarnation changed during activation")
     for receipt in resumed:
-        if receipt["state"] != "RESUMED" or any(
-            receipt[key] != request[key]
-            for key in ("session_id", "stream_id", "manifest_sha256", "target_version", "plan_digest")
+        if (
+            receipt["state"] != "RESUMED"
+            or (receipt["committed_stream_id"], receipt["version"]) != destination
+            or receipt["reverse"] != reverse
+            or any(
+                receipt[key] != request[key]
+                for key in (
+                    "session_id",
+                    "stream_id",
+                    "base_stream_id",
+                    "manifest_sha256",
+                    "base_version",
+                    "target_version",
+                    "plan_digest",
+                )
+            )
         ):
             raise RuntimeError("GPU-delta receiver has no matching completed activation")
     return response

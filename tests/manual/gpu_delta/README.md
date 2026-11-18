@@ -94,6 +94,9 @@ python tests/manual/gpu_delta/bench_gpu_delta.py --model /models/GLM5.2-NVFP4 \
   --reuse-producer-spec /data/gpu-delta/original-run/producer-spec.json --codecs bitcomp-zstd --hashing on
 ```
 
+Sealed publications must include the base stream and the content-bound checkpoint digest. Regenerate
+older fixtures once from their prepared inputs before using receiver-only replay.
+
 Every fresh-encoding run writes `producer-spec.json` with its argv and the SHA256 of the prepared
 inputs' `READY.json`. Before any receiver starts, replay requires the spec's reviewed SHA256, that the
 spec names RUN and these prepared inputs, and that each arm's fixture covers versions 1 through

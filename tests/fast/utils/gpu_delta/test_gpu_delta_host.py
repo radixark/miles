@@ -205,6 +205,7 @@ def metadata(version=1, engine="a", validate_payload_hash=True):
     return dict(
         stream_id="stream",
         session_id=f"session-{version}",
+        base_stream_id=None if version == 1 else "stream",
         base_version=version - 1,
         target_version=version,
         plan_digest="fixture-plan",
@@ -964,7 +965,7 @@ runpy.run_path(entry, run_name='__main__')
         return process
 
     monkeypatch.setattr(host.subprocess, "Popen", launch)
-    namespace = {"stream_id": "stream", "participants": shared_participants()}
+    namespace = {"participants": shared_participants()}
     client = host.CpuWorker(cache)
     previous, identities, metrics_by_version = None, [], []
     try:
@@ -975,6 +976,8 @@ runpy.run_path(entry, run_name='__main__')
                 "manifest_path": str(path),
                 "manifest_sha256": digest,
                 "session_id": f"publication-{version}",
+                "base_stream_id": None if version == 1 else "stream",
+                "stream_id": "stream",
                 "base_version": version - 1,
                 "target_version": version,
                 "plan_digest": "fixture-plan",

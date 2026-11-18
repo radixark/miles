@@ -3,6 +3,7 @@
 import asyncio
 from dataclasses import replace
 
+import httpx
 import pytest
 
 from miles.backends.training_utils.weight_update.protocols.gpu_delta import session
@@ -30,6 +31,7 @@ def _setup(failure=None, failed_engine=1, payload_checksum_format="sha256"):
         "manifest_path": "/shared/version/manifest.json",
         "manifest_sha256": "f" * 64,
         "stream_id": "stream",
+        "base_stream_id": None,
         "base_version": 0,
         "target_version": 1,
         "plan_digest": "canonical-checkpoint-digest",
@@ -44,19 +46,42 @@ class _Engine:
         self.failed_engine = failed_engine
         self.args = None
         self.calls = 0
+        self.completed = None
+        self.info_queries = 0
         self.timings = {"prepare_s": 10.0 + index, "apply_s": 2.0, "resume_s": 3.0, "activation_s": 15.0 + index}
 
     async def _make_request(self, endpoint, payload):
         # The GPU-delta controls post through the engine client's request helper; ``args`` records the wire payload.
         return await getattr(self, endpoint)(**payload)
 
+    async def get_gpu_delta_info(self, engine_id, session_id):
+        self.info_queries += 1
+        assert (engine_id, session_id) == (self.identities[0]["engine_id"], self.args["session_id"])
+        state = "RESUMED" if self.completed else "IDLE"
+        version = 1 if self.completed else 0
+        if self.failure == "applied_reply":
+            state = "APPLIED"
+        rows = [
+            {
+                "identity": identity,
+                "state": state,
+                "stream_id": "stream" if version else None,
+                "version": version,
+                "plan_digest": self.args["plan_digest"],
+            }
+            for identity in self.identities
+        ]
+        return {"participants": rows, "activation": self.completed}
+
     async def update_weights_from_gpu_delta(self, **kwargs):
         self.calls += 1
-        assert self.calls == 1, "An uncertain XOR publication was replayed"
+        assert self.calls == 1 or (self.failure == "before" and self.calls == 2 and self.info_queries == 1)
         self.args = kwargs
         assert list(kwargs["participants"]) == self.identities
         await asyncio.sleep(0.01 if self.index else 0)
         failure = self.failure if self.index == self.failed_engine else None
+        if failure == "before" and self.calls == 1:
+            raise httpx.ConnectError("request did not arrive")
         if failure == "transport":
             error = RuntimeError("update request lost")
             error.add_note("response.text='TimeoutError: '")  # As SGLangApiClient attaches a receiver's 409 body.
@@ -64,8 +89,17 @@ class _Engine:
         self.events.append((self.index, "prepared"))
         provenance = {
             key: kwargs[key]
-            for key in ("session_id", "stream_id", "manifest_sha256", "base_version", "target_version", "plan_digest")
+            for key in (
+                "session_id",
+                "stream_id",
+                "base_stream_id",
+                "manifest_sha256",
+                "base_version",
+                "target_version",
+                "plan_digest",
+            )
         }
+        provenance.update(reverse=False, committed_stream_id=kwargs["stream_id"], version=kwargs["target_version"])
         applied = [
             {
                 **provenance,
@@ -77,10 +111,8 @@ class _Engine:
         ]
         self.events.append((self.index, "applied"))
         if failure == "applied_reply":
-            raise RuntimeError("apply reply lost")
+            raise httpx.ReadError("apply reply lost")
         self.events.append((self.index, "resumed"))
-        if failure == "reply":
-            raise RuntimeError("update reply lost")
         resumed = [
             {
                 **provenance,
@@ -91,13 +123,16 @@ class _Engine:
             }
             for identity in self.identities
         ]
-        return {
+        self.completed = {
             "success": True,
             "message": "",
             "participants": resumed,
             "applied_participants": applied,
             "timings": self.timings,
         }
+        if failure == "reply":
+            raise httpx.ReadError("reply lost after resume")
+        return self.completed
 
 
 @pytest.mark.parametrize("weight_version,payload_checksum_format", [(None, "sha256"), ("42", "none")])
@@ -148,42 +183,64 @@ def test_rollout_sync_requests_its_pause_mode(pause_mode):
         assert "flush_cache" not in client.args
 
 
-@pytest.mark.parametrize("failure", ["transport", "reply"])
-@pytest.mark.parametrize("failed_engine", [0, 1])
-def test_update_failure_settles_other_engine_without_abort_or_replay(failure, failed_engine):
-    clients, descriptions, publication, events = _setup(failure, failed_engine)
-    with pytest.raises(RuntimeError, match="requires receiver recovery"):
-        asyncio.run(
-            session.activate_publication(clients, session.engine_identities(descriptions), publication, session_id="s")
-        )
-    assert [client.calls for client in clients] == [1, 1]
-    assert (1 - failed_engine, "resumed") in events
-    # A lost reply may hide a completed update. Neither that ambiguity nor an
-    # explicit failure authorizes another update request or a client abort.
-    assert ((failed_engine, "resumed") in events) == (failure == "reply")
-
-
-@pytest.mark.parametrize("failure", ["transport", "applied_reply", "reply"])
-def test_failed_or_lost_reply_quarantines_only_that_engine_without_status_or_replay(failure):
+@pytest.mark.parametrize("failure,requests", [("before", 2), ("reply", 1)])
+def test_lost_reply_settles_only_the_affected_engine(failure, requests):
     clients, descriptions, publication, events = _setup(failure)
     result = asyncio.run(
-        session.activate_publication(
-            clients, session.engine_identities(descriptions), publication, session_id="s", fault_tolerant=True
-        )
+        session.activate_publication(clients, session.engine_identities(descriptions), publication, session_id="s")
     )
-    # The failure text keeps the client's note: the receiver's typed message reaches the cell's error.
-    message = {
-        "transport": "update request lost\nresponse.text='TimeoutError: '",
-        "applied_reply": "apply reply lost",
-        "reply": "update reply lost",
-    }[failure]
-    assert result["failed_engines"] == {"engine-1": f"RuntimeError: {message}"}
-    assert result["succeeded_engine_ids"] == ["engine-0"]
+    assert [client.calls for client in clients] == [1, requests]
+    assert [client.info_queries for client in clients] == [0, 1]
+    assert events.count((1, "applied")) == 1
+    assert result["failed_engines"] == {}
+    assert len(result["resumed_receipts"]) == 4
+    assert result["engine_timings"][1]["prepare_s"] == clients[1].timings["prepare_s"]
+
+
+async def test_late_first_request_finishes_before_the_guarded_resend():
+    clients, descriptions, publication, _ = _setup()
+    engine = clients[0]
+    real_update = engine.update_weights_from_gpu_delta
+    attempts = 0
+
+    async def delayed(**request):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            engine.args = request
+            raise TimeoutError("initial request still in transit")
+        # The first delivery won the race after the source-state read. The server
+        # rejects the duplicate; its original completed session still has the proof.
+        await real_update(**request)
+        raise httpx.HTTPStatusError(
+            "duplicate", request=httpx.Request("POST", "http://engine"), response=httpx.Response(409)
+        )
+
+    engine.update_weights_from_gpu_delta = delayed
+    result = await session.activate_publication(
+        clients, session.engine_identities(descriptions), publication, session_id="s"
+    )
+    assert result["failed_engines"] == {}
+    assert (attempts, engine.info_queries, engine.calls) == (2, 2, 1)
+
+
+@pytest.mark.parametrize("failure", ["transport", "applied_reply"])
+@pytest.mark.parametrize("ft", [True, False])
+def test_rejected_or_unsettled_update_is_not_replayed(failure, ft):
+    clients, descriptions, publication, events = _setup(failure)
+    activation = session.activate_publication(
+        clients, session.engine_identities(descriptions), publication, session_id="s", fault_tolerant=ft
+    )
+    if ft:
+        result = asyncio.run(activation)
+        message = result["failed_engines"]["engine-1"]
+        assert ("response.text=" if failure == "transport" else "unsettled weights") in message
+        assert result["succeeded_engine_ids"] == ["engine-0"]
+    else:
+        with pytest.raises(RuntimeError, match="requires receiver recovery"):
+            asyncio.run(activation)
     assert [client.calls for client in clients] == [1, 1]
-    assert len(result["resumed_receipts"]) == 2
-    assert events.count((0, "applied")) == events.count((0, "resumed")) == 1
-    assert events.count((1, "applied")) == int(failure in {"applied_reply", "reply"})
-    assert events.count((1, "resumed")) == int(failure == "reply")
+    assert (0, "resumed") in events
 
 
 @pytest.mark.parametrize(

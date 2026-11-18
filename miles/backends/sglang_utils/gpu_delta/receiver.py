@@ -26,7 +26,6 @@ class GpuDeltaBackend:
     """Scheduler-owned plan; large decoded masks exist only during apply."""
 
     def __init__(self, model_runner, identity, shadows):
-        self._canonical_plan_digest = None
         self.binding_table = None
         self.batch_plan = None
         self.raw_plan = None
@@ -36,6 +35,12 @@ class GpuDeltaBackend:
         try:
             checkpoint = read_canonical_checkpoint(model_runner)
             self.layout = GpuDeltaLayout(model_runner.model, checkpoint, shadows)
+            definitions = (
+                {"name": name, **metadata}
+                for name, metadata in self.layout.inventory.items()
+                if self.layout.excluded.get(name) in (None, REMOTE_EXPERT)
+            )
+            self.plan_digest = plan_digest(definitions, checkpoint.content_digest)
         except ValueError as error:
             # A failed describe may reply without an identity; name the rank rejecting its checkpoint or layout.
             raise ValueError(f"tp_rank={identity['tp_rank']} dp_rank={identity['dp_rank']}: {error}") from error
@@ -194,9 +199,9 @@ def _plan_decode(plans, publication, offsets):
 def _qualify_canonical_plan(backend, publication):
     """Bind a canonical publication to the independently prepared local layout."""
     digest = publication.header["plan_digest"]
-    if backend._canonical_plan_digest is not None:
-        if digest != backend._canonical_plan_digest:
-            raise ValueError("canonical delta plan changed")
+    if digest != backend.plan_digest:
+        raise ValueError("publication does not match the receiver checkpoint bytes and canonical tensor plan")
+    if backend.binding_table is not None:
         return backend.binding_table, True
     catalog = publication.read_catalog()
     if catalog["plan_digest"] != digest:
@@ -205,7 +210,6 @@ def _qualify_canonical_plan(backend, publication):
     if len(entries) != len(catalog["tensors"]):
         raise ValueError("duplicate canonical tensor")
     bound = {binding.name for binding in backend.layout.bindings}
-    definitions = []
     for name, (_, entry) in entries.items():
         # Only a tensor this rank binds, or a routed expert another rank owns, may carry a delta;
         # any other exclusion, or an unbound tensor without one, would silently drop its mask.
@@ -215,17 +219,14 @@ def _qualify_canonical_plan(backend, publication):
         spec = {"name": name, **backend.layout.inventory[name]}
         if entry != catalog_entry(tensor_metadata(**spec)):
             raise ValueError(f"canonical tensor metadata mismatch: {name}")
-        definitions.append(spec)
-    missing = bound - entries.keys()
+    expected = bound | {name for name, reason in backend.layout.excluded.items() if reason == REMOTE_EXPERT}
+    missing = expected - entries.keys()
     if missing:
-        raise ValueError(f"publication is missing local tensors: {sorted(missing)}")
-    if plan_digest(definitions) != digest:
-        raise ValueError("publication does not match its canonical tensor plan")
+        raise ValueError(f"publication is missing canonical tensors: {sorted(missing)}")
     # Tensor selection and physical layout are receiver-local. The publication
     # never contains TP/EP slices, backend permutations or receiver identities.
     table = _BindingTable(backend.layout, entries)
     backend.binding_table = table
-    backend._canonical_plan_digest = digest
     return table, False
 
 

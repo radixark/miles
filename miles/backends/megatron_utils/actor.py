@@ -297,6 +297,20 @@ class MegatronTrainRayActor(TrainRayActor):
             )
 
         self._init_training_state()
+        if (
+            self.weight_updater is not None
+            and args.update_weight_transfer_mode == "gpu-delta"
+            and ckpt_load_config.load is not None
+            and load_output.start_rollout_id == load_output.loaded_rollout_id + 1
+        ):
+            # Use the iteration Megatron actually restored, before the trainer can take another step.
+            checkpoint_dir = get_checkpoint_name(
+                ckpt_load_config.load, load_output.loaded_rollout_id, return_base_dir=True
+            )
+            with self._gpu_delta_allocations():
+                self.weight_updater.restore_gpu_delta_checkpoint(
+                    checkpoint_dir, load_output.loaded_rollout_id, publish_eval_stream=indep_dp_info.alive_rank == 0
+                )
 
         self.rollout_data_postprocess = None
         if (x := self.args.rollout_data_postprocess_path) is not None:

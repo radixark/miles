@@ -31,6 +31,7 @@ class _Engine:
         self.protocol, self.events, self.index, self.fail = protocol, events, index, fail
         self.version = "default"
         self.delta_version = 0
+        self.stream_id = None
 
     async def _make_request(self, endpoint, payload):
         # The GPU-delta controls post through the engine client's request helper.
@@ -44,6 +45,8 @@ class _Engine:
                     "identity": {"engine_id": engine_id, "rank_id": str(self.index), "host_cache_id": engine_id},
                     "state": "IDLE" if self.delta_version == 0 else "RESUMED",
                     "version": self.delta_version,
+                    "stream_id": self.stream_id,
+                    "plan_digest": self.protocol._plan_digest,
                 }
             ],
         }
@@ -325,6 +328,7 @@ def _gpu_pending(monkeypatch, fail_batch=None):
     protocol._next_snapshot = {name: torch.empty(size, dtype=torch.uint8) for name, size in sizes.items()}
     protocol._plan = {name: {"dtype": "U8", "shape": [size], "encoding": "xor_bytes"} for name, size in sizes.items()}
     protocol._uncommitted = True
+    protocol._stream_id = "stream"
     protocol._plan_digest = "plan"
     protocol._receivers = gpu_delta.gpu_delta_session.EngineIdentities((), ())
     protocol._engine_cell_ids = ()
@@ -566,7 +570,7 @@ def _activation_result(cohort):
 
 
 @pytest.mark.parametrize(
-    "failure", ["transport", "fresh-version", "fresh-state", "committed-version", "committed-state"]
+    "failure", ["transport", "fresh-version", "fresh-state", "committed-version", "committed-state", "fresh-base"]
 )
 def test_failed_receiver_description_keeps_healthy_cohort_and_failed_cell(tmp_path, single_rank, monkeypatch, failure):
     protocol, _ = _setup(tmp_path)
@@ -577,9 +581,11 @@ def test_failed_receiver_description_keeps_healthy_cohort_and_failed_cell(tmp_pa
     if committed:
         protocol.connect(protocol.rollout_engines, [1, 1], [0, 1], ["cell-0", "cell-1"], _PARALLEL_STATE, None, None)
         protocol._committed_incarnations = protocol._incarnations()
+        protocol._base_stream_id = "old-stream"
         protocol._publication_version = 3
         for client in protocol.rollout_engines:
             client.delta_version = 3
+            client.stream_id = "old-stream"
     describe = _Engine.get_gpu_delta_info
     calls = []
 
@@ -589,7 +595,9 @@ def test_failed_receiver_description_keeps_healthy_cohort_and_failed_cell(tmp_pa
             raise RuntimeError("receiver exited before discovery")
         result = await describe(self, engine_id)
         if self.index == 1:
-            if failure.endswith("version"):
+            if failure == "fresh-base":
+                result["participants"][0]["plan_digest"] = "different-HF-bytes"
+            elif failure.endswith("version"):
                 result["participants"][0]["version"] = 2
             else:
                 result["participants"][0]["state"] = "APPLYING"
@@ -615,6 +623,89 @@ def test_sender_baseline_loss_never_relabels_existing_receiver_weights(tmp_path,
     monkeypatch.setattr(_Engine, "update_weight_version", unexpected_declaration)
     with pytest.raises(RuntimeError, match="immutable HF base"):
         _ready_protocol(tmp_path, monkeypatch, receiver_version=4).begin_sync(1, _buckets)
+
+
+def test_disk_resume_branches_from_exact_saved_bytes_and_keeps_fresh_receivers(tmp_path, single_rank, monkeypatch):
+    original = _ready_protocol(tmp_path, monkeypatch)
+    checkpoint = tmp_path / "iter_0000007"
+    original.prepare_checkpoint(checkpoint, 7, 17, _buckets)
+    original.finalize_checkpoint()
+    saved = json.loads((checkpoint / "gpu_delta/READY.json").read_text())
+    original.begin_sync(17, _buckets, rollout_id=7)
+    original.after_base_weights()
+    original._commit_baseline()
+    # Saving the same step after activation records its committed coordinate, not the next version.
+    original.prepare_checkpoint(checkpoint, 7, 17, _buckets)
+    original.finalize_checkpoint()
+    assert (
+        json.loads((checkpoint / "gpu_delta/READY.json").read_text())["target_version"] == saved["target_version"] == 1
+    )
+
+    resumed = _ready_protocol(tmp_path, monkeypatch, connect=False)
+    resumed.restore_checkpoint(checkpoint, 7, _buckets)
+    assert resumed._base_stream_id == saved["stream_id"] != resumed._stream_id
+    first, fresh = resumed.rollout_engines
+    first.stream_id, first.delta_version = saved["stream_id"], 1
+    resumed.connect([first, fresh], [1, 1], [0, 1], ["cell-0", "cell-1"], _PARALLEL_STATE, None, None)
+    publications = {}
+
+    async def activate(_clients, cohort, publication, **options):
+        for engine_id in cohort.engine_ids:
+            publications[engine_id] = publication
+        return _activation_result(cohort)
+
+    monkeypatch.setattr(gpu_delta.gpu_delta_session, "activate_publication", activate)
+    resumed.begin_sync(18, _buckets, rollout_id=8)
+    target = [9, 10, 11, 12]
+    resumed.send_bucket([("w", torch.tensor(target, dtype=torch.uint8))])
+    resumed.after_base_weights()
+    resumed.finalize(18)
+    for engine_id, old_bytes, parent, version in [
+        ("engine-00000", [5, 6, 7, 8], saved["stream_id"], 1),
+        ("engine-00001", [1, 2, 3, 4], None, 0),
+    ]:
+        desc = publications[engine_id]
+        assert (desc["base_stream_id"], desc["base_version"]) == (parent, version)
+        assert (desc["stream_id"], desc["target_version"]) == (resumed._stream_id, 2)
+        xor = (Path(desc["manifest_path"]).parent / "owner-00000.bin").read_bytes()
+        assert [a ^ b for a, b in zip(old_bytes, xor, strict=True)] == target
+
+    # The old launch could also have reached v2; the matching integer gives it no claim on this fork.
+    first.stream_id, first.delta_version = saved["stream_id"], 2
+    with pytest.raises(RuntimeError, match="replacement required"):
+        resumed._describe(["engine-00000", "engine-00001"])
+
+
+def test_only_selected_restored_cell_publishes_eval_stream(tmp_path, single_rank, monkeypatch):
+    models = [SimpleNamespace(name="eval")]
+    original = _ready_protocol(tmp_path, monkeypatch, connect=False, eval_models=models)
+    original.initialize_export(None, None)
+    checkpoint = tmp_path / "iter_0000007"
+    original.prepare_checkpoint(checkpoint, 7, 17, _buckets)
+    original.finalize_checkpoint()
+    first, standby = [_ready_protocol(tmp_path, monkeypatch, connect=False, eval_models=models) for _ in range(2)]
+    first.restore_checkpoint(checkpoint, 7, _buckets, publish_eval_stream=True)
+    standby.restore_checkpoint(checkpoint, 7, _buckets, publish_eval_stream=False)
+    record = tmp_path / "delta" / "eval-stream-run" / "STREAM"
+    predecessor = {"stream_id": original._stream_id, "target_version": 1, "training_step": 7}
+    assert json.loads(record.read_bytes()) == {"stream_id": first._stream_id, "predecessor": predecessor}
+
+    # The controller can select the standby for an eval export before that cell reconnects to rollout.
+    standby.initialize_export(None, None)
+    snapshot = standby.export_snapshot(tmp_path / "eval", 8, 18, _buckets)
+    assert json.loads(record.read_bytes()) == {"stream_id": snapshot["stream_id"], "predecessor": predecessor}
+
+
+def test_checkpoint_ancestry_requires_matching_step_and_reexported_bytes(tmp_path, single_rank, monkeypatch):
+    original = _ready_protocol(tmp_path, monkeypatch)
+    checkpoint = tmp_path / "iter_0000007"
+    original.prepare_checkpoint(checkpoint, 7, 17, _buckets)
+    original.finalize_checkpoint()
+    resumed = _ready_protocol(tmp_path, monkeypatch, connect=False)
+    with pytest.raises(RuntimeError, match="loaded step"):
+        resumed.restore_checkpoint(checkpoint, 8, _buckets)
+    with pytest.raises(ValueError, match="canonical bytes"):
+        resumed.restore_checkpoint(checkpoint, 7, lambda materialize: [[("w", torch.zeros(4, dtype=torch.uint8))]])
 
 
 def test_failed_activation_keeps_baseline_and_forbids_replay(tmp_path, single_rank, monkeypatch):
@@ -733,7 +824,7 @@ def test_checkpoint_target_reuse_and_healthy_updates_skip_recovery_encoding(tmp_
     current, reusable = protocol._snapshot, protocol._next_snapshot
     incarnations = protocol._committed_incarnations.copy()
     evaluation = protocol.export_snapshot(tmp_path / "eval-committed", 1, 2, export)
-    assert exports == [] and evaluation["base_version"] == 0 and evaluation["target_version"] == 1
+    assert exports == [] and evaluation["base_version"] == 0 and evaluation["target_version"] == 2
     assert protocol._recovery_payload.raw["w"] == bytes([8, 8, 8, 8])
     assert protocol._snapshot is current and protocol._next_snapshot is reusable
     assert protocol._publication_version == 2 and protocol._target_step is None
@@ -873,8 +964,8 @@ def test_trainer_records_each_stream_it_starts_for_dedicated_eval(tmp_path, sing
 
     if dedicated_eval:
         # The record names this trainer's stream and passes the hook, complete, before any snapshot of that stream.
-        assert record.read_text() == protocol._stream_id == descriptor["stream_id"]
-        assert published[0] == (record.parent, [], protocol._stream_id)
+        assert json.loads(record.read_bytes()) == {"stream_id": descriptor["stream_id"], "predecessor": None}
+        assert published[0] == (record.parent, [], record.read_text())
         assert len(published) == 2
     else:
         assert not record.parent.exists() and len(published) == 1
@@ -915,6 +1006,14 @@ def test_failed_snapshot_preserves_baseline_and_previous_recovery_payload(tmp_pa
     assert protocol._target_step == (None if failure == "capture" else (1, 2))
     assert not protocol._capture_only and not protocol._uncommitted and protocol._publication_version == 0
     assert not (tmp_path / "failed/gpu_delta/READY.json").exists()
+    if failure == "capture":
+        checkpoint = tmp_path / "ckpt-after-failed-export"
+        protocol.prepare_checkpoint(checkpoint, 0, 1, _buckets)
+        protocol.finalize_checkpoint()
+        descriptor = json.loads((checkpoint / "gpu_delta/READY.json").read_bytes())
+        assert descriptor["target_version"] == 2
+        assert protocol._recovery_payload.raw["w"] == bytes([4, 4, 4, 12])
+        assert descriptor["state_sha256"] == protocol._state_digest(protocol._next_snapshot)
     if failure == "peer-compression":
         protocol.export_snapshot(tmp_path / "retry", 1, 2, export)
         assert compression_checks == [True, True]  # A local cache hit must not skip the retry collective.
@@ -994,6 +1093,7 @@ def test_restarted_engine_uses_negotiated_update_and_retains_cache(
 
     # Existing Miles FT replaced one engine between ordinary weight updates.
     protocol.rollout_engines[1].index = 2
+    protocol.rollout_engines[0].stream_id = protocol._stream_id
     protocol.rollout_engines[0].delta_version = 1
     protocol.connect(protocol.rollout_engines, [1, 1], [0, 1], ["cell-0", "cell-1"], _PARALLEL_STATE, None, None)
     assert protocol.begin_sync(model_version, _buckets, rollout_id=rollout_id)

@@ -5,14 +5,18 @@ Requires CUDA, nvCOMP 6, zstandard, python-snappy and lz4. No model is loaded.
 """
 
 import json
+from argparse import Namespace
 from pathlib import Path
 
 import numpy as np
 import pytest
+import safetensors.numpy
 import torch
+import torch.distributed as dist
 import zstandard
 from tests.manual.gpu_delta.nvcomp_oracle import decode
 
+from miles.backends.training_utils.weight_update.protocols.gpu_delta import protocol as gpu_delta
 from miles.utils.gpu_delta import encoder as gpu_delta_encoder
 from miles.utils.gpu_delta.publication import (
     CODECS,
@@ -376,3 +380,79 @@ def test_cached_recovery_payload_survives_target_and_encoder_reuse(tmp_path, mon
     for name, original in zip(names, old, strict=True):
         np.testing.assert_array_equal(base[name].numpy(), original)
         assert target[name].data_ptr() == pointers[name]
+
+
+def test_checkpoint_restore_forks_real_bitcomp_publications(tmp_path, monkeypatch):
+    """Branch from a saved actor and replay both the rolling and HF-relative publications byte for byte."""
+    name = "model.layers.0.weight"
+    base = np.arange(65536, dtype=np.uint8).reshape(128, 512)
+    safetensors.numpy.save_file({name: base}, tmp_path / "model.safetensors")
+    (tmp_path / "config.json").write_text('{"architectures":["DeepseekV3ForCausalLM"],"num_hidden_layers":1}')
+    args = Namespace(
+        hf_checkpoint=tmp_path,
+        update_weight_disk_dir=tmp_path,
+        update_weight_transfer_mode="gpu-delta",
+        update_weight_buffer_size=1 << 20,
+        custom_update_weight_post_write_path=None,
+        sglang=Namespace(models=[]),
+    )
+    monkeypatch.setenv("GPU_DELTA_CODEC", "bitcomp-zstd")
+    monkeypatch.setenv("GPU_DELTA_INITIAL_SYNC_CODEC", "bitcomp-zstd")
+    monkeypatch.setenv("GPU_DELTA_SKIP_PAYLOAD_HASH", "0")
+
+    def sender():
+        protocol = gpu_delta.UpdateWeightFromGpuDelta(args)
+        protocol.is_sender = True
+        protocol.initialize_export(None, None)
+        return protocol
+
+    target = torch.from_numpy(base).cuda()
+
+    def export(materialize):
+        assert materialize
+        yield [(name, target)]
+
+    dist.init_process_group("gloo", init_method=(tmp_path / "gloo").as_uri(), rank=0, world_size=1)
+    monkeypatch.setattr(gpu_delta, "get_gloo_group", lambda: dist.group.WORLD)
+    try:
+        original = sender()
+        target.bitwise_xor_(17)
+        checkpoint = tmp_path / "iter_0000007"
+        original.prepare_checkpoint(checkpoint, 7, 17, export)
+        original.finalize_checkpoint()
+        saved = json.loads((checkpoint / "gpu_delta/READY.json").read_bytes())
+        old = {name: base.flatten().copy()}
+        _replay(saved, old, "bitcomp-zstd")
+        np.testing.assert_array_equal(old[name], target.flatten().cpu().numpy())
+
+        resumed = sender()
+        resumed.restore_checkpoint(checkpoint, 7, export)
+        resumed._receivers = gpu_delta.gpu_delta_session.EngineIdentities((), ())
+        resumed._engine_cell_ids = ()
+        fresh = {name: base.flatten().copy()}
+        for mask in (5, 23):
+            target.bitwise_xor_(mask)
+            # Even repeated caller step numbers must produce distinct publication endpoints.
+            resumed.begin_sync(18, export, rollout_id=8)
+            resumed.send_bucket(next(export(True)))
+            resumed.after_base_weights()
+            rolling = resumed._publish()
+            _replay(rolling, old, "bitcomp-zstd")
+            if mask == 5:
+                assert (rolling["base_stream_id"], rolling["base_version"]) == (saved["stream_id"], 1)
+                assert (rolling["stream_id"], rolling["target_version"]) == (resumed._stream_id, 2)
+                assert rolling["stream_id"] != saved["stream_id"]
+                resumed._cache_recovery_payload(resumed._next_snapshot, resumed._source_step)
+                recovery = resumed._recovery_descriptor()
+                assert (recovery["base_stream_id"], recovery["base_version"]) == (None, 0)
+                assert recovery["target_version"] == rolling["target_version"]
+                _replay(recovery, fresh, "bitcomp-zstd")
+            else:
+                assert (rolling["base_stream_id"], rolling["base_version"]) == (resumed._stream_id, 2)
+                assert rolling["target_version"] == 3
+                _replay(rolling, fresh, "bitcomp-zstd")
+            resumed._commit_baseline()
+            for state in (old, fresh):
+                np.testing.assert_array_equal(state[name], target.flatten().cpu().numpy())
+    finally:
+        dist.destroy_process_group()

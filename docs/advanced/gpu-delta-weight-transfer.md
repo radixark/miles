@@ -69,10 +69,14 @@ every serving process needs the matching Miles package.
 
 ## Startup delta
 
-GPU-delta always captures HF baseline version 0, then publishes and applies the loaded
-trainer's version 1 before the first rollout. This includes a trainer resumed from a
-checkpoint that differs from the HF base. Later updates start at version 2; transfer
-versions are independent of restored optimizer and rollout steps.
+A fresh trainer starts at the immutable HF base, version 0. Its first publication
+moves receivers to version 1. On a checkpoint restore, Miles reads the completed
+GPU-delta companion from the iteration Megatron actually loaded and verifies the
+restored canonical bytes. The new launch publishes on a fresh stream. A receiver
+at the saved `(stream_id, version)` can apply the first delta directly, while a
+fresh HF receiver receives an HF-relative publication for the same target.
+Receivers ahead of the restored checkpoint cannot join that branch in place.
+A checkpoint without saved ancestry uses the HF startup path.
 
 Initial and learned publications both default to Bitcomp-Zstd. Phase-specific codec
 overrides follow the initial-sync call, not transfer-version arithmetic. Encoder setup is
@@ -123,10 +127,13 @@ frame, outer-chunk and zero-gap columns that receivers use directly. Only change
 contribute work, and the Triton apply kernels stay independent of model shapes. The
 receiver contract defines the outer descriptor of unwrapped codecs.
 
-SHA-256 authenticates final owner files by default. Updates and checkpoint or recovery
-artifacts trust the immutable HF prior; they do not hash old or new weights or
-intermediate inner-codec bytes. The manifest uses sorted `orjson` serialization, while
-the canonical plan digest keeps its compact sorted JSON encoding.
+The canonical plan digest binds the tensor definitions to the SHA-256 of the selected
+HF shard names and contents. Each side verifies its own checkpoint, even when
+payload hashing is disabled. The first reader caches the result in
+`.miles-gpu-delta.sha256` beside the checkpoint; a read-only mount uses the local
+user cache. File identity, size and timestamps invalidate stale entries after replacement
+or in-place reconversion. Each engine must serve the same immutable checkpoint it
+admits. SHA-256 also authenticates final owner files by default.
 
 Miles derives the canonical plan from the immutable checkpoint inventory and export
 format and never requests layout plans or tensor views from rollout; connection queries
@@ -153,10 +160,12 @@ transfer modes. Replacement recovery and dedicated eval pins always use the rece
 defaults, retract and flush, so eval never reuses KV or prefix cache computed with older
 weights.
 
-The trainer drains every engine request before handling failures. A failed request has
-an unknown phase, so it never authorizes a client abort or retry; an uncertain receiver
-is replaced, never reconciled or given an XOR replay. Successful peers keep their target
-version. Successful activation alone does not prove full weight-content equality.
+Every rank checks the publication's source stream and version during preparation.
+After a transport failure, Miles reads the original ranks' committed state. If the
+requested session finished, the receiver returns its original receipts and timings.
+If all original ranks still report the exact source, Miles can resend once.
+A partial apply, divergent ranks, or a changed incarnation goes to the existing
+failure handler. Healthy peers retain their target version.
 
 For an ordinary delta of N matrix bytes, the trainer transfers N export bytes D2H and N
 previous-snapshot bytes H2D, plus current-snapshot H2D for batches that cannot reuse the
@@ -184,7 +193,7 @@ captured participant identities. That payload is always a recovery publication
 keeps the receiver cache for later updates.
 The trainer settles every engine request before committing its rolling baseline, which
 requires live trainer snapshots and the same canonical plan. With `--use-fault-tolerance`
-and the `weight_update` component, an in-flight receiver failure or lost reply marks only
+and the `weight_update` component, an unresolved activation error marks only
 its rollout cell failed, and the trainer commits the target for healthy receivers and
 future replacements; without it, a receiver error fails the update. Existing Miles fault
 tolerance replaces the failed cell while healthy cells keep their progress, and the next
@@ -216,25 +225,22 @@ the eval snapshot there, while a failed HF export leaves its directory unmarked 
 without a snapshot, so that eval point is skipped rather than failing the trainer. With
 `--eval-hf-dir`, the `--save-hf` directories get no GPU-delta snapshot.
 
-Receivers follow one delta stream per incarnation, so the trainer records each stream it
-starts in `--update-weight-disk-dir` (`eval-stream-<run uuid>/STREAM`), and eval pins only
-snapshots of the recorded stream. A resumed job's first eval point, whose save carries the
-previous trainer's stream, is skipped before any eval engine is contacted; pinning it would
-leave the fresh eval engines unable to apply this job's snapshots. A restart that keeps its
-trainer keeps the stream, so that point is still evaluated.
+The trainer records its stream and the exact checkpoint it restored in
+`--update-weight-disk-dir` (`eval-stream-<run uuid>/STREAM`). Dedicated eval can
+pin snapshots from the current stream and the restored checkpoint. An unrelated
+stream or an old launch's later checkpoint is rejected before contacting engines.
 
 The eval executor holds its existing eval lock across pinning and generation. To pin a
 new snapshot, the controller calls the ordinary update API twice, each time with a fresh
-session ID: it applies the previous snapshot again to return to the HF base, then applies
+session ID: it requests the reverse direction on the previous snapshot to return to the HF base, then applies
 the new one. No eval generation runs between those calls. Scalars, vectors and compact
 UE8M0 scales also carry XOR masks, so cancellation is the same operation, and derived
 scalar values are prepared before each pause. Skipped eval points need no intermediate
 updates.
 
 Queue cleanup removes staging descriptors; the publications stay in shared storage for
-later cancellation, with the same lifetime as other GPU-delta publications. A failed or
-uncertain activation is never retried on that receiver incarnation and requires a fresh
-engine. Dedicated eval gains no automatic fault tolerance.
+later cancellation, with the same lifetime as other GPU-delta publications. Lost replies use the same all-rank version and receipt check as rollout. An
+unsettled engine requires replacement. Dedicated eval gains no automatic fault tolerance.
 
 ## Training metrics
 

@@ -59,7 +59,8 @@ def tiny_receiver(monkeypatch, directory, rank_id, weights, extra):
         for name, value in model.named_parameters()
     }
     policy = static_policy({"architectures": ["DeepseekV3ForCausalLM"], "num_hidden_layers": len(weights)})
-    monkeypatch.setattr(receiver, "read_canonical_checkpoint", lambda _: CanonicalCheckpoint(inventory, policy, {}))
+    checkpoint = CanonicalCheckpoint(inventory, policy, {}, "a" * 64)
+    monkeypatch.setattr(receiver, "read_canonical_checkpoint", lambda _: checkpoint)
     for name, value in (
         ("GPU_DELTA_HOST_CACHE_DIR", str(Path(directory) / "cache")),
         ("GPU_DELTA_CPU_WORKERS", "4"),
@@ -85,7 +86,9 @@ def tiny_receiver(monkeypatch, directory, rank_id, weights, extra):
     return model, inventory, identity, backend, identities, shadow_store
 
 
-def publish(encoder, codec, directory, stream_id, base_version, target_version, inventory, before, after):
+def publish(
+    encoder, codec, directory, stream_id, base_version, target_version, inventory, before, after, base_stream_id=None
+):
     """Seal the canonical XOR publication between `before` and `after` byte views of every tensor."""
     from miles.utils.gpu_delta.publication import PublicationWriter, plan_digest
 
@@ -102,9 +105,10 @@ def publish(encoder, codec, directory, stream_id, base_version, target_version, 
         stream_id,
         base_version,
         target_version,
-        plan_digest(definitions),
+        plan_digest(definitions, "a" * 64),
         codec,
         frame_bytes=encoder.frame_bytes,
+        base_stream_id=base_stream_id,
     )
     try:
         for row, result in zip(matrices, encoded, strict=True):
@@ -304,9 +308,19 @@ def test_hf_relative_snapshots_are_reversible_with_the_same_update_api(monkeypat
                     descriptor = published[label]
                 else:
                     descriptor = published[label] = publish(
-                        encoder, "bitcomp-zstd", root / label, "eval-snapshots", 0, 1, inventory, base, values
+                        encoder,
+                        "bitcomp-zstd",
+                        root / label,
+                        "eval-snapshots",
+                        0,
+                        len(published) + 1,
+                        inventory,
+                        base,
+                        values,
                     )
-                request = dict(descriptor, session_id=operation, validate_payload_hash=True, participants=[identity])
+                request = dict(
+                    descriptor, session_id=operation, reverse=undo, validate_payload_hash=True, participants=[identity]
+                )
                 before = {name: value.detach().clone() for name, value in model.named_parameters()}
                 before_derived = [value.clone() for value in consumers]
                 assert session.prepare(request).result()["state"] == "PREPARED"
@@ -379,16 +393,18 @@ def test_bitcomp_failed_transaction_requires_fresh_receiver_recovery(failure, mo
                 encoder,
                 "bitcomp-zstd",
                 root / str(version),
-                "native-ft-stream",
+                "native-ft-stream" if version == 1 else "restored-trainer",
                 version - 1,
                 version,
                 inventory,
                 before,
                 after,
+                base_stream_id=None if version == 1 else "native-ft-stream",
             )
             metadata = dict(
                 descriptor,
                 session_id=f"native-ft-update-{version}",
+                reverse=False,
                 validate_payload_hash=True,
                 participants=[session.identity],
             )
@@ -430,7 +446,7 @@ def test_bitcomp_failed_transaction_requires_fresh_receiver_recovery(failure, mo
                     session.apply(metadata["session_id"], fence, lambda: None, None)
                 torch.cuda.synchronize(device)
                 assert session.status()["state"] == "POISONED"
-                assert session.version == 0
+                assert session.committed == (None, 0)
                 if failure == "before_apply":
                     assert_weights(model, before)
                 else:
@@ -450,13 +466,16 @@ def test_bitcomp_failed_transaction_requires_fresh_receiver_recovery(failure, mo
                     session.resume(metadata["session_id"], resumed.append)
                 assert not resumed
             else:
-                # The coordinator loses a reply after actual GPU writes. It must
-                # quarantine this incarnation rather than resubmit the XOR.
+                # A lost reply after GPU writes is settled only after resume. A missing
+                # all-rank commit still requires replacement.
                 session.apply(metadata["session_id"], fence, lambda: None, None)
                 assert session.status()["state"] == "APPLIED"
                 assert_weights(model, after)
                 if failure == "after_resume":
-                    session.resume(metadata["session_id"], resumed.append)
+                    receipt = session.resume(metadata["session_id"], resumed.append)
+                    assert (receipt["committed_stream_id"], receipt["version"]) == ("native-ft-stream", 1)
+                    with pytest.raises(ValueError, match="differs from committed"):
+                        session.prepare(metadata | dict(session_id="late-retry"))
                 with pytest.raises(ValueError):
                     session.apply(metadata["session_id"], fence, lambda: None, None)
                 assert len(applications) == 2
@@ -480,7 +499,7 @@ def test_bitcomp_failed_transaction_requires_fresh_receiver_recovery(failure, mo
             assert_weights(model, before)
             session.apply(metadata["session_id"], lambda: None, lambda: None, None)
             session.resume(metadata["session_id"], resumed.append)
-            assert session.version == 2 and resumed == [1, 2]
+            assert session.committed == ("restored-trainer", 2) and resumed == [1, 2]
             assert_weights(model, after)
         finally:
             for session in sessions:
@@ -648,6 +667,7 @@ def _consumer(rank, engine, workers, publications, cache, barrier, output):
         for version, (path, digest, expected) in enumerate(publications, 1):
             metadata = dict(
                 stream_id="native-shared-stream",
+                base_stream_id=None if version == 1 else "native-shared-stream",
                 session_id=f"update-{version}",
                 base_version=version - 1,
                 target_version=version,

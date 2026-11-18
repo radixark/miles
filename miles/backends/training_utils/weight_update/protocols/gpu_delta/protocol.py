@@ -9,6 +9,8 @@ adds GPU Zstd, then packs the final payload for one D2H transfer.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import shutil
 import time
@@ -79,7 +81,11 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._plan = {}
         self._capturing = False
         self._baseline_captured = False
+        self._eval_predecessor = None
+        self._base_stream_id = None
         self._publication_version = 0
+        self._reserved_version = 0
+        self._reserved_step = None
         self._uncommitted = False
         self._staging_stream = None
         self._gpu_encoder = None
@@ -127,6 +133,14 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self.rollout_engines = [self.rollout_engines[i] for i in active]
         self._engine_cell_ids = tuple(self._engine_cell_ids[i] for i in active)
         self._receivers = gpu_delta_session.engine_identities([descriptions[i] for i in active])
+        incarnations = self._incarnations()
+        self._committed_incarnations = {
+            engine_id: incarnations[engine_id]
+            for engine_id, i in zip(self._receivers.engine_ids, active, strict=True)
+            if descriptions[i]["participants"][0]["version"] != 0
+        }
+        if self._baseline_captured:
+            self._record_eval_stream()
 
     def initialize_export(self, parallel_state, placement):
         """Initialize producer ownership, the canonical plan and the recovery encoder before any receiver contact."""
@@ -148,7 +162,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         if not self._plan:
             plan = gpu_delta_publication.read_checkpoint_plan(self.args.hf_checkpoint)
             self._plan = {spec["name"]: spec for spec in plan}
-            self._plan_digest = gpu_delta_publication.plan_digest(plan)
+            self._plan_digest = gpu_delta_publication.checkpoint_plan_digest(self.args.hf_checkpoint, plan)
         return self._plan
 
     def _encoder(self, codec):
@@ -173,18 +187,17 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         for engine_id, cell_id, future in zip(engine_ids, self._engine_cell_ids, futures, strict=True):
             description = future.result()
             if description is not None:
-                rows = description["participants"]
-                incarnation = tuple(
-                    sorted((row["identity"] for row in rows), key=lambda identity: identity["rank_id"])
-                )
-                committed = self._committed_incarnations.get(engine_id) == incarnation
-                version = self._publication_version if committed else 0
-                states = {"IDLE", "RESUMED"} if committed else {"IDLE"}
-                if any(row["version"] != version or row["state"] not in states for row in rows):
-                    expected = f"settled version {version}" if committed else "the immutable HF base (IDLE version 0)"
-                    self.cell_updaters_of_cell_id[cell_id].mark_errored(
-                        RuntimeError(f"GPU-delta receiver {engine_id} must be at {expected}; replacement required")
-                    )
+                participants = [row["identity"] for row in description["participants"]]
+                try:
+                    point = gpu_delta_session.committed_endpoint(description, participants, self._plan_digest)
+                    # A retained receiver can continue from the saved point; fresh engines take HF-relative recovery.
+                    if point not in {(None, 0), (self._base_stream_id, self._publication_version)}:
+                        raise RuntimeError(
+                            f"GPU-delta receiver {engine_id} must be at the immutable HF base or committed point "
+                            f"{(self._base_stream_id, self._publication_version)}, got {point}; replacement required"
+                        )
+                except RuntimeError as error:
+                    self.cell_updaters_of_cell_id[cell_id].mark_errored(error)
                     description = None
             descriptions.append(description)
         return descriptions
@@ -212,9 +225,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self.codec = self._initial_sync_codec if initial_sync else self._update_codec
         self._gpu_encoder = self._encoder(self.codec)
         self._uncommitted = True
-        # Publications remain consecutive even when a restored/model-companion
-        # version repeats, jumps or rewinds. Each receiver pool owns its stream.
-        self._target_version = self._publication_version + 1
+        self._target_version = self._reserve_version(self._source_step)
         self._started = time.monotonic()
         self._version_dir = self._stream_dir / f"weight_v{self._target_version:06d}"
         try:
@@ -224,6 +235,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 self._version_dir,
                 stream_id=self._stream_id,
                 publication_id=f"{self._stream_id}:{self._target_version}",
+                base_stream_id=self._base_stream_id,
                 base_version=self._publication_version,
                 target_version=self._target_version,
                 plan_digest=self._plan_digest,
@@ -257,18 +269,27 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         """
         return not (self._uncommitted and self._target_step == self._source_step)
 
-    def _capture_baseline(self, iter_buckets):
+    def _capture_baseline(self, iter_buckets, restoring=False):
         self._capturing = True
         self._read_baseline = None
         try:
             self._read_baseline = gpu_delta_publication.make_checkpoint_reader(self.args.hf_checkpoint)
         except Exception as error:
             self._error = error
-        for bucket in iter_buckets(materialize=self.is_sender):
-            if self.is_sender:
-                self.send_bucket(bucket)
-        self._capturing = False
-        self._read_baseline = None
+        # Resume already traverses the restored export to establish owner inventory.
+        # Stage those bytes in the same traversal, before any trainer step can change them.
+        self._capture_only = restoring
+        if self._capture_only:
+            self._staging_stream = torch.cuda.Stream(device=torch.cuda.current_device())
+        try:
+            for bucket in iter_buckets(materialize=self.is_sender):
+                if self.is_sender:
+                    self.send_bucket(bucket)
+        finally:
+            if self._capture_only:
+                self._staging_stream.synchronize()
+            self._capturing = self._capture_only = False
+            self._read_baseline = None
         if self._error is None:
             try:
                 self._prepare_gpu_schedule()
@@ -286,11 +307,6 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             )
         self._stream_id = _on_root(lambda: uuid.uuid4().hex)
         self._stream_dir = Path(self.args.update_weight_disk_dir) / self._stream_id
-        if uses_gpu_delta_eval(self.args):
-            directory = _on_root(
-                lambda: record_eval_stream(self.args.update_weight_disk_dir, self.args.run_uuid, self._stream_id)
-            )
-            self._after_write(directory, ())
         # Rolling and immutable snapshots share the startup allocation until
         # the first commit, which must not recycle this storage for a new target.
         self._hf_snapshot = self._snapshot
@@ -302,9 +318,34 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 self._stream_id,
             )
 
+        if not restoring:
+            self._record_eval_stream()
+
+    def _record_eval_stream(self):
+        if uses_gpu_delta_eval(self.args):
+            directory = _on_root(
+                lambda: record_eval_stream(
+                    self.args.update_weight_disk_dir, self.args.run_uuid, self._stream_id, self._eval_predecessor
+                )
+            )
+            if directory is not None:
+                self._after_write(directory, ())
+
+    def _reserve_version(self, source_step):
+        # A checkpoint/eval export can precede a sync or be the only export of a step.
+        # Never hand a different snapshot its already published coordinate.
+        if self._reserved_step != source_step:
+            self._reserved_version += 1
+            self._reserved_step = source_step
+        return self._reserved_version
+
+    def _snapshot_version(self, source_step):
+        if self._snapshot_step == source_step:
+            return self._publication_version
+        return self._reserve_version(source_step)
+
     def _declare_receiver_baseline(self):
-        # The startup checkpoint is base version 0, not a learned update; connect
-        # admitted only IDLE version-0 receivers. Wait for every engine's
+        # Fresh-launch receivers start on the immutable HF prior. Wait for every engine's
         # scheduler/tokenizer acknowledgement before rollout; an ambiguous
         # partial acknowledgement must not be automatically retried.
         self._uncommitted = True
@@ -343,7 +384,8 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 if self._capturing:
                     original = gpu_delta_publication.read_canonical_tensor(self._read_baseline, name, self._plan[name])
                     self._snapshot[name] = torch.from_numpy(original).pin_memory()
-                    continue
+                    if not self._capture_only:
+                        continue
                 if name not in self._snapshot:
                     raise ValueError(f"Canonical ownership changed for {name!r}")
                 flat = tensor.detach().contiguous().reshape(-1).view(torch.uint8)
@@ -519,7 +561,9 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._snapshot, self._next_snapshot = self._next_snapshot, reusable
         self._snapshot_step = self._source_step
         self._target_step = None
+        self._base_stream_id = self._stream_id
         self._publication_version = self._target_version
+        self._reserved_step = None
         if self._recovery_step != self._snapshot_step:
             # Step keys repeat after a load_state rollback; keep only the committed target's payload.
             self._recovery_payload = self._recovery_publication = self._recovery_step = None
@@ -551,11 +595,12 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         self._recovery_publication = None
         self._recovery_encode_s = time.monotonic() - started
 
-    def _publish_recovery(self, directory, target_version, training_step=None):
+    def _publish_recovery(self, directory, target_version, training_step=None, state_sha256=None):
         """Persist each owner's cached bytes; gather only the manifest records. The caller runs the hook."""
         metadata = dict(
             stream_id=self._stream_id,
             publication_id=_on_root(lambda: uuid.uuid4().hex),
+            base_stream_id=None,
             base_version=0,
             target_version=target_version,
             plan_digest=self._plan_digest,
@@ -570,6 +615,8 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
                 "base_checkpoint": str(self.args.hf_checkpoint),
                 "training_step": training_step,
             }
+            if state_sha256 is not None:
+                provenance["state_sha256"] = state_sha256
             for owner in shards:
                 owner["metadata"].update(provenance)
             return gpu_delta_publication.seal_publication(directory, shards)
@@ -609,23 +656,7 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         elif self._target_step == source_step:
             target = self._next_snapshot
         else:
-            # A failed capture must never leave an older identity attached to
-            # buffers that now contain only part of the new target.
-            self._target_step = None
-            self._capture_only = True
-            self._seen.clear()
-            if self._staging_stream is None:
-                self._staging_stream = torch.cuda.Stream(device=torch.cuda.current_device())
-            try:
-                for bucket in iter_buckets(materialize=self.is_sender):
-                    if self.is_sender:
-                        self.send_bucket(bucket)
-            finally:
-                self._staging_stream.synchronize()
-                self._capture_only = False
-            if self._seen != self._snapshot.keys():
-                self._error = self._error or ValueError("Snapshot export omitted owner tensors")
-            _collective_check(self._error, "snapshot capture")
+            self._capture_current(iter_buckets)
             self._target_step = source_step
             target = self._next_snapshot
         previous_cache = (
@@ -648,6 +679,25 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
             ) = previous_cache
             raise
 
+    def _capture_current(self, iter_buckets):
+        # A failed capture must never leave an older identity attached to
+        # buffers that now contain only part of the new target.
+        self._target_step = None
+        self._capture_only = True
+        self._seen.clear()
+        if self._staging_stream is None:
+            self._staging_stream = torch.cuda.Stream(device=torch.cuda.current_device())
+        try:
+            for bucket in iter_buckets(materialize=self.is_sender):
+                if self.is_sender:
+                    self.send_bucket(bucket)
+        finally:
+            self._staging_stream.synchronize()
+            self._capture_only = False
+        if self._seen != self._snapshot.keys():
+            self._error = self._error or ValueError("Snapshot export omitted owner tensors")
+        _collective_check(self._error, "snapshot capture")
+
     def export_snapshot(self, path, rollout_id, weight_version, iter_buckets, in_hf_export=False):
         """Publish an immutable HF-relative eval snapshot without contacting receivers.
 
@@ -657,10 +707,14 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         if in_hf_export and not _on_root(lambda: (Path(path) / HF_EXPORT_COMPLETE_MARKER).exists()):
             return None
         self._capture_recovery_payload(rollout_id, weight_version, iter_buckets)
+        # Only the controller's selected trainer exports eval. It may have taken over before its first sync.
+        self._record_eval_stream()
         # Payloads share the rollout publication lifetime. Eval queue GC owns
         # only the small descriptor, so later snapshots can still cancel this one.
         directory = self._stream_dir / f"eval-{_on_root(lambda: uuid.uuid4().hex)}"
-        descriptor = self._publish_recovery(directory, 1, rollout_id)
+        descriptor = self._publish_recovery(
+            directory, self._snapshot_version((rollout_id, weight_version)), rollout_id
+        )
         # The dedicated eval engines that read it are not this trainer's clients.
         self._after_write(directory, ())
 
@@ -674,12 +728,68 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
 
     def prepare_checkpoint(self, checkpoint_dir, rollout_id, weight_version, iter_buckets):
         """Capture the saved training step once, before its ordinary weight sync."""
+        step = (rollout_id, weight_version)
+        if self._recovery_step == step and step not in (self._snapshot_step, self._target_step):
+            # A later failed export can leave the old compressed bytes intact but overwrite their CPU source.
+            # The saved checksum and payload must both come from the same fresh capture.
+            self._recovery_step = self._reserved_step = None
         self._capture_recovery_payload(rollout_id, weight_version, iter_buckets)
         directory = Path(checkpoint_dir) / "gpu_delta"
         # Like Megatron, replace any companion an earlier save left at this iteration: an unfinalized one a
         # crashed job left, or a finalized one before a --ckpt-step rollback.
         _on_root(lambda: shutil.rmtree(directory, ignore_errors=True), broadcast_value=False)
-        self._checkpoint = directory, self._publish_recovery(directory, self._publication_version + 1, rollout_id)
+        target = self._snapshot if self._snapshot_step == step else self._next_snapshot
+        self._checkpoint = directory, self._publish_recovery(
+            directory, self._snapshot_version(step), rollout_id, self._state_digest(target)
+        )
+
+    @staticmethod
+    def _state_digest(snapshot):
+        # Only at save/restore. Hash existing pinned bytes in place and send hashes rather than tensors.
+        # Sort by canonical name, so a different trainer parallelism can restore the same checkpoint.
+        with _collective_phase("checkpoint state digest"):
+            local = [(name, hashlib.sha256(value.numpy()).hexdigest()) for name, value in snapshot.items()]
+        entries = sorted(entry for shard in _gather_all(local) for entry in shard)
+        return hashlib.sha256(gpu_delta_publication.canonical_json(entries)).hexdigest()
+
+    def restore_checkpoint(self, checkpoint_dir, rollout_id, iter_buckets, publish_eval_stream=True):
+        """Capture the loaded actor before training and verify its exact bytes against the saved rollout point."""
+
+        def load():
+            directory = Path(checkpoint_dir) / "gpu_delta"
+            ready = directory / "READY.json"
+            if not ready.is_file():
+                return None
+            descriptor = json.loads(ready.read_bytes())
+            if "state_sha256" not in descriptor:
+                return None  # Older checkpoint without proven rollout ancestry: start from HF.
+            raw = (directory / "manifest.json").read_bytes()
+            header = json.loads(raw)
+            if (
+                hashlib.sha256(raw).hexdigest() != descriptor["manifest_sha256"]
+                or header["training_step"] != rollout_id
+                or header["base_stream_id"] is not None
+                or header["base_version"] != 0
+                or header["target_version"] < 1
+                or header["plan_digest"] != self._plan_digest
+                or any(header[key] != descriptor[key] for key in ("stream_id", "target_version", "state_sha256"))
+            ):
+                raise ValueError("GPU-delta checkpoint companion differs from the loaded step or canonical base")
+            return {key: header[key] for key in ("stream_id", "target_version", "training_step", "state_sha256")}
+
+        predecessor = _on_root(load)
+        if predecessor is None:
+            return
+        self._capture_baseline(iter_buckets, restoring=True)
+        if self._state_digest(self._next_snapshot) != predecessor.pop("state_sha256"):
+            raise ValueError("Restored trainer canonical bytes differ from the saved GPU-delta state")
+        self._snapshot, self._next_snapshot = self._next_snapshot, {}
+        self._base_stream_id = predecessor["stream_id"]
+        self._publication_version = self._reserved_version = predecessor["target_version"]
+        self._eval_predecessor = predecessor
+        # All independent trainer cells restore. Only the first alive cell publishes for this run.
+        if publish_eval_stream:
+            self._record_eval_stream()
 
     def finalize_checkpoint(self):
         """Called collectively after the matching Megatron writer has drained."""

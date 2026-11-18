@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
+from miles.utils.gpu_delta.checkpoint_digest import checkpoint_content_digest
 from miles.utils.gpu_delta.publication import (
     ADMITTED_LOAD_FORMATS,
     StaticPolicy,
@@ -22,7 +23,7 @@ from miles.utils.gpu_delta.publication import (
 
 @dataclass(frozen=True)
 class CanonicalCheckpoint:
-    """The startup checkpoint as admission reads it: safetensors headers and its own config.json."""
+    """The startup checkpoint admitted by this receiver, with its verified base content identity."""
 
     # name -> {"shape", "dtype"} of every selected tensor.
     inventory: dict
@@ -30,6 +31,7 @@ class CanonicalCheckpoint:
     policy: StaticPolicy
     # name -> (path, offset, nbytes, dtype, shape) of every selected tensor.
     locations: dict
+    content_digest: str
 
     def read_rows(self, name, start, stop):
         """Bytes of rows ``[start, stop)`` of one canonical tensor; only canonical shadows read tensor data."""
@@ -88,17 +90,19 @@ def read_canonical_checkpoint(model_runner):
     policy = static_policy(json.loads((folder / "config.json").read_text()))
     # Match the default loader's primary source (empty prefix, no draft remap).
     # Reuse its index filtering and bundled-MTP rules without invoking downloads,
-    # checksum verification, tensor loading, or checkpoint page-cache prefetch.
+    # tensor loading or checkpoint page-cache prefetch.
     files = filter_duplicate_safetensors_files(
         [str(path) for path in folder.glob("*.safetensors")],
         str(folder),
         "model.safetensors.index.json",
     )
-    files = maybe_add_mtp_safetensors(files, str(folder), "model.safetensors.index.json", model_config.hf_config)
     if not files:
         raise ValueError("GPU delta checkpoint has no selected safetensors shards")
+    # A separately bundled, unindexed MTP draft never participates in weight updates.
+    base_files = files
+    files = maybe_add_mtp_safetensors(base_files, str(folder), "model.safetensors.index.json", model_config.hf_config)
     locations = read_safetensors_headers(files)
     inventory = {name: {"shape": shape, "dtype": dtype} for name, (_, _, _, dtype, shape) in locations.items()}
     if not inventory:
         raise ValueError("canonical checkpoint metadata is empty")
-    return CanonicalCheckpoint(inventory=inventory, policy=policy, locations=locations)
+    return CanonicalCheckpoint(inventory, policy, locations, checkpoint_content_digest(folder, base_files))

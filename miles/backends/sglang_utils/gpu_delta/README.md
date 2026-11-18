@@ -20,9 +20,16 @@ hooks; where stated, admission also identifies SGLang main's storage.
 Canonical names, shapes and dtypes come from the immutable local safetensors
 checkpoint headers, read whenever `get_gpu_delta_info` builds a backend (also after a
 clear). The standard loader's selected target and bundled-MTP files are supported;
-custom, secondary, encrypted or transformed sources are not. Packed live buffers cannot
-reconstruct this source inventory. Names and shapes do not prove that the live engine
-has the correct base bytes.
+custom, secondary, encrypted or transformed sources are not. The receiver binds its plan digest to the SHA-256 of
+its own primary safetensors shards. A cached content digest beside the checkpoint
+(or in the user cache for a read-only mount) is reused while the files retain the
+same identities, sizes and timestamps. The startup checkpoint must remain immutable
+while the engine uses it.
+
+The checkpoint files must stay immutable between SGLang model loading and the
+receiver's first admission, when it binds their digest. Clearing delta resources
+retains this identity with the live weights; if the files change, reattachment
+requires an engine reload.
 
 The trainer and receiver share this checkpoint prior, not a negotiated receiver
 plan. The trainer publishes canonical names, dtypes, shapes and byte encodings.
@@ -163,23 +170,26 @@ its Marlin, DeepGEMM and MegaMoE transforms are rejected.
 
 ## Ownership and lifecycle
 
-Miles exclusively owns model updates, pause/resume, memory residency and topology
-for a stream's lifetime. There is no server-wide ownership lock, XOR retry,
-rollback or automatic replay of an uncertain update.
+Miles owns model updates, pause/resume, memory residency and topology. Each receiver
+commits a pair of stream ID and publication version. Every rank must match the
+publication's source before apply. Forward uses its base as the source and commits
+its target. Explicit reverse uses the target as the source and commits its base,
+as when eval cancels a snapshot. The immutable HF base is `(null, 0)`. A trainer
+restored at `(X, S)` can publish from that exact parent into a new stream.
 
 The three HTTP POST endpoints are an internal interface to Miles:
 
 | Endpoint | Purpose |
 | --- | --- |
-| `get_gpu_delta_info` | Admit the receiver and return original participant identities, state and version; no tensor plan. |
+| `get_gpu_delta_info` | Return original rank identities, committed stream/version, state and plan digest. An optional session ID retrieves its last completed activation reply. |
 | `update_weights_from_gpu_delta` | Prepare, apply and resume one publication, returning compact APPLIED acknowledgements, full RESUMED receipts and server timings. |
 | `clear_gpu_delta_state` | Release retained delta resources while preserving weights and committed version. |
 
 Each participant identity carries the engine ID, a random rank ID, hostname, host
 cache ID, PID, process start ticks and TP/DP/PP ranks.
 The update request carries the admitted participants, caller-generated session
-ID and publication descriptor: manifest path/SHA256, stream, base/target versions
-and plan digest, plus `validate_payload_hash=true` by default. Rolling updates and
+ID, manifest path/SHA256, base and target stream/version pairs, and plan digest.
+`validate_payload_hash` defaults to true and `reverse` to false. Rolling updates and
 HF-base recovery use the same request shape;
 the tokenizer does not reread the manifest or repeat admission. Each engine's
 tokenizer owns the following internal phases:
@@ -219,9 +229,12 @@ interpret eval or rollout modes. Miles sequences it as the
 [eval contract](../../../../docs/advanced/gpu-delta-weight-transfer.md#dedicated-eval-snapshots)
 describes.
 
-Preparation failure aborts that engine's preparation while old-version serving
-continues. Failed or aborted delta sessions require restart before another update.
-Internal apply/resume failures leave admission closed.
+The tokenizer serializes update, info and clear controls independently of generation.
+After a lost HTTP reply, Miles can read the original activation receipts when the
+session and all committed ranks match. A stale source is rejected before preparation
+and leaves the last committed state intact. An aborted preparation or a partially
+applied update requires receiver replacement. Internal apply/resume failures leave
+admission closed.
 
 Updates default to `pause_mode="retract"` and `abort_all_requests=false`.
 `pause_mode` selects SGLang's own scheduler pause, run after the reader fence.

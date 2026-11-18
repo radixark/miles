@@ -617,7 +617,10 @@ class HostBuilder(_MetadataMapping):
         manifest = orjson.loads(content)
         metrics["host_manifest_read_parse_s"] = time.perf_counter() - parse_started
         validate_codec(manifest)
-        if any(manifest[key] != expected[key] for key in ("base_version", "target_version", "plan_digest")):
+        if any(
+            manifest[key] != expected[key]
+            for key in ("base_stream_id", "base_version", "stream_id", "target_version", "plan_digest")
+        ):
             raise ValueError("publication header differs from prepare request")
         index["publication"] = expected | {"codec": manifest["codec"]}
         definitions = {}

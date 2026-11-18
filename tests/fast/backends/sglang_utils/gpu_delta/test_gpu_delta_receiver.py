@@ -39,7 +39,6 @@ class TestCanonicalPlanCache(unittest.TestCase):
             for name in ("local", "foreign")
         ]
         backend = SimpleNamespace(
-            _canonical_plan_digest=None,
             binding_table=None,
             batch_plan=None,
             layers_per_batch=1,
@@ -68,9 +67,10 @@ class TestCanonicalPlanCache(unittest.TestCase):
             {key: entry[key] for key in ("name", "dtype", "shape", "encoding")}
             for entry in sorted(entries, key=lambda entry: entry["name"])
         ]
+        backend.plan_digest = receiver.plan_digest(definitions, "a" * 64)
         return backend, {
             "tensors": sorted(entries, key=lambda entry: entry["name"]),
-            "plan_digest": receiver.plan_digest(definitions),
+            "plan_digest": backend.plan_digest,
         }
 
     def test_warm_plan_reuses_admitted_digest_with_fresh_payloads(self):
@@ -92,9 +92,20 @@ class TestCanonicalPlanCache(unittest.TestCase):
             entries, reused = receiver._qualify_canonical_plan(backend, updated)
         self.assertTrue(reused)
         self.assertIs(entries, admitted)
-        self.assertEqual(backend._canonical_plan_digest, publication["plan_digest"])
-        with self.assertRaisesRegex(ValueError, "plan changed"):
+        with self.assertRaisesRegex(ValueError, "checkpoint bytes"):
             receiver._qualify_canonical_plan(backend, publication_view(publication | {"plan_digest": "changed"}))
+
+    def test_foreign_base_bytes_reject_before_reading_catalog(self):
+        backend, publication = self.publication()
+        definitions = [{"name": name, **metadata} for name, metadata in backend.layout.inventory.items()]
+        publication["plan_digest"] = receiver.plan_digest(definitions, "b" * 64)
+        view = publication_view(publication)
+        with (
+            patch.object(view, "read_catalog", side_effect=AssertionError("foreign prior admitted")),
+            self.assertRaisesRegex(ValueError, "checkpoint bytes"),
+        ):
+            receiver._qualify_canonical_plan(backend, view)
+        self.assertIsNone(backend.binding_table)
 
     def test_compact_scale_format_matches_the_checkpoint_prior(self):
         backend, publication = self.publication()
@@ -111,9 +122,9 @@ class TestCanonicalPlanCache(unittest.TestCase):
             entry.update(format="fp8-block128-ue8m0", checkpoint_dtype="F32")
             definition.update(format="fp8-block128-ue8m0", checkpoint_dtype="F32")
             definitions.append(definition)
-        publication["plan_digest"] = receiver.plan_digest(definitions)
+        publication["plan_digest"] = backend.plan_digest = receiver.plan_digest(definitions, "a" * 64)
         receiver._qualify_canonical_plan(backend, publication_view(publication))
-        backend._canonical_plan_digest = None
+        backend.binding_table = None
         backend.layout.inventory["local"]["checkpoint_dtype"] = "U8"
         with self.assertRaisesRegex(ValueError, "canonical tensor metadata mismatch"):
             receiver._qualify_canonical_plan(backend, publication_view(publication))
@@ -121,7 +132,7 @@ class TestCanonicalPlanCache(unittest.TestCase):
     def test_failed_cold_qualification_does_not_admit_a_cache(self):
         for message, mutate in (
             ("canonical tensor plan", lambda _, catalog: catalog.update(plan_digest="invalid")),
-            ("missing local tensors", lambda _, catalog: catalog["tensors"].pop(1)),
+            ("missing canonical tensors", lambda _, catalog: catalog["tensors"].pop(1)),
             ("unadmitted tensor", lambda backend, _: backend.layout.excluded.update(local=STATIC_DRAFT)),
             ("unadmitted tensor: local", lambda backend, _: backend.layout.excluded.update(local=FROZEN_MODULE)),
             # Not excluded is not bound: a mapping that binds nothing must record why.
@@ -138,7 +149,7 @@ class TestCanonicalPlanCache(unittest.TestCase):
                 mutate(backend, invalid)
                 with self.assertRaisesRegex(ValueError, message):
                     receiver._qualify_canonical_plan(backend, publication_view(invalid))
-                self.assertIsNone(backend._canonical_plan_digest)
+                self.assertIsNone(backend.binding_table)
                 backend.layout.excluded = {"foreign": byte_layout.REMOTE_EXPERT}
                 self.assertFalse(receiver._qualify_canonical_plan(backend, publication_view(publication))[1])
 
@@ -427,14 +438,16 @@ class TestReceiverPreparation(unittest.TestCase):
         prepared._refresh_images()
 
     def test_backend_reads_inventory_once_and_drains_all_streams_on_failure(self):
-        fake_plan = SimpleNamespace(check_identity=lambda: None, finish=Mock(), bindings=[], excluded={})
+        fake_plan = SimpleNamespace(check_identity=lambda: None, finish=Mock(), inventory={}, bindings=[], excluded={})
         fake_model = SimpleNamespace(parameters=lambda: iter([SimpleNamespace(device=torch.device("cpu"))]))
         model_runner = SimpleNamespace(model=fake_model, device="cuda", gpu_id=0)
         with (
             patch.dict(receiver.os.environ, GPU_DELTA_LAYERS_PER_BATCH="3"),
             patch.object(receiver, "GpuDeltaLayout", return_value=fake_plan) as layout_type,
             patch.object(receiver, "HostArena") as arena_type,
-            patch.object(receiver, "read_canonical_checkpoint") as read_checkpoint,
+            patch.object(
+                receiver, "read_canonical_checkpoint", return_value=SimpleNamespace(content_digest="a" * 64)
+            ) as read_checkpoint,
         ):
             shadows = byte_layout.CanonicalShadows({}, create=True)
             backend = receiver.GpuDeltaBackend(model_runner, {"engine_id": "test-engine"}, shadows)

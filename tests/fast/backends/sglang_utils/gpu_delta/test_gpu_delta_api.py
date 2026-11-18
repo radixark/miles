@@ -62,6 +62,7 @@ def test_delta_routes_preserve_typed_requests_auth_and_app_route_class(http_delt
         "manifest_path": "/immutable/manifest.json",
         "manifest_sha256": "a" * 64,
         "stream_id": "run-1",
+        "base_stream_id": None,
         "base_version": 0,
         "target_version": 1,
         "plan_digest": "b" * 64,
@@ -156,6 +157,7 @@ def publication():
         manifest_path="/immutable/manifest.json",
         manifest_sha256="a" * 64,
         stream_id="run-1",
+        base_stream_id="run-1",
         base_version=2,
         target_version=7,
         plan_digest="b" * 64,
@@ -175,6 +177,7 @@ def reply(control, obj, state, ranks=(0,)):
                     "session_id": obj.session_id,
                     "state": state,
                     "target_version": 7,
+                    "version": 7,
                 }
                 for rank in ranks
             ],
@@ -219,6 +222,11 @@ def test_update_waits_for_every_rank_before_apply_and_resume(control, publicatio
         apply = await sent.get()
         assert type(apply) is io.ApplyGpuDeltaReqInput
         assert facade.manager.is_pause
+        # A timeout can race the original HTTP call. Reconciliation waits for its
+        # complete transaction, including resume on the last rank.
+        lookup = asyncio.create_task(
+            facade.request(io.GetGpuDeltaInfoReqInput(engine_id="e0", session_id=publication["session_id"]))
+        )
         reply(facade, apply, "APPLIED", ranks=routes[0])
         await asyncio.sleep(0)
         assert sent.empty() and facade.manager.is_pause
@@ -232,10 +240,15 @@ def test_update_waits_for_every_rank_before_apply_and_resume(control, publicatio
         reply(facade, resume, "RESUMED", ranks=routes[1])
         result = await task
         assert result["success"] and not facade.manager.is_pause
-        assert versions == ["7"] and sent.empty()
+        assert versions == ["7"]
+        info = await sent.get()
+        assert isinstance(info, io.GetGpuDeltaInfoReqInput)
+        for ranks in routes:
+            reply(facade, info, "RESUMED", ranks=ranks)
+        assert (await lookup)["activation"] == result
         assert [r["state"] for r in result["applied_participants"]] == ["APPLIED"] * (2 * ranks_per_route)
         assert [r["state"] for r in result["participants"]] == ["RESUMED"] * (2 * ranks_per_route)
-        assert setup_calls == ["loop", "workers"]
+        assert setup_calls == ["loop", "workers"] * 2
 
     asyncio.run(asyncio.wait_for(run(), timeout=2))
 
@@ -270,7 +283,7 @@ def test_update_preserves_receipts_options_and_failure_boundaries(
     # The same canonical input contract supports fresh-base and rolling updates.
     publication["validate_payload_hash"] = False
     if release_state:
-        publication["base_version"] = 0
+        publication.update(base_stream_id=None, base_version=0)
     now = [0.0]
     monkeypatch.setattr(tokenizer, "time", SimpleNamespace(monotonic=lambda: now[0]))
     serving_version = "7" if weight_version is None else weight_version

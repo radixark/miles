@@ -48,6 +48,7 @@ class Backend:
 
     def __init__(self, payload=None):
         self.payload = payload or Payload()
+        self.plan_digest = "b" * 64
         self.started = threading.Event()
         self.ready = threading.Event()
         self.error = None
@@ -82,7 +83,9 @@ def request(participants):
         manifest_path="/immutable/manifest.json",
         manifest_sha256="a" * 64,
         stream_id="run-1",
+        base_stream_id=None,
         base_version=0,
+        reverse=False,
         target_version=1,
         plan_digest="b" * 64,
         participants=participants,
@@ -295,6 +298,7 @@ def test_engine_release_runs_off_scheduler_and_before_next_prepare(make_session)
         req = request([session.identity]) | dict(
             session_id="publication-2",
             manifest_sha256="c" * 64,
+            base_stream_id="run-1",
             base_version=1,
             target_version=2,
         )
@@ -341,14 +345,25 @@ def test_wrong_or_repeated_transaction_never_replays_xor(make_session):
     with pytest.raises(ValueError, match="applied session"):
         session.resume("publication-1", lambda _: None)
     assert backend.payload.applications == 1
-    with pytest.raises(ValueError, match="another delta stream"):
-        session.prepare(
-            req | {"session_id": "other", "stream_id": "other-job", "base_version": 1, "target_version": 2}
-        )
     with pytest.raises(ValueError, match="must not be replayed"):
         session.prepare(req)
-    # Reusing an immutable mask to cancel it is an explicit new transaction.
-    assert session.prepare(req | {"session_id": "cancel"}).result()["state"] == "PREPARED"
+    # A new request ID cannot turn a duplicate forward into a cancel, even after a lost reply.
+    for stale in (
+        req,
+        req | dict(base_stream_id="other-job", base_version=1, target_version=2),
+        req | dict(base_stream_id="run-1", base_version=2, target_version=3),
+    ):
+        with pytest.raises(ValueError, match="differs from committed"):
+            session.prepare(stale | dict(session_id="late"))
+    assert session.status()["state"] == "RESUMED"
+    assert backend.payload.applications == 1
+    assert session.prepare(req | dict(session_id="cancel", reverse=True)).result()["state"] == "PREPARED"
+    session.apply("cancel", lambda: None, lambda: None, None)
+    resumed = []
+    cancel = session.resume("cancel", resumed.append)
+    assert resumed == [0] and (cancel["committed_stream_id"], cancel["version"]) == (None, 0)
+    with pytest.raises(ValueError, match="differs from committed"):
+        session.prepare(req | dict(session_id="duplicate-cancel", reverse=True))
 
 
 @pytest.mark.parametrize("failure", ["fence", "retract", "flush", "apply"])
@@ -422,8 +437,11 @@ def test_scheduler_blocked_timing_excludes_background_prepare(make_session, monk
     now[0] = 60_000_000_000
     resumed = session.resume("publication-1", lambda _: None)
     assert resumed["result"] == full_result
-    assert {k: v for k, v in receipt.items() if k not in {"state", "result", "scheduler_timing"}} == {
-        k: v for k, v in resumed.items() if k not in {"state", "result", "scheduler_timing"}
+    assert (receipt["committed_stream_id"], receipt["version"]) == (None, 0)
+    assert (resumed["committed_stream_id"], resumed["version"]) == ("run-1", 1)
+    evolving = {"state", "result", "scheduler_timing", "committed_stream_id", "version"}
+    assert {k: v for k, v in receipt.items() if k not in evolving} == {
+        k: v for k, v in resumed.items() if k not in evolving
     }
     assert resumed["scheduler_timing"] == {
         "clock": "monotonic_ns",
@@ -676,10 +694,17 @@ def test_clear_drains_release_before_private_close_and_shared_unlink(make_sessio
             assert current_receipt[key] == req[key]
     # A fresh transaction waits for describe to attach a backend; the cleared record stays settled.
     with pytest.raises(ValueError, match="must be described before its next update"):
-        session.prepare(req | dict(session_id="publication-2", base_version=7, target_version=8))
+        session.prepare(
+            req | dict(session_id="publication-2", base_stream_id="run-1", base_version=7, target_version=8)
+        )
     assert session.status()["state"] == "CLEARED" and session.status()["session_id"] == "publication-1"
     # After an update only the retained shadows hold the committed version, so describe never recreates them.
-    session.reattach(lambda identity, store, create: SimpleNamespace(create=create))
+    changed = Backend()
+    changed.plan_digest = "reconverted-base"
+    with pytest.raises(ValueError, match="checkpoint changed since receiver admission"):
+        session.reattach(lambda *_: changed)
+    assert changed.closed and session.backend is None and session.committed == ("run-1", 7)
+    session.reattach(lambda identity, store, create: SimpleNamespace(create=create, plan_digest=backend.plan_digest))
     assert session.backend.create is False
 
 
@@ -705,7 +730,9 @@ def test_failed_async_release_prevents_resource_reuse(make_session, next_operati
 
     backend.payload.close = fail_release
     session.resume("publication-1", lambda _: None)
-    following = request([session.identity]) | dict(session_id="publication-2", base_version=1, target_version=2)
+    following = request([session.identity]) | dict(
+        session_id="publication-2", base_stream_id="run-1", base_version=1, target_version=2
+    )
     if next_operation == "clear":
         with pytest.raises(OSError, match="state release failed"):
             session.clear()
@@ -720,7 +747,7 @@ def test_failed_async_release_prevents_resource_reuse(make_session, next_operati
         assert "state release failed" in receipt["message"]
         assert not backend.started.is_set()
         assert backend.payload.applications == 1
-    assert session.version == 1 and not backend.closed
+    assert session.committed == ("run-1", 1) and not backend.closed
     assert session.backend is backend
 
 
@@ -888,7 +915,9 @@ def test_describe_binds_published_scheduler_ranks(
             assert model_runner is runner
             backends.append(identity.copy())
             shadows.append(store)
-            return SimpleNamespace(host_arena=SimpleNamespace(directory=None, owner=False), close=lambda: None)
+            return SimpleNamespace(
+                plan_digest="fixture", host_arena=SimpleNamespace(directory=None, owner=False), close=lambda: None
+            )
 
         monkeypatch.setitem(
             sys.modules,
@@ -935,17 +964,17 @@ def test_describe_binds_published_scheduler_ranks(
             "pp_rank": 0,
         }
         assert receipt["state"] == "IDLE" and receipt["version"] == 0
-        assert set(receipt) == {"identity", "state", "version"}
+        assert receipt["stream_id"] is None and receipt["plan_digest"] == "fixture"
         assert control._describe("engine-0") == receipt
         assert len(backends) == 1
         assert cache_engines == ["engine-0"]
-        control.session.version = 7
+        control.session.committed = ("run", 7)
         assert control.session.clear()["version"] == 7
         control.session.release_cache()
         with pytest.raises(ValueError, match="another engine"):
             control._describe("unused-new-engine-name")
         fresh = control._describe("engine-0")
-        assert fresh["identity"] == receipt["identity"] and fresh["version"] == 7
+        assert fresh["identity"] == receipt["identity"] and (fresh["stream_id"], fresh["version"]) == ("run", 7)
         assert len(backends) == 2 and cache_engines == ["engine-0"]
         # Both backends share the session's shadow store; only the version-0 one may create shadows.
         assert [store.create for store in shadows] == [True, False]

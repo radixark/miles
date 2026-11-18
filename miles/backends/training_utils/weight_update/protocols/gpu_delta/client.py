@@ -10,8 +10,11 @@ def info_request(engine_id):
     return {"endpoint": "get_gpu_delta_info", "payload": {"engine_id": engine_id}}
 
 
-async def get_gpu_delta_info(client, engine_id):
-    return await client._make_request(**info_request(engine_id))
+async def get_gpu_delta_info(client, engine_id, session_id=None):
+    request = info_request(engine_id)
+    if session_id is not None:
+        request["payload"]["session_id"] = session_id
+    return await client._make_request(**request)
 
 
 async def clear_gpu_delta_state(client):

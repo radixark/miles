@@ -7,9 +7,11 @@ import uuid
 from pathlib import Path
 
 from miles.backends.training_utils.weight_update.protocols.gpu_delta.client import get_gpu_delta_info
-from miles.backends.training_utils.weight_update.protocols.gpu_delta.session import activate_engine, engine_identities
-
-_UNKNOWN = object()
+from miles.backends.training_utils.weight_update.protocols.gpu_delta.session import (
+    activate_engine,
+    committed_endpoint,
+    engine_identities,
+)
 
 
 def uses_gpu_delta_eval(args):
@@ -36,13 +38,17 @@ def _eval_stream_dir(update_weight_disk_dir, run_uuid):
     return Path(update_weight_disk_dir) / f"eval-stream-{run_uuid}"
 
 
-def record_eval_stream(update_weight_disk_dir, run_uuid, stream_id):
-    """Record the run's current trainer stream, the only one dedicated eval pins; return the record's directory."""
+def record_eval_stream(update_weight_disk_dir, run_uuid, stream_id, predecessor=None):
+    """Allow this launch and the exact checkpoint it restored as eval snapshot sources."""
     directory = _eval_stream_dir(update_weight_disk_dir, run_uuid)
     directory.mkdir(parents=True, exist_ok=True)
+    record = directory / "STREAM"
+    content = json.dumps({"stream_id": stream_id, "predecessor": predecessor})
+    if record.is_file() and record.read_text() == content:
+        return None
     staged = directory / f".STREAM.{stream_id}"
-    staged.write_text(stream_id)
-    staged.replace(directory / "STREAM")
+    staged.write_text(content)
+    staged.replace(record)
     return directory
 
 
@@ -56,18 +62,26 @@ def _read_snapshot(checkpoint_dir, hf_checkpoint, stream_record):
     if hashlib.sha256(content).hexdigest() != descriptor["manifest_sha256"]:
         raise ValueError("Eval snapshot manifest SHA256 differs")
     manifest = json.loads(content)
-    for key in ("stream_id", "publication_id", "base_version", "target_version", "plan_digest"):
+    for key in (
+        "stream_id",
+        "base_stream_id",
+        "publication_id",
+        "base_version",
+        "target_version",
+        "training_step",
+        "plan_digest",
+    ):
         if manifest[key] != descriptor[key]:
             raise ValueError(f"Eval snapshot completion differs from manifest: {key}")
-    if manifest["base_version"] != 0 or manifest["target_version"] != 1:
+    if manifest["base_stream_id"] is not None or manifest["base_version"] != 0 or manifest["target_version"] < 1:
         raise ValueError("Eval snapshot must be immutable and relative to the HF base")
     # Both sides trust the same immutable HF prior; this checks configuration identity.
     if Path(manifest["base_checkpoint"]).resolve() != Path(hf_checkpoint).resolve():
         raise ValueError("Eval snapshot uses a different configured HF base")
-    # Receivers keep the first stream they apply. A resumed job's first --save-hf point carries an earlier trainer's
-    # stream, so pinning it would leave the fresh eval engines unable to apply this run's later snapshots.
-    if manifest["stream_id"] != stream_record.read_text():
-        raise ValueError("Eval snapshot belongs to an earlier trainer stream")
+    allowed = json.loads(stream_record.read_bytes())
+    source = {key: manifest[key] for key in ("stream_id", "target_version", "training_step")}
+    if source["stream_id"] != allowed["stream_id"] and source != allowed["predecessor"]:
+        raise ValueError("Eval snapshot belongs to an unrelated trainer stream or checkpoint")
     return descriptor
 
 
@@ -75,7 +89,7 @@ class EvalSnapshotUpdater:
     """Cancel each engine's last snapshot before applying its next one.
 
     The executor's existing eval lock excludes generation between these calls.
-    A failed or ambiguous call requires receiver replacement, never XOR replay.
+    Every cancel or apply starts from the version reported by all original ranks.
     READY descriptors may be reclaimed by the ordinary eval queue; their
     immutable publications remain in the sender's shared run storage.
     """
@@ -118,25 +132,20 @@ class EvalSnapshotUpdater:
 
     async def _pin_engine(self, client, participants, description, publication, weight_version, timeout):
         engine_id = participants[0]["engine_id"]
-        incarnation = tuple(sorted(identity["rank_id"] for identity in participants))
-        previous_incarnation, previous = self._engines.get(engine_id, (None, None))
-        if previous_incarnation != incarnation:
-            if any(row["state"] != "IDLE" or row["version"] != 0 for row in description["participants"]):
-                raise ValueError("Eval snapshot requires fresh receiver state after controller or engine replacement")
-            previous = None
-            self._engines[engine_id] = incarnation, None
-        if previous is _UNKNOWN:
-            raise RuntimeError("Eval receiver has an uncertain XOR result and must be replaced")
-        if publication is None:
-            if previous is not None:
-                raise ValueError("Initial HF eval requires fresh receiver state")
+        previous = self._engines.get(engine_id)
+        plan_digest = (publication or previous or description["participants"][0])["plan_digest"]
+        current = committed_endpoint(description, participants, plan_digest)
+        destination = (publication["stream_id"], publication["target_version"]) if publication else (None, 0)
+        if current == destination:
             await asyncio.wait_for(client.update_weight_version(weight_version), timeout)
-            return
-        # No operation is replayable after dispatch: a lost reply could hide a
-        # completed XOR. Healthy engines keep their independent progress.
-        # Cancel and apply are distinct receiver sessions on the same engine.
-        self._engines[engine_id] = incarnation, _UNKNOWN
-        if previous is not None:
-            await activate_engine(client, previous, participants, uuid.uuid4().hex, "0", timeout)
-        await activate_engine(client, publication, participants, uuid.uuid4().hex, weight_version, timeout)
-        self._engines[engine_id] = incarnation, publication
+        else:
+            if current != (None, 0):
+                if previous is None or current != (previous["stream_id"], previous["target_version"]):
+                    raise ValueError("Eval receiver's committed weights have no known cancellation publication")
+                await activate_engine(client, previous, participants, uuid.uuid4().hex, "0", timeout, reverse=True)
+            if publication is not None:
+                # Keep the immutable mask even if the reply is lost. The next pin
+                # reads the actual endpoint before using it in either direction.
+                self._engines[engine_id] = publication
+                await activate_engine(client, publication, participants, uuid.uuid4().hex, weight_version, timeout)
+        self._engines[engine_id] = publication

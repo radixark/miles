@@ -89,6 +89,8 @@ class GpuDeltaTokenizerControl:
         from sglang.utils import TypeBasedDispatcher
 
         self.manager = manager
+        self._control_lock = asyncio.Lock()
+        self._last_activation = None
         self.reply_endpoint = manager.recv_from_detokenizer.getsockopt_string(zmq.LAST_ENDPOINT)
         self.communicator = GpuDeltaCommunicator(manager._dispatch_to_scheduler, fan_out)
         manager._result_dispatcher += TypeBasedDispatcher([(GpuDeltaReqOutput, self.communicator.handle_recv)])
@@ -102,15 +104,23 @@ class GpuDeltaTokenizerControl:
                     "message": "GPU delta requires one Python tokenizer worker",
                     "participants": [],
                 }
-            if isinstance(obj, UpdateWeightsFromGpuDeltaReqInput):
-                return await self._update(obj)
-            elif isinstance(obj, ClearGpuDeltaStateReqInput):
-                return await self._clear()
-            elif isinstance(obj, GetGpuDeltaInfoReqInput):
-                # Admission does not gate generation or acquire its writer lock.
-                return await self._request(obj)
-            else:
-                raise ValueError(f"unknown GPU delta request: {type(obj).__name__}")
+            # Serialize whole transactions, including info reads that settle a lost HTTP reply.
+            # This control-plane lock is independent of generation.
+            async with self._control_lock:
+                if isinstance(obj, UpdateWeightsFromGpuDeltaReqInput):
+                    result = await self._update(obj)
+                    if result["success"]:
+                        self._last_activation = obj.session_id, result
+                    return result
+                elif isinstance(obj, ClearGpuDeltaStateReqInput):
+                    return await self._clear()
+                elif isinstance(obj, GetGpuDeltaInfoReqInput):
+                    result = await self._request(obj)
+                    if self._last_activation is not None and self._last_activation[0] == obj.session_id:
+                        result["activation"] = self._last_activation[1]
+                    return result
+                else:
+                    raise ValueError(f"unknown GPU delta request: {type(obj).__name__}")
         except Exception as exc:
             return {"success": False, "message": f"{type(exc).__name__}: {exc}", "participants": []}
 
@@ -119,9 +129,7 @@ class GpuDeltaTokenizerControl:
             result = await self._request(obj)
             if result["success"]:
                 self.manager._update_weight_version_if_provided(
-                    str(result["participants"][0]["target_version"])
-                    if obj.weight_version is None
-                    else obj.weight_version
+                    str(result["participants"][0]["version"]) if obj.weight_version is None else obj.weight_version
                 )
                 if not obj.keep_pause:
                     self.manager.is_pause = False

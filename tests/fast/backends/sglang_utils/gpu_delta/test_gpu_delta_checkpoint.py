@@ -20,7 +20,13 @@ from safetensors.torch import save_file
 
 from miles.backends.sglang_utils.gpu_delta import checkpoint, receiver
 from miles.backends.sglang_utils.gpu_delta.bindings import CanonicalShadows
-from miles.utils.gpu_delta.publication import read_safetensors_headers, static_policy
+from miles.utils.gpu_delta.publication import (
+    checkpoint_plan_digest,
+    plan_digest,
+    read_checkpoint_plan,
+    read_safetensors_headers,
+    static_policy,
+)
 
 _root = Path(importlib.util.find_spec("sglang").origin).parent / "srt"
 
@@ -125,10 +131,7 @@ class TestCanonicalCheckpointHeaders(unittest.TestCase):
             "model.layers.9.mtp.weight": torch.zeros(2, dtype=torch.bfloat16),
             "model.layers.0.self_attn.rotary_emb.inv_freq": torch.zeros(2),
         }
-        path = self.save("model.safetensors", tensors)
-        # Metadata admission must not materialize tensors: keep only the length prefix and JSON header.
-        with path.open("r+b") as source:
-            source.truncate(8 + int.from_bytes(source.read(8), "little"))
+        self.save("model.safetensors", tensors)
         inventory = self.read()
         # Header order differs across dtypes; the inventory keeps safe_open's sorted key order.
         self.assertEqual(list(inventory), sorted(tensors))
@@ -192,7 +195,11 @@ class TestCanonicalCheckpointHeaders(unittest.TestCase):
         self.index({"target": "shard.safetensors"})
         self.assertEqual(set(self.read()), {"target"})
         self.runner.model_config.hf_config.num_nextn_predict_layers = 1
-        self.assertEqual(set(self.read()), {"target", "model.layers.9.mtp.weight"})
+        admitted = checkpoint.read_canonical_checkpoint(self.runner)
+        self.assertEqual(set(admitted.inventory), {"target", "model.layers.9.mtp.weight"})
+        plan = read_checkpoint_plan(self.folder)
+        self.assertEqual([tensor["name"] for tensor in plan], ["target"])
+        self.assertEqual(plan_digest(plan, admitted.content_digest), checkpoint_plan_digest(self.folder, plan))
 
     def test_missing_indexed_shard_and_ambiguous_sources_reject(self):
         self.index({"weight": "missing.safetensors"})

@@ -303,7 +303,7 @@ class HostArena(_MetadataMapping):
         """The original owner authenticates and prepares one shared publication."""
         started = time.perf_counter()
         participants = sorted(request["participants"], key=lambda value: value["rank_id"])
-        namespace = {"stream_id": request["stream_id"], "participants": participants}
+        namespace = {"participants": participants}
         if self._namespace is None:
             owner = min(
                 (
@@ -318,7 +318,7 @@ class HostArena(_MetadataMapping):
             self._live = _attach_namespace(self.root, self.directory, reclaim=self.owner)
             self._namespace = namespace
         elif namespace != self._namespace:
-            raise ValueError("host cache original cohort or stream changed")
+            raise ValueError("host cache original cohort changed")
         publication = Path(request["manifest_path"]).resolve(strict=True)
         expected = {
             "manifest_path": str(publication),
@@ -327,6 +327,8 @@ class HostArena(_MetadataMapping):
                 key: request[key]
                 for key in (
                     "session_id",
+                    "stream_id",
+                    "base_stream_id",
                     "base_version",
                     "target_version",
                     "plan_digest",

@@ -19,6 +19,7 @@ class ReleaseGpuDeltaCacheReqInput(BaseReq, kw_only=True):
 
 class GetGpuDeltaInfoReqInput(BaseReq, kw_only=True):
     engine_id: str
+    session_id: str | None = None
 
 
 class PrepareGpuDeltaReqInput(BaseReq, kw_only=True):
@@ -26,11 +27,13 @@ class PrepareGpuDeltaReqInput(BaseReq, kw_only=True):
     manifest_path: str
     manifest_sha256: str
     stream_id: str
+    base_stream_id: str | None
     base_version: int
     target_version: int
     plan_digest: str
     participants: list[dict[str, Any]]
     validate_payload_hash: bool = True
+    reverse: bool = False
 
     def publication(self) -> dict:
         return {
@@ -38,11 +41,13 @@ class PrepareGpuDeltaReqInput(BaseReq, kw_only=True):
             "manifest_path": self.manifest_path,
             "manifest_sha256": self.manifest_sha256,
             "stream_id": self.stream_id,
+            "base_stream_id": self.base_stream_id,
             "base_version": self.base_version,
             "target_version": self.target_version,
             "plan_digest": self.plan_digest,
             "participants": self.participants,
             "validate_payload_hash": self.validate_payload_hash,
+            "reverse": self.reverse,
         }
 
 

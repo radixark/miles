@@ -26,6 +26,8 @@ import orjson
 from safetensors.numpy import load as load_columns
 from safetensors.numpy import save as save_columns
 
+from miles.utils.gpu_delta.checkpoint_digest import checkpoint_content_digest
+
 FRAME_BYTES = 1 << 20
 MAX_FRAME_BYTES = 4 << 20
 CODECS = {
@@ -83,21 +85,20 @@ def read_safetensors_headers(files):
     return locations
 
 
-def _checkpoint_locations(checkpoint):
-    """Locate tensors in the indexed checkpoint shards, or in every shard without an index."""
+def _checkpoint_files(checkpoint):
+    """The indexed checkpoint shards, or every shard without an index."""
     checkpoint = Path(checkpoint)
     index = checkpoint / "model.safetensors.index.json"
-    files = (
+    return (
         [checkpoint / name for name in sorted(set(json.loads(index.read_text())["weight_map"].values()))]
         if index.exists()
         else sorted(checkpoint.glob("*.safetensors"))
     )
-    return read_safetensors_headers(files)
 
 
 def make_checkpoint_reader(checkpoint):
     """Read bytes from the same indexed prior used by the canonical contract."""
-    locations = _checkpoint_locations(checkpoint)
+    locations = read_safetensors_headers(_checkpoint_files(checkpoint))
 
     def read(name, expected_dtype, expected_shape):
         path, offset, size, dtype, shape = locations[name]
@@ -237,7 +238,7 @@ def read_checkpoint_plan(checkpoint):
     policy = static_policy(config)
     quantization = config.get("quantization_config") or {}
     block_fp8 = quantization.get("quant_method") == "fp8" and quantization.get("weight_block_size") == [128, 128]
-    locations = _checkpoint_locations(checkpoint)
+    locations = read_safetensors_headers(_checkpoint_files(checkpoint))
     plan = []
     for name, (_, _, _, dtype, shape) in sorted(locations.items()):
         # Activation calibration is static too; receivers classify input scales by expert layout, not by name.
@@ -262,8 +263,12 @@ def read_checkpoint_plan(checkpoint):
     return plan
 
 
-def plan_digest(plan):
-    return sha256(canonical_json(sorted(plan, key=lambda spec: spec["name"])))
+def checkpoint_plan_digest(checkpoint, plan):
+    return plan_digest(plan, checkpoint_content_digest(checkpoint, _checkpoint_files(checkpoint)))
+
+
+def plan_digest(plan, base_digest):
+    return sha256(canonical_json([base_digest, sorted(plan, key=lambda spec: spec["name"])]))
 
 
 def read_canonical_tensor(reader, name, spec):
@@ -370,7 +375,15 @@ class PublicationWriter:
         owner: int = 0,
         publication_id: str | None = None,
         frame_bytes: int = FRAME_BYTES,
+        base_stream_id: str | None = None,
     ):
+        if (
+            base_version < 0
+            or target_version <= base_version
+            or not stream_id
+            or (base_version == 0 and base_stream_id is not None)
+        ):
+            raise ValueError("Invalid GPU-delta publication endpoints")
         validate_frame_bytes(frame_bytes)
         if codec not in CODECS:
             raise ValueError(f"GPU-delta codec must be one of {tuple(CODECS)}")
@@ -383,6 +396,7 @@ class PublicationWriter:
             "frame_bytes": frame_bytes,
             "stream_id": stream_id,
             "publication_id": publication_id or uuid.uuid4().hex,
+            "base_stream_id": (base_stream_id or stream_id) if base_version else None,
             "base_version": base_version,
             "target_version": target_version,
             "plan_digest": plan_digest,

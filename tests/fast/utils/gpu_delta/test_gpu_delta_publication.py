@@ -7,6 +7,8 @@ fixture replay suites independently reconstruct real inner-codec/Zstd target byt
 import copy
 import hashlib
 import json
+import os
+import shutil
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -15,7 +17,7 @@ import safetensors.numpy
 import torch
 from safetensors.torch import save_file
 
-from miles.utils.gpu_delta import publication
+from miles.utils.gpu_delta import checkpoint_digest, publication
 
 
 def _writer(path, owner=0, frame_bytes=publication.FRAME_BYTES, codec="snappy-zstd"):
@@ -321,7 +323,65 @@ def test_checkpoint_prior_is_receiver_independent_and_keeps_frozen_tensors_out(t
         {"name": name, "dtype": dtype, "shape": shape, "encoding": encoding}
         for name, dtype, shape, encoding in expected
     ]
-    assert publication.plan_digest(plan) == publication.plan_digest(plan[::-1])
+    digest = publication.checkpoint_plan_digest(tmp_path, plan)
+    assert digest == publication.checkpoint_plan_digest(tmp_path, plan[::-1])
+
+
+def test_base_digest_tracks_bytes_and_reuses_one_hash_across_ranks(tmp_path, monkeypatch):
+    trainer, receiver = tmp_path / "trainer", tmp_path / "receiver"
+    trainer.mkdir()
+    config = {"architectures": ["DeepseekV3ForCausalLM"], "num_hidden_layers": 1}
+    (trainer / "config.json").write_text(json.dumps(config))
+    shard = trainer / "model.safetensors"
+    save_file({"model.norm.weight": torch.zeros(16)}, shard)
+    plan = publication.read_checkpoint_plan(trainer)
+    hashed = []
+    original = checkpoint_digest._shard_hash
+
+    def count_hashes(path):
+        hashed.append(path)
+        return original(path)
+
+    monkeypatch.setattr(checkpoint_digest, "_shard_hash", count_hashes)
+    with ThreadPoolExecutor(max_workers=8) as ranks:
+        observed = list(ranks.map(lambda _: publication.checkpoint_plan_digest(trainer, plan), range(16)))
+    assert len(set(observed)) == 1
+    assert hashed == [shard]
+
+    shutil.copytree(trainer, receiver)  # Copy the cached identity too, as when staging an HF checkpoint.
+    assert publication.checkpoint_plan_digest(receiver, plan) == observed[0]
+    copied = receiver / shard.name
+    stat = copied.stat()
+    with copied.open("r+b") as stream:
+        stream.seek(-1, os.SEEK_END)
+        stream.write(b"\x01")
+    os.utime(copied, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert publication.read_checkpoint_plan(receiver) == plan
+    assert publication.checkpoint_plan_digest(receiver, plan) != observed[0]
+    assert hashed == [shard, copied, copied]
+    # An incomplete or malformed sidecar is a cache miss, never an identity.
+    record = trainer / ".miles-gpu-delta.sha256"
+    record.write_text(json.dumps(json.loads(record.read_text()) | {"sha256": []}))
+    assert publication.checkpoint_plan_digest(trainer, plan) == observed[0]
+    assert hashed[-1] == shard
+
+
+def test_readonly_base_reuses_a_local_digest(tmp_path, monkeypatch):
+    source = tmp_path / "model.safetensors"
+    save_file({"w": torch.ones(2)}, source)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    open_path = type(source).open
+
+    def readonly(path, mode="r", *args, **kwargs):
+        if path.parent == tmp_path and mode == "a":
+            raise PermissionError(13, "read-only checkpoint")
+        return open_path(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(type(source), "open", readonly)
+    digest = checkpoint_digest.checkpoint_content_digest(tmp_path, [source])
+    monkeypatch.setattr(checkpoint_digest, "_shard_hash", lambda _: pytest.fail("hashed a cached base"))
+    assert checkpoint_digest.checkpoint_content_digest(tmp_path, [source]) == digest
+    assert not (tmp_path / ".miles-gpu-delta.sha256").exists()
 
 
 def test_block128_plan_publishes_ue8m0_scales_that_writers_keep(tmp_path):

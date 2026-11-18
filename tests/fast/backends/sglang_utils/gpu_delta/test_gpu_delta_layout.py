@@ -41,7 +41,7 @@ def _nvfp4_method():
 def _glm_checkpoint(inventory):
     # Admission reads only metadata and the policy of the checkpoint's own config.json.
     policy = publication.static_policy({"architectures": ["GlmMoeDsaForCausalLM"], "num_hidden_layers": 1})
-    return CanonicalCheckpoint(inventory=inventory, policy=policy, locations={})
+    return CanonicalCheckpoint(inventory=inventory, policy=policy, locations={}, content_digest="a" * 64)
 
 
 def _fixed_moe():
@@ -760,7 +760,7 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
             parameters=SimpleNamespace(excluded={}, modules={}, moe_layers={}, shadowed={}), consumers=[], bind=bind
         )
         with patch.object(layout, "model_mapping", return_value=mapping):
-            plan = layout.GpuDeltaLayout(SimpleNamespace(), CanonicalCheckpoint(inventory, policy, {}), None)
+            plan = layout.GpuDeltaLayout(SimpleNamespace(), CanonicalCheckpoint(inventory, policy, {}, "a" * 64), None)
         self.assertEqual(
             plan.excluded,
             {
@@ -806,7 +806,7 @@ class TestFlashInferDeltaLayout(unittest.TestCase):
         def bind_view(parameters, name, meta):
             return parameters.bind_view(name, meta, None, live[name], [[0, extent] for extent in meta["shape"]])
 
-        checkpoint = CanonicalCheckpoint(inventory, policy, {})
+        checkpoint = CanonicalCheckpoint(inventory, policy, {}, "a" * 64)
         with patch.object(layout, "model_mapping", return_value=mapping(bind_view)):
             plan = layout.GpuDeltaLayout(SimpleNamespace(), checkpoint, None)
         self.assertEqual(

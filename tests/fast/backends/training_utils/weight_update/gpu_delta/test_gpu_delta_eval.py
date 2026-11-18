@@ -25,7 +25,9 @@ def write_snapshot(path, hf_checkpoint, **overrides):
     manifest = {
         "stream_id": "job-stream",
         "publication_id": path.name,
+        "base_stream_id": None,
         "base_version": 0,
+        "training_step": 1,
         "target_version": 1,
         "plan_digest": "plan",
         "base_checkpoint": str(hf_checkpoint),
@@ -48,8 +50,23 @@ def make_client(engine_id, version=0):
     async def apply(**request):
         receipt = {
             key: request[key]
-            for key in ("session_id", "stream_id", "manifest_sha256", "target_version", "plan_digest")
+            for key in (
+                "session_id",
+                "base_stream_id",
+                "stream_id",
+                "manifest_sha256",
+                "base_version",
+                "target_version",
+                "plan_digest",
+            )
         } | {"identity": identity, "state": "RESUMED"}
+        reverse = request.get("reverse", False)
+        stream = request["base_stream_id" if reverse else "stream_id"]
+        version = request["base_version" if reverse else "target_version"]
+        receipt.update(reverse=reverse, committed_stream_id=stream, version=version)
+        client.get_gpu_delta_info.return_value["participants"][0].update(
+            state="RESUMED", stream_id=stream, version=version
+        )
         return {
             "success": True,
             "participants": [receipt],
@@ -62,7 +79,15 @@ def make_client(engine_id, version=0):
         get_gpu_delta_info=AsyncMock(
             return_value={
                 "success": True,
-                "participants": [{"identity": identity, "state": "IDLE", "version": version}],
+                "participants": [
+                    {
+                        "identity": identity,
+                        "state": "IDLE",
+                        "stream_id": None if version == 0 else "unknown",
+                        "version": version,
+                        "plan_digest": "plan",
+                    }
+                ],
             }
         ),
         update_weight_version=AsyncMock(),
@@ -77,10 +102,10 @@ def make_client(engine_id, version=0):
     return client
 
 
-def make_updater(tmp_path, hf_checkpoint, stream_id="job-stream"):
+def make_updater(tmp_path, hf_checkpoint, stream_id="job-stream", predecessor=None):
     """An eval updater whose run's trainer recorded ``stream_id``, the stream ``write_snapshot`` publishes by default."""
     disk_dir = tmp_path / "publication-root"
-    record_eval_stream(disk_dir, "job", stream_id)
+    record_eval_stream(disk_dir, "job", stream_id, predecessor)
     return EvalSnapshotUpdater(
         SimpleNamespace(hf_checkpoint=hf_checkpoint, run_uuid="job", update_weight_disk_dir=disk_dir)
     )
@@ -95,11 +120,11 @@ async def test_nonconsecutive_eval_points_pin_independent_base_relative_snapshot
         if previous_staging is not None:
             shutil.rmtree(previous_staging)
         path = tmp_path / f"step_{step}"
-        descriptor = write_snapshot(path, base)
+        descriptor = write_snapshot(path, base, training_step=step, target_version=step)
         await updater.pin(clients, path, str(step), 5)
         for client in clients:
             request = client.update_weights_from_gpu_delta.call_args.kwargs
-            assert (request["base_version"], request["target_version"]) == (0, 1)
+            assert (request["base_version"], request["target_version"]) == (0, step)
             assert request["weight_version"] == str(step)
             assert request["manifest_sha256"] == descriptor["manifest_sha256"]
             assert request["validate_payload_hash"] is True
@@ -112,6 +137,7 @@ async def test_nonconsecutive_eval_points_pin_independent_base_relative_snapshot
         assert [call["weight_version"] for call in calls] == ["3", "0", "9"]
         # Pins keep the receiver's defaults, retract and flush, so eval reuses no KV computed with older weights.
         assert not any("pause_mode" in call for call in calls)
+        assert [call.get("reverse", False) for call in calls] == [False, True, False]
         assert calls[0]["manifest_path"] == calls[1]["manifest_path"]
         assert Path(calls[1]["manifest_path"]).exists()
         assert len({call["session_id"] for call in calls}) == 3
@@ -131,22 +157,28 @@ async def test_invalid_snapshot_never_reaches_xor_apply(tmp_path, invalid):
     client.update_weights_from_gpu_delta.assert_not_awaited()
 
 
-async def test_resumed_job_never_pins_an_earlier_trainers_stream(tmp_path):
+async def test_resume_pins_only_the_restored_parent_then_the_new_stream(tmp_path):
     base = tmp_path / "base"
-    # The resume-time point reads the previous launch's --save-hf snapshot; this run's trainer recorded a new stream.
-    write_snapshot(tmp_path / "hf_9", base, stream_id="earlier-stream")
-    write_snapshot(tmp_path / "hf_10", base)
+    parent = {"stream_id": "earlier-stream", "training_step": 9, "target_version": 6}
+    write_snapshot(tmp_path / "hf_9", base, **parent)
+    write_snapshot(tmp_path / "abandoned", base, **(parent | {"target_version": 7}))
+    write_snapshot(tmp_path / "unrelated", base, **(parent | {"stream_id": "other-job"}))
+    write_snapshot(tmp_path / "hf_10", base, training_step=10, target_version=7)
     client = make_client("e0")
-    updater = make_updater(tmp_path, base)
+    updater = make_updater(tmp_path, base, predecessor=parent)
 
-    with pytest.raises(ValueError, match="earlier trainer stream"):
-        await updater.pin([client], tmp_path / "hf_9", "9", 5)
-    # It is skipped before any engine is contacted, so the fresh engine still takes this run's stream.
+    for rejected in ("abandoned", "unrelated"):
+        with pytest.raises(ValueError, match="unrelated trainer stream or checkpoint"):
+            await updater.pin([client], tmp_path / rejected, "9", 5)
     client.get_gpu_delta_info.assert_not_awaited()
-    client.update_weights_from_gpu_delta.assert_not_awaited()
+    await updater.pin([client], tmp_path / "hf_9", "9", 5)
     await updater.pin([client], tmp_path / "hf_10", "10", 5)
-    request = client.update_weights_from_gpu_delta.call_args.kwargs
-    assert (request["stream_id"], request["weight_version"]) == ("job-stream", "10")
+    calls = [call.kwargs for call in client.update_weights_from_gpu_delta.await_args_list]
+    assert [(call["stream_id"], call.get("reverse", False)) for call in calls] == [
+        ("earlier-stream", False),
+        ("earlier-stream", True),
+        ("job-stream", False),
+    ]
 
 
 async def test_failed_pin_settles_other_engines_without_replaying_xor(tmp_path):
@@ -157,7 +189,7 @@ async def test_failed_pin_settles_other_engines_without_replaying_xor(tmp_path):
     finished = asyncio.Event()
 
     async def fail(**request):
-        raise TimeoutError("applied, but reply lost")
+        raise RuntimeError("receiver stopped during apply")
 
     healthy_apply = healthy.update_weights_from_gpu_delta.side_effect
 
@@ -173,13 +205,13 @@ async def test_failed_pin_settles_other_engines_without_replaying_xor(tmp_path):
     assert finished.is_set()
     failed.update_weights_from_gpu_delta.assert_awaited_once()
     healthy.update_weights_from_gpu_delta.assert_awaited_once()
-    # A later eval may advance healthy engines, but never retries the uncertain
-    # incarnation. A replacement rank starts directly from the immutable base.
+    # An unsettled rank prevents another apply. The healthy engine already holds this target.
+    failed.get_gpu_delta_info.return_value["participants"][0]["state"] = "FAILED"
     with pytest.raises(RuntimeError) as uncertain:
         await updater.pin([failed, healthy], path, "9", 5)
-    assert "uncertain XOR result" in str(uncertain.value.__cause__)
+    assert "unsettled weights" in str(uncertain.value.__cause__)
     failed.update_weights_from_gpu_delta.assert_awaited_once()
-    assert healthy.update_weights_from_gpu_delta.await_count == 3
+    healthy.update_weights_from_gpu_delta.assert_awaited_once()
     replacement = make_client("failed")
     replacement.get_gpu_delta_info.return_value["participants"][0]["identity"]["rank_id"] = "new-rank"
     await updater.pin([replacement, healthy], path, "12", 5)
