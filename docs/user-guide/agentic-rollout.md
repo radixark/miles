@@ -194,6 +194,19 @@ the worker then refuses requests without it, and a call it refuses discards the
 sample (`exit_status` `WorkerUnauthorized`). Without a secret the worker accepts
 any request, so run it on a private network.
 
+`--custom-agent-function-worker` also takes a start function's `module.fn`, which
+gives each call a worker of its own, so nothing a call leaves behind reaches the
+next. Anything but an `http://` or `https://` URL is loaded as one, and a path that
+does not load fails at startup. It has the shape `fn(label, "") -> (close_fn,
+worker_url)`, runs on the rollout host, and may block. Miles waits up to two
+minutes for the worker's `/health`, runs the call there, and runs `close_fn` however
+the call ends. A failed start or a worker that never turns healthy discards the
+sample (`exit_status` `SandboxWorkerUnavailable`), and a rollout abort during the
+start cancels it, closes the worker and discards the sample (`Cancelled`). Agents on
+these workers cannot use `rollout_semaphore` or `rollout_lock`: the locks would limit
+one worker, so they raise. `examples/experimental/agent_sandbox/` has an E2B start
+function and a local-process one.
+
 A rollout abort, such as the one that ends an oversampled round, cancels this
 rollout's calls in every mode and discards their samples (`exit_status`
 `Cancelled`), however the agent then ends; an episode whose session opens after
