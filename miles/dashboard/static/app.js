@@ -18,12 +18,21 @@ export function el(tag, attrs = {}, children = []) {
   return node;
 }
 
-// views with background work (follow-mode auto refresh) register a cleanup
-// here; render() runs it before switching views so intervals never leak
-let activeViewCleanup = null;
-
-export function setViewCleanup(cleanup) {
-  activeViewCleanup = cleanup;
+// follow-mode refresh: the next round starts `ms` after the previous one settles, and
+// rounds are skipped while the browser tab is hidden; `signal` aborts when the user leaves the page
+export function poll(refresh, ms, signal) {
+  const tick = async () => {
+    if (signal.aborted) return;
+    if (!document.hidden) {
+      try {
+        await refresh();
+      } catch {
+        // transient fetch failure (server restart, network blip): keep polling
+      }
+    }
+    setTimeout(tick, ms);
+  };
+  setTimeout(tick, ms);
 }
 
 export const fmtNum = (v) => {
@@ -111,16 +120,19 @@ function crumbs(route, meta) {
   document.getElementById("crumbs").replaceChildren(...parts);
 }
 
+let pageVisit = new AbortController();
+
 async function render() {
-  if (activeViewCleanup) {
-    activeViewCleanup();
-    activeViewCleanup = null;
-  }
+  pageVisit.abort();
+  pageVisit = new AbortController();
+  const { signal } = pageVisit;
   const route = parseRoute();
-  const view = document.getElementById("view");
-  view.replaceChildren(el("p", { class: "muted" }, ["loading…"]));
+  // a page the user left may still be loading; its own element keeps it from drawing over the next page
+  const view = el("div", {}, [el("p", { class: "muted" }, ["loading…"])]);
+  document.getElementById("view").replaceChildren(view);
   try {
     const meta = await getMeta();
+    if (signal.aborted) return;
     crumbs(route, meta);
     const modeLabel =
       meta.mode === "follow" ? "● live — auto-refreshing from a still-running job" : "◼ static snapshot — job has finished";
@@ -132,10 +144,10 @@ async function render() {
     ];
     if (meta.wandb_url) runinfo.push(" · ", el("a", { href: meta.wandb_url, target: "_blank" }, ["wandb ↗"]));
     document.getElementById("runinfo").replaceChildren(...runinfo);
-    if (route.view === "metrics") await renderMetrics(view, meta);
-    else if (route.view === "timeline") await renderTimeline(view, meta, route);
+    if (route.view === "metrics") await renderMetrics(view, meta, signal);
+    else if (route.view === "timeline") await renderTimeline(view, meta, route, signal);
     else if (route.view === "rollout") await renderRollout(view, meta, route);
-    else if (route.view === "sandboxes") await renderSandboxes(view, meta, route);
+    else if (route.view === "sandboxes") await renderSandboxes(view, meta, route, signal);
     else await renderTokens(view, meta, route);
   } catch (err) {
     view.replaceChildren(el("div", { class: "error" }, [String(err)]));

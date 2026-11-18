@@ -1,5 +1,5 @@
 import { api } from "./api.js";
-import { el, setViewCleanup } from "./app.js";
+import { el, poll } from "./app.js";
 import { drawChart, drawMultiLine, SERIES_COLORS } from "./charts.js";
 
 // wandb-shaped L0: metric names come verbatim from the tracking fan-out, so
@@ -80,7 +80,7 @@ function orderedCategories(meta) {
   return cats;
 }
 
-export async function renderMetrics(view, meta) {
+export async function renderMetrics(view, meta, signal) {
   const cats = orderedCategories(meta);
   let active = sessionStorage.getItem("metricsCategory");
   if (!cats.includes(active)) active = cats[0] ?? null;
@@ -191,6 +191,7 @@ export async function renderMetrics(view, meta) {
   };
 
   function buildPanels() {
+    epoch++;
     slots.clear();
     legendPanel.style.display = active === "sglang" ? "" : "none";
     if (active === "sglang") renderLegend(); // toggle must exist before data arrives
@@ -208,14 +209,15 @@ export async function renderMetrics(view, meta) {
         return el("div", { class: "panel" }, [title, status, canvas]);
       }),
     );
-    refresh();
+    return refresh();
   }
 
   function refresh() {
-    const current = ++epoch;
+    const current = epoch;
+    const requests = [];
     if (active === "sglang") {
       for (const [key, slot] of slots.entries()) {
-        api("/api/timeline/engine_series", { metric: key, max_points: 1000, per_dp_rank: perDpRank })
+        const request = api("/api/timeline/engine_series", { metric: key, max_points: 1000, per_dp_rank: perDpRank })
           .then(({ series }) => {
             if (current !== epoch) return;
             const signature = series.map((s) => `${seriesLabel(s)}:${s.ts.length}:${s.ts.at(-1)}`).join("|");
@@ -241,8 +243,9 @@ export async function renderMetrics(view, meta) {
           .catch((err) => {
             if (current === epoch && slot.signature === null) slot.status.textContent = String(err);
           });
+        requests.push(request);
       }
-      return;
+      return Promise.all(requests);
     }
     const byAxis = new Map();
     for (const key of slots.keys()) {
@@ -251,7 +254,7 @@ export async function renderMetrics(view, meta) {
       byAxis.get(axis).push(key);
     }
     for (const [axis, keys] of byAxis.entries()) {
-      api("/api/metrics", { keys: keys.join(","), x: axis === "dump" ? "rollout/step" : axis })
+      const request = api("/api/metrics", { keys: keys.join(","), x: axis === "dump" ? "rollout/step" : axis })
         .then((series) => {
           if (current !== epoch) return; // category/filter changed meanwhile
           for (const key of keys) {
@@ -275,7 +278,9 @@ export async function renderMetrics(view, meta) {
             if (slot && slot.signature === null) slot.status.textContent = String(err);
           }
         });
+      requests.push(request);
     }
+    return Promise.all(requests);
   }
 
   filterInput.oninput = () => {
@@ -295,12 +300,8 @@ export async function renderMetrics(view, meta) {
     ]),
   );
   renderCategories();
-  buildPanels();
+  await buildPanels();
 
-  if (meta.mode === "follow") {
-    // refresh is fire-and-forget and idempotent: unchanged charts skip the
-    // repaint entirely, so the live page sits still between real updates
-    const intervalId = setInterval(refresh, 5000);
-    setViewCleanup(() => clearInterval(intervalId));
-  }
+  // unchanged charts skip the repaint entirely, so the live page sits still between real updates
+  if (meta.mode === "follow") poll(refresh, 5000, signal);
 }
