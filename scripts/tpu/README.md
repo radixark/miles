@@ -60,7 +60,7 @@ One launcher per model family, each with the same `prepare`, `sglang` and `train
 | `run_qwen3_5_torchtitan.py --model-name Qwen3.5-27B` or `Qwen3.8-27B` | Qwen3.5-27B / Qwen3.8-27B | params, grads and Adam on the host (`--optimizer-cpu-offload`), ~110 GB of host RAM per trainer process |
 | `run_qwen3_5_torchtitan.py --model-name Qwen3.6-35B-A3B` | Qwen3.6-35B-A3B | params, grads and Adam on the host (`--optimizer-cpu-offload`); sglang serves EP 4; the trainer replays the engine's expert routing (`--use-rollout-routing-replay`) |
 
-The MoE trainers keep every expert on each rank (EP 1); sglang serves them with EP 4. Both MoE launchers run the
+The MoE trainers keep every expert on each rank (EP 1); sglang serves them with EP 4. The Qwen3-30B-A3B and GLM-4.7-Flash launchers run the
 smoke recipe end to end on one v7x 2x2x1 host (cold compile caches; steps 1-2): Qwen3-30B-A3B at 266-313 s a step
 with 14 s weight syncs, GLM-4.7-Flash 4-layer at 80-82 s with 0.6-0.9 s syncs. The GLM engine traces with dynamo:
 the direct tracer aborts the MLA backend at startup. Model and data
