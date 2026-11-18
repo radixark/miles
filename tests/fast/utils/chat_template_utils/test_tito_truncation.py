@@ -14,8 +14,9 @@ sampled output, and cuts it at every token.  At each cut:
   template render in special tokens and non-assistant text.
 
 Separate checks pin each grammar's closing text to its template and require
-every added token the template puts inside an assistant turn to be a declared
-marker or explicitly ignored.
+every added token and every closing tag the template puts inside an assistant
+turn to be a declared marker or explicitly ignored, so a marker the grammar
+leaves out fails here instead of passing unseen.
 """
 
 from __future__ import annotations
@@ -45,8 +46,8 @@ register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["rollout"])
 class _Family:
     # chat_template_kwargs that turn reasoning off, when the template allows it.
     thinking_off: dict[str, Any] | None = None
-    # Added tokens the template puts inside an assistant turn that close nothing.
-    ignored_added_tokens: frozenset[str] = field(default_factory=frozenset)
+    # Markers the template puts inside an assistant turn that close nothing.
+    ignored_markers: frozenset[str] = field(default_factory=frozenset)
 
 
 _ENABLE_THINKING_OFF = {"enable_thinking": False}
@@ -382,17 +383,22 @@ def test_closing_text_matches_template(family_tito):
     assert completion.endswith(outer.close_marker + outer.close[len(outer.close.rstrip()) :] + end_of_turn)
 
 
+_CLOSING_TAG = re.compile(r"</[^>\n]+>")
+
+
 @pytest.mark.parametrize("fixture", ["two_calls", "call_in_reasoning"])
-def test_added_tokens_in_turn_are_declared(family_tito, fixture):
+def test_markers_in_turn_are_declared(family_tito, fixture):
+    """Found in the render, not taken from the grammar: its added tokens and its closing tags."""
     family, tito = family_tito
     grammar = _grammar(tito)
     markers = [marker for pair in (grammar.think, *grammar.tool_blocks) for marker in (pair.open, pair.close_marker)]
     markers += [grammar.end_of_turn] if grammar.end_of_turn else []
+    completion = _build_case(tito, family, fixture).completion
     added = tito.tokenizer.added_tokens_decoder
-    for token_id in _encode(tito, _build_case(tito, family, fixture).completion):
-        if token_id in added:
-            content = added[token_id].content
-            assert content in family.ignored_added_tokens or any(content in marker for marker in markers), content
+    rendered = {added[token_id].content for token_id in _encode(tito, completion) if token_id in added}
+    rendered |= set(_CLOSING_TAG.findall(completion))
+    for content in sorted(rendered):
+        assert content in family.ignored_markers or any(content in marker for marker in markers), content
 
 
 # ---------------------------------------------------------------------------
@@ -453,6 +459,12 @@ def test_reasoning_opened_by_generation_prompt():
 def test_closing_marker_closes_structures_opened_inside_it():
     stack, problems = _GRAMMAR.scan("a <tool_call> b </think> c <tool_call> d", (_GRAMMAR.think,))
     assert stack == [_TOOL_CALL] and len(problems) == 1
+
+
+def test_inner_tool_marker_counts_only_inside_the_outer_block():
+    arg = MarkerPair("<arg=", "\n</arg>")
+    grammar = TruncationGrammar(think=_GRAMMAR.think, tool_blocks=(_TOOL_CALL, arg), end_of_turn="<e>")
+    assert grammar.scan("I will pass <arg=city> </arg> then <tool_call> <arg=city", ()) == ([_TOOL_CALL, arg], [])
 
 
 def test_closing_marker_without_open_structure_is_ignored():

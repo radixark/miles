@@ -59,10 +59,11 @@ class TruncationGrammar:
     """The structures a family's assistant turn opens and closes.
 
     ``think.close`` is the template's text for closing reasoning when nothing
-    follows it.  ``tool_blocks`` are the tool-call structures, outermost first;
-    only markers that are single tokens or fixed template text are tracked, not
-    inner text such as ``<function=``.  ``end_of_turn`` is ``None`` when the next
-    message's role token ends the turn.
+    follows it.  ``tool_blocks`` are the tool-call structures the template
+    renders as single tokens or fixed text, outermost first.  The inner ones
+    count only inside the outermost block, where the template renders them;
+    elsewhere the same text is ordinary content.  ``end_of_turn`` is ``None``
+    when the next message's role token ends the turn.
     """
 
     think: MarkerPair
@@ -128,6 +129,8 @@ class TruncationGrammar:
         problems: list[str] = []
         for match in self._pattern.finditer(text):
             pair, is_open = self._roles[match.group()]
+            if pair in self.tool_blocks[1:] and self.tool_blocks[0] not in stack:
+                continue
             if is_open:
                 stack.append(pair)
             elif stack and stack[-1] == pair:

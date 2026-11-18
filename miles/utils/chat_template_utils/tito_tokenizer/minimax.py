@@ -12,10 +12,14 @@ from miles.utils.chat_template_utils.tito_tokenizer.base import FixedTemplate, T
 from miles.utils.chat_template_utils.truncation import MarkerPair, TruncationGrammar
 
 
-# ``<invoke ...>`` and ``<parameter ...>`` inside the block are plain text.
+# The invoke and parameter openers are tag prefixes: their ``name`` attribute follows.
 _MINIMAX_TRUNCATION = TruncationGrammar(
     think=MarkerPair("<think>", "\n</think>\n\n"),
-    tool_blocks=(MarkerPair("<minimax:tool_call>", "\n</minimax:tool_call>"),),
+    tool_blocks=(
+        MarkerPair("<minimax:tool_call>", "\n</minimax:tool_call>"),
+        MarkerPair("<invoke name=", "\n</invoke>"),
+        MarkerPair("<parameter name=", "</parameter>"),
+    ),
     end_of_turn="[e~[",
 )
 
