@@ -47,7 +47,7 @@ def _part_routers(part: nn.Module) -> list[tuple[int, nn.Module]]:
 def router_top_k(model_parts: list[nn.Module]) -> int:
     """The experts each token takes, shared by every router here."""
     top_ks = {router.top_k for part in model_parts for _, router in _part_routers(part)}
-    assert len(top_ks) == 1, f"routers disagree on top-k: {sorted(top_ks)}"
+    assert len(top_ks) == 1, f"expected one top-k shared by every router, got {sorted(top_ks)}"
     return top_ks.pop()
 
 
