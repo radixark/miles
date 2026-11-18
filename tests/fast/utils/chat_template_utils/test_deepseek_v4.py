@@ -27,7 +27,7 @@ from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 from sglang.srt.entrypoints.openai.serving_deepseek_recipe import DeepSeekRecipeChatEncodingAdapter
 from transformers import AutoTokenizer
 
-from miles.utils.chat_template_utils import apply_chat_template, deepseek
+from miles.utils.chat_template_utils import apply_chat_template, deepseek, tito_tokenizer
 from miles.utils.chat_template_utils.tito_tokenizer import DeepSeekV4TITOTokenizer, DeepSeekV41TITOTokenizer
 
 _MSGS_BASIC = [{"role": "user", "content": "Hello"}]
@@ -385,14 +385,21 @@ def _random_conversation(rng: random.Random) -> tuple[list[dict], list[int]]:
 @pytest.mark.parametrize("tools", [None, _TOOLS], ids=["no_tools", "tools"])
 @pytest.mark.parametrize("thinking", [False, True], ids=["chat", "thinking"])
 @pytest.mark.parametrize("spec", _SPECS)
-def test_appended_messages_tokenize_as_with_the_whole_history(spec, thinking, tools):
+def test_appended_messages_tokenize_as_with_the_whole_history(spec, thinking, tools, monkeypatch):
     """``tokenize_additional_messages`` renders from the history's last assistant turn; its
-    result must still continue the render of the whole history."""
+    result must still continue the render of the whole history, with the ids it had when it
+    rendered the whole history."""
+    tito = _TITO_CLASSES[spec](_tokenizer(spec), chat_template_kwargs={"thinking": thinking})
+    args = tito.default_template_args(tools)
     rng = random.Random(0)
     for _ in range(60):
         messages, cuts = _random_conversation(rng)
         start, end = sorted(rng.sample(cuts, 2))
         _assert_delta_is_the_render_tail(spec, thinking, tools, messages[:start], messages[start:end])
+        delta = tito.tokenize_additional_messages(messages[:start], messages[:end], template_args=args)
+        with monkeypatch.context() as whole_history:
+            whole_history.setattr(tito_tokenizer, "_from_last_assistant", lambda history: history)
+            assert delta == tito.tokenize_additional_messages(messages[:start], messages[:end], template_args=args)
 
 
 # ---------------------------------------------------------------------------
