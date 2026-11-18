@@ -306,6 +306,8 @@ _APPENDS = {
     "tool_result_after_pending_call": ([_USER, _CALLING], [_RESULT]),
     # recipe drops the empty system turn, so the pending call is not at the input's index.
     "tool_result_after_empty_system": ([{"role": "system", "content": ""}, _USER, _CALLING], [_RESULT]),
+    # No assistant turn to start the render at: the whole history is rendered.
+    "user_before_any_answer": ([_USER], [_FOLLOW_UP]),
     "user_after_answer": ([_USER, _ANSWER], [_FOLLOW_UP]),
     # A pretokenized prefix may end on a tool result; the user turn then folds in on plain text.
     "user_after_tool_result": ([_USER, _CALLING, _RESULT], [_FOLLOW_UP]),
