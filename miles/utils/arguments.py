@@ -2146,6 +2146,10 @@ def validate_compile_warmup(args) -> None:
                 args.custom_convert_samples_to_train_data_path is not None,
             ),
             ("--custom-reward-post-process-path", args.custom_reward_post_process_path is not None),
+            (
+                "--use-routing-replay without --use-rollout-routing-replay",
+                args.use_routing_replay and not args.use_rollout_routing_replay,
+            ),
         )
         if enabled
     ]

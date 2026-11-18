@@ -4495,6 +4495,7 @@ class TestValidateCompileWarmup:
             ({"use_critic": True}, "--use-critic"),
             ({"custom_convert_samples_to_train_data_path": "x.py"}, "--custom-convert-samples-to-train-data-path"),
             ({"custom_reward_post_process_path": "x.py"}, "--custom-reward-post-process-path"),
+            ({"use_routing_replay": True}, "--use-routing-replay without --use-rollout-routing-replay"),
         ],
     )
     def test_a_run_the_synthetic_batch_cannot_mirror_is_refused(self, overrides: dict, flag: str) -> None:
