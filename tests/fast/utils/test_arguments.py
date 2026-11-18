@@ -1270,6 +1270,14 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
             ],
             "cannot currently be combined with reference KL or teacher distillation",
         ),
+        (
+            ["--rollout-top-k", "32", "--use-rollout-logprobs", "--kl-coef", "0.1"],
+            "would take the filtered sampler's log-probs",
+        ),
+        (
+            ["--rollout-top-k", "32", "--use-rollout-logprobs", "--use-opd"],
+            "would take the filtered sampler's log-probs",
+        ),
     ],
 )
 def test_sampling_support_arguments_fail_closed(extra, message):
@@ -1409,6 +1417,24 @@ def test_sampling_replay_is_opt_in_and_support_mode_follows_the_recorded_support
     assert args.rollout_sampling_logprobs_mode == (
         "support" if replay or (filtered and candidate_count) else "selected"
     )
+
+
+@pytest.mark.parametrize(
+    ("sampling_args", "expect_warning"),
+    [
+        ([], False),
+        (["--rollout-top-k", "32"], True),
+        (["--rollout-top-k", "32", "--use-rollout-sampling-support-replay"], False),
+    ],
+)
+def test_filtered_rollout_without_replay_warns(sampling_args, expect_warning, caplog):
+    parser = get_megatron_arg_parser()
+    args = parser.parse_args(sampling_args + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+        miles_validate_args(args)
+
+    assert caplog.text.count("without --use-rollout-sampling-support-replay") == int(expect_warning)
 
 
 def test_sglang_parallel_sizes_keep_server_args_destinations():
