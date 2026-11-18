@@ -135,6 +135,9 @@ async def test_abort_echo_is_not_appended_twice():
         ("id", "another-request", "identity changed"),
         ("completion_tokens", 3, "incremental token output"),
         ("output_token_logprobs", [[-0.5, 99, "b"]], "tokens and logprobs disagree"),
+        ("output_token_logprobs", [[-0.5]], "malformed token logprobs"),
+        ("finish_reason", "invalid", "invalid finish_reason"),
+        ("output_token_sampling_mask", 17, "expected output_token_sampling_mask array"),
     ],
 )
 async def test_rejects_inconsistent_incremental_responses(field, value, error):

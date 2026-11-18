@@ -137,9 +137,17 @@ async def decode_response(response: httpx.Response) -> dict:
         if not request_id or not isinstance(event.get("text"), str) or not isinstance(event.get("output_ids"), list):
             raise GenerateProtocolError("missing native response identity, text or tokens")
         chunk_ids = event["output_ids"]
-        if (meta.get("finish_reason") or {}).get("type") == "abort":
+        finish = meta.get("finish_reason") or {}
+        if not isinstance(finish, dict):
+            raise GenerateProtocolError("invalid finish_reason")
+        pairs = meta.get("output_token_logprobs")
+        if pairs is not None and (
+            not isinstance(pairs, list) or any(not isinstance(pair, list) or len(pair) < 2 for pair in pairs)
+        ):
+            raise GenerateProtocolError("malformed token logprobs")
+        if finish.get("type") == "abort":
             # sglang-miles abort echoes cumulative text/logprobs, even in incremental mode.
-            pairs = meta.get("output_token_logprobs", [])
+            pairs = pairs or []
             if len(pairs) != meta.get("completion_tokens"):
                 raise GenerateProtocolError("aborted response has incomplete token logprobs")
             ids = [pair[1] for pair in pairs]
@@ -147,7 +155,6 @@ async def decode_response(response: httpx.Response) -> dict:
             arrays = {}
             final = event
             continue
-        pairs = meta.get("output_token_logprobs")
         if pairs is not None and (len(pairs) != len(chunk_ids) or [pair[1] for pair in pairs] != chunk_ids):
             raise GenerateProtocolError("incremental tokens and logprobs disagree")
         ids.extend(chunk_ids)
@@ -162,6 +169,8 @@ async def decode_response(response: httpx.Response) -> dict:
             "output_token_sampling_logprobs",
         ):
             if meta.get(name) is not None:
+                if not isinstance(meta[name], list):
+                    raise GenerateProtocolError(f"expected {name} array")
                 arrays.setdefault(name, []).extend(meta[name])
         final = event
     if final is None:
