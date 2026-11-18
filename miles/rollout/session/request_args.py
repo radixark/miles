@@ -18,7 +18,10 @@ from typing import Any
 import orjson
 
 from miles.rollout.generate_utils.rollout_topk_logprobs import configure_rollout_topk_logprobs_request
-from miles.rollout.generate_utils.sampling_mask import validate_sampling_support_request
+from miles.rollout.generate_utils.sampling_mask import (
+    configure_sampling_mask_request,
+    validate_sampling_support_request,
+)
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
@@ -124,6 +127,7 @@ def prepare_chat_request(
         request_args[OUTPUT_STORE_REQUEST_KEY] = True
         if config.replay_layer_splits:
             request_args[REPLAY_LAYER_SPLITS_KEY] = list(config.replay_layer_splits)
+    configure_sampling_mask_request(request_args)
     return PreparedChatRequest(
         body=request_args, template_args=extract_template_args(request_args), response_intent=response_intent
     )

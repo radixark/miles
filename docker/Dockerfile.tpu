@@ -27,8 +27,9 @@ ARG MILES_COMMIT=main
 ARG WHEELS_REPO=radixark/miles-wheels
 ARG WHEELS_TAG=cu130-torch214-x86_64
 # torch_tpu main + docker/tpu_patch/torch_tpu_job_local_worlds.patch (--update-weight-transfer-mode ici)
-ARG TORCH_TPU_WHEELS_TAG=torch-tpu-e8468781a-pr6110
-ARG TORCH_TPU_WHEEL=torch_tpu-0.2.1.dev20261103-cp312-cp312-manylinux_2_31_x86_64.whl
+# + docker/tpu_patch/torch_tpu_chunk_cat.patch (FSDP2's reduce-scatter copy-in)
+ARG TORCH_TPU_WHEELS_TAG=torch-tpu-e8468781a-pr6110-pr6728-v2
+ARG TORCH_TPU_WHEEL=torch_tpu-0.2.1.dev2026111702-cp312-cp312-manylinux_2_31_x86_64.whl
 ARG TARGETARCH
 
 # ====================================== Install sglang-torchtpu ============================================
@@ -47,8 +48,10 @@ RUN SGLANG_VERSION=$(python3 -c 'import importlib.metadata as m; print(m.version
 # ====================================== Torch ============================================
 
 # torch_tpu with job-local worlds (google-pytorch/torch_tpu#6110), so a trainer and an engine can share one slice
-# (ICI weight sync); same libtpu as the release. Rebuild: bazel build --config=wheel_release --config=no_rbe
-# //ci/wheel:torch_tpu_wheel on google-pytorch/torch_tpu e8468781a (main, 2026-11-03) with the patch applied.
+# (ICI weight sync), and a _chunk_cat.out kernel (google-pytorch/torch_tpu#6728), without which the trainer's first
+# backward spends ~100 s compiling FSDP2's gradient copy-in per vocabulary-sized unit; same libtpu as the release.
+# Rebuild: bazel build --config=wheel_release --config=no_rbe //ci/wheel:torch_tpu_wheel on google-pytorch/torch_tpu
+# e8468781a (main, 2026-11-03) with both patches applied in that order.
 RUN curl -fsSL -o "/tmp/${TORCH_TPU_WHEEL}" \
     "https://github.com/${WHEELS_REPO}/releases/download/${TORCH_TPU_WHEELS_TAG}/${TORCH_TPU_WHEEL}" && \
     pip install --no-deps --force-reinstall "/tmp/${TORCH_TPU_WHEEL}" && rm "/tmp/${TORCH_TPU_WHEEL}"

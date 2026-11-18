@@ -51,7 +51,11 @@ from .generate_utils.generate_endpoint_utils import (
 )
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .generate_utils.sample_utils import reward_log_summary, sample_text_preview
-from .generate_utils.sampling_mask import append_sampling_metadata, should_return_sampling_mask
+from .generate_utils.sampling_mask import (
+    append_sampling_metadata,
+    configure_sampling_mask_request,
+    should_return_sampling_mask,
+)
 from .rm_hub import async_rm, batched_async_rm
 
 __all__ = ["generate_rollout", "get_model_url"]
@@ -213,6 +217,7 @@ async def generate(
     }
     if return_sampling_mask:
         payload["return_sampling_mask"] = True
+        configure_sampling_mask_request(payload)
     opd_top_k = args.opd_log_prob_top_k or 0
     opd_top_k_strategy = args.opd_top_k_strategy
     if args.use_opd and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":

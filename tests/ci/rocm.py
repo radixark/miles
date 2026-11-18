@@ -31,11 +31,15 @@ ROCM_CHANGED_FILE_LIMIT = 4
 ROCM_FILE_RUN_LIMIT_SECONDS = 3 * 3600 - 15 * 60
 
 
+_PR_TAG = re.compile(r"pr-[1-9][0-9]*-rocm10-mi35x")
+
+
 def container_image(tag: str = "") -> str:
     tag = tag or DEFAULT_IMAGE_TAG
     if re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", tag) is None:
         raise ValueError(f"invalid ROCm CI image tag: {tag!r}")
-    return f"rocm/sgl-dev:{tag}"
+    repository = "radixark/miles" if _PR_TAG.fullmatch(tag) else "rocm/sgl-dev"
+    return f"{repository}:{tag}"
 
 
 def pr_image_tag(pr_body: str) -> str:
@@ -45,10 +49,16 @@ def pr_image_tag(pr_body: str) -> str:
 
 
 def main() -> int:
-    # pr-test.yml's order without its pr-<num> step, since PRs build no ROCm image:
-    # the called workflow's image_tag or the dispatch input, the PR description,
-    # then DEFAULT_IMAGE_TAG.
-    tag = os.environ.get("INPUT_CI_IMAGE_TAG", "") or pr_image_tag(os.environ.get("PR_BODY", ""))
+    # Match CUDA: explicit input, current PR image (including a reused tag),
+    # PR-body directive, then the released default. A failed build never gets here.
+    tag = os.environ.get("INPUT_CI_IMAGE_TAG", "")
+    if not tag and os.environ.get("PR_IMAGE_AVAILABLE") == "true":
+        number = os.environ.get("PR_NUMBER", "")
+        if not re.fullmatch(r"[1-9][0-9]*", number):
+            print("::error::Invalid PR number for ROCm image", file=sys.stderr)
+            return 1
+        tag = f"pr-{number}-rocm10-mi35x"
+    tag = tag or pr_image_tag(os.environ.get("PR_BODY", ""))
     try:
         image = container_image(tag)
     except ValueError as error:
