@@ -45,6 +45,13 @@ returned as base64 flat arrays (`return_flat_raw_sampling_mask`) unless the
 output store takes it, and uses the returned
 support-normalized log probability as the rollout log probability.
 
+Without replay, the rollout log probability is the filtered sampler's, not the
+full-vocabulary actor's. Miles therefore rejects `--true-on-policy-mode`, and
+with `--use-rollout-logprobs` also nonzero `--kl-coef` and `--use-opd`, which
+would read it as the actor's score. A training request may filter its sampling
+only when `--rollout-top-p` or `--rollout-top-k` does, so these checks cover
+every request.
+
 `--rollout-top-k` is the default for rollout requests, not a global upper bound
 on request-specific top-k values. SGLang owns support capacity through
 `--sglang-sampling-mask-max-tokens` (or the matching server-group override) and
