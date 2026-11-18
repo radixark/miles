@@ -30,6 +30,7 @@ services:
     restart: always
     environment:
       RUNNER_ALLOW_RUNASROOT: "1"
+      ACTIONS_RUNNER_HOOK_JOB_STARTED: /data/miles_ci/runner-hooks/remove-foreign-checkouts.sh
     privileged: true
     user: root
     # ref: https://github.com/actions/runner/issues/367#issuecomment-2007558723

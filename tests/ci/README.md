@@ -35,6 +35,17 @@ The script probes mounts with `df`, picks the biggest non-system mount, and
 ensures `/data/miles_ci` resolves there (real dir if `/data` is biggest;
 symlink otherwise). Idempotent.
 
+### Step 0.5: Install the job-start hook
+
+`docker-compose.yml` runs `remove-foreign-checkouts.sh` before every job: a job
+container mounts its runner's whole work directory, so the checkouts that other
+repositories' jobs left there must go first.
+
+```shell
+sudo install -d /data/miles_ci/runner-hooks
+sudo install -m 755 tests/ci/github_runner/remove-foreign-checkouts.sh /data/miles_ci/runner-hooks/
+```
+
 ### Step 1: Env
 
 Write `.env` mimicking `.env.example`.
@@ -138,6 +149,7 @@ registration token in `.env`:
 
 ```shell
 sudo install -d /data/miles_ci/runner-hooks
+sudo install -m 755 remove-foreign-checkouts.sh /data/miles_ci/runner-hooks/
 sudo install -m 755 b200-job-start.sh /data/miles_ci/runner-hooks/
 sudo install -m 644 b200_job_lock.py /data/miles_ci/runner-hooks/
 docker compose --env-file .env -f docker-compose.b200.yml config --quiet
