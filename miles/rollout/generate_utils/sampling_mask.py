@@ -26,7 +26,7 @@ def should_return_sampling_mask(
     return validate_sampling_support_request(
         params,
         replay_enabled=args.use_rollout_sampling_support_replay,
-        filtered_rollout=filters_rollout_sampling(args),
+        filtered_sampling=filters_rollout_sampling(args),
         support_logprobs=requests_support_logprobs(args),
         expected_temperature=float(args.rollout_temperature),
     )
@@ -41,7 +41,7 @@ def validate_sampling_support_request(
     sampling_params: Mapping[str, object],
     *,
     replay_enabled: bool,
-    filtered_rollout: bool,
+    filtered_sampling: bool,
     support_logprobs: bool,
     expected_temperature: float | None,
 ) -> bool:
@@ -51,7 +51,7 @@ def validate_sampling_support_request(
         raise ValueError(f"training request top_p must be in (0, 1], got {request_top_p}")
 
     if not replay_enabled:
-        if not filtered_rollout and _filters_sampling(sampling_params):
+        if not filtered_sampling and _filters_sampling(sampling_params):
             raise ValueError("bounded training-request sampling requires bounded rollout sampling")
         if not support_logprobs:
             return False

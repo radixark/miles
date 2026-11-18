@@ -1250,9 +1250,9 @@ def miles_validate_args(args):
         raise ValueError(f"--rollout-top-p must be in (0, 1], got {args.rollout_top_p}")
     if args.rollout_top_k != -1 and args.rollout_top_k < 1:
         raise ValueError(f"--rollout-top-k must be -1 or at least 1, got {args.rollout_top_k}")
-    filtered_rollout = filters_rollout_sampling(args)
+    filtered_sampling = filters_rollout_sampling(args)
     returns_support = args.use_rollout_sampling_support_replay or (
-        filtered_rollout and args.rollout_top_logprobs_num > 0
+        filtered_sampling and args.rollout_top_logprobs_num > 0
     )
     args.rollout_sampling_logprobs_mode = "support" if returns_support else "selected"
     if returns_support and args.rollout_top_k == -1:
@@ -1260,7 +1260,7 @@ def miles_validate_args(args):
             "returning the sampling support (--use-rollout-sampling-support-replay, or --rollout-top-logprobs-num "
             "with --rollout-top-p below 1) requires a positive --rollout-top-k to bound its size"
         )
-    if filtered_rollout and args.recompute_logprobs_via_prefill:
+    if filtered_sampling and args.recompute_logprobs_via_prefill:
         raise ValueError(
             "--rollout-top-p below 1 or a positive --rollout-top-k cannot be combined with "
             "--recompute-logprobs-via-prefill; prefill scoring returns the unfiltered distribution, not the sampler's"
@@ -1274,7 +1274,7 @@ def miles_validate_args(args):
                 "sampling-support replay cannot currently be combined with reference KL or teacher distillation; "
                 "those objectives require a separate full-policy actor score"
             )
-    elif filtered_rollout:
+    elif filtered_sampling:
         if args.true_on_policy_mode:
             raise ValueError(
                 "--true-on-policy-mode with --rollout-top-p below 1 or a positive --rollout-top-k requires "

@@ -109,7 +109,7 @@ def prepare_chat_request(
             return_sampling_mask = validate_sampling_support_request(
                 request_args,
                 replay_enabled=config.use_rollout_sampling_support_replay,
-                filtered_rollout=filters_rollout_sampling(config),
+                filtered_sampling=filters_rollout_sampling(config),
                 support_logprobs=requests_support_logprobs(config),
                 expected_temperature=(sampling_defaults or {}).get("temperature"),
             )

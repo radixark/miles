@@ -1427,7 +1427,7 @@ def test_sampling_replay_is_opt_in_and_support_mode_follows_the_recorded_support
         (["--rollout-top-k", "32", "--use-rollout-sampling-support-replay"], False),
     ],
 )
-def test_filtered_rollout_without_replay_warns(sampling_args, expect_warning, caplog):
+def test_filtered_sampling_without_replay_warns(sampling_args, expect_warning, caplog):
     parser = get_megatron_arg_parser()
     args = parser.parse_args(sampling_args + ["--num-rollout", "1"] + REQUIRED_ARGS)
 
