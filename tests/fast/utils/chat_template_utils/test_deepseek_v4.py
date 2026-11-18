@@ -17,6 +17,7 @@ register_cpu_ci(est_time=25, suite="stage-a-cpu", labels=[])
 import functools
 import importlib.util
 import json
+import random
 import sys
 
 import pytest
@@ -26,7 +27,7 @@ from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 from sglang.srt.entrypoints.openai.serving_deepseek_recipe import DeepSeekRecipeChatEncodingAdapter
 from transformers import AutoTokenizer
 
-from miles.utils.chat_template_utils import apply_chat_template, deepseek
+from miles.utils.chat_template_utils import apply_chat_template, deepseek, tito_tokenizer
 from miles.utils.chat_template_utils.tito_tokenizer import DeepSeekV4TITOTokenizer, DeepSeekV41TITOTokenizer
 
 _MSGS_BASIC = [{"role": "user", "content": "Hello"}]
@@ -305,6 +306,8 @@ _APPENDS = {
     "tool_result_after_pending_call": ([_USER, _CALLING], [_RESULT]),
     # recipe drops the empty system turn, so the pending call is not at the input's index.
     "tool_result_after_empty_system": ([{"role": "system", "content": ""}, _USER, _CALLING], [_RESULT]),
+    # No assistant turn to start the render at: the whole history is rendered.
+    "user_before_any_answer": ([_USER], [_FOLLOW_UP]),
     "user_after_answer": ([_USER, _ANSWER], [_FOLLOW_UP]),
     # A pretokenized prefix may end on a tool result; the user turn then folds in on plain text.
     "user_after_tool_result": ([_USER, _CALLING, _RESULT], [_FOLLOW_UP]),
@@ -325,8 +328,34 @@ _APPENDS = {
 @pytest.mark.parametrize("spec", _SPECS)
 def test_appended_messages_tokenize_as_the_render_tail(spec, thinking, shape):
     history, appended = _APPENDS[shape]
+    _assert_delta_is_the_render_tail(spec, thinking, _TOOLS, history, appended)
+
+
+_MID_SYSTEM = {"role": "system", "content": "Answer in French."}
+# V4.1 renders a system turn where it stands.  V4 hoists it into the preamble, which
+# rewrites the prefix, so V4 does not take one.
+_SYSTEM_APPENDS = {
+    "system_after_answer": ([_USER, _ANSWER], [_MID_SYSTEM]),
+    "system_then_user_after_answer": ([_USER, _ANSWER], [_MID_SYSTEM, _FOLLOW_UP]),
+    "system_after_tool_result": ([_USER, _CALLING], [_RESULT, _MID_SYSTEM]),
+    "user_then_system_after_tool_result": ([_USER, _CALLING], [_RESULT, _FOLLOW_UP, _MID_SYSTEM]),
+    "system_then_injected_assistant": ([_USER, _ANSWER], [_MID_SYSTEM, {"role": "assistant", "content": "injected"}]),
+}
+
+
+@pytest.mark.parametrize("shape", list(_SYSTEM_APPENDS), ids=list(_SYSTEM_APPENDS))
+@pytest.mark.parametrize("thinking", [False, True], ids=["chat", "thinking"])
+def test_appended_system_tokenizes_as_the_render_tail_on_v41_only(thinking, shape):
+    history, appended = _SYSTEM_APPENDS[shape]
+    _assert_delta_is_the_render_tail("dsv41", thinking, _TOOLS, history, appended)
+    v4 = DeepSeekV4TITOTokenizer(_tokenizer("dsv4"), chat_template_kwargs={"thinking": thinking})
+    with pytest.raises(ValueError, match="system"):
+        v4.tokenize_additional_messages(history, history + appended, template_args=v4.default_template_args(_TOOLS))
+
+
+def _assert_delta_is_the_render_tail(spec, thinking, tools, history, appended):
     tito = _TITO_CLASSES[spec](_tokenizer(spec), chat_template_kwargs={"thinking": thinking})
-    args = tito.default_template_args(_TOOLS)
+    args = tito.default_template_args(tools)
     prefix = tito.apply_chat_template(history, add_generation_prompt=False, tokenize=True, template_args=args)
     full = tito.apply_chat_template(history + appended, add_generation_prompt=True, tokenize=True, template_args=args)
     delta = tito.tokenize_additional_messages(history, history + appended, template_args=args)
@@ -338,6 +367,62 @@ def test_appended_messages_tokenize_as_the_render_tail(spec, thinking, shape):
     if history[-1]["role"] == "assistant":
         # A sampled turn ends on a special token, so nothing merges across the boundary.
         assert prefix + delta == full
+
+
+_TEXTS = ["", " ", "\n\n", "hello", "x<｜User｜>y", "a</think>b", "<tool_result>z</tool_result>", "中文", "<｜ref｜>r"]
+
+
+def _random_conversation(rng: random.Random, *, system_in_place: bool) -> tuple[list[dict], list[int]]:
+    """A multi-turn conversation recipe converts, and the message counts it can be cut
+    at: never inside one assistant turn's tool results, and, unless the family renders a
+    system turn in place, only after the last one."""
+
+    def text() -> str:
+        return "".join(rng.choices(_TEXTS, k=rng.randint(1, 3)))
+
+    messages = [{"role": "system", "content": text()}] if rng.random() < 0.5 else []
+    messages.append({"role": "user", "content": text()})
+    cuts: list[int] = []
+    for turn in range(rng.randint(3, 5)):
+        calls = [
+            {"id": f"call_{rng.randrange(1000)}_{i}", "type": "function", "function": _CALL["function"]}
+            for i in range(rng.choice([0, 0, 1, 2, 3]))
+        ]
+        messages.append({"role": "assistant", "content": text(), "reasoning_content": text()})
+        if calls:
+            messages[-1]["tool_calls"] = calls
+        cuts.append(len(messages))
+        # Results arrive in any order; recipe sorts them.
+        for call in rng.sample(calls, len(calls)):
+            messages.append({"role": "tool", "tool_call_id": call["id"], "content": text()})
+        cuts.append(len(messages))
+        for _ in range(rng.randint(0, 2)):
+            messages.append({"role": "user", "content": text()})
+            cuts.append(len(messages))
+        if (system_in_place or turn == 0) and rng.random() < 0.3:
+            messages.append({"role": "system", "content": text()})
+            cuts = [*cuts, len(messages)] if system_in_place else [len(messages)]
+    return messages, sorted(set(cuts))
+
+
+@pytest.mark.parametrize("tools", [None, _TOOLS], ids=["no_tools", "tools"])
+@pytest.mark.parametrize("thinking", [False, True], ids=["chat", "thinking"])
+@pytest.mark.parametrize("spec", _SPECS)
+def test_appended_messages_tokenize_as_with_the_whole_history(spec, thinking, tools, monkeypatch):
+    """``tokenize_additional_messages`` renders from the history's last assistant turn; its
+    result must still continue the render of the whole history, with the ids it had when it
+    rendered the whole history."""
+    tito = _TITO_CLASSES[spec](_tokenizer(spec), chat_template_kwargs={"thinking": thinking})
+    args = tito.default_template_args(tools)
+    rng = random.Random(0)
+    for _ in range(60):
+        messages, cuts = _random_conversation(rng, system_in_place="system" in tito.allowed_append_roles)
+        start, end = sorted(rng.sample(cuts, 2))
+        _assert_delta_is_the_render_tail(spec, thinking, tools, messages[:start], messages[start:end])
+        delta = tito.tokenize_additional_messages(messages[:start], messages[:end], template_args=args)
+        with monkeypatch.context() as whole_history:
+            whole_history.setattr(tito_tokenizer, "_from_last_assistant", lambda history: history)
+            assert delta == tito.tokenize_additional_messages(messages[:start], messages[:end], template_args=args)
 
 
 # ---------------------------------------------------------------------------
