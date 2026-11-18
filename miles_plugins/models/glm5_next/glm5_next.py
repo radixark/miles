@@ -88,6 +88,12 @@ def _patch_reference_proj_rms() -> None:
 
 
 def get_glm5_next_spec(args, config, vp_stage=None):
+    # The DSA layers gather keys in rank order and the KDA layers run fla's CP on contiguous shards:
+    # both need each rank to hold one contiguous chunk of the packed stream, which is --allgather-cp.
+    assert config.context_parallel_size == 1 or args.allgather_cp, (
+        "GLM-5.3 context parallelism needs --allgather-cp (contiguous CP chunks); the zigzag layout is not "
+        "supported by the DSA kpool indexer"
+    )
     hf_config = load_hf_config(args.hf_checkpoint)
     text_config = _get_text_config(hf_config)
 

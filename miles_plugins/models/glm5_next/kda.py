@@ -126,6 +126,9 @@ class Glm5NextKDA(nn.Module):
 class Glm5NextKDAAttention(HuggingfaceAttention):
 
     hybrid_cp = True
+    # the KDA core holds the CP group that build_gdn_cp_context reads; without it the core would run
+    # each rank's slice of the packed stream as if it were whole
+    linear_attn_attr = "kda"
 
     def __init__(
         self,

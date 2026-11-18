@@ -42,5 +42,8 @@ def model_args(nlayers: int = 45, first_k_dense_replace: int = 3) -> str:
         "--disable-bias-linear "
         "--untie-embeddings-and-output-weights "
         "--make-vocab-size-divisible-by 16 "
+        # The spec turns mHC on (and sets its stream count and Sinkhorn iterations from the HF config) only after
+        # Megatron has validated the config; enabling it here lets --recompute-modules name mhc.
+        "--enable-hyper-connections "
         "--enable-experimental "
     )

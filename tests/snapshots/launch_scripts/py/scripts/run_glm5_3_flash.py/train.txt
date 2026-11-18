@@ -55,6 +55,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --disable-bias-linear
   --untie-embeddings-and-output-weights
   --make-vocab-size-divisible-by 16
+  --enable-hyper-connections
   --enable-experimental
   --hf-checkpoint /root/models/GLM-5.3-Flash-4layer
   --ref-load /root/ckpt/glm5.3-flash-4layer_torch_dist 
