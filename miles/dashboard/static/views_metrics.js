@@ -307,6 +307,5 @@ export async function renderMetrics(view, meta, signal) {
   renderCategories();
   await buildPanels();
 
-  // unchanged charts skip the repaint entirely, so the live page sits still between real updates
   if (meta.mode === "follow") poll(refresh, 5000, signal);
 }

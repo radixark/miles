@@ -18,8 +18,7 @@ export function el(tag, attrs = {}, children = []) {
   return node;
 }
 
-// follow-mode refresh: the next round starts `ms` after the previous one settles, and
-// rounds are skipped while the browser tab is hidden; `signal` aborts when the user leaves the page
+// the next round starts `ms` after the previous one settles, so a slow round never overlaps the next
 export function poll(refresh, ms, signal) {
   const tick = async () => {
     if (signal.aborted) return;
