@@ -83,7 +83,8 @@ class SessionConfig(BaseConfig):
         Arg(
             help=(
                 "Process-wide session history matcher: strict (default), "
-                "loose_tool_call, role_content_only, or a trusted dotted import "
+                "loose_tool_call, loose_tool_call_ignore_reasoning, role_content_only, "
+                "or a trusted dotted import "
                 "path. role_content_only is a high-risk opt-in that can collapse "
                 "different tool-call lineages and does not reconcile call IDs."
             )

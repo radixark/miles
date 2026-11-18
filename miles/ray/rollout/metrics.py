@@ -122,6 +122,7 @@ def _compute_metrics_from_samples(args, samples):
     log_dict |= dict_add_prefix(compute_statistics(response_lengths), "response_len/")
     log_dict |= _compute_zero_std_metrics(args, samples)
     log_dict |= _compute_spec_metrics(args, samples)
+    log_dict |= _compute_session_tree_metrics(samples)
     log_dict |= _compute_prefix_cache_metrics(args, samples)
     log_dict |= _compute_reward_cat_metrics(args, samples)
     log_dict["repetition_frac"] = np.mean([int(has_repetition(s.response)) for s in samples]).item()
@@ -369,6 +370,31 @@ def _compute_spec_metrics(args, all_samples: list[Sample]):
         "spec_accept_rate": num_correct_drafts / num_proposed_drafts if num_proposed_drafts > 0 else 0.0,
         "spec_accept_length": completion_tokens / spec_verify_ct if spec_verify_ct > 0 else 0.0,
     }
+
+
+def _compute_session_tree_metrics(all_samples: list[Sample]) -> dict[str, float]:
+    trees = {
+        carrier["session_id"]: carrier["metrics"]["tree"]
+        for sample in all_samples
+        if (carrier := sample.metadata.get(SESSION_ROLLOUT_METRICS_KEY)) is not None
+    }
+    if not trees:
+        return {}
+    log_dict = {
+        "session/roots_per_episode": np.mean([tree["roots"] for tree in trees.values()]).item(),
+        "session/leaves_per_episode": np.mean([tree["leaves"] for tree in trees.values()]).item(),
+    }
+    multi_turn = [tree for tree in trees.values() if tree["turns"] > 1]
+    if multi_turn:
+        split = sum(1 for tree in multi_turn if tree["roots"] == tree["turns"])
+        log_dict["session/one_turn_per_root_ratio"] = split / len(multi_turn)
+        if split * 2 > len(multi_turn):
+            logger.warning(
+                f"{split}/{len(multi_turn)} multi-turn sessions opened a new root on every turn, so each sample "
+                "holds one turn: the agent does not replay history as --session-message-matcher accepts it. "
+                "See 'Choose replay matching' in docs/user-guide/agentic-rollout.md."
+            )
+    return log_dict
 
 
 def _compute_prefix_cache_metrics(args, all_samples: list[Sample]):
