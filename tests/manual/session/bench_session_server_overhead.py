@@ -428,7 +428,8 @@ def _build_server_config(
         rollout_temperature=1.0,
         output_store_backend_config=None,
         multimodal_token_space_processing=False,
-        shared_media_dir=None,
+        run_media_dir=None,
+        image_process_config={},
     )
 
 

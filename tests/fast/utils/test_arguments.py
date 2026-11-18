@@ -4477,6 +4477,8 @@ class TestMultimodalTokenSpaceProcessingArgs:
                 "trainer_mm_io_worker_num": 0,
                 "hf_checkpoint": "/ckpt",
                 "train_backend": "megatron",
+                "use_session_server": False,
+                "router": RouterKind.SGLANG,
                 **overrides,
             }
         )
@@ -4495,6 +4497,7 @@ class TestMultimodalTokenSpaceProcessingArgs:
     def test_settings_the_trainer_cannot_follow_are_rejected(self, engine_overrides, external_engines, match):
         args = SimpleNamespace(
             multimodal_token_space_processing=True,
+            use_session_server=None,
             rollout_external_engine_addrs=external_engines,
             custom_inference_engine_provider_path=None,
             rollout_external=external_engines is not None,
@@ -4513,6 +4516,7 @@ class TestMultimodalTokenSpaceProcessingArgs:
         """torchtitan has no consumer of multimodal_train_inputs, so it would train on placeholder tokens alone."""
         args = SimpleNamespace(
             multimodal_token_space_processing=True,
+            use_session_server=None,
             rollout_external_engine_addrs=None,
             custom_inference_engine_provider_path=None,
             rollout_external=False,
@@ -4526,6 +4530,7 @@ class TestMultimodalTokenSpaceProcessingArgs:
     def test_supported_settings_pass(self):
         args = SimpleNamespace(
             multimodal_token_space_processing=True,
+            use_session_server=None,
             rollout_external_engine_addrs=None,
             custom_inference_engine_provider_path=None,
             rollout_external=False,
@@ -4542,6 +4547,7 @@ class TestMultimodalTokenSpaceProcessingArgs:
         processor the trainer builds for the actor engines' samples."""
         args = SimpleNamespace(
             multimodal_token_space_processing=True,
+            use_session_server=None,
             rollout_external_engine_addrs=None,
             custom_inference_engine_provider_path=None,
             rollout_external=False,
@@ -4585,6 +4591,7 @@ class TestMultimodalTokenSpaceProcessingArgs:
         """The trainer builds one processor, so two engine groups with different settings cannot both be mirrored."""
         args = SimpleNamespace(
             multimodal_token_space_processing=True,
+            use_session_server=None,
             rollout_external_engine_addrs=None,
             custom_inference_engine_provider_path=None,
             rollout_external=False,
@@ -4622,9 +4629,29 @@ class TestMultimodalTokenSpaceProcessingArgs:
                 "miles.ray.rollout.external_engine_provider.static_inference_engine_provider",
             )
 
+    @pytest.mark.parametrize("use_session_server", [True, "v2"])
+    def test_the_session_server_without_the_miles_router_is_rejected(self, use_session_server):
+        args = self._args(use_session_server=use_session_server)
+
+        with pytest.raises(ValueError, match="needs --use-miles-router"):
+            _check_multimodal_token_space_processing_args(args, sglang=make_sglang_config(**self._SUPPORTED))
+
+    def test_the_session_server_with_the_miles_router_passes(self):
+        args = self._args(use_session_server="v2", router=RouterKind.MILES)
+        _check_multimodal_token_space_processing_args(args, sglang=make_sglang_config(**self._SUPPORTED))
+
+    def test_a_session_server_run_with_the_miles_router_parses(self):
+        args = parse_megatron_test_config(*self._TOKEN_SPACE_ARGV, "--use-session-server", "v2", "--use-miles-router")
+        assert args.router == RouterKind.MILES
+
+    def test_a_session_server_run_without_the_miles_router_is_refused_at_parse(self):
+        with pytest.raises(ValueError, match="needs --use-miles-router"):
+            parse_megatron_test_config(*self._TOKEN_SPACE_ARGV, "--use-session-server", "v2")
+
     def test_a_custom_inference_engine_provider_is_rejected(self):
         args = SimpleNamespace(
             multimodal_token_space_processing=True,
+            use_session_server=None,
             rollout_external_engine_addrs=None,
             custom_inference_engine_provider_path="my.provider.fn",
             rollout_external=True,

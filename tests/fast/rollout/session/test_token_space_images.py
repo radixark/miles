@@ -14,6 +14,7 @@ import json
 import os
 import threading
 import uuid
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -22,6 +23,7 @@ from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.session.core import SessionCore
 from miles.rollout.session.errors import MessageValidationError, TokenizationError, UpstreamResponseError
+from miles.rollout.session.image_expansion import build_image_token_counter
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.rollout.session.samples.codec import (
     COMPUTED_FIELDS,
@@ -272,7 +274,7 @@ def _make_core(
             "session_sample_picker_path": "miles.rollout.session.v2.picker_hub.drop_rolled_back_leaves",
             "session_sample_postprocessor_path": "miles.rollout.session.v2.postprocessor_hub.default_postprocess",
             "multimodal_token_space_processing": token_space,
-            "shared_media_dir": str(media_dir),
+            "run_media_dir": str(media_dir),
             **overrides,
         }
     )
@@ -628,3 +630,60 @@ def test_with_replay_off_no_offset_is_sent_with_media(tokenizer, processor_core,
     assert asyncio.run(_chat(core, session_id, [_user("look", _data_url(64, 64, (1, 2, 3)))])).status_code == 200
     (body,) = engine.bodies
     assert body["return_routed_experts"] is False and "routed_experts_start_len" not in body
+
+
+@pytest.fixture(
+    scope="module",
+    params=[{"max_pixels": 401408}, {"size": {"shortest_edge": 65536, "longest_edge": 401408}}],
+    ids=["max_pixels", "size"],
+)
+def small_images(request, engine_args):
+    from miles.backends.training_utils.data.token_space_media_process import build_trainer_processor
+
+    core = build_trainer_processor(
+        replace(engine_args, mm_process_config_json=json.dumps({"image": request.param})),
+        mm_processor_worker_num=1,
+        mm_io_worker_num=1,
+        device=torch.device("cpu"),
+    ).core
+    return request.param, core
+
+
+def test_the_image_count_follows_the_engines_image_settings(tokenizer, small_images, tmp_path):
+    image, processor_core = small_images
+    engine = TokenSpaceEngine(processor_core, tokenizer)
+    core, registry = _make_core("v2", tokenizer, engine, tmp_path, image_process_config=image)
+    counter = build_image_token_counter(core.config, tokenizer)
+    core.image_token_counter = counter
+    session_id = registry.create_session()
+    response = asyncio.run(_chat(core, session_id, [_user("look", _data_url(1920, 1080, (9, 40, 90)))]))
+    assert response.status_code == 200, response.body
+
+    pad_id = tokenizer.convert_tokens_to_ids(IMAGE_PAD)
+    (path,) = _image_urls(engine.bodies[0]["messages"])
+    assert engine.prompts[0].count(pad_id) == counter.count(path)
+    assert (
+        counter.count(path)
+        < counter.processor._get_num_multimodal_tokens(image_sizes=[(1080, 1920)]).num_image_tokens[0]
+    )
+
+
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_the_session_servers_image_count_matches_the_engines_expansion(version, tokenizer, processor_core, tmp_path):
+    engine = TokenSpaceEngine(processor_core, tokenizer)
+    core, registry = _make_core(version, tokenizer, engine, tmp_path)
+    counter = build_image_token_counter(core.config, tokenizer)
+    core.image_token_counter = counter
+    session_id = registry.create_session()
+    messages = []
+    for size in ((1280, 720), (1920, 1080), (333, 517)):
+        messages.append(_user("look", _data_url(*size, (size[0] % 256, 40, 90))))
+        response = asyncio.run(_chat(core, session_id, messages))
+        assert response.status_code == 200, response.body
+        messages.append(json.loads(response.body)["choices"][0]["message"])
+
+    pad_id = tokenizer.convert_tokens_to_ids(IMAGE_PAD)
+    paths = _image_urls(engine.bodies[-1]["messages"])
+    assert [prompt.count(pad_id) for prompt in engine.prompts] == [
+        sum(counter.count(path) for path in paths[: turn + 1]) for turn in range(3)
+    ]

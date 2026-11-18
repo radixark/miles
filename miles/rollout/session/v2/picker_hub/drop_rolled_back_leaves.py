@@ -105,8 +105,17 @@ def _same_prompt(node_id: int, sample: Sample, leaf_samples: list[Sample], nodes
     if nodes[node_id]["completion_span"][0] != prompt_len:
         return False
     covering = next((s for s in leaf_samples if node_id in s.metadata["leaf"]["path_node_ids"]), None)
-    return (
-        covering is not None
-        and covering.metadata["accumulated_token_ids"][:prompt_len]
-        == sample.metadata["accumulated_token_ids"][:prompt_len]
-    )
+    if covering is None:
+        return False
+    if (
+        covering.metadata["accumulated_token_ids"][:prompt_len]
+        != sample.metadata["accumulated_token_ids"][:prompt_len]
+    ):
+        return False
+    return _same_media(node_id, sample, covering)
+
+
+def _same_media(node_id: int, sample: Sample, covering: Sample) -> bool:
+    sibling_media = (covering.metadata.get("prompt_media_refs") or {}).get(str(node_id))
+    own_media = (sample.metadata.get("prompt_media_refs") or {}).get(str(sample.metadata["leaf"]["node_id"]))
+    return sibling_media == own_media

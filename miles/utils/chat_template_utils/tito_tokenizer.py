@@ -492,6 +492,25 @@ class QwenNextTITOTokenizer(Qwen3TITOTokenizer):
     )
 
 
+class Qwen3VLTITOTokenizer(Qwen3TITOTokenizer):
+    FIXED_TEMPLATE = FixedTemplate(consistant_kwargs=["add_vision_id"])
+
+    def tokenize_additional_messages(
+        self,
+        old_messages: list[dict[str, Any]],
+        new_messages: list[dict[str, Any]],
+        *,
+        template_args: dict[str, Any] | None = None,
+    ) -> list[int]:
+        assert_messages_append_only_with_allowed_role(old_messages, new_messages, self.allowed_append_roles)
+        return self._tokenize_rendered_suffix(
+            old_messages,
+            new_messages[len(old_messages) :],
+            template_args=template_args,
+            add_generation_prompt=True,
+        )
+
+
 # ---------------------------------------------------------------------------
 # GLM family implementation
 # ---------------------------------------------------------------------------
@@ -1149,6 +1168,7 @@ class TITOTokenizerType(StrEnum):
     QWEN38_SMALL = "qwen38small"
     QWEN4_EXP = "qwen4exp"
     QWENNEXT = "qwennext"
+    QWEN3_VL = "qwen3_vl"
     GLM47 = "glm47"
     GLM53 = "glm53"
     NEMOTRON3 = "nemotron3"
@@ -1178,6 +1198,8 @@ class TITOTokenizerType(StrEnum):
                 return Qwen38SmallTITOTokenizer
             case cls.QWENNEXT:
                 return QwenNextTITOTokenizer
+            case cls.QWEN3_VL:
+                return Qwen3VLTITOTokenizer
             case cls.GLM47:
                 return GLM47TITOTokenizer
             case cls.GLM53:

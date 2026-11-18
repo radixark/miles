@@ -20,12 +20,7 @@ from miles.rollout.session.core import (
 from miles.rollout.session.errors import OutputStoreContractError, SessionNotFoundError, TokenizationError
 from miles.rollout.session.request_args import filter_turn_args, parse_chat_request
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, ROLLOUT_SAMPLING_MASK_FIELDS, encode_samples
-from miles.rollout.session.token_space import (
-    check_engine_prompt,
-    engine_prompt_ids,
-    engine_token_ids,
-    prepare_engine_request,
-)
+from miles.rollout.session.token_space import engine_prompt_ids
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY, build_session_rollout_metrics
 from miles.rollout.session.v2.session_state import (
@@ -55,6 +50,7 @@ class SessionCoreV2(SessionCore):
         *,
         use_addition_r3=False,
         output_store=None,
+        image_token_counter=None,
     ):
         super().__init__(
             backend,
@@ -63,6 +59,7 @@ class SessionCoreV2(SessionCore):
             session_server_instance_id,
             use_addition_r3=use_addition_r3,
             output_store=output_store,
+            image_token_counter=image_token_counter,
         )
         # Import-path only in production: function_registry is process-local.
         self.sample_picker = load_function(config.session_sample_picker_path, sync_required=True)
@@ -226,19 +223,10 @@ class SessionCoreV2(SessionCore):
             prompt_token_ids = request_body["input_ids"]
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
 
-            checkpoint_token_ids = attach_parent.token_ids if attach_parent is not None else []
-            checkpoint_record = attach_parent.record if attach_parent is not None else None
-            prepare_engine_request(
+            self._prepare_engine_request(
                 request_body,
-                checkpoint_token_ids=checkpoint_token_ids,
-                checkpoint_record=checkpoint_record,
-                token_space=self.config.multimodal_token_space_processing,
-            )
-            # R3 rows count the tokens the engine runs: the offset uses the engine's form.
-            self._maybe_request_addition_r3(
-                request_body,
-                engine_token_ids(checkpoint_token_ids, checkpoint_record),
-                request_body["input_ids"],
+                checkpoint_token_ids=attach_parent.token_ids if attach_parent is not None else [],
+                checkpoint_record=attach_parent.record if attach_parent is not None else None,
             )
             _add_session_extra_key(request_body, session)
 
@@ -260,7 +248,7 @@ class SessionCoreV2(SessionCore):
             return proxy_result_to_response(result)
 
         response, choice, assistant_message, completion_token_ids = completion
-        check_engine_prompt(request_body, choice)
+        self._check_engine_prompt(request_body, choice)
         assistant_message = tito_tokenizer.postprocess_completion(
             choice=choice,
             assistant_message=assistant_message,

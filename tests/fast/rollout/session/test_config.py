@@ -38,12 +38,11 @@ _ARGS_TO_CONFIG_FIELD = {
     "rollout_sampling_logprobs_mode": "rollout_sampling_logprobs_mode",
     "rollout_temperature": "rollout_temperature",
     "multimodal_token_space_processing": "multimodal_token_space_processing",
-    "shared_media_dir": "shared_media_dir",
 }
 
 _CALL_SITE_FIELDS = ("host", "port", "instance_id", "backend_url")
 # Derived from several args, tested on their own below.
-_DERIVED_FIELDS = ("output_store_backend_config",)
+_DERIVED_FIELDS = ("output_store_backend_config", "run_media_dir", "image_process_config")
 _ROUTER_DERIVED_FIELDS = ("routing_key_header",)
 
 _DISTINCT_ARGS_VALUES = dict(
@@ -74,6 +73,7 @@ _DISTINCT_ARGS_VALUES = dict(
     rollout_temperature=0.7,
     multimodal_token_space_processing=True,
     shared_media_dir="/fake/media",
+    run_uuid="fakerun",
     use_output_store=False,
     **sglang_router_args("manual"),
 )
@@ -85,7 +85,7 @@ def _make_args(**overrides) -> Namespace:
     moe_router_topk = values.pop("moe_router_topk")
     return Namespace(
         **values,
-        sglang=make_sglang_config(speculative_algorithm=speculative_algorithm),
+        sglang=make_sglang_config(speculative_algorithm=speculative_algorithm, mm_process_config=None),
         raw_megatron=MegatronConfig(trainers=[], base_args={"moe_router_topk": moe_router_topk}),
     )
 
@@ -130,6 +130,30 @@ class TestComputeSessionServerConfig:
             backend_url="http://10.0.0.2:3000",
         )
         assert config.use_session_server is flag_value
+
+    def test_session_media_go_under_this_runs_directory(self):
+        config = compute_session_server_config(
+            _make_args(), host="10.0.0.1", port=5001, instance_id="abc", backend_url="http://10.0.0.2:3000"
+        )
+        assert config.run_media_dir == "/fake/media/fakerun"
+
+    @pytest.mark.parametrize(
+        ("token_space", "expected"), [(True, {"max_pixels": 1003520}), (False, {})], ids=["token-space", "off"]
+    )
+    def test_the_actor_engines_image_settings_reach_the_config(self, token_space, expected):
+        args = _make_args(multimodal_token_space_processing=token_space)
+        args.sglang = make_sglang_config(
+            speculative_algorithm="EAGLE",
+            mm_process_config={"image": {"max_pixels": 1003520}, "video": {"fps": 2.0}},
+        )
+        config = compute_session_server_config(args, host="h", port=1, instance_id="i", backend_url="http://x")
+        assert config.image_process_config == expected
+
+    def test_no_shared_media_dir_means_no_session_media_dir(self):
+        config = compute_session_server_config(
+            _make_args(shared_media_dir=None), host="10.0.0.1", port=5001, instance_id="abc", backend_url="http://x"
+        )
+        assert config.run_media_dir is None
 
     def test_the_output_store_config_deletes_only_and_leaves_the_host_to_the_server(self):
         store_args = dict(
@@ -214,7 +238,8 @@ _COMPLETE_CONFIG_KWARGS = dict(
     rollout_temperature=1.0,
     output_store_backend_config=None,
     multimodal_token_space_processing=False,
-    shared_media_dir=None,
+    run_media_dir=None,
+    image_process_config={},
 )
 
 
