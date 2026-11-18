@@ -95,5 +95,10 @@ def test_routed_expert_targets_are_served_shared_outer():
         _resolve([Q_PROJ, GATE_UP, DOWN], shared_outer=False)
 
 
+def test_routed_expert_targets_need_gate_up_and_down():
+    with pytest.raises(AssertionError, match="gate/up and down selected together"):
+        _resolve([Q_PROJ, GATE_UP], shared_outer=True)
+
+
 def test_attention_only_targets_need_no_expert_layout():
     assert _resolve([Q_PROJ], shared_outer=False) == [Q_PROJ]

@@ -218,6 +218,7 @@ def resolve_adapter_targets(
         f"--target-modules {attention_target_modules_csv(hf_config)}) or use --megatron-to-hf-mode bridge."
     )
     _assert_shared_expert_up_proj_has_gate_proj(selected or hf_targets)
+    _assert_experts_select_gate_up_and_down(spec, selected or hf_targets)
     if spec.linear_attention is None:
         return hf_targets
     return spec.linear_attention.served_targets(selected or hf_targets, hf_targets)
@@ -281,6 +282,23 @@ def _assert_fixed_target_layout(spec: LoRAArchSpec, hf_config: dict, hf_targets:
     assert not (missing or unexpected), (
         f"native {spec.name} LoRA requires its verified adapter layout (missing={missing}, "
         f"unexpected={unexpected}); omit --target-modules and --exclude-modules to use it"
+    )
+
+
+def _assert_experts_select_gate_up_and_down(spec: LoRAArchSpec, hf_targets: list[str]) -> None:
+    """SGLang applies routed-expert adapters only when gate/up and down are both targeted."""
+    leaves = {target.rpartition(".")[2] for target in hf_targets if spec.adapts_experts(target)}
+    if not leaves:
+        return
+    experts = spec.experts
+    gate_up, down = (
+        (("gate_up_proj",), "down_proj")
+        if experts.packed_targets
+        else (experts.gate_up_hf_leaves, experts.down_hf_leaf)
+    )
+    assert down in leaves and not leaves.isdisjoint(gate_up), (
+        f"native LoRA needs the routed experts' gate/up and down selected together, got {sorted(leaves)}: "
+        "SGLang wraps an MoE layer only when both are targeted and otherwise ignores the expert weights"
     )
 
 
