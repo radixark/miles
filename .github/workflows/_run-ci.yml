@@ -13,8 +13,7 @@ on:
         description: 'JSON-encoded list of runner labels (all required). e.g. ''["h100", "8gpu"]'' picks runners that carry BOTH labels. No default: GPU jobs must pass this explicitly.'
       container_image:
         type: string
-        required: false
-        default: 'radixark/miles:dev'
+        required: true
       num_gpus:
         description: 'Exact CUDA-visible device count for a dynamically allocated B200 job.'
         type: number

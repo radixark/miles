@@ -208,8 +208,8 @@ jobs:
             echo "::error::ci-image-tag must be a Docker tag, not a full image name: $CI_IMAGE_TAG"
             exit 1
           fi
-          echo "container_image=radixark/miles:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
-          echo "Resolved CI image: radixark/miles:${CI_IMAGE_TAG}"
+          echo "container_image=${GITHUB_REPOSITORY}:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved CI image: ${GITHUB_REPOSITORY}:${CI_IMAGE_TAG}"
 
   # Stage A: CPU-only fast tests (runs whenever resolve-ci-policy runs)
   # Uses the CPU-only reusable workflow on GitHub-hosted ubuntu-latest, so

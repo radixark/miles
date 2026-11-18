@@ -82,7 +82,7 @@ def plan_file_run(all_tests, test_file: str, image_tag: str, *, hw: str = "auto"
     else:
         if _IMAGE_TAG_PATTERN.fullmatch(image_tag) is None:
             raise FileRunError(f"invalid CI image tag: {image_tag!r}")
-        image = f"radixark/miles:{image_tag}"
+        image = f"{os.environ['GITHUB_REPOSITORY']}:{image_tag}"
     registrations = [t for t in all_tests if t.filename == test_file]
     if not registrations:
         raise FileRunError(f"{test_file} has no CI registration; /rerun-test runs only registered test files")

@@ -15,6 +15,11 @@ from tests.ci.run_suite import CI_SUITES
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
 
 
+@pytest.fixture(autouse=True)
+def _repository(monkeypatch):
+    monkeypatch.setenv("GITHUB_REPOSITORY", "radixark/miles")
+
+
 def _make(
     filename: str,
     *,

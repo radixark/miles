@@ -168,7 +168,7 @@ jobs:
             echo "Using the pinned tag ${CI_IMAGE_TAG}."
             exit 0
           fi
-          if docker buildx imagetools inspect "radixark/miles:pr-${PULL_NUMBER}" >/dev/null 2>&1; then
+          if docker buildx imagetools inspect "${GITHUB_REPOSITORY}:pr-${PULL_NUMBER}" >/dev/null 2>&1; then
             echo "tag=pr-${PULL_NUMBER}" >> "$GITHUB_OUTPUT"
             echo "Using this PR's image pr-${PULL_NUMBER}."
           else
