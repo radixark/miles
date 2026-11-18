@@ -18,13 +18,13 @@ path (``miles.utils.media_refs``); the trainer rebuilds the processor inputs fro
 
 from typing import Any
 
-from miles.rollout.generate_utils.generate_endpoint_utils import token_space_request_fields
+from miles.rollout.generate_utils.generate_endpoint_utils import (
+    MM_TOKEN_EXPANSION_START_LEN,
+    token_space_request_fields,
+)
 from miles.rollout.session.errors import MessageValidationError, TokenizationError, UpstreamResponseError
 from miles.rollout.session.types import SessionRecord
 from miles.utils.media_refs import has_message_media, materialize_message_media
-
-# Request fields only the session server sets.
-MM_TOKEN_EXPANSION_START_LEN = "mm_token_expansion_start_len"
 
 
 def store_message_media(client_args: dict[str, Any], *, token_space: bool, media_dir: str | None) -> dict[str, Any]:
@@ -67,6 +67,7 @@ def engine_token_ids(token_ids: list[int], record: SessionRecord | None) -> list
 
 def engine_input_ids(
     prompt_token_ids: list[int],
+    *,
     checkpoint_token_ids: list[int],
     checkpoint_engine_ids: list[int],
     checkpoint_completion_len: int,
@@ -113,9 +114,9 @@ def prepare_engine_request(
     )
     input_ids, start_len = engine_input_ids(
         request_body["input_ids"],
-        checkpoint_token_ids,
-        engine_token_ids(checkpoint_token_ids, checkpoint_record),
-        completion_len,
+        checkpoint_token_ids=checkpoint_token_ids,
+        checkpoint_engine_ids=engine_token_ids(checkpoint_token_ids, checkpoint_record),
+        checkpoint_completion_len=completion_len,
     )
     request_body["input_ids"] = input_ids
     request_body.update(token_space_request_fields(start_len))

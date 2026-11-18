@@ -34,7 +34,6 @@ from miles.rollout.session.request_args import (
     prepare_chat_request,
 )
 from miles.rollout.session.store_refs import SessionStoreRefs
-from miles.rollout.session.token_space import engine_prompt_ids
 from miles.rollout.session.types import SessionRecord
 from miles.rollout.session.v2.tree_trajectory import AttachPoint, SessionTree, TrajectoryNode
 from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher
@@ -193,10 +192,12 @@ def commit_generation(
     response_id: str,
     finish_reason: str,
     turn_args: dict[str, Any] | None = None,
+    engine_prompt_len: int | None = None,
 ) -> TrajectoryNode:
     """Validate and append one generation under *parent* (the request's attach
     node). Prefix validation is byte-identical to the pre-tree checkpoint check.
-    ``turn_args`` is the full resolved request for this generation."""
+    ``turn_args`` is the full resolved request for this generation; ``engine_prompt_len``
+    is the length of the prompt the engine ran, ``len(prompt_token_ids)`` unless media expanded it."""
     all_token_ids = prompt_token_ids + completion_token_ids
     assert_pretokenized_prefix(
         parent.token_ids if parent is not None else [],
@@ -210,7 +211,7 @@ def commit_generation(
     delta = list(request_messages[len(parent_messages) :]) + [assistant_message]
     # The span is in the engine's form, as the samples are (token_space): a prompt with media is longer
     # there than in token_ids, which the tree keeps in TITO's form for its prefix checks.
-    completion_start = len(engine_prompt_ids(record))
+    completion_start = len(prompt_token_ids) if engine_prompt_len is None else engine_prompt_len
     node = state.tree.create_node(
         parent,
         delta_messages=delta,
