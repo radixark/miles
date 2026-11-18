@@ -17,6 +17,7 @@ register_cpu_ci(est_time=25, suite="stage-a-cpu", labels=[])
 import functools
 import importlib.util
 import json
+import random
 import sys
 
 import pytest
@@ -325,8 +326,12 @@ _APPENDS = {
 @pytest.mark.parametrize("spec", _SPECS)
 def test_appended_messages_tokenize_as_the_render_tail(spec, thinking, shape):
     history, appended = _APPENDS[shape]
+    _assert_delta_is_the_render_tail(spec, thinking, _TOOLS, history, appended)
+
+
+def _assert_delta_is_the_render_tail(spec, thinking, tools, history, appended):
     tito = _TITO_CLASSES[spec](_tokenizer(spec), chat_template_kwargs={"thinking": thinking})
-    args = tito.default_template_args(_TOOLS)
+    args = tito.default_template_args(tools)
     prefix = tito.apply_chat_template(history, add_generation_prompt=False, tokenize=True, template_args=args)
     full = tito.apply_chat_template(history + appended, add_generation_prompt=True, tokenize=True, template_args=args)
     delta = tito.tokenize_additional_messages(history, history + appended, template_args=args)
@@ -338,6 +343,54 @@ def test_appended_messages_tokenize_as_the_render_tail(spec, thinking, shape):
     if history[-1]["role"] == "assistant":
         # A sampled turn ends on a special token, so nothing merges across the boundary.
         assert prefix + delta == full
+
+
+_TEXTS = ["", " ", "\n\n", "hello", "x<｜User｜>y", "a</think>b", "<tool_result>z</tool_result>", "中文", "<｜ref｜>r"]
+
+
+def _random_conversation(rng: random.Random) -> tuple[list[dict], list[int]]:
+    """A multi-turn conversation recipe converts, and the message counts it can be cut
+    at: after its last system turn and never inside one assistant turn's tool results."""
+
+    def text() -> str:
+        return "".join(rng.choices(_TEXTS, k=rng.randint(1, 3)))
+
+    messages = [{"role": "system", "content": text()}] if rng.random() < 0.5 else []
+    messages.append({"role": "user", "content": text()})
+    cuts: list[int] = []
+    for turn in range(rng.randint(3, 5)):
+        calls = [
+            {"id": f"call_{rng.randrange(1000)}_{i}", "type": "function", "function": _CALL["function"]}
+            for i in range(rng.choice([0, 0, 1, 2, 3]))
+        ]
+        messages.append({"role": "assistant", "content": text(), "reasoning_content": text()})
+        if calls:
+            messages[-1]["tool_calls"] = calls
+        cuts.append(len(messages))
+        # Results arrive in any order; recipe sorts them.
+        for call in rng.sample(calls, len(calls)):
+            messages.append({"role": "tool", "tool_call_id": call["id"], "content": text()})
+        cuts.append(len(messages))
+        for _ in range(rng.randint(0, 2)):
+            messages.append({"role": "user", "content": text()})
+            cuts.append(len(messages))
+        if turn == 0 and rng.random() < 0.3:
+            messages.append({"role": "system", "content": text()})
+            cuts = [len(messages)]
+    return messages, sorted(set(cuts))
+
+
+@pytest.mark.parametrize("tools", [None, _TOOLS], ids=["no_tools", "tools"])
+@pytest.mark.parametrize("thinking", [False, True], ids=["chat", "thinking"])
+@pytest.mark.parametrize("spec", _SPECS)
+def test_appended_messages_tokenize_as_with_the_whole_history(spec, thinking, tools):
+    """``tokenize_additional_messages`` renders from the history's last assistant turn; its
+    result must still continue the render of the whole history."""
+    rng = random.Random(0)
+    for _ in range(60):
+        messages, cuts = _random_conversation(rng)
+        start, end = sorted(rng.sample(cuts, 2))
+        _assert_delta_is_the_render_tail(spec, thinking, tools, messages[:start], messages[start:end])
 
 
 # ---------------------------------------------------------------------------
