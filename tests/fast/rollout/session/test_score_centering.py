@@ -189,7 +189,7 @@ def test_session_request_owns_sampling_logprobs_mode(candidate_count: int, filte
     "override,match",
     [
         ({"temperature": 0.8}, "Rollout top-k logprobs"),
-        ({"top_p": 0.9}, "launched without top-p/top-k"),
+        ({"top_p": 0.9}, "bounded training-request sampling"),
         ({"min_p": 0.1}, "Rollout top-k logprobs"),
         ({"logit_bias": {"1": 2}}, "Rollout top-k logprobs"),
     ],

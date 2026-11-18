@@ -59,6 +59,8 @@ def _serve_router(extra_args: dict | None = None):
             "use_output_store": False,
             "rollout_top_logprobs_num": 0,
             "rollout_sampling_logprobs_mode": "selected",
+            "rollout_top_p": 1.0,
+            "rollout_top_k": -1,
             "sglang": make_sglang_config(speculative_algorithm=None),
             "num_layers": None,
             "raw_megatron": MegatronConfig(trainers=[], base_args={}),

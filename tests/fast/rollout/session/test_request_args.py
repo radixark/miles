@@ -198,12 +198,21 @@ class TestPrepareChatRequest:
         prepared = prepare_chat_request(
             {"temperature": 1.0, "sampling_logprobs_mode": "support", **sampling},
             self._tito(),
-            config=make_session_server_config(),
+            config=make_session_server_config(rollout_top_k=32),
             turn_args=None,
         )
 
         assert "return_sampling_mask" not in prepared.body
         assert prepared.body.get("sampling_logprobs_mode") == mode
+
+    def test_unbounded_run_rejects_bounded_training_request(self):
+        with pytest.raises(MessageValidationError, match="bounded training-request sampling"):
+            prepare_chat_request(
+                {"temperature": 1.0, "top_p": 1.0, "top_k": 32},
+                self._tito(),
+                config=make_session_server_config(),
+                turn_args=None,
+            )
 
     def test_evaluation_requests_no_sampler_logprobs(self):
         prepared = prepare_chat_request(
@@ -385,7 +394,7 @@ def test_session_sampling_defaults_fill_only_omitted_fields(evaluation):
     prepared = prepare_chat_request(
         client_args,
         TITOTokenizer(MagicMock()),
-        config=make_session_server_config(),
+        config=make_session_server_config(rollout_top_p=0.9, rollout_top_k=20),
         turn_args=None,
         evaluation=evaluation,
         sampling_defaults={"temperature": 0.6, "top_p": 0.9, "top_k": 20},

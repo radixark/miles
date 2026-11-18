@@ -48,6 +48,8 @@ def _make_args() -> SimpleNamespace:
         use_rollout_sampling_support_replay=False,
         rollout_top_logprobs_num=0,
         rollout_temperature=1.0,
+        rollout_top_p=1.0,
+        rollout_top_k=-1,
         lora_rank=0,
         lora_adapter_path=None,
         use_output_store=False,

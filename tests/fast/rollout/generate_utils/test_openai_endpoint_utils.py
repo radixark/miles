@@ -101,6 +101,8 @@ async def test_create_without_instance_id_on_args(monkeypatch):
         rollout_top_logprobs_num=0,
         use_session_server=False,
         rollout_temperature=1.0,
+        rollout_top_p=1.0,
+        rollout_top_k=-1,
     )
     tracer = await OpenAIEndpointTracer.create(args)
 
@@ -134,6 +136,8 @@ async def test_create_distributes_sessions_across_port_range(monkeypatch):
         rollout_top_logprobs_num=0,
         use_session_server=False,
         rollout_temperature=1.0,
+        rollout_top_p=1.0,
+        rollout_top_k=-1,
     )
 
     chosen_ports = set()
@@ -181,6 +185,8 @@ class TestOpenAIEndpointTracerCreate:
             rollout_top_logprobs_num=0,
             use_session_server=False,
             rollout_temperature=1.0,
+            rollout_top_p=1.0,
+            rollout_top_k=-1,
         )
         tracer = await OpenAIEndpointTracer.create(args)
 
@@ -219,6 +225,8 @@ class TestOpenAIEndpointTracerCreate:
                 rollout_top_logprobs_num=0,
                 use_session_server=False,
                 rollout_temperature=1.0,
+                rollout_top_p=1.0,
+                rollout_top_k=-1,
             ),
             extra_key=extra_key,
         )
@@ -249,6 +257,8 @@ class TestOpenAIEndpointTracerCreate:
             rollout_top_logprobs_num=0,
             use_session_server=False,
             rollout_temperature=1.0,
+            rollout_top_p=1.0,
+            rollout_top_k=-1,
         )
         tracer = await OpenAIEndpointTracer.create(args)
 
@@ -272,6 +282,8 @@ class TestOpenAIEndpointTracerCreate:
             rollout_top_logprobs_num=0,
             use_session_server=False,
             rollout_temperature=1.0,
+            rollout_top_p=1.0,
+            rollout_top_k=-1,
         )
         tracer = await OpenAIEndpointTracer.create(args)
 

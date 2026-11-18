@@ -238,6 +238,8 @@ def _serve_session(*, backend_url: str, hf_checkpoint: str, version: str) -> Ite
         use_rollout_sampling_support_replay=False,
         rollout_top_logprobs_num=0,
         rollout_temperature=1.0,
+        rollout_top_p=1.0,
+        rollout_top_k=-1,
         pause_generation_mode="retract",
         session_server_ip="127.0.0.1",
         session_server_instances=[SessionServerInstance(addr=session_addr, instance_id=instance_id)],

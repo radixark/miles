@@ -26,15 +26,22 @@ def should_return_sampling_mask(
     return validate_sampling_support_request(
         params,
         replay_enabled=args.use_rollout_sampling_support_replay,
+        filtered_rollout=filters_rollout_sampling(args),
         support_logprobs=requests_support_logprobs(args),
         expected_temperature=float(args.rollout_temperature),
     )
+
+
+def filters_rollout_sampling(args: Any) -> bool:
+    """Whether the run's rollout sampling filters: --rollout-top-p below 1 or a positive --rollout-top-k."""
+    return args.rollout_top_p < 1.0 or args.rollout_top_k > 0
 
 
 def validate_sampling_support_request(
     sampling_params: Mapping[str, object],
     *,
     replay_enabled: bool,
+    filtered_rollout: bool,
     support_logprobs: bool,
     expected_temperature: float | None,
 ) -> bool:
@@ -44,6 +51,8 @@ def validate_sampling_support_request(
         raise ValueError(f"training request top_p must be in (0, 1], got {request_top_p}")
 
     if not replay_enabled:
+        if not filtered_rollout and _filters_sampling(sampling_params):
+            raise ValueError("bounded training-request sampling requires bounded rollout sampling")
         if not support_logprobs:
             return False
         request_top_k = sampling_params.get("top_k")
@@ -100,13 +109,17 @@ def configure_sampling_logprobs_request(request: dict[str, Any], sampling: Mappi
     """Without the mask, ask a training request that filters its sampling for the sampler's own log-probs."""
     if request.get("return_sampling_mask", False):
         return
+    if _filters_sampling(sampling):
+        request["sampling_logprobs_mode"] = "selected"
+
+
+def _filters_sampling(sampling: Mapping[str, object]) -> bool:
     top_p, top_k, min_p = sampling.get("top_p"), sampling.get("top_k"), sampling.get("min_p")
-    if (
+    return (
         (top_p is not None and float(top_p) < 1.0)
         or (top_k is not None and int(top_k) > 0)
         or (min_p is not None and float(min_p) > 0.0)
-    ):
-        request["sampling_logprobs_mode"] = "selected"
+    )
 
 
 def decode_flat_sampling_mask(

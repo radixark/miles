@@ -21,6 +21,7 @@ from miles.rollout.generate_utils.rollout_topk_logprobs import configure_rollout
 from miles.rollout.generate_utils.sampling_mask import (
     configure_sampling_logprobs_request,
     configure_sampling_mask_request,
+    filters_rollout_sampling,
     validate_sampling_support_request,
 )
 from miles.rollout.session.config import SessionServerConfig
@@ -108,6 +109,7 @@ def prepare_chat_request(
             return_sampling_mask = validate_sampling_support_request(
                 request_args,
                 replay_enabled=config.use_rollout_sampling_support_replay,
+                filtered_rollout=filters_rollout_sampling(config),
                 support_logprobs=requests_support_logprobs(config),
                 expected_temperature=(sampling_defaults or {}).get("temperature"),
             )
