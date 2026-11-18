@@ -7,6 +7,7 @@ from typing import Any, Generic, TypeVar
 
 import ray
 
+from miles.rollout.agentic.agent_function import cancel_calls, has_calls, rollout_abort_scope
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import MILES_HOST_IP_ENV, is_port_available
 from miles.utils.port_range import service_port_range
@@ -53,18 +54,22 @@ def merge_asserting_consistency(a: dict[_K, _V], b: dict[_K, _V]) -> dict[_K, _V
 
 
 async def call_agent_abort_hook(args) -> None:
-    """Invoke the optional abort hook of every agent function the run can call.
+    """Cancel this rollout's agent calls, then invoke the optional abort hook of every agent function the run can call.
 
     When oversampling collects enough samples, the rollout aborts SGLang, but an
-    external agent loop keeps running and keeps issuing fresh completion requests
-    until it hits its own limit. The agent integration knows how to tell its
-    backend to stop, so we look for a sibling ``abort`` callable in the same module
-    as each agent function -- ``--custom-agent-function-path`` and every
-    ``--rollout-data-yaml-config`` dataset's ``custom_agent_function_path`` -- and call it once per
-    distinct (module, config).
-    Backends that don't expose one are left to drain as before.
+    agent loop keeps running and keeps issuing fresh completion requests until it
+    hits its own limit. Cancelling its call stops it, in every
+    ``--custom-agent-function-mode``. An integration whose work outlives that call,
+    such as a run on an external server, tells its backend to stop through a sibling
+    ``abort`` callable in the same module as each agent function --
+    ``--custom-agent-function-path`` and every ``--rollout-data-yaml-config`` dataset's
+    ``custom_agent_function_path`` -- called once per distinct (module, config).
     """
     from miles.utils.args.custom_view import compute_custom_function_config
+
+    if has_calls():
+        cancelled = await cancel_calls(rollout_abort_scope(args))
+        logger.info(f"Cancelled {cancelled} agent call(s)")
 
     agent_functions = [args.custom_agent_function_path] if args.custom_agent_function_path else []
     # resolved at startup and carried by both rollout and orchestrator configs, so abort never rereads the YAML

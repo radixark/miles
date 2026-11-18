@@ -91,6 +91,28 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
   scores the attempt 0, like any other with no reward, and counts it in
   `eval/<dataset>-none_reward_ratio`.
 
+The function owns one episode and these rules:
+
+- One call is one episode. Miles opens the session before the call and collects
+  its samples once the call returns.
+- The returned dictionary is the episode's verdict, merged as above.
+- Raise `InfraAbort` only on signals the policy cannot write, such as the
+  harness's own result event or the session's count of backend failures. An exit
+  code alone does not count, and neither does error text that an agent with a
+  shell could print. The next section says which failures qualify.
+- A cancelled call stops and cleans up: free the sandbox, then let
+  `asyncio.CancelledError` propagate. Every mode delivers the cancel, and a
+  rollout abort sends one (see below). A harness that cannot honour it runs
+  under `subproc`, whose SIGTERM and backstop kill end it. An adapter that
+  spawns a CLI also stops the CLI's descendants, since a tool can sit in its own
+  process group.
+- Run blocking code with `asyncio.to_thread`, or the event loop cannot deliver
+  the cancel while it runs.
+- Hold a wall-clock cap, such as `asyncio.timeout`, around the episode, because
+  a harness's retry loop need not end by itself. A timeout after the agent
+  started is the policy's: return `reward: 0`. Give a CLI its stdin from
+  `/dev/null`, or it can wait on it forever.
+
 For structured parsing, the payload may use SGLang's
 `ChatCompletionRequest`-compatible fields, which extend the OpenAI format.
 
@@ -137,6 +159,17 @@ a sandbox still runs; an agent still running two minutes later is stopped.
 `--custom-agent-function-mode inline` runs the agent on the rollout's event loop,
 as before; use it for debugging and for agents that keep state across calls.
 
+A rollout abort, such as the one that ends an oversampled round, cancels this
+rollout's calls in every mode and discards their samples (`exit_status`
+`Cancelled`), however the agent then ends; an episode whose session opens after
+the abort never starts its agent. Under `subproc` the abort does not wait for
+the agent process's cleanup, which runs beside the next round to the deadlines
+above. An `inline` agent's cleanup runs on the rollout's loop: the abort hook
+waits up to 30 seconds for it before running the teardown hook below, and the
+rollout then waits for the episode to end, however long its cleanup takes. An
+evaluation on its own engines (`--eval-num-gpus`) keeps its calls through a
+training abort.
+
 ### Optional teardown hook
 
 The module named by `--custom-agent-function-path` may expose an `abort` function
@@ -148,11 +181,12 @@ async def abort(args) -> None:
 ```
 
 Miles calls this hook in the rollout process during oversampling abort after it
-stops in-flight SGLang generation, so under `subproc` it cannot reach the agent
-calls' module state; tell the external backend to stop, as below. Use it when the
-agent drives an external sandbox or agent server that would otherwise keep issuing
-completion requests until its own length limit or timeout. The hook is optional;
-modules without it continue to work.
+stops in-flight SGLang generation and cancels the agent calls, so under `subproc`
+it cannot reach their module state; tell the external backend to stop, as below.
+Use it when the agent drives an external sandbox or agent server whose work outlives
+the cancelled call and would otherwise keep issuing completion requests until its
+own length limit or timeout. The hook is optional; modules without it continue to
+work.
 
 See [`swe_agent_function.abort`](https://github.com/radixark/miles/blob/main/examples/swe-agent-harbor-docker/swe_agent_function.py)
 for an implementation that flushes the Harbor agent server.

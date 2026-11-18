@@ -33,6 +33,7 @@ AGENT_FUNCTION_MODES = ("subproc", "inline")
 _CANCEL_GRACE_S = 120.0
 # Once the call is over, cleanup the agent left running (a thread closing a sandbox) gets this long.
 _LEFTOVER_CLEANUP_S = 600.0
+_ABORT_WAIT_S = 30.0
 
 # the child takes the rollout's import path before it imports anything from miles
 _CHILD_BOOTSTRAP = (
@@ -75,6 +76,8 @@ class _ResultPipe:
 # set in a ``subproc`` agent process only (see report_to_caller)
 _result_pipe: _ResultPipe | None = None
 
+_calls: dict[asyncio.Task, dict[str, Any]] = {}
+
 
 class _RemoteTraceback(Exception):
     """The agent process's traceback, chained under the error it raised, as concurrent.futures does."""
@@ -103,11 +106,64 @@ async def call_agent_function(
     *,
     mode: str,
     on_child_reports: Callable[[list[Any]], None] | None = None,
+    abort_scope: str | None = None,
     **kwargs: Any,
 ) -> Any:
     """Await ``fn(**kwargs)`` on this loop (``inline``) or in a child process of its own (``subproc``).
 
-    Under ``subproc``, ``on_child_reports`` receives each item the agent sends with ``report_to_caller``."""
+    Under ``subproc``, ``on_child_reports`` receives each item the agent sends with ``report_to_caller``. In every
+    mode, a ``cancel_calls`` that reaches ``abort_scope`` cancels the call, which then raises
+    ``InfraAbort("Cancelled")`` however the agent ended."""
+    task = asyncio.ensure_future(_place(fn, mode, on_child_reports, kwargs))
+    call = _calls[task] = {"scope": abort_scope, "aborted": False}
+    try:
+        result = await task
+    except asyncio.CancelledError:
+        if not call["aborted"] or asyncio.current_task().cancelling():
+            raise
+    except Exception:
+        if not call["aborted"]:
+            raise
+    finally:
+        del _calls[task]
+    if call["aborted"]:
+        raise InfraAbort("Cancelled", "a rollout abort cancelled this agent call")
+    return result
+
+
+def has_calls() -> bool:
+    return bool(_calls_on_this_loop())
+
+
+def _calls_on_this_loop() -> dict[asyncio.Task, dict[str, Any]]:
+    loop = asyncio.get_running_loop()
+    return {task: call for task, call in list(_calls.items()) if task.get_loop() is loop}
+
+
+async def cancel_calls(scope: str | None = None) -> int:
+    """Cancel this loop's calls in ``scope`` (every call when None) and wait, within a bound, until their tasks have
+    ended; return how many. A cancelled ``subproc`` task ends once its child has SIGTERM, not once the child exits."""
+    calls = {
+        task: call for task, call in _calls_on_this_loop().items() if scope is None or call["scope"] in (None, scope)
+    }
+    for task, call in calls.items():
+        call["aborted"] = True
+        task.cancel()
+    if calls:
+        await asyncio.wait(list(calls), timeout=_ABORT_WAIT_S)
+    return len(calls)
+
+
+def rollout_abort_scope(args) -> str:
+    return f"{args.sglang_router_ip}:{args.sglang_router_port}"
+
+
+async def _place(
+    fn: Callable[..., Awaitable[Any]],
+    mode: str,
+    on_child_reports: Callable[[list[Any]], None] | None,
+    kwargs: dict[str, Any],
+) -> Any:
     if mode == "inline":
         return await fn(**kwargs)
     # pickled before the process starts, so an unpicklable argument fails here
