@@ -119,11 +119,14 @@ cmd_add() {
   [ ! -e "$SETUP_ROOT/$NAME/.runner" ] || die "$SETUP_ROOT/$NAME still holds a registration; run remove first"
 
   local labels="self-hosted,Linux,X64,gpu-runner,$NAME,$HWTYPE,${NGPU}gpu${TAGS:+,$TAGS}"
-  local hook_args=()
+  install -D -m 0755 "$SKILL_DIR/../../../tests/ci/github_runner/remove-foreign-checkouts.sh" \
+    "$HOOK_ROOT/job-start/remove-foreign-checkouts.sh"
+  local hook_args=(-v "$HOOK_ROOT/job-start:/opt/runner-hooks/job-start:ro"
+    -e ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/runner-hooks/job-start/remove-foreign-checkouts.sh)
   if [[ ",$TAGS," == *",aliyun,"* ]]; then
     ensure_rdma_networks
     install -D -m 0755 "$SKILL_DIR/hooks/aliyun/docker" "$HOOK_ROOT/aliyun/docker"
-    hook_args=(-v "$HOOK_ROOT/aliyun:/opt/runner-hooks/aliyun:ro" -e "PATH=/opt/runner-hooks/aliyun:$DEFAULT_PATH")
+    hook_args+=(-v "$HOOK_ROOT/aliyun:/opt/runner-hooks/aliyun:ro" -e "PATH=/opt/runner-hooks/aliyun:$DEFAULT_PATH")
   fi
   mkdir -p "$SETUP_ROOT/$NAME" "$CACHE_ROOT/$NAME/.cache"
 

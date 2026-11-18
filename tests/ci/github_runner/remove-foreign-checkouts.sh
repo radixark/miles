@@ -3,7 +3,8 @@
 # repository the runner served; delete all but the starting job's own before it runs.
 set -euo pipefail
 shopt -s nullglob
-work_dir="/data/miles_ci/runner_${HOSTNAME}"
+# RUNNER_WORKSPACE is <work dir>/<repository name>, whatever layout the host gives the runner.
+work_dir=$(dirname "$RUNNER_WORKSPACE")
 for checkout in "$work_dir"/*/; do
   name=$(basename "$checkout")
   [[ $name == _* || $name == "${GITHUB_REPOSITORY#*/}" ]] || rm -rf -- "$checkout"
