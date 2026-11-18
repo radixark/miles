@@ -206,9 +206,13 @@ def test_the_reference_model_is_left_alone(part):
         pass
 
 
-def test_the_warmup_routing_row_is_top_k_wide():
-    """--compile-warmup's synthetic routing rows are as wide as the routers' shared top-k."""
-    assert routing_replay.router_top_k([_Part(layer=1), _Part(layer=3)]) == 2
+def test_the_warmup_routing_row_needs_one_top_k_shared_by_every_router():
+    """--compile-warmup's synthetic routing rows are one top-k wide, so mixed top-ks have no row width."""
+    wider = _Part(layer=3)
+    wider.layers["3"].top_k = 3
+
+    with pytest.raises(AssertionError, match="expected one top-k shared by every router"):
+        routing_replay.router_top_k([_Part(layer=1), wider])
 
 
 def test_the_actor_sizes_the_warmup_routing_rows_from_its_trainer_args(monkeypatch):
