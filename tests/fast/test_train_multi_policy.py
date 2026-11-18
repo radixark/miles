@@ -23,6 +23,7 @@ from miles.utils.multi_policy.checkpoint_state import MultiPolicyCheckpointState
 from miles.utils.multi_policy.parker import Parker
 from miles.utils.multi_policy.utils import TrainerInfo
 from miles.utils.orchestration_utils import ArgvOrchestratorStartupInfo
+from miles.utils.workers import ray_worker_manager
 
 
 def _make_args(**overrides: Any) -> Namespace:
@@ -190,10 +191,10 @@ class TestTerminalLifecycle:
             trainer.dispose.side_effect = lambda model_id=model_id: events.append(f"{model_id}_dispose")
 
         def init_orchestration_script(_startup_info: ArgvOrchestratorStartupInfo, *, disposer: Any) -> None:
-            disposer.add(partial(wiring.shutdown_worker_manager, manager))
+            disposer.add(partial(wiring.shutdown_worker_manager, manager.launched))
 
         monkeypatch.setattr(multi_policy_driver, "init_orchestration_script", init_orchestration_script)
-        monkeypatch.setattr(wiring.ray, "kill", manager.kill)
+        monkeypatch.setattr(ray_worker_manager.ray, "kill", manager.kill)
         await _run(_make_args(num_rollout=0), trainers=trainers, lifecycle_events=events)
 
         assert manager.killed == [manager]

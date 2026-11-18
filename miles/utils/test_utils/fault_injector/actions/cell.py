@@ -72,7 +72,7 @@ class RestartRolloutCellAction(BaseFaultAction):
             operations=capability.cell_operations(),
             controller=create_inference_controller_handle(capability=capability),
             category=POOL_CATEGORY_INFERENCE_ENGINE,
-            auto_resume=ClusterBackend(args.cluster_backend) == ClusterBackend.KUBERNETES,
+            auto_resume=ClusterBackend(args.cluster_backend).auto_resumes_cells(),
         )
         logger.warning("[ft test rollout restart] %s", json.dumps({"at_rollout": context.rollout_id, **receipt}))
 
