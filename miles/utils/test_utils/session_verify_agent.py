@@ -17,8 +17,8 @@ its prompt record:
   accepts must succeed.  It also rolls back, appends a system message and
   injects assistant messages, which the session server must handle too.
 
-- ``truncate`` generates one reply greedily, regenerates it with ``max_tokens``
-  so that it stops inside its reasoning, a tool call or its answer
+- ``truncate`` generates one reply in full, regenerates it with a ``max_tokens``
+  that would stop it inside its reasoning, a tool call or its answer
   (``session_verify_cut_kind`` of the prompt record), and continues the cut turn.  The continuation must succeed exactly when the run
   continues truncated turns (``--allow-truncated-continuation``), and then the
   next prompt must close the cut turn with the family's closer.
@@ -49,7 +49,12 @@ from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_hub.agentic_tool_call import generate as _base_generate
 from miles.utils.chat_template_utils.tito_tokenizer import VALID_APPEND_ROLES, FixedTemplate, TITOTokenizerType
 from miles.utils.test_utils.openai_stream_client import stream_chat_completions
-from miles.utils.test_utils.session_truncation import check_continued_cuts, cut_length, load_tito_tokenizer
+from miles.utils.test_utils.session_truncation import (
+    check_continued_cuts,
+    cut_length,
+    load_tito_tokenizer,
+    record_cut_kind,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,10 +148,10 @@ _TRUNCATED_REFUSED = 409
 CONTINUE_CUT_STEP = "continue cut turn"
 # Where a truncate rollout cuts when the family declares no closer to place the cut by.
 _BLIND_CUT_TOKENS = 8
-# Sampling for the reply a truncate rollout generates twice: the top token at every step, so the
-# regeneration repeats the probed reply up to the cut.  A seed would not do: the verifier's requests
-# carry none, and SGLang honours one only under deterministic inference.
-REPRODUCIBLE_REQUEST_ARGS = {"top_k": 1}
+# Regenerations a truncate rollout tries until one stops in the planned place.  Each is a new sample:
+# a training session pins the temperature and refuses top_k, and SGLang honours a seed only under
+# deterministic inference, so nothing makes the regeneration repeat the probed reply.
+_MAX_CUT_ATTEMPTS = 4
 
 
 def fixed_template(tito_model: TITOTokenizerType | str) -> FixedTemplate:
@@ -313,8 +318,6 @@ class _Driver:
     events: list[str] = field(default_factory=list)
     expectations: list[dict] = field(default_factory=list)
     cuts: list[dict] = field(default_factory=list)
-    # Request kwargs of the reply ``chat`` accepted last, with its resample's seed.
-    accepted_kwargs: dict = field(default_factory=dict)
     counters: dict[str, int] = field(
         default_factory=lambda: dict.fromkeys(
             (
@@ -335,13 +338,11 @@ class _Driver:
         rejected = []
         complete_without_call = False
         for retry in range(_MAX_RESAMPLES + 1):
-            retry_kwargs = _with_retry_seed(kwargs, retry)
-            response = await _chat(self.client, self.base_url, messages, retry_kwargs, label=label)
+            response = await _chat(self.client, self.base_url, messages, _with_retry_seed(kwargs, retry), label=label)
             choice = response["choices"][0]
             message = choice["message"]
             if choice.get("finish_reason") != "length":
                 if message.get("tool_calls") or not need_tool_call:
-                    self.accepted_kwargs = retry_kwargs
                     return self._accept(message)
                 complete_without_call = True
             rejected.append(f"{choice.get('finish_reason')}: {_reply_head(message)!r}")
@@ -366,14 +367,12 @@ class _Driver:
         self.expectations.append({"step": label, "expected_status": expected_status, "actual_status": status})
         return None if status != _ACCEPTED else self._accept(response["choices"][0]["message"])
 
-    async def cut(self, messages, *, max_tokens: int, label) -> dict:
-        """Regenerate the reply ``chat`` accepted last, stopped after *max_tokens* tokens."""
-        kwargs = {**self.accepted_kwargs, "max_tokens": max_tokens}
+    async def cut(self, messages, *, max_tokens: int, label, retry: int) -> dict | None:
+        """Regenerate the last reply with at most *max_tokens* tokens; ``None`` if it ended by itself before that."""
+        kwargs = _with_retry_seed({**self.request_kwargs, "max_tokens": max_tokens}, retry)
         response = await _chat(self.client, self.base_url, messages, kwargs, label=label)
         choice = response["choices"][0]
-        if choice.get("finish_reason") != "length":
-            raise _ModelBehaviorError(f"{label}: the regenerated reply ended by itself within {max_tokens} tokens")
-        return self._accept(choice["message"])
+        return choice["message"] if choice.get("finish_reason") == "length" else None
 
     async def records(self) -> list[dict]:
         return await _session_records(self.client, self.base_url)
@@ -506,8 +505,7 @@ async def _run_truncate(driver: _Driver, fixed: FixedTemplate, tito, *, cut_kind
         call = await driver.chat(messages, label="Initial", need_tool_call=True)
         driver.events.append("initial")
         driver.append_tool_results(messages, call)
-    # No resample for a missing tool call: a greedy reply comes out the same every time.
-    await driver.chat(messages, label="Probe", extra_kwargs=REPRODUCIBLE_REQUEST_ARGS)
+    await driver.chat(messages, label="Probe", need_tool_call=cut_kind == "tool_call")
     driver.events.append("probe")
     if tito is None:
         max_tokens = _BLIND_CUT_TOKENS
@@ -515,8 +513,16 @@ async def _run_truncate(driver: _Driver, fixed: FixedTemplate, tito, *, cut_kind
         max_tokens = cut_length(tito, (await driver.records())[-1], cut_kind)
         if max_tokens is None:
             raise _ModelBehaviorError(f"the probed reply has no {cut_kind} to cut")
-    cut = await driver.cut(messages, max_tokens=max_tokens, label=f"Cut in {cut_kind}")
-    driver.events.append("cut")
+    # The probe tells where such a reply has its reasoning, call and answer; a regeneration is another
+    # sample, so try a few until one stops in the planned place, and otherwise continue the last cut.
+    for attempt in range(_MAX_CUT_ATTEMPTS):
+        cut = await driver.cut(messages, max_tokens=max_tokens, label=f"Cut in {cut_kind}", retry=attempt)
+        driver.events.append("cut")
+        if cut is not None and (tito is None or record_cut_kind(tito, (await driver.records())[-1]) == cut_kind):
+            break
+    if cut is None:
+        raise _ModelBehaviorError(f"the regenerated reply ended by itself within {max_tokens} tokens")
+    driver.counters["tool_call_count"] += len(cut.get("tool_calls") or [])
 
     probed_messages = list(messages)
     # The continuation follows the normal rollout: answer the cut turn's complete calls, else ask on.

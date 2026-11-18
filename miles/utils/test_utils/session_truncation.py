@@ -2,9 +2,8 @@
 
 A cut is placed by a probe. The verifier first generates a turn in full, finds
 where its reasoning, tool call or answer lies, and re-sends the same request
-with ``max_tokens`` ending there. Both requests sample greedily so the second
-repeats the first; it may still drift, so the kind of a cut is read from the
-cut turn's tokens, not from the plan.
+with ``max_tokens`` ending there. The regeneration is a new sample, so the kind
+of a cut is read from the cut turn's tokens, not from the plan.
 """
 
 from __future__ import annotations
@@ -34,12 +33,18 @@ def sampled_ids(record: dict) -> list[int]:
     return [entry[1] for entry in record["response"]["choices"][0]["meta_info"]["output_token_logprobs"]]
 
 
+def record_cut_kind(tito: TITOTokenizer, record: dict) -> str:
+    """Which of ``CUT_KINDS`` the record's reply stops in."""
+    prompt = prompt_ids(record)
+    return tito.cut_kind(prompt + sampled_ids(record), len(prompt))
+
+
 def cut_length(tito: TITOTokenizer, record: dict, kind: str) -> int | None:
     """How many of a full reply's tokens to keep so a regeneration stops inside *kind*.
 
-    The middle of the longest stretch of the reply that lies in *kind*, so a
-    regeneration that drifts by a few tokens still stops there. ``None`` when
-    the reply has no such place.
+    The middle of the longest stretch of the reply that lies in *kind*, where
+    another sample of the same reply is most likely in *kind* too. ``None``
+    when the reply has no such place.
     """
     prompt, reply = prompt_ids(record), sampled_ids(record)
     # The last token is the stop token; a cut turn never ends with it.

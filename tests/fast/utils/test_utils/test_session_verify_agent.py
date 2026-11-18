@@ -19,7 +19,6 @@ from miles.utils.test_utils.session_verify_agent import (
     EXPECTATIONS_KEY,
     NO_TOOL_CALL_REQUEST_ARGS,
     NO_TOOL_CALL_USER_TEXT,
-    REPRODUCIBLE_REQUEST_ARGS,
     SESSION_VERIFY_CUT_KIND_KEY,
     SESSION_VERIFY_KIND_KEY,
     SYSTEM_REMINDER_TEXT,
@@ -668,13 +667,16 @@ _QWEN3_REPLY = (
 class _FakeTruncatingSession:
     """A session server over the real Qwen3 tokenizer whose model always writes one scripted turn.
 
-    A request with ``max_tokens`` gets the turn cut there.  Continuing a cut turn puts the family's
-    closer at the head of the next prompt unless *closes* is off, or is refused with *refuse_status*.
+    A request with ``max_tokens`` gets a turn cut there: the scripted one, or the next of
+    *regenerated* in turn, since a regeneration is another sample.  Continuing a cut turn puts the
+    family's closer at the head of the next prompt unless *closes* is off, or is refused with
+    *refuse_status*.
     """
 
-    def __init__(self, tito, *, reply=_QWEN3_REPLY, closes=True, refuse_status=None):
+    def __init__(self, tito, *, reply=_QWEN3_REPLY, regenerated=(), closes=True, refuse_status=None):
         self.tito = tito
         self.reply_ids = self._encode(reply)
+        self.regenerated_ids = [self._encode(text) for text in regenerated]
         self.closes = closes
         self.refuse_status = refuse_status
         self.records = []
@@ -707,9 +709,12 @@ class _FakeTruncatingSession:
         else:
             prompt = self._next_prompt()
         self._last_messages = deepcopy(messages)
-        max_tokens = request_kwargs.get("max_tokens", len(self.reply_ids))
-        sampled = self.reply_ids[:max_tokens]
-        complete = len(sampled) == len(self.reply_ids)
+        reply_ids = self.reply_ids
+        if "max_tokens" in request_kwargs and self.regenerated_ids:
+            reply_ids = self.regenerated_ids.pop(0)
+            self.regenerated_ids.append(reply_ids)
+        sampled = reply_ids[: request_kwargs.get("max_tokens", len(reply_ids))]
+        complete = len(sampled) == len(reply_ids)
         message = {"role": "assistant", "content": self.tito.tokenizer.decode(sampled)}
         if complete and "<tool_call>" in message["content"]:
             call = {"name": "get_weather", "arguments": '{"location": "Beijing"}'}
@@ -774,16 +779,53 @@ def test_truncate_rollout_continues_a_turn_cut_in_each_kind(monkeypatch, qwen3_t
     assert result[CUTS_KEY] == [{"kind": cut_kind, "problems": []}]
     assert result[UNFINISHED_KEY] is None
     assert result["driver_events"][-1] == "continue_cut"
-    # The cut regenerates the probed reply: the same greedy request, stopped by max_tokens.
+    # The cut landed where it was planned on the first try: the probed request, stopped by max_tokens.
     (probe_kwargs,) = [kwargs for label, kwargs in session.requests if label == "Probe"]
     (cut_kwargs,) = [kwargs for label, kwargs in session.requests if label == f"Cut in {cut_kind}"]
-    assert probe_kwargs == {"temperature": 0.7, **REPRODUCIBLE_REQUEST_ARGS}
     assert 0 < cut_kwargs.pop("max_tokens") < len(session.reply_ids)
-    assert cut_kwargs == probe_kwargs
-    # Every other turn samples as the run does.
-    assert all(
-        "top_k" not in kwargs for label, kwargs in session.requests if label not in ("Probe", f"Cut in {cut_kind}")
-    )
+    assert cut_kwargs == probe_kwargs == {"temperature": 0.7}
+
+
+_QWEN3_LONG_REASONING_REPLY = _QWEN3_REPLY.replace(
+    "so I should call the weather tool.",
+    "so I should call the weather tool. " + "Let me think it over once more. " * 12,
+)
+
+
+def _cut_requests(session) -> list[dict]:
+    return [kwargs for label, kwargs in session.requests if label.startswith("Cut in")]
+
+
+def test_truncate_rollout_regenerates_until_the_cut_lands_in_the_planned_kind(monkeypatch, qwen3_tito):
+    """A regeneration is another sample: the first one reasons for longer, so the same budget stops in reasoning."""
+    session = _FakeTruncatingSession(qwen3_tito, regenerated=[_QWEN3_LONG_REASONING_REPLY, _QWEN3_REPLY])
+
+    result = _run_truncate(monkeypatch, session, "tool_call")
+
+    assert len(_cut_requests(session)) == 2
+    assert result[CUTS_KEY] == [{"kind": "tool_call", "problems": []}]
+    assert result[UNFINISHED_KEY] is None
+
+
+def test_truncate_rollout_continues_the_kind_it_got_when_no_regeneration_lands_as_planned(monkeypatch, qwen3_tito):
+    session = _FakeTruncatingSession(qwen3_tito, regenerated=[_QWEN3_LONG_REASONING_REPLY])
+
+    result = _run_truncate(monkeypatch, session, "tool_call")
+
+    assert len(_cut_requests(session)) == session_verify_agent._MAX_CUT_ATTEMPTS
+    assert result[EXPECTATIONS_KEY] == [{"step": CONTINUE_CUT_STEP, "expected_status": 200, "actual_status": 200}]
+    assert result[CUTS_KEY] == [{"kind": "reasoning", "problems": []}]
+    assert result[UNFINISHED_KEY] is None
+
+
+def test_truncate_rollout_is_unfinished_when_every_regeneration_ends_by_itself(monkeypatch, qwen3_tito):
+    session = _FakeTruncatingSession(qwen3_tito, regenerated=["Sunny.<|im_end|>"])
+
+    result = _run_truncate(monkeypatch, session, "answer")
+
+    assert len(_cut_requests(session)) == session_verify_agent._MAX_CUT_ATTEMPTS
+    assert "ended by itself within" in result[UNFINISHED_KEY]
+    assert result[EXPECTATIONS_KEY] == [] and result[CUTS_KEY] == []
 
 
 def test_truncate_rollout_reports_a_cut_turn_the_server_did_not_close(monkeypatch, qwen3_tito):
