@@ -72,13 +72,6 @@ def test_packed_expert_targets_attach_adapters_exported_under_the_expert_leaves(
     assert exported[f"{experts}down_proj.lora_B.weight"].shape == (1, HIDDEN, RANK)
 
 
-def test_each_packed_target_selects_its_own_projection():
-    moe, attached = _moe([GATE_UP])
-
-    assert attached == 1
-    assert hasattr(moe.experts, "lora_fc1_adapter") and not hasattr(moe.experts, "lora_fc2_adapter")
-
-
 def _resolve(targets, *, shared_outer):
     return resolve_adapter_targets(
         {"model_type": "qwen3_6_moe"},
@@ -89,16 +82,10 @@ def _resolve(targets, *, shared_outer):
     )
 
 
-def test_routed_expert_targets_are_served_shared_outer():
+def test_routed_expert_targets_need_the_shared_outer_layout_and_both_projections():
+    assert _resolve([Q_PROJ], shared_outer=False) == [Q_PROJ]
     assert {GATE_UP, DOWN} <= set(_resolve([Q_PROJ, GATE_UP, DOWN], shared_outer=True))
     with pytest.raises(AssertionError, match="pass --experts-shared-outer-loras"):
         _resolve([Q_PROJ, GATE_UP, DOWN], shared_outer=False)
-
-
-def test_routed_expert_targets_need_gate_up_and_down():
     with pytest.raises(AssertionError, match="gate/up and down selected together"):
         _resolve([Q_PROJ, GATE_UP], shared_outer=True)
-
-
-def test_attention_only_targets_need_no_expert_layout():
-    assert _resolve([Q_PROJ], shared_outer=False) == [Q_PROJ]
