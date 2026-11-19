@@ -22,8 +22,13 @@ class SessionBackendBoundary:
         self.calls.append(kwargs)
         self.metrics_path = Path(kwargs["extra_env_vars"]["MILES_SESSION_VERIFY_METRICS_PATH"])
         records = [
-            dict(driver_events=["append_tool"], hard_mismatch_count=1, hard_mismatch_types=["special_token_count"]),
-            dict(driver_events=["append_tool"], hard_mismatch_count=0, hard_mismatch_types=[]),
+            dict(
+                kind="normal",
+                driver_events=["append_tool"],
+                hard_mismatch_count=1,
+                hard_mismatch_types=["special_token_count"],
+            ),
+            dict(kind="normal", driver_events=["append_tool"], hard_mismatch_count=0, hard_mismatch_types=[]),
         ]
         self.metrics_path.write_text("".join(json.dumps(record) + "\n" for record in records))
 
@@ -57,8 +62,7 @@ def session_threshold_inputs(
             "2",
             "--session-verify-cycles",
             "2",
-            "--tool-call-failure-mode",
-            "append_user",
+            "--no-session-verify-spec-trajectory",
             "--no-enable-sample-ownership-checker",
             "--sglang-reasoning-parser",
             "qwen3",
@@ -74,7 +78,6 @@ def session_threshold_inputs(
     monkeypatch.setattr(
         session_verify_runner.command_utils, "default_config", lambda: SimpleNamespace(create_backend=lambda: backend)
     )
-    monkeypatch.setattr(session_verify_runner, "PROMPT_DATA_PATH", str(tmp_path / "prompt.jsonl"))
     monkeypatch.setattr(session_verify_runner.tempfile, "tempdir", str(tmp_path))
     for key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         monkeypatch.setenv(key, "http://proxy.invalid")

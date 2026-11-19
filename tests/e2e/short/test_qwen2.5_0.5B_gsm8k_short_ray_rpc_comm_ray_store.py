@@ -11,7 +11,7 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     num_gpus=8,
 )
-register_rocm_ci(est_time=300, suite="nightly-stage-c-8-gpu-mi350", labels=["short", "rpc-comm"])
+register_rocm_ci(est_time=300, suite="stage-c-8-gpu-mi350", labels=["amd"])
 
 
 def _load_base_test() -> ModuleType:

@@ -21,8 +21,8 @@ pr-test-tpu.yml: plan ─▶ image-build (PRs that change the TPU image) ─▶ 
 ## One run
 
 1. **Image.** As for the CUDA suites (`pr-test.yml`), runs use the rolling `radixark/miles:dev-tpu` that
-   `docker-build.yml` publishes, unless the PR changes the files it rebuilds `dev-tpu` for (`docker/Dockerfile.tpu`,
-   `docker/tpu_patch/`, `docker/install-kube-tools.sh`, `requirements.txt`). Such a PR builds its own
+   `docker-build.yml` publishes, unless the PR changes the common or TPU inputs owned by `docker/image_inputs.py`
+   ([input mapping](../../docs/developer/ci/02-docker-build.md#repository-input-mapping)). Such a PR builds its own
    `radixark/miles:pr-<number>-tpu` with `docker/build.py --variant tpu` on the `docker-build` runners, and
    `docker-pr-tag-cleanup.yml` deletes it when the PR closes. A change to miles' code alone never needs a new image.
 2. **JobSet.** `render_jobset.py` prints one single-host JobSet labelled with the queue `tpu-prgate-1h`, the queue

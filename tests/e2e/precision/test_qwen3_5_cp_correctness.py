@@ -24,7 +24,7 @@ from linear_attn_reference import ReplicatedGDN, ReplicatedKDA, build_layer, pac
 register_cuda_ci(
     est_time=300, suite="stage-c-4-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=4
 )
-register_rocm_ci(est_time=200, suite="nightly-stage-c-4-gpu-mi350", labels=["precision"])
+register_rocm_ci(est_time=200, suite="stage-c-4-gpu-mi350", labels=["precision"])
 
 HIDDEN = 256
 

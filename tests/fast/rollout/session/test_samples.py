@@ -10,7 +10,8 @@ from unittest.mock import MagicMock
 import numpy as np
 import pybase64
 import pytest
-from tests.fast.utils.output_store.test_plan import Ref, Spec, fake_store_refs
+from tests.fast.fixtures.score_centering_fixtures import _flat_sampling_mask
+from tests.fast.utils.output_store.test_plan import Ref, Spec, fake_store_refs, read_rows, stored_parts
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.samples.merge import (
@@ -93,9 +94,10 @@ def _make_record(
     if weight_versions is not None:
         meta_info["weight_versions"] = weight_versions
     if sampling_masks is not None:
-        request["return_sampling_mask"] = True
-        meta_info["output_token_sampling_mask"] = sampling_masks
-        meta_info["output_token_sampling_logprobs"] = sampling_log_probs
+        request.update(
+            return_sampling_mask=True, return_flat_raw_sampling_mask=True, return_flat_raw_sampling_mask_b64=True
+        )
+        meta_info |= _flat_sampling_mask(sampling_masks, sampling_log_probs)
     if prefill_weight_versions is not None:
         meta_info["prefill_weight_versions"] = prefill_weight_versions
     return SessionRecord(
@@ -251,12 +253,12 @@ class TestComputeSamplesFromRecords:
             output_token_ids=[10, 11],
             output_log_probs=[-2.5, -2.6],
             sampling_masks=[[10, 4, 7], [11, 3]],
-            sampling_log_probs=[-0.5, -0.6],
+            sampling_log_probs=[-0.5, -0.625],
         )
 
         (sample,) = compute_samples_from_openai_records(_ARGS, [record], tok)
 
-        assert sample.rollout_log_probs == [-0.5, -0.6]
+        assert sample.rollout_log_probs == [-0.5, -0.625]
         ids, offsets = sample.rollout_sampling_mask._as_tensors()
         assert ids.tolist() == [10, 4, 7, 11, 3]
         assert offsets.tolist() == [0, 3, 5]
@@ -278,7 +280,7 @@ class TestComputeSamplesFromRecords:
         record = _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10])
         record.request["return_sampling_mask"] = True
 
-        with pytest.raises(ValueError, match="missing output_token_sampling_mask"):
+        with pytest.raises(ValueError, match="missing output_token_sampling_mask_flat_b64"):
             compute_samples_from_openai_records(_ARGS, [record], tok)
 
     def test_later_abort_preserves_terminal_status(self):
@@ -1039,7 +1041,9 @@ def _store_record(
         arrays[MASK_SUPPORT_LOGPROBS] = np.asarray(log_probs, dtype=np.float32)
     if routed_experts is not None:
         request["return_routed_experts"] = True
-        arrays[R3] = routed_experts
+        # Stored in parts split at layer 1, as a two-stage pipeline's requests ask.
+        request["replay_layer_splits"] = [1]
+        arrays |= stored_parts(R3, routed_experts, [1])
     if routed_experts_start_len is not None:
         request["routed_experts_start_len"] = routed_experts_start_len
     meta_info = {
@@ -1083,11 +1087,8 @@ def _merge_store(records, accumulated, *, use_addition_r3=True, max_trim_tokens=
 
 
 def _routed_experts(merged: Sample, objects: dict) -> np.ndarray:
-    tokens = np.asarray(merged.tokens[len(merged.tokens) - merged.response_length :])
-    columns = merged.rollout_store_plan.materialize(
-        objects, response_tokens=tokens, support_topk=0, indexer_streams=None
-    )
-    return columns["rollout_routed_experts"]
+    """The rows the plan's routed experts segments take from ``objects``, as replay reads them."""
+    return read_rows(merged.rollout_store_plan.fields[R3], objects)
 
 
 class TestStoreSessionAssembly:

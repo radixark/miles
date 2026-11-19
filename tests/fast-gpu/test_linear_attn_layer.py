@@ -25,7 +25,7 @@ register_cuda_ci(
     est_time=120, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=2
 )
 
-register_rocm_ci(est_time=270, suite="nightly-stage-c-2-gpu-mi350", labels=["precision"])
+register_rocm_ci(est_time=270, suite="stage-c-2-gpu-mi350", labels=["precision"])
 
 HIDDEN = 256
 HEADS = LinearAttnHeads(num_k_heads=8, num_v_heads=8, head_k_dim=64, head_v_dim=64)

@@ -8,6 +8,7 @@ import os
 import sys
 import threading
 import time
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 
 from miles.rollout.agentic.rollout_limits import current_scope, rollout_lock, rollout_semaphore
@@ -79,6 +80,41 @@ async def leave_cleanup_thread(*, marker: str, delay_s: float, **kwargs) -> int:
 
 async def leave_endless_thread(**kwargs) -> int:
     threading.Thread(target=time.sleep, args=(3600,), daemon=False).start()
+    return os.getpid()
+
+
+# held by the module, as a library holds its pool, so it outlives the agent call
+_MODULE_POOL = ThreadPoolExecutor(max_workers=1)
+
+
+async def leave_module_pool_work(*, marker: str, delay_s: float, **kwargs) -> int:
+    def _log() -> None:
+        time.sleep(delay_s)
+        Path(marker).touch()
+
+    _MODULE_POOL.submit(_log)
+    return os.getpid()
+
+
+# held by the module too; its manager thread waits for work until the pool shuts down
+_MODULE_PROCESS_POOL = ProcessPoolExecutor(max_workers=1)
+
+
+async def leave_module_process_pool(**kwargs) -> int:
+    _MODULE_PROCESS_POOL.submit(os.getpid).result()
+    return os.getpid()
+
+
+async def leave_cleanup_using_a_pool(*, marker: str, delay_s: float, **kwargs) -> int:
+    def _use_pool() -> None:
+        time.sleep(delay_s)
+        ThreadPoolExecutor(max_workers=1).submit(Path(marker).touch).result()
+
+    def _cleanup() -> None:
+        time.sleep(delay_s)
+        threading.Thread(target=_use_pool, daemon=False).start()
+
+    threading.Thread(target=_cleanup, daemon=False).start()
     return os.getpid()
 
 

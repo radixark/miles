@@ -34,16 +34,18 @@ class CudaStage:
     arch: str
     num_gpus: int
     runs_on: tuple[str, ...]
+    # CPU architecture of the stage's runners; its job requires that architecture's CI image.
+    image_arch: str
 
 
 CUDA_STAGES: dict[str, CudaStage] = {
-    "stage-b-2-gpu-h200": CudaStage("hopper", 2, ("h200", "2gpu")),
-    "stage-c-8-gpu-h100": CudaStage("hopper", 8, ("h100", "8gpu")),
-    "stage-c-8-gpu-h200": CudaStage("hopper", 8, ("h200", "8gpu")),
-    "stage-c-4-gpu-h200": CudaStage("hopper", 4, ("h200", "4gpu")),
-    "stage-c-2-gpu-h200": CudaStage("hopper", 2, ("h200", "2gpu")),
-    "stage-c-4-gpu-b200": CudaStage("blackwell", 4, ("b200", "4gpu")),
-    "stage-c-8-gpu-b200": CudaStage("blackwell", 8, ("b200", "8gpu")),
+    "stage-b-2-gpu-h200": CudaStage("hopper", 2, ("h200", "2gpu"), "amd64"),
+    "stage-c-8-gpu-h100": CudaStage("hopper", 8, ("h100", "8gpu"), "amd64"),
+    "stage-c-8-gpu-h200": CudaStage("hopper", 8, ("h200", "8gpu"), "amd64"),
+    "stage-c-4-gpu-h200": CudaStage("hopper", 4, ("h200", "4gpu"), "amd64"),
+    "stage-c-2-gpu-h200": CudaStage("hopper", 2, ("h200", "2gpu"), "amd64"),
+    "stage-c-4-gpu-b200": CudaStage("blackwell", 4, ("b200", "4gpu"), "amd64"),
+    "stage-c-8-gpu-b200": CudaStage("blackwell", 8, ("b200", "8gpu"), "amd64"),
 }
 
 
