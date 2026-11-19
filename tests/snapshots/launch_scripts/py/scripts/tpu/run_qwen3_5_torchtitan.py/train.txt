@@ -46,11 +46,11 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --rm-type dapo
   --reward-key score
   --eval-reward-key acc
-  --rollout-max-prompt-len 1024
   --num-rollout 100
   --rollout-batch-size 16
   --n-samples-per-prompt 8
   --rollout-max-response-len 7168
+  --rollout-max-prompt-len 1024
   --rollout-temperature 1
   --global-batch-size 128 
   --eval-interval 10

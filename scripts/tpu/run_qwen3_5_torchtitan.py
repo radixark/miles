@@ -43,9 +43,8 @@ from miles.utils.external_utils import command_utils
 _ENGINE_ARGS = "--tpu-compile-tokens 128 256 512 1024 2048 "
 # an empty ladder skips the vision tower's precompile (~14 of ~17 startup minutes); rollouts are text only
 _ENGINE_ENV = "SGLANG_TPU_VIT_PRECOMPILE_SIZES='' "
-# dapo grades the "Answer:" line the dapo-math prompts ask for; --rollout-max-prompt-len drops prompts sglang would
-# refuse (context minus the response budget)
-_ROLLOUT_ARGS = "--rm-type dapo --reward-key score --eval-reward-key acc --rollout-max-prompt-len 1024 "
+# dapo grades the "Answer:" line the dapo-math prompts ask for
+_ROLLOUT_ARGS = "--rm-type dapo --reward-key score --eval-reward-key acc "
 # AIME with the dapo-math prompts' "Answer:" instruction (tools/add_dapo_answer_instruction.py): thinking-off
 # answers end in a bare "Answer: N" line, never a \boxed{}
 _EVAL_DATA = "aime-2024-dapo"

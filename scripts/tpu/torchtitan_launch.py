@@ -230,6 +230,8 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
         f"--rollout-batch-size {recipe.rollout_batch_size} "
         f"--n-samples-per-prompt {recipe.n_samples_per_prompt} "
         f"--rollout-max-response-len {recipe.max_response_len} "
+        # sglang refuses a prompt that leaves less than the response budget in its context
+        f"--rollout-max-prompt-len {SEQ_LEN - recipe.max_response_len} "
         "--rollout-temperature 1 "
         f"--global-batch-size {recipe.global_batch_size} "
     )
