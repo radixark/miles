@@ -18,7 +18,6 @@ from tests.ci.run_suite import CI_SUITES
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
 
 
-
 @pytest.mark.parametrize("hw", ["cuda", "rocm"])
 @pytest.mark.parametrize("published", [False, True])
 @pytest.mark.parametrize("pin", ["", "debug"])
@@ -97,7 +96,9 @@ def test_every_cpu_suite_is_allowed():
 
 
 def test_cuda_file_image_comes_from_the_given_repository():
-    plan = plan_file_run([_make("tests/e2e/x/test_a.py")], "tests/e2e/x/test_a.py", "pr-7", image_repo="example/miles-copy")
+    plan = plan_file_run(
+        [_make("tests/e2e/x/test_a.py")], "tests/e2e/x/test_a.py", "pr-7", image_repo="example/miles-copy"
+    )
     assert plan["container_image"] == "example/miles-copy:pr-7"
 
 

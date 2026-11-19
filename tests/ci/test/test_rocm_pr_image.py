@@ -209,7 +209,9 @@ def test_pr_eligibility_uses_common_and_hardware_inputs(repository, variant, pat
         ("example/miles-copy", "docker/tpu_patch/fix.patch", []),
     ],
 )
-def test_rolling_push_builds_only_supported_variants_with_changed_inputs(repository, github_repository, path, variants):
+def test_rolling_push_builds_only_supported_variants_with_changed_inputs(
+    repository, github_repository, path, variants
+):
     root, git = repository
     before = git("rev-parse", "HEAD")
     (root / path).write_text("changed\n")
