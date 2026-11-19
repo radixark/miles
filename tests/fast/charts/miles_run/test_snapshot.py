@@ -1,9 +1,7 @@
-import os
 import re
 import shlex
 import subprocess
 import sys
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -166,23 +164,14 @@ SCENARIO_ARGV = [
 
 
 @pytest.fixture(autouse=True)
-def parser_process_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def parser_process_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "orig_argv", [sys.executable, "-m", "pytest"])
     monkeypatch.delenv(RECORD_DIR_ENV, raising=False)
     for name, value in PARSER_ENV.items():
         monkeypatch.setenv(name, value)
-    tuning_env_name = "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2"
-    tuning_env_value = os.environ.pop(tuning_env_name, None)
     # megatron validates the arguments against the local accelerator, which the cpu lane that
     # runs this snapshot has none of; the rendered values do not depend on the answer
     monkeypatch.setattr(megatron_arguments, "get_device_arch_version", lambda: _DEVICE_ARCH_VERSION)
-
-    yield
-
-    if tuning_env_value is None:
-        os.environ.pop(tuning_env_name, None)
-    else:
-        os.environ[tuning_env_name] = tuning_env_value
 
 
 _DEVICE_ARCH_VERSION = 9

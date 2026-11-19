@@ -9,7 +9,7 @@ from tests.fast.fixtures.sglang_config_fixtures import with_parser_defaults_and_
 
 from miles.backends.sglang_utils import sglang_engine
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
-from miles.backends.sglang_utils.sglang_engine import _compute_server_args
+from miles.backends.sglang_utils.sglang_engine import _compute_server_args, engine_enables_memory_saver
 
 
 def make_args(**overrides: object) -> SimpleNamespace:
@@ -239,3 +239,20 @@ class TestAttentionDpLoRA:
         pinned = {"lora_name": "miles_lora", "lora_path": "/fake/adapter", "pinned": True}
         assert server_args["lora_paths"] == [pinned if attention_dp else "miles_lora=/fake/adapter"]
         assert server_args["max_loras_per_batch"] == (2 if attention_dp else 1)
+
+
+class TestEnableMemorySaver:
+    @pytest.mark.parametrize(
+        ("offload_rollout", "sglang_overrides", "expected"),
+        [
+            (False, None, False),
+            (True, None, True),
+            (True, {"enable_memory_saver": False}, False),
+            (False, {"enable_memory_saver": True}, True),
+        ],
+    )
+    def test_memory_saver_matches_offload_and_overrides(self, offload_rollout, sglang_overrides, expected):
+        args = make_args(offload_rollout=offload_rollout)
+
+        assert engine_enables_memory_saver(args, sglang_overrides=sglang_overrides) is expected
+        assert compute(args, sglang_overrides=sglang_overrides)["enable_memory_saver"] is expected
