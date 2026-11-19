@@ -49,6 +49,12 @@ def main():
     parser.add_argument("--log-dir", default=".")
     parser.add_argument("--mem-fraction-static", type=float, default=0.85)
     parser.add_argument("--extra-args", default="", help="Extra sglang.launch_server flags for every teacher")
+    parser.add_argument(
+        "--prefix-cache",
+        action="store_true",
+        help="Keep the radix cache: --opd-chunk-tokens scores each response chunk by chunk, so a chunk reuses the "
+        "previous chunk's prefix (pass the mamba / HiCache flags in --extra-args)",
+    )
     args = parser.parse_args()
 
     processes = []
@@ -74,8 +80,8 @@ def main():
             "--tp-size", "1", "--dp-size", str(len(gpus.split(","))),
             "--context-length", "32768",
             "--mem-fraction-static", str(args.mem_fraction_static),
-            # n=1 per prompt: no prefix worth caching, and the hybrid model needs extra state to cache.
-            "--disable-radix-cache",
+            # n=1 per prompt: unchunked scoring has no prefix worth caching
+            *([] if args.prefix_cache else ["--disable-radix-cache"]),
             "--enable-metrics",
             *args.extra_args.split(),
         ]  # fmt: skip

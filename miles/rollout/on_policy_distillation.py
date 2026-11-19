@@ -1,4 +1,6 @@
 import asyncio
+import copy
+import dataclasses
 import math
 from argparse import Namespace
 from collections.abc import Iterable
@@ -7,6 +9,8 @@ from typing import Any
 import aiohttp
 import torch
 
+from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
+from miles.rollout.generate_hub.single_turn import generate as single_turn_generate
 from miles.utils.types import Sample
 
 TopLogprobs = list[list[Any]]
@@ -22,6 +26,67 @@ STUDENT_ON_TEACHER_STRATEGIES = {"only-teacher", "union", "xor"}
 
 # Reserved teacher name in --opd-teacher-urls used as the fallback route.
 DEFAULT_TEACHER_NAME = "default"
+
+# Sample metadata flag: the rollout stopped at a --opd-chunk-tokens boundary and continues later.
+CHUNK_OPEN_KEY = "opd_chunk_open"
+# Sample metadata: response tokens before this call's chunk; they are context, never scored or trained again.
+CHUNK_START_KEY = "opd_chunk_start"
+
+
+async def generate(input: GenerateFnInput, url: str | None = None) -> GenerateFnOutput:
+    """Single-turn generation that stops a training rollout after --opd-chunk-tokens new tokens.
+
+    OPD's per-token signal needs no finished response: the teacher scores the prefix generated so far,
+    and the sample trains on this call's tokens only (earlier chunks are loss-masked context). A rollout
+    stopped at a chunk boundary is marked open; ``chunk_continuations`` re-queues a copy that resumes it.
+    """
+    args, sample = input.args, input.sample
+    if input.evaluation or args.opd_chunk_tokens is None:
+        return await single_turn_generate(input, url)
+
+    prefix_len = sample.response_length
+    budget = input.sampling_params["max_new_tokens"]
+    # single_turn subtracts the generated prefix from max_new_tokens, so this allows one chunk of new tokens
+    sampling_params = {**input.sampling_params, "max_new_tokens": min(budget, prefix_len + args.opd_chunk_tokens)}
+    output = await single_turn_generate(dataclasses.replace(input, sampling_params=sampling_params), url)
+    num_new_tokens = sample.response_length - prefix_len
+    sample.loss_mask = [0] * prefix_len + [1] * num_new_tokens
+    sample.metadata[CHUNK_START_KEY] = prefix_len
+    # open only when the chunk cap stopped it: --rollout-max-response-len or --max-seq-len end the rollout
+    sample.metadata[CHUNK_OPEN_KEY] = (
+        sample.status == Sample.Status.TRUNCATED
+        and num_new_tokens == args.opd_chunk_tokens
+        and sample.response_length < budget
+    )
+    return output
+
+
+def chunk_continuations(groups: list[list[Sample]]) -> list[list[Sample]]:
+    """Copies of the rollouts stopped at a chunk boundary, ready to resume generating from their prefix."""
+    if any(CHUNK_START_KEY not in sample.metadata for group in groups for sample in group):
+        raise ValueError(
+            "--opd-chunk-tokens needs miles.rollout.on_policy_distillation.generate (or a generate function that "
+            "calls it); this rollout's samples were not cut into chunks."
+        )
+    return [
+        [_chunk_continuation(sample) for sample in group] for group in groups if group[0].metadata.get(CHUNK_OPEN_KEY)
+    ]
+
+
+def _chunk_continuation(sample: Sample) -> Sample:
+    # a copy: the original trains on this chunk in the current step; the copy keeps only the generated prefix
+    sample = copy.deepcopy(sample)
+    sample.status = Sample.Status.PENDING
+    sample.reward = None
+    sample.teacher_log_probs = None
+    sample.opd_reverse_kl = None
+    sample.loss_mask = None
+    sample.remove_sample = False
+    sample.train_metadata = None
+    # the next rollout stamps its own namespace, so the prefix is not served from KV of older weights
+    sample.kv_cache_namespace = None
+    del sample.metadata[CHUNK_OPEN_KEY]
+    return sample
 
 
 def parse_teacher_urls(values: Iterable[str] | None) -> dict[str, str]:
@@ -149,8 +214,9 @@ def _response_logprob_start_len(sample: Sample) -> int:
     since no radix-cache prefix can match) a row for every prompt token that
     ``_trim_input_field`` then discarded.
     """
-    prompt_len = len(sample.tokens) - sample.response_length
-    return max(prompt_len - 1, 0)
+    # a chunk scores only its own tokens: the earlier response is context, like the prompt
+    unscored_len = len(sample.tokens) - sample.response_length + sample.metadata.get(CHUNK_START_KEY, 0)
+    return max(unscored_len - 1, 0)
 
 
 def _student_score_url(args: Namespace) -> str:
@@ -500,7 +566,10 @@ def _store_opd_signal(args: Namespace, sample: Sample, reward_payload: dict[str,
     if _get_opd_top_k(args) > 0:
         sample.opd_reverse_kl = _compute_topk_reverse_kl(args, sample, reward_payload)
     else:
-        sample.teacher_log_probs = _teacher_sampled_log_probs(reward_payload, sample.response_length)
+        chunk_start = sample.metadata.get(CHUNK_START_KEY, 0)
+        chunk_log_probs = _teacher_sampled_log_probs(reward_payload, sample.response_length - chunk_start)
+        # earlier chunks are loss-masked, so their zeros are never trained on
+        sample.teacher_log_probs = torch.cat([torch.zeros(chunk_start), chunk_log_probs])
 
 
 def post_process_rewards(args: Namespace, samples: list[Sample], **kwargs: Any) -> tuple[list[float], list[float]]:

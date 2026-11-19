@@ -197,8 +197,14 @@ class LegacyRolloutDataSourceWithBuffer(RolloutDataSource):
     def get_buffer_length(self):
         return len(self.buffer)
 
+    def save(self, directory: Path) -> None:
+        super().save(directory)
+        # the re-queued groups (partial rollouts, open OPD chunks) are part of where the run stands
+        save_simple_checkpoint(directory=directory / "buffer", data=self.buffer)
+
     def load(self, directory: Path) -> None:
-        raise NotImplementedError("LegacyRolloutDataSourceWithBuffer does not support checkpoint loading")
+        super().load(directory)
+        self.buffer = load_simple_checkpoint(directory=directory / "buffer")
 
 
 def pop_first(args, rollout_id, buffer: list[list[Sample]], num_samples: int) -> list[list[Sample]]:

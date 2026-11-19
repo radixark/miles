@@ -498,3 +498,106 @@ class TestPooledScoringSession:
             loop.call_soon_threadsafe(loop.stop)
             thread.join()
             loop.close()
+
+
+class TestChunkedGenerate:
+    """--opd-chunk-tokens: each call adds at most one chunk; unfinished rollouts re-queue and resume."""
+
+    BUDGET = 30
+    CHUNK = 12
+
+    @staticmethod
+    async def _fake_single_turn(input, url=None, stop_after=None):
+        # mimics single_turn: max_new_tokens counts from the prompt, so the generated prefix is subtracted
+        sample = input.sample
+        allowed = input.sampling_params["max_new_tokens"] - sample.response_length
+        num_new = allowed if stop_after is None else min(allowed, stop_after - sample.response_length)
+        sample.tokens = sample.tokens + [7] * num_new
+        sample.response_length += num_new
+        sample.status = Sample.Status.TRUNCATED if num_new == allowed else Sample.Status.COMPLETED
+        return on_policy_distillation.GenerateFnOutput(samples=sample)
+
+    def _input(self, sample, evaluation=False):
+        state = Namespace(args=Namespace(opd_chunk_tokens=self.CHUNK))
+        return on_policy_distillation.GenerateFnInput(
+            state=state, sample=sample, sampling_params={"max_new_tokens": self.BUDGET}, evaluation=evaluation
+        )
+
+    def _run(self, monkeypatch, sample, stop_after=None, evaluation=False):
+        async def fake(input, url=None):
+            return await self._fake_single_turn(input, url, stop_after=stop_after)
+
+        monkeypatch.setattr(on_policy_distillation, "single_turn_generate", fake)
+        asyncio.run(on_policy_distillation.generate(self._input(sample, evaluation=evaluation)))
+        return sample
+
+    def test_chunks_until_the_response_budget(self, monkeypatch):
+        sample = self._run(monkeypatch, Sample(index=3, tokens=[1, 2], response_length=0))
+        assert (sample.response_length, sample.loss_mask) == (12, [1] * 12)
+        assert sample.metadata[on_policy_distillation.CHUNK_OPEN_KEY]
+
+        sample.teacher_log_probs = torch.zeros(12)
+        sample.reward = 0.0
+        # per-step training state a filter or the rollout stamped on this chunk
+        sample.remove_sample, sample.train_metadata, sample.kv_cache_namespace = True, {"step": 0}, "rollout-0"
+        [[resumed]] = on_policy_distillation.chunk_continuations([[sample]])
+        # the trained original keeps its chunk; the copy is fresh for the next rollout
+        assert sample.teacher_log_probs is not None and sample.loss_mask == [1] * 12
+        assert resumed.status == Sample.Status.PENDING and resumed.index == 3
+        assert resumed.reward is None and resumed.teacher_log_probs is None and resumed.loss_mask is None
+        assert not resumed.remove_sample and resumed.train_metadata is None and resumed.kv_cache_namespace is None
+        assert on_policy_distillation.CHUNK_OPEN_KEY not in resumed.metadata
+
+        resumed = self._run(monkeypatch, resumed)
+        assert (resumed.response_length, resumed.loss_mask) == (24, [0] * 12 + [1] * 12)
+        assert resumed.metadata[on_policy_distillation.CHUNK_OPEN_KEY]
+
+        [[last]] = on_policy_distillation.chunk_continuations([[resumed]])
+        last = self._run(monkeypatch, last)
+        # the run's response budget, not the chunk, ended it
+        assert (last.response_length, last.loss_mask) == (30, [0] * 24 + [1] * 6)
+        assert not last.metadata[on_policy_distillation.CHUNK_OPEN_KEY]
+        assert on_policy_distillation.chunk_continuations([[last]]) == []
+
+    def test_natural_stop_inside_a_chunk_closes_the_rollout(self, monkeypatch):
+        sample = self._run(monkeypatch, Sample(tokens=[1], response_length=0), stop_after=5)
+        assert (sample.response_length, sample.status) == (5, Sample.Status.COMPLETED)
+        assert not sample.metadata[on_policy_distillation.CHUNK_OPEN_KEY]
+
+    def test_cut_shorter_than_a_chunk_closes_the_rollout(self, monkeypatch):
+        # e.g. --max-seq-len lowered max_new_tokens: TRUNCATED, but not by the chunk cap
+        sample = Sample(tokens=[1], response_length=0)
+
+        async def fake(input, url=None):
+            input = on_policy_distillation.dataclasses.replace(input, sampling_params={"max_new_tokens": 4})
+            return await self._fake_single_turn(input, url)
+
+        monkeypatch.setattr(on_policy_distillation, "single_turn_generate", fake)
+        asyncio.run(on_policy_distillation.generate(self._input(sample)))
+        assert (sample.response_length, sample.status) == (4, Sample.Status.TRUNCATED)
+        assert not sample.metadata[on_policy_distillation.CHUNK_OPEN_KEY]
+
+    def test_evaluation_is_not_chunked(self, monkeypatch):
+        sample = self._run(monkeypatch, Sample(tokens=[1], response_length=0), evaluation=True)
+        assert sample.response_length == self.BUDGET
+        assert sample.loss_mask is None and on_policy_distillation.CHUNK_OPEN_KEY not in sample.metadata
+
+    def test_teacher_scores_only_the_new_chunk(self):
+        # prompt [1, 2, 3], earlier chunk [4, 5, 6], this chunk [7, 8]
+        sample = Sample(tokens=[1, 2, 3, 4, 5, 6, 7, 8], response_length=5)
+        sample.metadata[on_policy_distillation.CHUNK_START_KEY] = 3
+        start = on_policy_distillation._response_logprob_start_len(sample)
+        assert start == 5  # SGLang's placeholder row sits on position 5; rows for 7 and 8 follow
+
+        reply = {"meta_info": {"input_token_logprobs": [None, [-0.5, 7, None], [-0.25, 8, None]]}}
+        on_policy_distillation._store_opd_signal(Namespace(opd_log_prob_top_k=0), sample, reply)
+        assert sample.teacher_log_probs.tolist() == [0.0, 0.0, 0.0, -0.5, -0.25]
+
+    def test_an_unchunked_sample_scores_its_whole_response(self):
+        sample = Sample(tokens=[1, 2, 3, 4, 5], response_length=2)
+        assert on_policy_distillation._response_logprob_start_len(sample) == 2
+
+    def test_samples_not_cut_by_the_chunked_generate_fail_loudly(self):
+        # e.g. a custom generate function that skips opd.generate: nothing would ever resume
+        with pytest.raises(ValueError, match="on_policy_distillation.generate"):
+            on_policy_distillation.chunk_continuations([[Sample(tokens=[1, 2], response_length=1)]])
