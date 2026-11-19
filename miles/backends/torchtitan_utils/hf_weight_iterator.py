@@ -3,7 +3,7 @@ import glob
 import json
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 
 import safetensors
@@ -42,7 +42,10 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
         # an engine sharing the slice over ICI takes each EP rank's experts from the paired trainer rank
         local_experts = self.args.update_weight_transfer_mode == "ici"
         for name, tensor in hf_weights(
-            self.model, complete_across_pp=self.placement.gather_pp, local_experts=local_experts
+            self.model,
+            complete_across_pp=self.placement.gather_pp,
+            local_experts=local_experts,
+            engine_dtypes=self._engine_dtypes,
         ):
             if materialize:
                 yield [(name, self._to_engine_dtype(name, tensor))]
@@ -50,7 +53,7 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
 
     def _to_engine_dtype(self, name: str, tensor: torch.Tensor) -> torch.Tensor:
         # experts split out of a grouped checkpoint tensor take its dtype
-        target = self._engine_dtypes.get(name) or self._engine_dtypes.get(_grouped_expert_name(name))
+        target = _resolve_target_dtype(name, self._engine_dtypes)
         if target is None or tensor.dtype == target or not tensor.is_floating_point():
             return tensor
         return tensor.to(target)
@@ -69,7 +72,11 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
 
 
 def hf_weights(
-    trainer, *, complete_across_pp: bool = True, local_experts: bool = False
+    trainer,
+    *,
+    complete_across_pp: bool = True,
+    local_experts: bool = False,
+    engine_dtypes: Mapping[str, torch.dtype] | None = None,
 ) -> Iterator[tuple[str, torch.Tensor]]:
     # FSDP2 CPU offload keeps the shards on the host; gather_full_param moves one tensor at a time
     offloaded = (
@@ -80,7 +87,12 @@ def hf_weights(
         for part in trainer.model_parts:
             part.to(current_platform.current_device())
     try:
-        yield from _hf_weights_on_device(trainer, complete_across_pp=complete_across_pp, local_experts=local_experts)
+        yield from _hf_weights_on_device(
+            trainer,
+            complete_across_pp=complete_across_pp,
+            local_experts=local_experts,
+            engine_dtypes=engine_dtypes,
+        )
     finally:
         if offloaded:
             for part in trainer.model_parts:
@@ -115,7 +127,11 @@ _GROUPED_EXPERTS = ".routed_experts."
 
 
 def _hf_weights_on_device(
-    trainer, *, complete_across_pp: bool, local_experts: bool
+    trainer,
+    *,
+    complete_across_pp: bool,
+    local_experts: bool,
+    engine_dtypes: Mapping[str, torch.dtype] | None = None,
 ) -> Iterator[tuple[str, torch.Tensor]]:
     sd_adapter = _state_dict_adapter(trainer)
     state = {
@@ -123,26 +139,40 @@ def _hf_weights_on_device(
     }
     layout = _StageLayout.from_trainer(trainer, complete_across_pp=complete_across_pp)
 
-    dense = {k: v for k, v in state.items() if _GROUPED_EXPERTS not in k}
-    yield from layout.stream(sd_adapter.to_hf(dense))
+    dense = _precast_cpu_state(
+        sd_adapter, {k: v for k, v in state.items() if _GROUPED_EXPERTS not in k}, engine_dtypes
+    )
+    yield from layout.stream(sd_adapter.to_hf(dense), engine_dtypes=engine_dtypes)
 
     mine = sorted(k for k in state if _GROUPED_EXPERTS in k)
     if local_experts:
-        yield from _local_experts(sd_adapter, state, mine)
+        yield from _local_experts(sd_adapter, state, mine, engine_dtypes=engine_dtypes)
         return
     everyone: list = [None] * layout.world
     dist.all_gather_object(everyone, mine)
     for key in sorted(set().union(*everyone)):
-        yield from layout.stream(sd_adapter.to_hf({key: gather_full_param(state[key])}) if key in state else {})
+        if key in state:
+            target = _single_key_target_dtype(sd_adapter, key, state[key], engine_dtypes)
+            converted = sd_adapter.to_hf({key: gather_full_param(_precast_cpu_shard(state[key], target))})
+        else:
+            converted = {}
+        yield from layout.stream(converted, engine_dtypes=engine_dtypes)
 
 
-def _local_experts(sd_adapter, state, keys: list[str]) -> Iterator[tuple[str, torch.Tensor]]:
+def _local_experts(
+    sd_adapter,
+    state,
+    keys: list[str],
+    *,
+    engine_dtypes: Mapping[str, torch.dtype] | None = None,
+) -> Iterator[tuple[str, torch.Tensor]]:
     """This rank's experts as whole HF tensors on its device, named by their global expert ids."""
     rank, world = dist.get_rank(), dist.get_world_size()
     device = current_platform.current_device()
     for key in keys:
-        # under FSDP CPU offload the shards live on the host; the bucket goes out from the device
-        converted = sd_adapter.to_hf({key: _on_device(state[key], device)})
+        # under FSDP CPU offload the shards live on the host; cast to narrower checkpoint dtype on host before H2D
+        target = _single_key_target_dtype(sd_adapter, key, state[key], engine_dtypes)
+        converted = sd_adapter.to_hf({key: _on_device(_precast_cpu_shard(state[key], target), device)})
         if any(_GROUPED_EXPERT_NAME.search(name) for name in converted):
             yield from _grouped_experts_by_id(converted, titan_shape=state[key].shape, rank=rank, world=world)
             continue
@@ -213,15 +243,212 @@ def _grouped_expert_name(name: str) -> str:
     return f"{name[: match.start()]}.experts.{_GROUPED_LAYOUT[match.group(1)]}"
 
 
+def _resolve_target_dtype(name: str, engine_dtypes: Mapping[str, torch.dtype] | None) -> torch.dtype | None:
+    if not engine_dtypes:
+        return None
+    return engine_dtypes.get(name) or engine_dtypes.get(_grouped_expert_name(name))
+
+
+def _local_shard(tensor: torch.Tensor) -> torch.Tensor:
+    return tensor.to_local() if isinstance(tensor, DTensor) else tensor
+
+
+def _rewrap_dtensor(template: DTensor, local: torch.Tensor) -> DTensor:
+    return DTensor.from_local(
+        local,
+        template.device_mesh,
+        template.placements,
+        shape=template.shape,
+        stride=template.stride(),
+        run_check=False,
+    )
+
+
+def _precast_cpu_shard(tensor: torch.Tensor, target_dtype: torch.dtype | None) -> torch.Tensor:
+    """Cast a host-resident float shard to a narrower checkpoint dtype before H2D transfer."""
+    if target_dtype is None or not target_dtype.is_floating_point:
+        return tensor
+    local = _local_shard(tensor)
+    if local.device.type != "cpu" or not local.is_floating_point() or target_dtype.itemsize >= local.dtype.itemsize:
+        return tensor
+    cast_local = local.detach().to(dtype=target_dtype)
+    if not isinstance(tensor, DTensor):
+        return cast_local
+    return _rewrap_dtensor(tensor, cast_local)
+
+
+_STRUCTURAL_TENSOR_OPS = frozenset(
+    {
+        torch.Tensor.view,
+        torch.Tensor.reshape,
+        torch.Tensor.flatten,
+        torch.Tensor.unflatten,
+        torch.Tensor.transpose,
+        torch.Tensor.permute,
+        torch.Tensor.movedim,
+        torch.Tensor.swapaxes,
+        torch.Tensor.swapdims,
+        torch.Tensor.squeeze,
+        torch.Tensor.unsqueeze,
+        torch.Tensor.expand,
+        torch.Tensor.contiguous,
+        torch.Tensor.detach,
+        torch.Tensor.clone,
+        torch.Tensor.unbind,
+        torch.Tensor.chunk,
+        torch.Tensor.split,
+        torch.Tensor.tensor_split,
+        torch.Tensor.narrow,
+        torch.Tensor.select,
+        torch.Tensor.t,
+        torch.Tensor.T.__get__,
+        torch.Tensor.__getitem__,
+        torch.reshape,
+        torch.flatten,
+        torch.unflatten,
+        torch.transpose,
+        torch.permute,
+        torch.movedim,
+        torch.swapaxes,
+        torch.swapdims,
+        torch.squeeze,
+        torch.unsqueeze,
+        torch.unbind,
+        torch.chunk,
+        torch.split,
+        torch.tensor_split,
+        torch.narrow,
+        torch.select,
+        torch.cat,
+        torch.concat,
+        torch.concatenate,
+        torch.stack,
+        torch.vstack,
+        torch.hstack,
+    }
+)
+
+
+class _KeyTracker(torch.Tensor):
+    """Zero-storage meta tensor tracking which native keys structurally feed each HF output."""
+
+    _sources: frozenset[str]
+    _non_structural: bool
+
+    @staticmethod
+    def make(key: str, shape: torch.Size, dtype: torch.dtype) -> "_KeyTracker":
+        tracked = torch.empty(shape, dtype=dtype, device="meta").as_subclass(_KeyTracker)
+        tracked._sources = frozenset({key})
+        tracked._non_structural = False
+        return tracked
+
+    @classmethod
+    def __torch_function__(cls, func, types, args=(), kwargs=None):
+        if kwargs is None:
+            kwargs = {}
+        sources: set[str] = set()
+        non_structural = func not in _STRUCTURAL_TENSOR_OPS
+
+        def _unwrap(value):
+            nonlocal non_structural
+            if isinstance(value, _KeyTracker):
+                sources.update(value._sources)
+                non_structural = non_structural or value._non_structural
+                return value.as_subclass(torch.Tensor)
+            if isinstance(value, (list, tuple)):
+                return type(value)(_unwrap(item) for item in value)
+            return value
+
+        result = func(*_unwrap(args), **{k: _unwrap(v) for k, v in kwargs.items()})
+
+        def _wrap(value):
+            if isinstance(value, torch.Tensor):
+                wrapped = value.as_subclass(_KeyTracker)
+                wrapped._sources = frozenset(sources)
+                wrapped._non_structural = non_structural
+                return wrapped
+            if isinstance(value, (list, tuple)):
+                return type(value)(_wrap(item) for item in value)
+            return value
+
+        return _wrap(result)
+
+
+def _infer_native_target_dtypes(
+    sd_adapter,
+    native_state: Mapping[str, torch.Tensor],
+    engine_dtypes: Mapping[str, torch.dtype] | None,
+) -> dict[str, torch.dtype]:
+    if not engine_dtypes or not native_state:
+        return {}
+    try:
+        probe = {k: _KeyTracker.make(k, v.shape, v.dtype) for k, v in native_state.items()}
+        converted = sd_adapter.to_hf(probe)
+    except Exception:
+        return {}
+
+    candidates: dict[str, set[torch.dtype]] = {}
+    ineligible: set[str] = set()
+    for hf_name, out in converted.items():
+        if not isinstance(out, _KeyTracker):
+            continue
+        target = _resolve_target_dtype(hf_name, engine_dtypes)
+        for src_key in out._sources:
+            if out._non_structural or target is None:
+                ineligible.add(src_key)
+            else:
+                candidates.setdefault(src_key, set()).add(target)
+
+    return {
+        key: next(iter(dtypes)) for key, dtypes in candidates.items() if key not in ineligible and len(dtypes) == 1
+    }
+
+
+def _precast_cpu_state(
+    sd_adapter,
+    native_state: dict[str, torch.Tensor],
+    engine_dtypes: Mapping[str, torch.dtype] | None,
+) -> dict[str, torch.Tensor]:
+    if not engine_dtypes or not any(_local_shard(v).device.type == "cpu" for v in native_state.values()):
+        return native_state
+    targets = _infer_native_target_dtypes(sd_adapter, native_state, engine_dtypes)
+    if not targets:
+        return native_state
+    return {k: _precast_cpu_shard(v, targets.get(k)) for k, v in native_state.items()}
+
+
+def _single_key_target_dtype(
+    sd_adapter,
+    key: str,
+    tensor: torch.Tensor,
+    engine_dtypes: Mapping[str, torch.dtype] | None,
+) -> torch.dtype | None:
+    if not engine_dtypes or _local_shard(tensor).device.type != "cpu":
+        return None
+    inferred = _infer_native_target_dtypes(sd_adapter, {key: tensor}, engine_dtypes)
+    if key in inferred:
+        return inferred[key]
+    try:
+        converted = sd_adapter.to_hf({key: tensor})
+    except Exception:
+        return None
+    if not converted or any(not isinstance(v, torch.Tensor) or v.dtype != tensor.dtype for v in converted.values()):
+        return None
+    targets = {_resolve_target_dtype(hf_name, engine_dtypes) for hf_name in converted}
+    if None in targets or len(targets) != 1:
+        return None
+    return next(iter(targets))
+
+
 def _on_device(tensor: torch.Tensor, device: torch.device) -> torch.Tensor:
     """``tensor`` with its local shard on ``device``; a DTensor keeps its mesh and placements."""
-    local = tensor.to_local() if isinstance(tensor, DTensor) else tensor
-    local = local.detach().to(device)
+    local = _local_shard(tensor)
+    if local.device == device:
+        return tensor if isinstance(tensor, DTensor) else local.detach()
+    moved = local.detach().to(device)
     if not isinstance(tensor, DTensor):
-        return local
-    return DTensor.from_local(
-        local, tensor.device_mesh, tensor.placements, shape=tensor.shape, stride=tensor.stride(), run_check=False
-    )
+        return moved
+    return _rewrap_dtensor(tensor, moved)
 
 
 @dataclass(frozen=True)
@@ -257,7 +484,16 @@ class _StageLayout:
             broadcast_group=broadcast_group,
         )
 
-    def stream(self, local: dict[str, torch.Tensor]) -> Iterator[tuple[str, torch.Tensor]]:
+    def stream(
+        self,
+        local: dict[str, torch.Tensor],
+        *,
+        engine_dtypes: Mapping[str, torch.dtype] | None = None,
+    ) -> Iterator[tuple[str, torch.Tensor]]:
+        if engine_dtypes:
+            local = {
+                name: _precast_cpu_shard(t, _resolve_target_dtype(name, engine_dtypes)) for name, t in local.items()
+            }
         local_meta = {name: (tuple(t.shape), str(t.dtype)) for name, t in local.items()}
         gathered: list = [None] * self.world
         dist.all_gather_object(gathered, local_meta)
