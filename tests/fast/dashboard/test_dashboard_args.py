@@ -89,6 +89,14 @@ def test_the_switch_takes_the_spellings_of_miles_other_switches(monkeypatch, val
     assert DashboardObserver().enabled() is on
 
 
+def test_an_unreadable_switch_refuses_the_run(monkeypatch):
+    """A typo in ``MILES_DASHBOARD`` must stop the run, not let it train without the dashboard."""
+    monkeypatch.setenv("MILES_DASHBOARD", "2")
+
+    with pytest.raises(RunRefusedError, match="MILES_DASHBOARD='2'"):
+        DashboardObserver().enabled()
+
+
 def test_an_unreadable_setting_refuses_the_run(monkeypatch):
     """A typo in a dashboard setting must stop the run, not let it train without the dashboard."""
     monkeypatch.setenv("MILES_DASHBOARD_FLUSH_INTERVAL", "five")

@@ -213,6 +213,24 @@ class TestRouterFlag:
             parse_megatron_test_config("--custom-config-path", str(path))
 
 
+class TestRemovedDashboardArgs:
+    @pytest.mark.parametrize(
+        ("config", "remedy"),
+        [
+            ("use_miles_dashboard: true", "MILES_DASHBOARD=1"),
+            ("dashboard_flush_interval: 5", "MILES_DASHBOARD_FLUSH_INTERVAL"),
+            ("dashboard_sglang_scrape_mode: router", "always scrapes each engine directly"),
+        ],
+        ids=["switch", "setting", "dropped"],
+    )
+    def test_a_config_file_that_sets_one_is_rejected(self, tmp_path: Path, config: str, remedy: str):
+        """Nothing reads these keys any more, so an old config must not silently run without its dashboard settings."""
+        path = tmp_path / "config.yaml"
+        path.write_text(config)
+        with pytest.raises(ValueError, match=remedy):
+            parse_megatron_test_config("--custom-config-path", str(path))
+
+
 class TestFullyAsyncDataBufferFlags:
     def test_a_fully_async_run_reaches_the_data_buffer_flags_through_its_rollout_function(self):
         """The flag sits beside --custom-async-data-buffer-path, so a fully async run parses it like any other."""

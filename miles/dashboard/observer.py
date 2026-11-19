@@ -54,7 +54,10 @@ class DashboardObserver(Observer):
         self._trajectories = _Batcher(lambda batch: self._collector.push_trajectories.remote(batch))
 
     def enabled(self) -> bool:
-        return env_switch(ENABLE_ENV)
+        try:
+            return env_switch(ENABLE_ENV)
+        except ValueError as e:
+            raise RunRefusedError(f"unreadable dashboard setting: {e}") from e
 
     def start_run(self, run: RunStart) -> dict[str, str]:
         validate_dashboard_args(run["args"])
@@ -62,21 +65,26 @@ class DashboardObserver(Observer):
             config = collector_config_from_args(run["args"], start_ts=run["start_ts"])
         except ValueError as e:
             raise RunRefusedError(f"unreadable dashboard setting: {e}") from e
-        self._collector = (
-            ray.remote(DashboardCollector)
-            .options(
-                name=COLLECTOR_ACTOR_NAME,
-                # driver node, hard-pinned: the dump volume and the run's other
-                # observability live there, and driver death ends the job anyway
-                scheduling_strategy=NodeAffinitySchedulingStrategy(
-                    node_id=ray.get_runtime_context().get_node_id(), soft=False
-                ),
+        try:
+            self._collector = (
+                ray.remote(DashboardCollector)
+                .options(
+                    name=COLLECTOR_ACTOR_NAME,
+                    # driver node, hard-pinned: the dump volume and the run's other
+                    # observability live there, and driver death ends the job anyway
+                    scheduling_strategy=NodeAffinitySchedulingStrategy(
+                        node_id=ray.get_runtime_context().get_node_id(), soft=False
+                    ),
+                )
+                .remote(
+                    config=config,
+                    prometheus_handle_factory=_prometheus_collector if config.forward_prometheus else None,
+                )
             )
-            .remote(
-                config=config, prometheus_handle_factory=_prometheus_collector if config.forward_prometheus else None
-            )
-        )
-        ray.get(self._collector.ping.remote())
+            ray.get(self._collector.ping.remote())
+        except Exception as e:
+            # only RunRefusedError stops the run; anything else is logged and the run goes on without the dashboard
+            raise RunRefusedError(f"the dashboard collector did not start: {e!r}") from e
         self._collector.start.remote()
         self._owns_collector = True
         logger.info(

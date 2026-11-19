@@ -79,6 +79,31 @@ def test_a_run_the_dashboard_cannot_serve_is_refused_before_it_starts(monkeypatc
         observers.start_run(run_uuid="0123456789abcdef", args=args)
 
 
+class _RayWhoseCollectorDies:
+    """Stands in for ``ray`` in the observer module: the collector actor dies before it answers."""
+
+    @staticmethod
+    def remote(actor_class):
+        return SimpleNamespace(options=lambda **_: SimpleNamespace(remote=lambda **_: FakeCollector()))
+
+    @staticmethod
+    def get_runtime_context():
+        return SimpleNamespace(get_node_id=lambda: "0" * 56)
+
+    @staticmethod
+    def get(ref, timeout=None):
+        raise RuntimeError("collector died in its constructor")
+
+
+def test_a_collector_that_does_not_start_refuses_the_run(monkeypatch):
+    """Without its collector nothing reaches the dashboard, so the run must stop rather than go on unobserved."""
+    monkeypatch.setattr(dashboard_observer, "ray", _RayWhoseCollectorDies)
+    args = dict(dump_details="/tmp/dump", cluster_backend="ray", use_rollout_entropy=True, wandb_group=None)
+
+    with pytest.raises(observers.RunRefusedError, match="collector died"):
+        DashboardObserver().start_run(dict(run_uuid="0123456789abcdef", start_ts=0.0, args=args))
+
+
 def test_a_phase_start_is_pushed_at_once_as_an_open_phase(collector):
     """An open phase must reach the timeline while it runs, not when it ends."""
     observer = _started(TRAIN_RANK)

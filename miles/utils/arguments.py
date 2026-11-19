@@ -1085,10 +1085,27 @@ def _check_stop_token_replace_streaming_session(args: argparse.Namespace, *, sgl
         )
 
 
+_REMOVED_DASHBOARD_ARGS = {
+    "use_miles_dashboard": "set MILES_DASHBOARD=1 instead",
+    "dashboard_flush_interval": "set MILES_DASHBOARD_FLUSH_INTERVAL instead",
+    "dashboard_gpu_sample_interval": "set MILES_DASHBOARD_GPU_SAMPLE_INTERVAL instead",
+    "dashboard_sglang_scrape_interval": "set MILES_DASHBOARD_SGLANG_SCRAPE_INTERVAL instead",
+    "dashboard_sglang_metrics": "set MILES_DASHBOARD_SGLANG_METRICS instead",
+    "dashboard_forward_prometheus": "set MILES_DASHBOARD_FORWARD_PROMETHEUS=1 instead",
+    "dashboard_sglang_scrape_mode": "drop it: the dashboard always scrapes each engine directly",
+}
+
+
 def _apply_custom_config(args, data: dict) -> None:
     # configs written before --router
     if data.pop("use_miles_router", False):
         data["router"] = RouterKind.MILES
+    # configs written before the dashboard read environment variables
+    if removed := [key for key in data if key in _REMOVED_DASHBOARD_ARGS]:
+        raise ValueError(
+            "The --custom-config-path file sets dashboard arguments that no longer exist: "
+            + ", ".join(f"{key} ({_REMOVED_DASHBOARD_ARGS[key]})" for key in removed)
+        )
     for k, v in data.items():
         if hasattr(args, k):  # config-access-exempt: attribute selected at runtime from k
             logger.info(
