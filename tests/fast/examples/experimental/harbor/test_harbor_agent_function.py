@@ -21,6 +21,7 @@ class _EnvironmentType(str, enum.Enum):
     DOCKER = "docker"
     DAYTONA = "daytona"
     E2B = "e2b"
+    AGENTENV = "agentenv"
     MODAL = "modal"
     NOVITA = "novita"
 
@@ -152,10 +153,11 @@ def test_daytona_reclaim_timer_outlasts_the_trial_cap(tasks_dir, monkeypatch):
         haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
 
 
-def test_e2b_max_lifetime_outlasts_the_trial_cap(tasks_dir, monkeypatch):
+@pytest.mark.parametrize("env_type", ["e2b", "agentenv"])
+def test_e2b_max_lifetime_outlasts_the_trial_cap(tasks_dir, monkeypatch, env_type):
     """A sandbox Harbor keeps renewing must still end soon after the longest
     trial could, and never while a trial runs."""
-    monkeypatch.setenv("HARBOR_ENV_TYPE", "e2b")
+    monkeypatch.setenv("HARBOR_ENV_TYPE", env_type)
     monkeypatch.setenv("AGENT_TRIAL_TIMEOUT", "1200")
     cfg = haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
     assert cfg.environment.kwargs == {"max_lifetime_secs": 3000}  # and none of Daytona's reclaim timers
@@ -360,9 +362,13 @@ def test_run_scores_a_timeout_zero(tasks_dir, fake_harbor, monkeypatch):
     assert out == {"reward": 0.0, "exit_status": "TimeLimitExceeded", "eval_report": {}, "agent_metrics": {}}
 
 
-def test_run_resolves_the_provider_key_file_into_the_sdk_env_var(tasks_dir, fake_harbor, tmp_path, monkeypatch):
+@pytest.mark.parametrize("env_type", ["e2b", "agentenv"])
+def test_run_resolves_the_provider_key_file_into_the_sdk_env_var(
+    tasks_dir, fake_harbor, tmp_path, monkeypatch, env_type
+):
     """The launcher forwards the key by PATH; the SDK reads its own env var, so
     the worker must resolve the file -- the gap the first live e2e run hit."""
+    monkeypatch.setenv("HARBOR_ENV_TYPE", env_type)
     key_file = tmp_path / "api_key"
     key_file.write_text("e2b_test_key\n")
     monkeypatch.delenv("E2B_API_KEY", raising=False)

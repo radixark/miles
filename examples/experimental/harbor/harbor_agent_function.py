@@ -73,7 +73,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, resolve_provider_api_key
+from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, resolve_provider, resolve_provider_api_key
 from miles.rollout.agentic.session import openai_session_url
 
 logger = logging.getLogger(__name__)
@@ -287,7 +287,7 @@ def _ensure_provider_key() -> None:
     """Resolve the key file the launcher forwarded (by PATH) into the env var the
     provider's SDK reads. Modal needs nothing here: its SDK reads the config file
     MODAL_CONFIG_PATH names."""
-    spec = PROVIDER_CREDENTIALS.get(os.getenv("HARBOR_ENV_TYPE", "").strip().lower())
+    spec = PROVIDER_CREDENTIALS.get(resolve_provider(os.getenv("HARBOR_ENV_TYPE", "").strip().lower()))
     if not spec or len(spec["key_env_vars"]) != 1:
         return
     key_env = spec["key_env_vars"][0]
@@ -307,7 +307,8 @@ def _environment_config():
         raise ValueError("set HARBOR_ENV_TYPE to the Harbor environment type to run trials on (e.g. e2b, daytona)")
     env_type = EnvironmentType(raw)  # raises on an unknown backend instead of guessing
     kwargs = json.loads(os.getenv("HARBOR_ENV_KWARGS", "{}") or "{}")
-    if env_type == EnvironmentType.DAYTONA:
+    provider = resolve_provider(env_type.value)
+    if provider == "daytona":
         # a killed worker never reaches Harbor's teardown, and Harbor's Daytona defaults (0) never reclaim;
         # the stop timer outlasts the trial cap because an in-sandbox agent looks idle to Daytona
         trial_min = math.ceil(_trial_timeout_s() / 60)
@@ -318,7 +319,7 @@ def _environment_config():
                 f"auto_stop_interval_mins={kwargs['auto_stop_interval_mins']} would stop a Daytona sandbox "
                 f"mid-trial: AGENT_TRIAL_TIMEOUT allows {trial_min} minutes"
             )
-    elif env_type == EnvironmentType.E2B:
+    elif provider == "e2b":
         # renewals keep a sandbox alive as long as Harbor runs; servers that read this end it soon after
         # the trial cap (the 30 minutes of slack is an estimate)
         trial_s = _trial_timeout_s()

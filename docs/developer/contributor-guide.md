@@ -192,7 +192,7 @@ start of a line:
 | Line in the PR description | Effect |
 |---|---|
 | `ci-image-tag: <tag>` | Run the GPU suites on `radixark/miles:<tag>` instead of `dev`. Must be a bare tag, not a full image reference |
-| `ci-rocm-image-tag: <tag>` | Run the ROCm suites and ROCm file runs on `rocm/sgl-dev:<tag>` instead of `miles-rocm10-mi35x`. Must be a bare tag |
+| `ci-rocm-image-tag: <tag>` | Select a bare ROCm tag for suites and file runs. `pr-<number>-rocm10-mi35x` uses `radixark/miles`; other tags use `rocm/sgl-dev` |
 | `ci-sglang-pr: <ref>` | Check the SGLang tree out at `<ref>` instead of the default `sglang-miles` branch |
 | `ci-megatron-pr: <ref>` | Check Megatron-LM out at `<ref>` instead of the default `miles-main` branch |
 
@@ -207,10 +207,10 @@ ci-image-tag: dev-202608100600
 ```
 
 Precedence, when several sources disagree: a `workflow_dispatch` input wins, then the
-PR-description line, then the default. `ci-image-tag:` has one more rule: a current
-`pr-<number>` image outranks the directive, including when a matching image is reused,
-so a docker PR always tests what it built. A called workflow's `image_tag` also
-outranks these choices. See [image selection](/developer/ci/00-stage#shared-by-cuda-and-rocm).
+PR-description line, then the default. For both CUDA and ROCm suites, a current PR
+image (`pr-<number>` or `pr-<number>-rocm10-mi35x`) outranks its corresponding body
+directive, including when a matching image is reused. A called workflow's
+`image_tag` also outranks these choices. See [image selection](/developer/ci/00-stage#shared-by-cuda-and-rocm).
 
 ## PR conventions
 

@@ -16,6 +16,8 @@ name: PR Test (ROCm)
 #
 # PR jobs use the same low-trust `pull_request` model as pr-test.yml: checkout
 # tests the merge commit, and GitHub withholds repository secrets from forks.
+# As in pr-test.yml, selected ROCm tests or the `rebuild-ci-image` label build or
+# reuse a PR image when its inputs change, on the same docker-build builders.
 #
 # Dependency refs use the CUDA resolver. Each nonempty shard checks the
 # requested refs or release lock, then tracks sglang-miles / miles-main.
@@ -87,6 +89,12 @@ jobs:
       bypass_fastfail: ${{ steps.resolve.outputs.bypass_fastfail }}
       skipped_stages: ${{ steps.resolve.outputs.skipped_stages }}
       rocm_file_jobs: ${{ steps.rocm-files.outputs.rocm_file_jobs }}
+      # A selected ROCm stage or changed-file job; both use the resolved image.
+      needs_rocm_image: >-
+        ${{ !(contains(fromJSON(steps.resolve.outputs.skipped_stages || '[]'), 'stage-c-2-gpu-mi350') &&
+        contains(fromJSON(steps.resolve.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350') &&
+        contains(fromJSON(steps.resolve.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-mi350')) ||
+        (steps.rocm-files.outputs.rocm_file_jobs || '[]') != '[]' }}
     steps:
       - name: Checkout repository
         # Deliberately not inputs.ref: this job executes ci_policy.py, so it
@@ -127,13 +135,28 @@ jobs:
           SKIPPED_STAGES: ${{ steps.resolve.outputs.skipped_stages }}
         run: python -S -m tests.ci.rocm_file_plan
 
-  resolve-ci-image:
+  # The `rebuild-ci-image` label build-tests the image on a PR that selects no ROCm tests.
+  docker-build-rocm10-mi35x:
     needs: [resolve-ci-policy]
-    # Needed unless every ROCm stage is skipped.
-    if: >-
-      ${{ !(contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-2-gpu-mi350') &&
-      contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350') &&
-      contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-mi350')) }}
+    if: |
+      github.event.action != 'closed' &&
+      (needs.resolve-ci-policy.outputs.needs_rocm_image == 'true' ||
+         contains(github.event.pull_request.labels.*.name, 'rebuild-ci-image'))
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    uses: ./.github/workflows/_build-pr-ci-image.yml
+    with:
+      arch: rocm10-mi35x
+    secrets: inherit
+
+  resolve-ci-image:
+    needs: [resolve-ci-policy, docker-build-rocm10-mi35x]
+    if: |
+      always() && !cancelled() &&
+      needs.docker-build-rocm10-mi35x.result == 'success' &&
+      needs.resolve-ci-policy.outputs.needs_rocm_image == 'true'
     runs-on: ubuntu-latest
     outputs:
       container_image: ${{ steps.resolve.outputs.container_image }}
@@ -148,6 +171,8 @@ jobs:
           # workflow_call image_tag (e.g. a frozen release-CI tag) outranks the
           # dispatch input, which only exists on manual runs anyway.
           INPUT_CI_IMAGE_TAG: ${{ inputs.image_tag || github.event.inputs.ci_image_tag || '' }}
+          PR_IMAGE_AVAILABLE: ${{ needs.docker-build-rocm10-mi35x.outputs.tag_available }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
         run: python3 -S -m tests.ci.rocm
 
   stage-c-2-gpu-mi350:
@@ -245,8 +270,11 @@ jobs:
       AMD_NEON_DATABASE_URL: ${{ secrets.AMD_NEON_DATABASE_URL }}
 
   changed-rocm-file:
-    needs: resolve-ci-policy
-    if: github.event_name == 'pull_request' && (needs.resolve-ci-policy.outputs.rocm_file_jobs || '[]') != '[]'
+    needs: [resolve-ci-policy, resolve-ci-image]
+    if: >-
+      always() && !cancelled() && github.event_name == 'pull_request' &&
+      needs.resolve-ci-image.result == 'success' &&
+      (needs.resolve-ci-policy.outputs.rocm_file_jobs || '[]') != '[]'
     name: ROCm ${{ matrix.test_file }}
     concurrency:
       group: rocm-file-run
@@ -262,7 +290,7 @@ jobs:
       plan_already_resolved: true
       runs_on: ${{ matrix.runs_on }}
       num_gpus: ${{ fromJSON(matrix.num_gpus) }}
-      container_image: ${{ matrix.container_image }}
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       withhold_runner_secrets: ${{ github.event.pull_request.head.repo.id != github.event.pull_request.base.repo.id }}
       execute_command: ${{ matrix.execute_command }}
     secrets:

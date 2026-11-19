@@ -52,18 +52,27 @@ def test_missing_harbor_names_the_install(monkeypatch):
         launch_common.harbor_env_vars(_args())
 
 
-def test_known_provider_is_provisioned_by_key_path(monkeypatch, tmp_path):
+@pytest.mark.parametrize("env_type", ["e2b", "agentenv"])
+def test_known_provider_is_provisioned_by_key_path(monkeypatch, tmp_path, fake_aenv, env_type):
+    """agentenv runs on the E2B provider, so it gets E2B's key and endpoint."""
+    fake_aenv("aenv 0.2.5")
     key_file = tmp_path / "api_key"
     key_file.write_text("e2b_secret\n")
     monkeypatch.setenv("E2B_API_URL", "http://agentenv.internal:8000")
 
-    env = launch_common.harbor_env_vars(_args(e2b_api_key_file=str(key_file)))
+    env = launch_common.harbor_env_vars(_args(harbor_env_type=env_type, e2b_api_key_file=str(key_file)))
 
-    assert env["HARBOR_ENV_TYPE"] == "e2b"
+    assert env["HARBOR_ENV_TYPE"] == env_type  # Harbor still gets its own environment type
     assert env["HARBOR_TASKS_DIR"] == "/tasks"
     assert env["E2B_API_KEY_FILE"] == str(key_file)
     assert env["E2B_API_URL"] == "http://agentenv.internal:8000"
     assert "e2b_secret" not in str(env)
+
+
+def test_agentenv_without_aenv_stops_the_launch(fake_aenv):
+    """Harbor builds task Dockerfiles with aenv; a launch that cannot must not start."""
+    with pytest.raises(RuntimeError, match="aenv is not on PATH"):
+        launch_common.harbor_env_vars(_args(harbor_env_type="agentenv"))
 
 
 def test_unknown_provider_passes_through_with_a_notice(monkeypatch, capsys):

@@ -15,6 +15,10 @@ _LONG_LABELS = frozenset({"long", "ft-long"})
 _RERUN_HINT = "Use `/rerun-test <file> --hw rocm` to request an individual file."
 
 
+def is_opted_in(raw_labels: set[str]) -> bool:
+    return bool(raw_labels & _OPT_IN_LABELS)
+
+
 def plan_jobs(
     changed_files: tuple[ChangedFile, ...],
     registrations: list[CIRegistry],
@@ -66,7 +70,7 @@ def main() -> int:
     labels = set(os.environ.get("RAW_LABELS", "").split())
     changed_files = read_changed_files(os.environ.get("CHANGED_FILES_PATH", ""))
     jobs, warnings = [], []
-    if changed_files and labels & _OPT_IN_LABELS:
+    if changed_files and is_opted_in(labels):
         jobs, warnings = plan_jobs(
             changed_files,
             collect_tests(discover_ci_files(), sanity_check=True),
