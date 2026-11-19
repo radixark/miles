@@ -100,3 +100,14 @@ class OnPolicyDistillationRolloutOnlyConfig(BaseConfig):
             )
         ),
     ] = "opd_teacher"
+    opd_chunk_tokens: A[
+        int | None,
+        Arg(
+            help=(
+                "Train each OPD rollout in chunks of at most this many generated tokens. A rollout that is "
+                "still generating after a chunk is scored by its teacher and trained on that chunk now, "
+                "then continues from its prefix in a later rollout. Needs "
+                "miles.rollout.on_policy_distillation.generate as the generate function."
+            )
+        ),
+    ] = None

@@ -1065,6 +1065,18 @@ def miles_validate_args(args):
 
             parse_teacher_urls(args.opd_teacher_urls)  # fail fast on malformed/duplicate entries
 
+        if args.opd_chunk_tokens is not None:
+            if args.opd_chunk_tokens < 1 or args.opd_type != "sglang" or args.opd_log_prob_top_k > 0:
+                raise ValueError(
+                    "--opd-chunk-tokens needs a positive value, --opd-type=sglang and sampled-token OPD "
+                    "(--opd-log-prob-top-k 0)."
+                )
+            if args.n_samples_per_prompt != 1 or args.fully_async or args.partial_rollout:
+                raise ValueError(
+                    "--opd-chunk-tokens re-queues single unfinished rollouts through the buffered data source: "
+                    "it needs --n-samples-per-prompt 1 and neither --fully-async nor --partial-rollout."
+                )
+
         if args.opd_type == "megatron":
             if args.opd_teacher_load is None:
                 raise ValueError(
@@ -1891,6 +1903,8 @@ def hf_validate_args(args, hf_config):
 
 
 def _resolve_data_source_path(args: argparse.Namespace) -> None:
-    if args.partial_rollout and args.data_source_path == "miles.rollout.data_source.RolloutDataSource":
+    if (
+        args.partial_rollout or args.opd_chunk_tokens is not None
+    ) and args.data_source_path == "miles.rollout.data_source.RolloutDataSource":
         args.data_source_path = "miles.rollout.data_source.LegacyRolloutDataSourceWithBuffer"
         logger.info("Partial rollout uses the legacy buffered data source by default")

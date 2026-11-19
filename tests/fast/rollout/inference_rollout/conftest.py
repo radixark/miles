@@ -51,6 +51,7 @@ def make_eval_args(*, namespaced_radix_cache: bool = True) -> dict[str, Any]:
     return dict(
         namespaced_radix_cache=namespaced_radix_cache,
         partial_rollout=False,
+        opd_chunk_tokens=None,
         mask_offpolicy_in_partial_rollout=False,
         group_rm=False,
         sglang_router_policy="round_robin",

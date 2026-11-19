@@ -184,6 +184,51 @@ On 2 × 4 GB300 this setup trains on 4 GPUs while only 2 generate, so the step i
 `b200-async` gives rollout 6 GPUs. A cross-tray weight sync took about 10 s, and trainer and
 rollout log-probs differed by 0.016 on average.
 
+## Chunked training (`--opd-chunk-tokens`)
+
+Every batch of this workload has a caesar_cipher response that runs to the 30,720-token cap, and
+the step waits for it. OPD's per-token signal needs no finished response, so a training rollout
+can be cut into chunks instead:
+
+1. A rollout stops after `--opd-chunk-tokens` new tokens.
+2. Its teacher scores only those tokens; the prompt and earlier chunks are context.
+3. It trains on them in this step, with earlier chunks loss-masked.
+4. A copy re-queues and resumes from its prefix in the next rollout, under the newer weights.
+
+Each token is still generated, scored and trained once. Evaluation is never chunked. It needs
+`--n-samples-per-prompt 1` and sampled-token OPD (`--opd-log-prob-top-k 0`).
+
+```bash
+# teachers: keep the radix cache so a chunk reuses the previous chunk's prefix
+python examples/on_policy_distillation/mopd_reasoning_gym/serve_teachers.py --models-dir /root/models \
+    --teacher caesar_cipher=2 --teacher simple_geometry=3 --log-dir /root/shared_data/teachers \
+    --prefix-cache --extra-args "--mamba-radix-cache-strategy extra_buffer --enable-hierarchical-cache --hicache-ratio 2"
+# trainer: Setup 2 as above, plus
+    --extra-args "--opd-chunk-tokens 8192" --num-rollout 40
+```
+
+**Validation on one 8× B300 node** (the `gb300-async` split on one node: trainer on 4 GPUs with
+EP4, 2 rollout engines, one GPU per teacher; MTP decoding, token-mean loss):
+
+| Run | caesar_cipher / simple_geometry at step 10 | Final | Median step | New tokens/s | P90 request latency |
+|---|---|---|---|---|---|
+| Setup 2 | 73.6% / 99.6% | 77.0% / 99.4% (step 20) | 168 s | 6.2k | 93–153 s |
+| + `--opd-chunk-tokens 8192` | 77.5% / 99.8% | 75.8% / 100% (step 40) | 79 s | 8.2k | 54–71 s |
+| + teacher `--prefix-cache` | 75.8% / 99.4% | 76.8% / 99.4% (step 40) | 78 s | 8.1k | 56–76 s |
+
+- **The tail is gone.** The trainer waits 43 s per step instead of 130 s, and the run reaches the
+  final accuracy of Setup 2 by step 10, in about 13 minutes of training instead of 57.
+- **The cost is prefix work.** Each resumed chunk is a new request, so the student engines
+  re-read its prefix (21.0M tokens over the run, for 26.5M generated) and the trainer recomputes
+  it in the forward. A smaller chunk shortens the step but adds more of this work.
+- **The teacher prefix cache** removes the teacher's share. Each chunk reuses up to the last
+  `--mamba-track-interval` boundary of its prefix: chunk 3 of a 24.7k-token response prefilled
+  8.2k tokens instead of 24.7k. The teacher is frozen, so the cached prefix stays valid. Over the run the teachers
+  prefilled 27.7M tokens instead of about 48M, and the median caesar_cipher scoring time fell from
+  0.23 s to 0.11 s; step time did not change, since scoring was never the bottleneck. Resuming
+  the GDN layers from a cached state splits their prefill at a different point, so cached and cold
+  log-probs differ by 0.002–0.016 per token on average, about the same as the trainer–rollout gap.
+
 ## Choices shared by both setups
 
 These keep the math unchanged:
@@ -193,7 +238,7 @@ These keep the math unchanged:
 - **`--log-probs-backend fused`.** A 30,720-token response against the 248k vocabulary is a 28 GiB fp32 logits copy under the torch backend.
 - **Token-mean loss** (`--token-mean-loss`, on by default). Miles' default averages within each sample first, which gives each token of a ~10k-token caesar_cipher response about a third of the weight of a simple_geometry token.
 - **MTP speculative decoding** (`--mtp-spec-decode`, off by default). Qwen3.6's MTP head drafts for SGLang (accept length ~2.7), and sampling stays lossless. It speeds up the single long sequence that sets rollout time. Report it separately from a matched baseline.
-- **Teachers outside Ray**, one SGLang server per teacher with DP replicas (TP1, radix cache off since n = 1).
+- **Teachers outside Ray**, one SGLang server per teacher with DP replicas (TP1, radix cache off since n = 1; on with `--prefix-cache` for chunked training).
 
 `--dump-dir` turns on `--dump-details` and the Miles dashboard. That records per-rank phase
 timings, GPU utilization, SGLang engine metrics, and each sample's generation and teacher-scoring

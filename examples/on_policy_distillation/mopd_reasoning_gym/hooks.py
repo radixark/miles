@@ -21,7 +21,6 @@ import time
 from functools import cache
 
 from miles.rollout import on_policy_distillation as opd
-from miles.rollout.generate_hub.single_turn import generate as _single_turn_generate
 
 _ANSWER = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
 
@@ -64,7 +63,8 @@ def post_process_rewards(args, samples, **kwargs) -> tuple[list[float], list[flo
 
 async def generate(input, url=None):
     started = time.time()
-    output = await _single_turn_generate(input, url)
+    # single-turn generation, cut into --opd-chunk-tokens chunks when that flag is set
+    output = await opd.generate(input, url)
     finished = time.time()
     for sample in output.samples if isinstance(output.samples, list) else [output.samples]:
         sample.metadata.update(gen_t0=started, gen_t1=finished)

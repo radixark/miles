@@ -256,6 +256,7 @@ class InferenceRolloutFn(BaseRolloutFn):
 
     async def _call_train(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
         from miles.rollout.inference_rollout.inference_rollout_train import generate_rollout_async
+        from miles.rollout.on_policy_distillation import chunk_continuations
 
         output, aborted_samples = await generate_rollout_async(
             self.state,
@@ -265,6 +266,8 @@ class InferenceRolloutFn(BaseRolloutFn):
         )
         if aborted_samples:
             self.data_source.add_samples(aborted_samples)
+        if self.state.args.opd_chunk_tokens is not None:
+            self.data_source.add_samples(chunk_continuations(output.samples))
         return output
 
     async def _call_eval(self, input: RolloutFnEvalInput) -> RolloutFnEvalOutput:
