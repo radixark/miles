@@ -9,9 +9,11 @@ user_invocable: true
 Prepares a new physical host to run miles GitHub Actions CI runners by making
 `/data/miles_ci` canonical on the host.
 
-The miles CI workflow (`.github/workflows/_run-ci.yml`) bind-mounts
-`/data/miles_ci` and its subdirectories (`models`, `datasets`, `hf_cache`)
-from the host into every CI job container, using literal paths everywhere.
+The miles CI workflow (`.github/workflows/_run-ci.yml`) bind-mounts the
+`jit`, `dumps`, `models`, `datasets` and `hf_cache` subdirectories of
+`/data/miles_ci` from the host into every CI job container, using literal
+paths everywhere, and never `/data/miles_ci` itself: the runners of a host
+share it.
 For that to work, every CI host must provide `/data/miles_ci` either as a
 real directory on its biggest disk OR as a symlink to wherever the real big
 disk is. This script automates that.
@@ -97,7 +99,7 @@ non-root invocation and suggest `sudo ./setup-host.sh`.
 Once the host side is prepared, the runner container's compose mount
 `/data/miles_ci:/data/miles_ci` works as an identity bind (per the docker-out-
 of-docker requirement explained in `docker-compose.yml`). The inner job
-container sees `/data/miles_ci` as a real bind from the host's canonical
-path, whether or not the host side is itself a symlink — Docker resolves the
-host symlink at bind time, so the container always sees the underlying
-directory. This is the desired behavior.
+container sees only the five subdirectories above, each a real bind from the
+host's canonical path, whether or not the host side is itself a symlink —
+Docker resolves the host symlink at bind time, so the container always sees
+the underlying directories. This is the desired behavior.
