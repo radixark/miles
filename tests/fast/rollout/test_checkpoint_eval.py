@@ -398,7 +398,7 @@ class FakeActorModel:
         self.exports = []
         self.fail = fail
 
-    async def export_hf(self, rollout_id, path):
+    async def export_eval_snapshot(self, rollout_id, path):
         if self.fail:
             raise RuntimeError("export boom")
         self.exports.append((rollout_id, path))
