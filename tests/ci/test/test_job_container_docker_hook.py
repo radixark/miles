@@ -86,7 +86,8 @@ def test_other_commands_pass_through_unchanged(next_docker, args):
 
 
 @pytest.mark.parametrize(
-    "mount", [["--volume", SOCKET_MOUNT], ["-v", "/var/run/docker.sock:/sock"], ["--mount", "src=/var/run/docker.sock"]]
+    "mount",
+    [["--volume", SOCKET_MOUNT], ["-v", "/var/run/docker.sock:/sock"], ["--mount", "src=/var/run/docker.sock"]],
 )
 def test_any_other_socket_reference_fails_closed(next_docker, mount):
     next_dir, calls = next_docker
