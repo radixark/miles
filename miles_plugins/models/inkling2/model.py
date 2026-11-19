@@ -15,7 +15,7 @@ from megatron.core.tensor_parallel.mappings import copy_to_tensor_model_parallel
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.linear_cross_entropy import LinearCrossEntropyModule
 from megatron.core.transformer.spec_utils import ModuleSpec
-from megatron.core.transformer.transformer_block import TransformerBlockSubmodules
+from megatron.core.transformer.transformer_block import TransformerBlockSubmodules, get_num_layers_to_build
 from megatron.core.transformer.transformer_config import TransformerConfig
 
 from miles.backends.megatron_utils.megatron_to_hf.inkling2 import (
@@ -111,6 +111,8 @@ def build_inkling2_config(text_cfg: dict, args) -> TransformerConfig:
         layernorm_epsilon=text_cfg["rms_norm_eps"],
         tensor_model_parallel_size=args.tensor_model_parallel_size,
         pipeline_model_parallel_size=args.pipeline_model_parallel_size,
+        num_layers_in_first_pipeline_stage=args.decoder_first_pipeline_num_layers,
+        num_layers_in_last_pipeline_stage=args.decoder_last_pipeline_num_layers,
         expert_model_parallel_size=args.expert_model_parallel_size,
         expert_tensor_parallel_size=args.expert_tensor_parallel_size or 1,
         context_parallel_size=args.context_parallel_size,
@@ -137,12 +139,19 @@ def build_inkling2_config(text_cfg: dict, args) -> TransformerConfig:
         hetereogenous_dist_checkpoint=True,
     )
     assert config.context_parallel_size == 1, "Inkling2 supports CP=1"
+    assert args.virtual_pipeline_model_parallel_size is None, "Inkling2 does not support VPP"
+    # This config carries only the first/last stage sizes; other split flags would be dropped.
+    assert (
+        args.pipeline_model_parallel_layout is None
+        and not args.account_for_embedding_in_pipeline_split
+        and not args.account_for_loss_in_pipeline_split
+    ), "Inkling2 splits pipeline stages by --decoder-first/last-pipeline-num-layers only"
     assert not config.sequence_parallel, "Inkling2 does not support sequence parallelism"
     config.inkling2 = Inkling2Config.from_text_config(text_cfg)
     return config
 
 
-def get_inkling2_block_spec(config: TransformerConfig) -> TransformerBlockSubmodules:
+def get_inkling2_block_spec(config: TransformerConfig, vp_stage: int | None = None) -> TransformerBlockSubmodules:
     spec = get_gpt_layer_with_transformer_engine_spec(
         num_experts=config.num_moe_experts, moe_grouped_gemm=True, qk_layernorm=False
     )
@@ -158,7 +167,9 @@ def get_inkling2_block_spec(config: TransformerConfig) -> TransformerBlockSubmod
     spec.submodules.input_layernorm = IdentityOp
     spec.submodules.self_attention = ModuleSpec(module=Inkling2Attention)
     spec.submodules.pre_mlp_layernorm = Inkling2RMSNorm
-    return TransformerBlockSubmodules(layer_specs=[spec] * config.num_layers, layer_norm=Inkling2RMSNorm)
+    # The block builds only this pipeline stage's layers; every layer shares one spec.
+    num_layers = get_num_layers_to_build(config, vp_stage=vp_stage)
+    return TransformerBlockSubmodules(layer_specs=[spec] * num_layers, layer_norm=Inkling2RMSNorm)
 
 
 class Inkling2LMHead(LinearCrossEntropyModule):
@@ -249,7 +260,7 @@ def inkling2_model_provider(pre_process=True, post_process=True, vp_stage=None, 
     config.inkling2 = replace(config.inkling2, expert_fake_quant=_expert_formats(args.hf_checkpoint, text_cfg))
     return Inkling2GPTModel(
         config=config,
-        transformer_layer_spec=get_inkling2_block_spec(config),
+        transformer_layer_spec=get_inkling2_block_spec(config, vp_stage),
         vocab_size=text_cfg["vocab_size"],
         max_sequence_length=args.backend.max_position_embeddings,
         pre_process=pre_process,
