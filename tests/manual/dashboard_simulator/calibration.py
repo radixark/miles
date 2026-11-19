@@ -10,9 +10,9 @@ from pathlib import Path
 
 import torch
 
-from miles.dashboard.dump_reader import DumpReader
-from miles.dashboard.store import MetricStore, PhaseEvent, Role, Stream, TrajectoryEvent, TrajectoryEventKind
 from miles.utils.types import Sample
+from miles_dashboard.dump_reader import DumpReader
+from miles_dashboard.store import MetricStore, PhaseEvent, Role, Stream, TrajectoryEvent, TrajectoryEventKind
 
 _LIFECYCLE_TS_KEYS = ("t0", "t1", "req_ts", "prev_t1")
 
