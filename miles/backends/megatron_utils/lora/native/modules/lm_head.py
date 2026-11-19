@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from miles.backends.megatron_utils.lora.native.distributed import branch_input
-from miles.backends.megatron_utils.lora.native.modules.linear import PhasedLoRAAdapter, new_lora_parameter
+from miles.backends.megatron_utils.lora.native.modules.linear import LoRADraw, PhasedLoRAAdapter, new_lora_parameter
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 
 
@@ -37,6 +37,8 @@ class LoRAOutputHead(PhasedLoRAAdapter):
                 (context.lora.rank, context.transformer_config.hidden_size),
                 init=context.lora.a_init_method,
                 grad_sum_group="tp",
+                draw=LoRADraw(f"{hf_prefix}head_A"),
+                seed=context.lora.seed,
             ),
         )
         self.register_parameter(
