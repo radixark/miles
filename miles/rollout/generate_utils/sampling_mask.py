@@ -170,20 +170,20 @@ def append_forced_sampling_tokens(sample: Sample, token_ids: Sequence[int]) -> N
 
 
 def merge_sampling_masks(
-    first: Sample,
-    observation_token_ids: Sequence[int],
-    second: Sample,
+    turns: Sequence[Sample],
+    observations: Sequence[Sequence[int]],
 ) -> RolloutSamplingMask | None:
-    """Merge two per-response ragged masks with forced observation tokens between them."""
-    first_mask = first.rollout_sampling_mask
-    second_mask = second.rollout_sampling_mask
-    if first_mask is None or second_mask is None:
-        if first_mask is None and second_mask is None:
+    """The turns' per-response ragged masks with each observation's forced tokens between them."""
+    masks = [turn.rollout_sampling_mask for turn in turns]
+    if any(mask is None for mask in masks):
+        if all(mask is None for mask in masks):
             return None
         raise ValueError("cannot merge samples unless both turns carry a complete rollout sampling mask")
 
-    observation_mask = RolloutSamplingMask.from_mask_list([[int(token_id)] for token_id in observation_token_ids])
-    return RolloutSamplingMask.concatenate((first_mask, observation_mask, second_mask))
+    pieces = [masks[0]]
+    for observation, mask in zip(observations, masks[1:], strict=True):
+        pieces += [RolloutSamplingMask.from_mask_list([[int(token_id)] for token_id in observation]), mask]
+    return RolloutSamplingMask.concatenate(pieces)
 
 
 def _append_sampling_mask(sample: Sample, sampling_mask: RolloutSamplingMask) -> None:

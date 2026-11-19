@@ -5,7 +5,7 @@ import numpy
 import pytest
 from tests.fast.utils.output_store.test_plan import response
 
-from miles.rollout.generate_utils.sample_utils import _merge_sample_pair, merge_samples
+from miles.rollout.generate_utils.sample_utils import _merge_turns, merge_samples
 from miles.utils.output_store.plan import StorePlanError
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
@@ -53,7 +53,7 @@ class TestMergeSamples:
         b = make_sample(tokens=[1, 2, 10, 20, 30], response_length=1, loss_mask=[1])
         a.kv_cache_namespace = b.kv_cache_namespace = namespace
 
-        merged = _merge_sample_pair(a=a, b=b, tokenizer=mock_tokenizer)
+        merged = _merge_turns([a, b], mock_tokenizer)
 
         assert merged.kv_cache_namespace == namespace
 
@@ -68,7 +68,7 @@ class TestMergeSamples:
         b.kv_cache_namespace = other_namespace
 
         with pytest.raises(AssertionError, match="kv_cache_namespace mismatch"):
-            _merge_sample_pair(a=a, b=b, tokenizer=mock_tokenizer)
+            _merge_turns([a, b], mock_tokenizer)
 
     def test_basic_merge(self, mock_tokenizer):
         a = make_sample(
@@ -87,7 +87,7 @@ class TestMergeSamples:
             status=Sample.Status.TRUNCATED,
         )
 
-        merged = _merge_sample_pair(a, b, mock_tokenizer)
+        merged = _merge_turns([a, b], mock_tokenizer)
 
         assert merged.tokens == b.tokens
         assert merged.response_length == 3 + 2 + 3
@@ -110,7 +110,7 @@ class TestMergeSamples:
         b.metadata = {"messages": [{"role": "user", "content": "hi"}], "lifecycle": [{"turn": 1}], "k": [1]}
         before = (deepcopy(a), deepcopy(b))
 
-        merged = _merge_sample_pair(a, b, mock_tokenizer)
+        merged = _merge_turns([a, b], mock_tokenizer)
 
         assert (a, b) == before
         assert merged.loss_mask == [1, 1, 0, 1]
@@ -142,7 +142,7 @@ class TestMergeSamples:
         )
         b.weight_versions = [WeightVersionsPerCall(spans=[WeightVersionSpan("v2", 8, 11)])]
 
-        merged = _merge_sample_pair(a, b, mock_tokenizer)
+        merged = _merge_turns([a, b], mock_tokenizer)
 
         assert merged.weight_versions == [
             WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 3, 6)]),
@@ -171,7 +171,7 @@ class TestMergeSamples:
             )
         ]
 
-        merged = _merge_sample_pair(a=a, b=b, tokenizer=mock_tokenizer)
+        merged = _merge_turns([a, b], mock_tokenizer)
         merged.validate()
 
         assert merged.weight_versions == a.weight_versions + b.weight_versions
@@ -183,7 +183,7 @@ class TestMergeSamples:
         a.trainer_model_id = "policy-a"
         b.trainer_model_id = "policy-a"
 
-        merged = _merge_sample_pair(a=a, b=b, tokenizer=mock_tokenizer)
+        merged = _merge_turns([a, b], mock_tokenizer)
 
         assert merged.trainer_model_id == "policy-a"
 
@@ -194,7 +194,7 @@ class TestMergeSamples:
         a.max_response_len = 64
         b.max_response_len = 64
 
-        merged = _merge_sample_pair(a=a, b=b, tokenizer=mock_tokenizer)
+        merged = _merge_turns([a, b], mock_tokenizer)
 
         assert merged.max_response_len == 64
 
@@ -206,7 +206,7 @@ class TestMergeSamples:
         b.trainer_model_id = "policy-b"
 
         with pytest.raises(AssertionError, match="trainer_model_id mismatch"):
-            _merge_sample_pair(a=a, b=b, tokenizer=mock_tokenizer)
+            _merge_turns([a, b], mock_tokenizer)
 
     def test_merge_preserves_indexer_topk_from_final_sample(self, mock_tokenizer):
         a = make_sample(
@@ -224,7 +224,7 @@ class TestMergeSamples:
         a.rollout_indexer_topk = numpy.zeros((2, 2, 3), dtype=numpy.int32)
         b.rollout_indexer_topk = numpy.ones((4, 2, 3), dtype=numpy.int32)
 
-        merged = _merge_sample_pair(a, b, mock_tokenizer)
+        merged = _merge_turns([a, b], mock_tokenizer)
 
         numpy.testing.assert_array_equal(merged.rollout_indexer_topk, b.rollout_indexer_topk)
 
@@ -242,7 +242,7 @@ class TestMergeSamples:
             rollout_log_probs=None,
         )
 
-        merged = _merge_sample_pair(a, b, mock_tokenizer)
+        merged = _merge_turns([a, b], mock_tokenizer)
 
         assert merged.loss_mask == [1, 0, 1]
         assert merged.rollout_log_probs == [0.0, 0.0, 0.0]
@@ -260,7 +260,7 @@ class TestMergeSamples:
         )
 
         with pytest.raises(AssertionError, match="b.tokens must start with a.tokens"):
-            _merge_sample_pair(a, b, mock_tokenizer)
+            _merge_turns([a, b], mock_tokenizer)
 
     def test_field_mismatch_raises(self, mock_tokenizer):
         a = make_sample(
@@ -277,7 +277,7 @@ class TestMergeSamples:
         )
 
         with pytest.raises(AssertionError, match="index mismatch"):
-            _merge_sample_pair(a, b, mock_tokenizer)
+            _merge_turns([a, b], mock_tokenizer)
 
     def test_obs_len_invalid_raises(self, mock_tokenizer):
         a = make_sample(
@@ -292,7 +292,7 @@ class TestMergeSamples:
         )
 
         with pytest.raises(AssertionError, match="obs_len must be > 0"):
-            _merge_sample_pair(a, b, mock_tokenizer)
+            _merge_turns([a, b], mock_tokenizer)
 
     def test_sample_validate_fails_raises(self, mock_tokenizer):
         a = make_sample(
@@ -307,7 +307,7 @@ class TestMergeSamples:
         )
 
         with pytest.raises(AssertionError, match="loss_mask length"):
-            _merge_sample_pair(a, b, mock_tokenizer)
+            _merge_turns([a, b], mock_tokenizer)
 
     def test_merge_sample_pair_routed_experts_gap_raises_clear_error(self, mock_tokenizer):
         # An aborted turn omits routed_experts; merging a routed turn into it must
@@ -318,7 +318,7 @@ class TestMergeSamples:
         b.rollout_routed_experts = None
 
         with pytest.raises(AssertionError, match="a has rollout_routed_experts but b does not"):
-            _merge_sample_pair(a, b, mock_tokenizer)
+            _merge_turns([a, b], mock_tokenizer)
 
     def test_merge_samples_stops_at_routing_gap(self, mock_tokenizer):
         # merge_samples should keep the last fully-captured turn when a later turn
@@ -345,7 +345,7 @@ class TestMergeSamples:
         a.rollout_store_plan = response("a", prompt=2, output=1)
         b.rollout_store_plan = response("b", prompt=4, output=1)
 
-        merged = _merge_sample_pair(a, b, mock_tokenizer)
+        merged = _merge_turns([a, b], mock_tokenizer)
 
         assert merged.rollout_store_plan == a.rollout_store_plan.merge_turn(b.rollout_store_plan, observation_tokens=1)
         merged.validate()
@@ -362,3 +362,48 @@ class TestMergeSamples:
 
         with pytest.raises(StorePlanError, match="with output store data and one without"):
             merge_samples([a, b], mock_tokenizer)
+
+    def test_a_long_trajectory_merges_in_one_pass_as_turn_by_turn(self, mock_tokenizer):
+        from miles.utils.sampling_mask import RolloutSamplingMask
+
+        rng, k, turns, tokens = numpy.random.default_rng(0), 4, [], [1, 2, 3]
+        for turn in range(9):
+            if turn:
+                tokens = tokens + [int(x) for x in rng.integers(100, 200, int(rng.integers(1, 4)))]
+            output = [int(x) for x in rng.integers(200, 300, int(rng.integers(1, 5)))]
+            tokens = tokens + output
+            supports = [
+                [token, *(int(x) for x in rng.integers(300, 400, int(rng.integers(0, k))))] for token in output
+            ]
+            sample = make_sample(
+                tokens=list(tokens),
+                response=f"r{turn}",
+                response_length=len(output),
+                loss_mask=[1] * len(output),
+                rollout_log_probs=[float(x) for x in rng.normal(size=len(output))],
+            )
+            sample.rollout_sampling_mask = RolloutSamplingMask.from_mask_list(supports)
+            sample.rollout_topk_token_ids = numpy.full((len(output), k), -1, dtype=numpy.int32)
+            sample.rollout_topk_log_probs = numpy.full((len(output), k), -numpy.inf, dtype=numpy.float32)
+            for row, support in enumerate(supports):
+                sample.rollout_topk_token_ids[row, : len(support)] = support
+                sample.rollout_topk_log_probs[row, : len(support)] = rng.normal(size=len(support))
+            turns.append(sample)
+
+        expected = turns[0]
+        for turn in turns[1:]:
+            expected = _merge_turns([expected, turn], mock_tokenizer)
+        merged = merge_samples(turns, mock_tokenizer)
+
+        assert (merged.tokens, merged.response, merged.response_length) == (
+            expected.tokens,
+            expected.response,
+            expected.response_length,
+        )
+        assert (merged.loss_mask, merged.rollout_log_probs) == (expected.loss_mask, expected.rollout_log_probs)
+        for got, want in zip(
+            merged.rollout_sampling_mask._as_tensors(), expected.rollout_sampling_mask._as_tensors(), strict=True
+        ):
+            numpy.testing.assert_array_equal(got.numpy(), want.numpy())
+        numpy.testing.assert_array_equal(merged.rollout_topk_token_ids, expected.rollout_topk_token_ids)
+        numpy.testing.assert_array_equal(merged.rollout_topk_log_probs, expected.rollout_topk_log_probs)
