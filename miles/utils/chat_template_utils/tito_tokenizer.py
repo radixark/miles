@@ -1109,10 +1109,22 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
 
 class DeepSeekV41TITOTokenizer(DeepSeekV4TITOTokenizer):
     """DeepSeek V4.1 — deepseek-recipe's V4.1 encoding; the V4 incremental-render
-    machinery applies unchanged."""
+    machinery applies unchanged.
+
+    V4.1 renders a ``system`` message where it stands, behind ``<｜System｜>``, so
+    one appended after an answer or a tool result keeps the prefix.  V4 hoists
+    every system message into the preamble.
+    """
 
     reasoning_parser = "deepseek-v41"
     tool_call_parser = "deepseekv41"
+
+    FIXED_TEMPLATE = FixedTemplate(
+        template=None,
+        consistant_kwargs=["reasoning_effort"],
+        roles_after_tool_call=frozenset({"tool"}),
+        roles_after_no_tool_call=frozenset({"user", "system", "assistant"}),
+    )
 
     def __init__(
         self,

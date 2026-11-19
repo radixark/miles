@@ -1,16 +1,11 @@
 name: Docker Build & Push
 
 on:
+  # Every main push reaches the hosted planner; image_inputs.py alone decides
+  # which images need rebuilding, including inputs added outside docker/.
   push:
     branches:
       - main
-    paths:
-      - 'docker/Dockerfile'
-      - 'docker/Dockerfile.tpu'
-      - 'docker/tpu_patch/**'
-      - 'docker/install-kube-tools.sh'
-      - 'docker/verify_transformer_engine.py'
-      - 'requirements.txt'
 
   schedule:
     # Poll every 10 minutes so an upstream move starts a build within ~30 minutes;
@@ -188,15 +183,16 @@ jobs:
         env:
           BEFORE: ${{ github.event.before }}
         run: |
+          set -euo pipefail
           git fetch -q --depth=1 origin "$BEFORE"
-          changed=$(git diff --name-only "$BEFORE" HEAD)
           variants=()
-          if grep -qxE 'docker/Dockerfile|docker/install-kube-tools\.sh|docker/verify_transformer_engine\.py|requirements\.txt' <<< "$changed"; then
-            variants+=('"cu13"')
-          fi
-          if grep -qxE 'docker/Dockerfile\.tpu|docker/tpu_patch/.+|docker/install-kube-tools\.sh|requirements\.txt' <<< "$changed"; then
-            variants+=('"tpu"')
-          fi
+          for variant in cu13 tpu; do
+            current=$(python3 docker/image_inputs.py --variant "$variant" --rev HEAD)
+            base=$(python3 docker/image_inputs.py --variant "$variant" --rev "$BEFORE")
+            if [ "$current" != "$base" ]; then
+              variants+=("\"${variant}\"")
+            fi
+          done
           echo "variants=[$(IFS=,; echo "${variants[*]}")]" | tee -a "$GITHUB_OUTPUT"
 
   build-and-push:
@@ -207,7 +203,7 @@ jobs:
     if: |
       always() &&
       (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true') &&
-      (github.event_name != 'push' || needs.push-variants.result == 'success')
+      (github.event_name != 'push' || (needs.push-variants.result == 'success' && needs.push-variants.outputs.variants != '[]'))
     # A schedule keeps every rolling image current; a push builds what it touched, and
     # a manual dispatch builds only the variant it picks.
     strategy:
@@ -270,6 +266,7 @@ jobs:
             --image-tag ${{ inputs.image_tag || 'dev' }} \
             --dockerfile ${{ inputs.dockerfile || 'docker/Dockerfile' }} \
             ${{ inputs.custom_tag && format('--custom-tag {0}', inputs.custom_tag) || '' }} \
+            --image-repo "$GITHUB_REPOSITORY" \
             --push
 
       - name: Point latest to current dev
@@ -277,7 +274,7 @@ jobs:
         # simulate_schedule must not move it.
         if: github.event_name == 'schedule'
         run: |
-          docker buildx imagetools create -t "radixark/miles:latest${TAG_POSTFIX}" "radixark/miles:dev${TAG_POSTFIX}"
+          docker buildx imagetools create -t "${GITHUB_REPOSITORY}:latest${TAG_POSTFIX}" "${GITHUB_REPOSITORY}:dev${TAG_POSTFIX}"
 
       - name: Prune old dev tags
         if: github.event_name == 'schedule'
@@ -287,7 +284,7 @@ jobs:
           # days however often builds run, so the count limit alone never deletes it.
           MIN_AGE_DAYS=14
           CUTOFF=$(date -u -d "${MIN_AGE_DAYS} days ago" +%Y%m%d%H%M)
-          IMAGE=radixark/miles
+          IMAGE=${GITHUB_REPOSITORY}
 
           # Authenticate with Docker Hub API
           TOKEN=$(curl -s -X POST "https://hub.docker.com/v2/users/login/" \

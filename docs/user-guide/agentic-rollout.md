@@ -112,6 +112,26 @@ a sandbox still runs; an agent still running two minutes later is stopped.
 `--custom-agent-function-mode inline` runs the agent on the rollout's event loop,
 as before; use it for debugging and for agents that keep state across calls.
 
+### Optional startup check
+
+The module named by `--custom-agent-function-path` may expose a `preflight`
+function alongside the agent entry point:
+
+```python
+async def preflight(args) -> None:
+    ...  # raise if this host cannot run the agent at all
+```
+
+Miles calls it once in the rollout process at startup, before waiting for the
+inference engines, with the same `args` as `abort` below, and an exception there
+fails the run. During the run, an exception from the agent function aborts only
+its own sample, so check here what every sample needs, such as a tool on `PATH`
+or a readable credential; otherwise a broken setup shows up only as every sample
+aborting. The hook is optional.
+
+See [`harbor_agent_function.preflight`](https://github.com/radixark/miles/blob/main/examples/experimental/harbor/harbor_agent_function.py)
+for an implementation.
+
 ### Optional teardown hook
 
 The module named by `--custom-agent-function-path` may expose an `abort` function
@@ -228,7 +248,7 @@ but treat it as best-effort until it passes the checks below.
 | NVIDIA Nemotron 3 Nano / Super / Ultra | `nemotron3` |
 | Kimi K2.5 / K2.6 | `kimi25` / `kimi26` |
 | MiniMax M2.5 / M2.7 | `minimax_m25` / `minimax_m27` |
-| DeepSeek-V3.2 / V4 | `deepseekv32` / `deepseekv4` |
+| DeepSeek-V3.2 / V4 / V4.1 | `deepseekv32` / `deepseekv4` / `deepseekv41` |
 | Inkling / Inkling-Small | `inkling` |
 | Unregistered model or custom template (best-effort) | `default` |
 

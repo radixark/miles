@@ -66,8 +66,8 @@ class MockSGLangEngine:
     def get_http_payloads_of(self, path: str) -> list[dict | None]:
         return self._http_server.payloads_of(path) if self._http_server is not None else []
 
-    def run(self, cmd: str, envs: dict[str, str]):
-        self._record("run", (), {"cmd": cmd, "envs": envs})
+    def run(self, cmd: str, envs: dict[str, str], gpu_ids: list[int]):
+        self._record("run", (), {"cmd": cmd, "envs": envs, "gpu_ids": gpu_ids})
         self._maybe_fault("run")
         self._server_args = parse_cmd_flags(cmd)
         self._http_server = MockSGLangHttpServer(port=int(self._server_args["port"]))
@@ -79,6 +79,9 @@ class MockSGLangEngine:
         if self._http_server is not None:
             self._http_server.close()
         return True
+
+    def report_process_end(self):
+        self._record("report_process_end", (), {})
 
     def kill_subprocess(self):
         """Real CommandActor takes the actor down with the subprocess; the
