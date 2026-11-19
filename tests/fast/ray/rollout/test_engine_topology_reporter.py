@@ -136,6 +136,7 @@ class FakeCell:
             needs_offload=False,
             update_weights=False,
             workers_hash=f"hash-{cell_index}",
+            health_check_timeout_seconds=20,
         )
         self.server_url = url
         self.is_pending_weights_or_serving = alive

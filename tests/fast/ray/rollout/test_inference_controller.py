@@ -56,6 +56,7 @@ def _make_cell_info(
             sglang_api_key=None,
             needs_offload=False,
             update_weights=True,
+            health_check_timeout_seconds=20,
         ),
     )
 
@@ -71,6 +72,7 @@ def _make_cell_meta(info: CellInfo) -> ServerCellMetadata:
         worker_name=info.worker_names[0],
         needs_offload=info.meta["needs_offload"],
         update_weights=info.meta["update_weights"],
+        health_check_timeout_seconds=20,
         workers_hash=info.workers_hash,
     )
 
@@ -783,6 +785,7 @@ class TestEngineMetaContract:
             worker_name="inference-engine-0-0-1-0",
             needs_offload=False,
             update_weights=True,
+            health_check_timeout_seconds=20,
             workers_hash="pseudo-hash-0",
         )
 
@@ -1654,6 +1657,7 @@ def _registration_snapshot(*, model_id: str = "model-a", run_uuid: str = _RUN_UU
         sglang_api_key=None,
         needs_offload=False,
         update_weights=True,
+        health_check_timeout_seconds=20,
     )
 
     cell = RegisteredCellInfo(

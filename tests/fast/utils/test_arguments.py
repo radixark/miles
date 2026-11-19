@@ -1390,7 +1390,7 @@ def test_sglang_parallel_sizes_keep_server_args_destinations():
             "5",
         ]
     )
-    args.rollout_num_gpus_per_engine = 8
+    args.rollout_num_gpus_per_engine = 8 * args.sglang_pp_size
     args.true_on_policy_mode = False
     args.sglang_enable_dp_attention = True
     args.loss_type = "policy_loss"
@@ -2677,6 +2677,7 @@ class TestAllowStopTokenReplaceResolution:
         group = ServerGroupConfig(
             worker_type=WorkerType.REGULAR,
             num_gpus_per_engine=1,
+            pp_size=1,
             overrides={"enable_streaming_session": True},
             needs_offload=False,
         )
@@ -3323,7 +3324,7 @@ def test_sglang_parallel_sizes_use_short_namespace_fields(parallel_args, expecte
     assert not hasattr(args, "sglang_pipeline_parallel_size")
     assert not hasattr(args, "sglang_expert_parallel_size")
 
-    args.rollout_num_gpus_per_engine = 8
+    args.rollout_num_gpus_per_engine = 8 * args.sglang_pp_size
     args.true_on_policy_mode = False
     args.recompute_logprobs_via_prefill = False
     args.sglang_router_policy = None
@@ -4563,12 +4564,14 @@ class TestMultimodalTokenSpaceProcessingArgs:
         actor_group = ServerGroupConfig(
             worker_type=WorkerType.REGULAR,
             num_gpus_per_engine=1,
+            pp_size=1,
             needs_offload=False,
             overrides={"model_path": "/ckpt"},
         )
         reward_group = ServerGroupConfig(
             worker_type=WorkerType.REGULAR,
             num_gpus_per_engine=1,
+            pp_size=1,
             needs_offload=False,
             overrides={
                 "model_path": "/reward",
@@ -4605,6 +4608,7 @@ class TestMultimodalTokenSpaceProcessingArgs:
             ServerGroupConfig(
                 worker_type=WorkerType.REGULAR,
                 num_gpus_per_engine=1,
+                pp_size=1,
                 needs_offload=False,
                 overrides={"model_path": "/ckpt", "image_processor_backend": backend},
             )
