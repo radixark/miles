@@ -42,6 +42,8 @@ command below uses E2B:
 mkdir -p ~/.config/e2b && echo e2b_... > ~/.config/e2b/api_key
 ```
 
+The run fails at startup when the E2B API refuses this key or cannot be reached.
+
 On an [AgentENV](https://github.com/kvcache-ai/AgentENV) deployment, launch
 with `HARBOR_ENV_TYPE=agentenv` instead of `e2b` when task Dockerfiles `COPY`
 or `ADD` files or have several `FROM`s: `e2b` cannot build those there, and

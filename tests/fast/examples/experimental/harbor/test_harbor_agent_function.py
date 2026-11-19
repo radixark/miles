@@ -1,8 +1,8 @@
 """Offline tests for the in-process Harbor agent function (no Harbor, no sandbox).
 
-The ``harbor`` package is faked in sys.modules (module-local autouse fixture),
-so these tests run where Harbor is not installed. The contract against the
-REAL package lives in test_harbor_contract.py.
+The ``harbor`` and ``e2b`` packages are faked in sys.modules (module-local
+autouse fixtures), so these tests run where Harbor is not installed. The
+contract against the REAL package lives in test_harbor_contract.py.
 """
 
 import asyncio
@@ -79,6 +79,35 @@ def fake_harbor(monkeypatch):
     FakeTrial.result = None
     FakeTrial.run_delay_s = 0.0
     yield FakeTrial
+
+
+class FakeTemplate:
+    """Answers the E2B template lookups the preflight sends; ``error`` makes them fail."""
+
+    looked_up: list = []
+    error = None
+
+    @classmethod
+    def exists(cls, name):
+        cls.looked_up.append(name)
+        if cls.error is not None:
+            raise cls.error
+        return False
+
+
+class _AuthenticationException(Exception):
+    pass
+
+
+@pytest.fixture(autouse=True)
+def fake_e2b(monkeypatch):
+    e2b = types.ModuleType("e2b")
+    e2b.Template = FakeTemplate
+    e2b.ConnectionConfig = lambda: SimpleNamespace(api_url=os.getenv("E2B_API_URL", "https://api.e2b.app"))
+    monkeypatch.setitem(sys.modules, "e2b", e2b)
+    FakeTemplate.looked_up = []
+    FakeTemplate.error = None
+    yield FakeTemplate
 
 
 def run_async(coro):
@@ -412,12 +441,31 @@ def test_run_raises_on_a_missing_task_instead_of_scoring_zero(tasks_dir, fake_ha
 
 @pytest.mark.parametrize("env_type", ["e2b", "agentenv"])
 def test_preflight_passes_a_working_setup_without_running_a_trial(
-    tasks_dir, fake_harbor, fake_aenv, monkeypatch, env_type
+    tasks_dir, fake_harbor, fake_aenv, fake_e2b, monkeypatch, env_type
 ):
     fake_aenv("aenv 0.2.5")
     monkeypatch.setenv("HARBOR_ENV_TYPE", env_type)
     run_async(haf.preflight(None))
     assert fake_harbor.created == []
+    assert len(fake_e2b.looked_up) == 1
+
+
+@pytest.mark.parametrize("env_type", ["e2b", "agentenv"])
+def test_preflight_fails_when_the_e2b_api_refuses_the_request(tasks_dir, fake_aenv, fake_e2b, monkeypatch, env_type):
+    """A wrong endpoint answers 401 just like a bad key, so the error must name the endpoint."""
+    fake_aenv("aenv 0.2.5")
+    monkeypatch.setenv("HARBOR_ENV_TYPE", env_type)
+    monkeypatch.setenv("E2B_API_URL", "https://wrong.example")
+    fake_e2b.error = _AuthenticationException("401: Unauthorized, please check your credentials.")
+    with pytest.raises(RuntimeError, match="https://wrong.example.*401: Unauthorized"):
+        run_async(haf.preflight(None))
+
+
+def test_preflight_sends_no_e2b_request_for_other_backends(tasks_dir, fake_e2b, monkeypatch):
+    """Other backends have no E2B key, so asking the E2B API would fail a working setup."""
+    monkeypatch.setenv("HARBOR_ENV_TYPE", "docker")
+    run_async(haf.preflight(None))
+    assert fake_e2b.looked_up == []
 
 
 @pytest.mark.parametrize(

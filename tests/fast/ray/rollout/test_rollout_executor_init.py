@@ -79,59 +79,41 @@ class TestInitRunsExactlyOnce:
             await _inited_executor().init()
 
 
-class TestAgentPreflight:
-    async def test_a_broken_agent_setup_fails_init_before_the_engine_waits(
+class TestAgentSetupCheck:
+    async def test_the_check_runs_the_agent_preflight_on_the_executor_args(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Checked after the engine waits, a setup no sample can run on would surface only once the engines are up."""
+        """A check that skipped the hook would let a setup no sample can run on start the run."""
+        args = make_args()
         executor = RolloutExecutor(
-            args=make_args(use_session_server=True),
-            router_providers=[],
-            session_server_provider=MagicMock(),
-            inference_controller_provider=MagicMock(),
-        )
-        waits: list[str] = []
-
-        async def preflight(args) -> None:
-            raise RuntimeError("the agent's tool is not on PATH")
-
-        async def resolve_router(args, *, router_providers) -> dict:
-            waits.append("router")
-            return {}
-
-        monkeypatch.setattr(executor_module, "call_agent_preflight_hook", preflight)
-        monkeypatch.setattr(executor_module, "resolve_router_addrs", resolve_router)
-
-        with pytest.raises(RuntimeError, match="not on PATH"):
-            await executor.init()
-        assert waits == []
-
-    async def test_a_replay_of_saved_rollouts_skips_the_agent_preflight(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A replay calls no agent function, so it must not need what the agent needs."""
-        executor = RolloutExecutor(
-            args=make_args(load_debug_rollout_data="/saved/{rollout_id}.pt", starts_inference_engines=False),
-            router_providers=[],
-            session_server_provider=None,
-            inference_controller_provider=FakeInferenceTopologyProvider(
-                InferenceRuntimeImmutState(engine_count=1, gpu_count=1)
-            ),
+            args=args, router_providers=[], session_server_provider=None, inference_controller_provider=MagicMock()
         )
         preflighted: list[object] = []
 
         async def preflight(args) -> None:
             preflighted.append(args)
 
-        class StopAfterPreflight(Exception):
-            pass
+        monkeypatch.setattr(executor_module, "call_agent_preflight_hook", preflight)
 
-        def stop_tracking(*args, **kwargs) -> None:
-            raise StopAfterPreflight
+        await executor.check_agent_setup()
+        assert preflighted == [args]
+
+    async def test_a_replay_of_saved_rollouts_skips_the_agent_preflight(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A replay calls no agent function, so it must not need what the agent needs."""
+        executor = RolloutExecutor(
+            args=make_args(load_debug_rollout_data="/saved/{rollout_id}.pt"),
+            router_providers=[],
+            session_server_provider=None,
+            inference_controller_provider=MagicMock(),
+        )
+        preflighted: list[object] = []
+
+        async def preflight(args) -> None:
+            preflighted.append(args)
 
         monkeypatch.setattr(executor_module, "call_agent_preflight_hook", preflight)
-        monkeypatch.setattr(executor_module, "init_tracking", stop_tracking)
 
-        with pytest.raises(StopAfterPreflight):
-            await executor.init()
+        await executor.check_agent_setup()
         assert preflighted == []
 
 

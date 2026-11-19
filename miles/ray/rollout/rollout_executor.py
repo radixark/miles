@@ -112,13 +112,15 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         self.eval_generate_rollout = None
         self._metric_checker = None
 
+    async def check_agent_setup(self) -> None:
+        """Run the agent functions' ``preflight`` hooks. Needs nothing from ``init``, so it runs before the engine wait."""
+        if self.args.load_debug_rollout_data is None:  # replayed rollouts call no agent function
+            await call_agent_preflight_hook(self.args)
+
     @init_once
     async def init(self) -> None:
         args = self.args
         observers.start_process("rollout_manager")
-        if args.load_debug_rollout_data is None:  # replayed rollouts call no agent function
-            # before the engine waits, so a broken agent setup fails the run at once
-            await call_agent_preflight_hook(args)
         if args.starts_inference_engines:
             await resolve_router_addrs(args, router_providers=self._router_providers)
             await wait_session_server_ready(args, provider=self._session_server_provider)

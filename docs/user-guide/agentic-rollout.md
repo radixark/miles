@@ -122,12 +122,12 @@ async def preflight(args) -> None:
     ...  # raise if this host cannot run the agent at all
 ```
 
-Miles calls it once in the rollout process before the first rollout, with the
-same `args` as `abort` below, and an exception there fails the run. During the
-run, an exception from the agent function aborts only its own sample, so check
-here what every sample needs, such as a tool on `PATH` or a readable credential;
-otherwise a broken setup shows up only as every sample aborting. The hook is
-optional.
+Miles calls it once in the rollout process at startup, before waiting for the
+inference engines, with the same `args` as `abort` below, and an exception there
+fails the run. During the run, an exception from the agent function aborts only
+its own sample, so check here what every sample needs, such as a tool on `PATH`
+or a readable credential; otherwise a broken setup shows up only as every sample
+aborting. The hook is optional.
 
 See [`harbor_agent_function.preflight`](https://github.com/radixark/miles/blob/main/examples/experimental/harbor/harbor_agent_function.py)
 for an implementation.

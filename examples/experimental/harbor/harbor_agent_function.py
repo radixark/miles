@@ -56,10 +56,9 @@ Failure semantics: a verdict is returned as-is; every episode that ends
 without one scores 0 with a named ``exit_status`` (``TimeLimitExceeded``,
 ``SequenceLengthLimitExceeded``, ``AgentError``), matching the agent-server
 path. Setup errors raise instead, which aborts only this sample: ``preflight``
-has already checked, before the first rollout, what every trial on this host
-needs, so an error here belongs to this sample, such as a row whose task dir
-is missing. Platform-side Harbor exceptions still score 0; see the tracking
-issue for wiring them to ``InfraAbort`` once that contract lands.
+has already checked, before the first rollout, the setup every trial on this
+host shares, so an error here belongs to this sample, such as a row whose task
+dir is missing.
 """
 
 import asyncio
@@ -508,19 +507,35 @@ def _failed(exit_status: str) -> dict[str, Any]:
 
 async def preflight(args) -> None:
     """Fail the run before its first rollout if no trial could start on this host."""
-    await asyncio.to_thread(_check_trial_setup)  # `aenv --version` would block the rollout loop
+    # `aenv --version` and the E2B request block the event loop
+    await asyncio.to_thread(_check_trial_setup)
 
 
 def _check_trial_setup() -> None:
     import harbor.trial.trial  # noqa: F401  # every trial imports it
 
-    preflight_aenv(_harbor_env_type())
+    env_type = _harbor_env_type()
+    preflight_aenv(env_type)
     _trial_timeout_s()
     _ensure_provider_key()
     # every sample builds its trial config from the same environment, so a stand-in sample per harness checks it
     stand_in_metadata = {"instance_id": _stand_in_task_id(_tasks_dir())}
     for agent_name in HARNESS_BINDINGS:
         build_trial_config({**stand_in_metadata, "agent_name": agent_name}, "http://preflight.invalid/v1", {})
+    if resolve_provider(env_type) == "e2b":
+        _check_e2b_api()
+
+
+def _check_e2b_api() -> None:
+    from e2b import ConnectionConfig, Template  # installed only with harbor[e2b]
+
+    try:
+        Template.exists("miles-preflight")  # any name: only whether the API answers matters
+    except Exception as e:  # a 401 from a wrong endpoint reads as a bad key, so name the endpoint
+        raise RuntimeError(
+            f"the E2B API at {ConnectionConfig().api_url} refused or did not answer a template lookup, "
+            f"so no trial can start; check E2B_API_URL and the API key: {e}"
+        ) from e
 
 
 def _stand_in_task_id(tasks_dir: Path) -> str:
