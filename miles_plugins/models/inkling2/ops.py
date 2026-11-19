@@ -149,31 +149,16 @@ class _CappedSwiGLU(torch.autograd.Function):
         gate_cap, up_cap = ctx.caps
         grad_fc1 = torch.empty_like(fc1_out) if ctx.needs_input_grad[0] else None
         grad_probs = torch.empty_like(probs) if ctx.needs_input_grad[1] else None
+        # Replays each chunk's forward graph, so the gradients equal the unfused graph's bit for bit.
         for start in range(0, fc1_out.shape[0], CAPPED_SWIGLU_CHUNK_ROWS):
             rows = slice(start, start + CAPPED_SWIGLU_CHUNK_ROWS)
-            gate, up = torch.chunk(fc1_out[rows].float(), 2, dim=-1)
-            p, g = probs[rows].float(), grad_out[rows].float()
-            sigmoid = torch.sigmoid(gate)
-            if gate_cap > 0:
-                t = torch.tanh(gate / gate_cap)
-                capped_gate, d_capped_gate = gate_cap * t, 1 - t * t
-            else:
-                capped_gate, d_capped_gate = gate, 1.0
-            if up_cap > 0:
-                t = torch.tanh(up / up_cap)
-                capped_up, d_capped_up = up_cap * t, 1 - t * t
-            else:
-                capped_up, d_capped_up = up, 1.0
-            gated = capped_gate * sigmoid
+            with torch.enable_grad():
+                x, p = fc1_out[rows].detach().requires_grad_(), probs[rows].detach().requires_grad_()
+                dx, dp = torch.autograd.grad(_capped_swiglu_rows(x, p, gate_cap, up_cap), (x, p), grad_out[rows])
             if grad_fc1 is not None:
-                d_gate = g * capped_up * p * (d_capped_gate * sigmoid + capped_gate * sigmoid * (1 - sigmoid))
-                d_up = g * gated * p * d_capped_up
-                grad_fc1[rows] = torch.cat([d_gate, d_up], dim=-1).to(fc1_out.dtype)
+                grad_fc1[rows] = dx
             if grad_probs is not None:
-                d_probs = g * gated * capped_up
-                if p.shape[-1] == 1:
-                    d_probs = d_probs.sum(dim=-1, keepdim=True)
-                grad_probs[rows] = d_probs.to(probs.dtype)
+                grad_probs[rows] = dp
         return grad_fc1, grad_probs, None, None
 
 

@@ -43,9 +43,8 @@ def test_matches_unfused_graph(rows: int, caps: tuple[float, float]) -> None:
     grad = torch.randn_like(ref)
     out.backward(grad)
     ref.backward(grad)
-    # Both round the fp32 gradient to bf16 once; the hand-written formula may land one ulp away.
-    torch.testing.assert_close(x.grad.float(), x_ref.grad.float(), rtol=2e-2, atol=2e-2)
-    torch.testing.assert_close(p.grad, p_ref.grad, rtol=1e-4, atol=1e-4)
+    torch.testing.assert_close(x.grad, x_ref.grad, rtol=0, atol=0)
+    torch.testing.assert_close(p.grad, p_ref.grad, rtol=0, atol=0)
 
 
 def test_skips_input_gradients_that_are_not_needed() -> None:
