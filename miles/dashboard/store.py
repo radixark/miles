@@ -1599,12 +1599,12 @@ class MetricStore:
                 raise ValueError(f"bad lane selector {token!r}: expected kind:value")
             if kind == "rank":
                 lo, _, hi = value.partition("-")
-                ranks = set(range(int(lo), int(hi if hi else lo) + 1))
+                ranks = _clipped_range(lo, hi, max((r for e in index for r in e["ranks"]), default=-1))
                 selected |= {(e["node"], e["gpu"]) for e in index if ranks & set(e["ranks"])}
             elif kind == "g":
                 # cluster-global lane numbers (the g{index} labels on every view)
                 lo, _, hi = value.partition("-")
-                positions = set(range(int(lo), int(hi if hi else lo) + 1))
+                positions = _clipped_range(lo, hi, max((e["index"] for e in index), default=-1))
                 selected |= {(e["node"], e["gpu"]) for e in index if e["index"] in positions}
             elif kind == "node":
                 selected |= {(e["node"], e["gpu"]) for e in index if e["node"] == value}
@@ -1836,6 +1836,13 @@ class MetricStore:
                 continue
             out.append(dict(step=record.step, ts=record.ts, step_time=step_time, wait_ratio=wait_ratio))
         return out
+
+
+def _clipped_range(lo: str, hi: str, max_known: int) -> set[int]:
+    """Inclusive ``lo-hi`` range from a caller-supplied lane selector, clipped
+    to ``max_known`` so an untrusted bound cannot force a huge allocation."""
+    start, stop = int(lo), int(hi if hi else lo)
+    return set(range(max(start, 0), min(stop, max_known) + 1))
 
 
 def _metric_by_suffix(metrics: dict[str, float], base_key: str) -> float | None:

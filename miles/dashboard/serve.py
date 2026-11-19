@@ -1,7 +1,7 @@
 """Standalone dashboard server over a ``--dump-details`` directory.
 
     python -m miles.dashboard.serve --dump-details /path/to/dump_details \\
-        [--host 0.0.0.0] [--port 7788] [--follow] [--tensor-lru 2] [--cache-dir DIR]
+        [--host 127.0.0.1] [--port 7788] [--follow] [--tensor-lru 2] [--cache-dir DIR]
 
 Works on any machine that can see the directory (login node, laptop over
 NFS, the training node itself). ``--follow`` tails the JSONL telemetry
@@ -45,7 +45,9 @@ def make_demo_dir(target: Path) -> Path:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dump-details", default=None, help="the run's --dump-details directory")
-    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument(
+        "--host", default="127.0.0.1", help="bind address; the server has no auth, keep it on loopback"
+    )
     parser.add_argument("--port", type=int, default=7788)
     parser.add_argument("--follow", action="store_true", help="tail telemetry streams of a still-running job")
     parser.add_argument("--tensor-lru", type=int, default=2, help="rollout steps kept resident in tensor memory")
