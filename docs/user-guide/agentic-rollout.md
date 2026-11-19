@@ -228,7 +228,7 @@ but treat it as best-effort until it passes the checks below.
 | NVIDIA Nemotron 3 Nano / Super / Ultra | `nemotron3` |
 | Kimi K2.5 / K2.6 | `kimi25` / `kimi26` |
 | MiniMax M2.5 / M2.7 | `minimax_m25` / `minimax_m27` |
-| DeepSeek-V3.2 / V4 | `deepseekv32` / `deepseekv4` |
+| DeepSeek-V3.2 / V4 / V4.1 | `deepseekv32` / `deepseekv4` / `deepseekv41` |
 | Inkling / Inkling-Small | `inkling` |
 | Unregistered model or custom template (best-effort) | `default` |
 

@@ -4,7 +4,7 @@ run-name: fork-ci-image-${{ github.event.workflow_run.id }}-${{ github.event.wor
 
 on:
   workflow_run:
-    workflows: [PR Test]
+    workflows: [PR Test, 'PR Test (ROCm)']
     types: [in_progress]
 
 permissions:
@@ -25,6 +25,7 @@ jobs:
       request: ${{ steps.resolve.outputs.request }}
       pr: ${{ steps.resolve.outputs.pr }}
       merge_sha: ${{ steps.resolve.outputs.merge_sha }}
+      arches: ${{ steps.resolve.outputs.arches }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,15 +37,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/workflows/scripts/fork_ci_image.py resolve
 
-  # One request covers both architectures. Each publishes its own tag from its own job,
-  # which the PR-side job of that architecture waits for.
+  # A request covers its source workflow's architectures: amd64 and arm64 for PR Test,
+  # rocm10-mi35x for PR Test (ROCm). Each publishes its own tag from its own job, which
+  # the PR-side job of that architecture waits for.
   build:
     needs: request
     name: build (${{ matrix.arch }})
     strategy:
       fail-fast: false
       matrix:
-        arch: [amd64, arm64]
+        arch: ${{ fromJSON(needs.request.outputs.arches) }}
     if: needs.request.outputs.request != ''
     runs-on: [docker-build]
     timeout-minutes: 180

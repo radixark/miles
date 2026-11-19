@@ -2,6 +2,7 @@ from array import array
 from collections.abc import Sequence
 from dataclasses import InitVar, dataclass, field
 
+import numpy as np
 import torch
 
 
@@ -121,6 +122,22 @@ class RolloutSamplingMask:
             for start, end in zip(run_starts[:-1], run_starts[1:], strict=True)
         ]
         return (parts[0] if len(parts) == 1 else torch.cat(parts)), lengths
+
+
+def validate_sampling_support(
+    ids: np.ndarray, offsets: np.ndarray, sampled_tokens: np.ndarray, *, exactly_once: bool
+) -> None:
+    """Every support is non-empty and holds its sampled token (exactly once in support mode)."""
+    row_lengths = np.diff(offsets)
+    if (empty := row_lengths == 0).any():
+        raise ValueError(f"sampling support must contain at least one token (row {int(np.argmax(empty))})")
+    entry_row = np.repeat(np.arange(len(row_lengths)), row_lengths)
+    hits = np.bincount(entry_row[ids == sampled_tokens[entry_row]], minlength=len(row_lengths))
+    bad = hits != 1 if exactly_once else hits == 0
+    if bad.any():
+        row = int(np.argmax(bad))
+        what = "must occur exactly once in" if exactly_once else "is absent from"
+        raise ValueError(f"sampled token {int(sampled_tokens[row])} {what} its sampling support (row {row})")
 
 
 def _to_owned_cpu_integer_tensor(
