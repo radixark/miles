@@ -125,8 +125,11 @@ jobs:
             exit 0
           fi
 
-          read -r _ TAG < <(python3 docker/image_inputs.py --pr "$PR_NUMBER" --arch "$ARCH")
-          PUBLISHED=$(docker buildx imagetools inspect "${GITHUB_REPOSITORY}:${TAG}" \
+          read -r VARIANT TAG < <(python3 docker/image_inputs.py --pr "$PR_NUMBER" --arch "$ARCH")
+          # docker/build.py pins the ROCm PR variant to radixark/miles; every other one follows --image-repo.
+          IMAGE_REPO=$GITHUB_REPOSITORY
+          [ "$VARIANT" != rocm10-mi35x-pr ] || IMAGE_REPO=radixark/miles
+          PUBLISHED=$(docker buildx imagetools inspect "${IMAGE_REPO}:${TAG}" \
             --format '{{ json .Image }}' 2>/dev/null \
             | python3 docker/image_inputs.py --read-label || true)
 
