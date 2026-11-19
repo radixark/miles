@@ -5,6 +5,7 @@ The child owns publication locks, shared allocations and READY/release transitio
 """
 
 import argparse
+import errno
 import fcntl
 import hashlib
 import json
@@ -45,6 +46,21 @@ TENSOR_DTYPE = np.dtype(
         )
     ]
 )
+
+
+def retryable_prepare_errno(error):
+    """Storage errors for which rebuilding the same immutable publication can succeed."""
+    if isinstance(error, TimeoutError):
+        return errno.ETIMEDOUT
+    if isinstance(error, OSError) and error.errno in {
+        errno.ENOENT,
+        errno.EIO,
+        errno.ESTALE,
+        errno.EAGAIN,
+        errno.EINTR,
+    }:
+        return error.errno
+    return None
 
 
 def validate_codec(manifest):
@@ -479,11 +495,18 @@ class HostBuilder(_MetadataMapping):
             ):
                 raise ValueError("encoded cache requires prior engine APPLIED release before overwrite")
             index = self._index = {"namespace": namespace, "publication": expected, "token": token}
-            _write_record(self.directory, "index", index)
-            _write_record(self.directory, "state", {"token": token, "state": "BUILDING"})
-            self._build(index, previous, metrics)
-            _write_record(self.directory, "index", index)
-            _write_record(self.directory, "state", {"token": token, "state": "READY"})
+            try:
+                _write_record(self.directory, "index", index)
+                _write_record(self.directory, "state", {"token": token, "state": "BUILDING"})
+                self._build(index, previous, metrics)
+                _write_record(self.directory, "index", index)
+                _write_record(self.directory, "state", {"token": token, "state": "READY"})
+            except OSError as error:
+                # Followers may report first. Record the same error before unlocking the shared arena.
+                code = retryable_prepare_errno(error)
+                if code is not None:
+                    _write_record(self.directory, "state", {"token": token, "state": "FAILED", "errno": code})
+                raise
             if previous:
                 for kind in ("encoded", "prepared", "metadata"):
                     if previous[kind]["file"] != index[kind]["file"]:
@@ -497,7 +520,7 @@ class HostBuilder(_MetadataMapping):
             state = orjson.loads((self.directory / "state.json").read_bytes())
             if state["state"] == "READY" and state["token"] == token:
                 _write_record(self.directory, "state", {"token": token, "state": "REUSABLE"})
-            elif state["state"] not in {"READY", "REUSABLE", "BUILDING"}:
+            elif state["state"] not in {"READY", "REUSABLE", "BUILDING", "FAILED"}:
                 raise ValueError(f"unknown GPU-delta host cache state: {state['state']}")
 
     def _attach_prepared(self, allocation):
@@ -701,7 +724,14 @@ def main():
                 result["status"] = "OK"
             except BaseException as error:
                 connection.send_bytes(
-                    orjson.dumps({"status": "FAILED", "error_type": type(error).__name__, "error": str(error)})
+                    orjson.dumps(
+                        {
+                            "status": "FAILED",
+                            "error_type": type(error).__name__,
+                            "error": str(error),
+                            "errno": retryable_prepare_errno(error),
+                        }
+                    )
                 )
                 raise
             connection.send_bytes(orjson.dumps(result))

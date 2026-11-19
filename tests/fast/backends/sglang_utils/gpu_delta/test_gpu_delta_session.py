@@ -1,5 +1,6 @@
 """CPU tests for distributed delta transaction failure boundaries."""
 
+import errno
 import hashlib
 import io
 import json
@@ -15,7 +16,6 @@ import pytest
 from miles.backends.sglang_utils.gpu_delta import io as delta_io
 from miles.backends.sglang_utils.gpu_delta import scheduler as delta_scheduler
 from miles.backends.sglang_utils.gpu_delta import session as delta_runtime
-from miles.backends.sglang_utils.gpu_delta.receiver import GpuDeltaBackend
 from miles.backends.sglang_utils.gpu_delta.scheduler import GpuDeltaSchedulerControl
 from miles.backends.sglang_utils.gpu_delta.session import DeltaSession
 
@@ -44,8 +44,6 @@ class Payload:
 
 
 class Backend:
-    discard = GpuDeltaBackend.discard
-
     def __init__(self, payload=None):
         self.payload = payload or Payload()
         self.plan_digest = "b" * 64
@@ -171,7 +169,7 @@ def test_prepare_completion_uses_request_route_without_scheduler_socket(make_ses
 
 @pytest.mark.parametrize(
     "abort_state,drain_failure",
-    [("PREPARING", False), ("PREPARED", False), ("PREPARING", True)],
+    [("PREPARING", False), ("PREPARED", False), ("PREPARING", True), ("PREPARED", True)],
 )
 def test_prepare_and_status_do_not_wait_for_file_io(make_session, abort_state, drain_failure):
     session, backend = make_session()
@@ -221,24 +219,28 @@ def test_prepare_and_status_do_not_wait_for_file_io(make_session, abort_state, d
         close_backend()
 
     backend.payload.close, backend.close = drain, close
-    session.abort("publication-1")
+    assert session.abort("publication-1")["state"] == "ABORTED"
     backend.ready.set()
-    session._executor.submit(lambda: None).result(timeout=2)
     if drain_failure:
-        assert replied.wait(2)
-        # The late discard raised in the preparation future: its reply names the exception type.
-        assert not replies[-1][1] and replies[-1][2] == "RuntimeError: GPU drain failed"
+        with pytest.raises((ValueError, RuntimeError), match="GPU drain failed|can only be cleared"):
+            session.clear()
+        receipt = session.status()
+        assert receipt["state"] == "POISONED" and "GPU drain failed" in receipt["message"]
+        with pytest.raises(ValueError, match="unsettled"):
+            session.prepare(req)
         assert cleanup == ["drain"]
         assert not backend.closed and not backend.payload.closed.is_set()
     else:
+        assert session.clear()["state"] == "CLEARED"
         assert cleanup == ["drain", "close"]
         assert backend.closed and backend.payload.closed.is_set()
-    assert session.status()["state"] == "ABORTED"
+        session.release_cache()
+        fresh = Backend()
+        session.reattach(lambda *_: fresh)
+        fresh.ready.set()
+        assert session.prepare(req).result(timeout=2)["state"] == "PREPARED"
+        assert session.committed == (None, 0)
     assert not backend.payload.released.is_set()
-    backend.started.clear()
-    with pytest.raises(ValueError, match="requires restart"):
-        session.prepare(req)
-    assert not backend.started.is_set()
 
 
 def test_abort_unblocks_rank_waiting_for_shared_preparation_owner(make_session, monkeypatch, tmp_path):
@@ -316,15 +318,35 @@ def test_engine_release_runs_off_scheduler_and_before_next_prepare(make_session)
     assert completion.result(timeout=2)["state"] == "PREPARED"
 
 
-def test_bad_publication_never_mutates(make_session):
+@pytest.mark.parametrize(
+    "error,retryable",
+    [(ValueError("encoded checksum mismatch"), False), (OSError(errno.ESTALE, "stale handle"), True)],
+)
+def test_prepare_failure_preserves_committed_weights_and_retryability(make_session, error, retryable):
     session, backend = make_session()
-    backend.error = ValueError("encoded checksum mismatch")
-    session.prepare(request([session.identity]))
+    applied(session, backend)
+    session.resume("publication-1", lambda _: None)
+    # This rank never accepted the peer's rejected request.
+    assert session.abort("publication-2")["state"] == "RESUMED"
+    req = request([session.identity]) | dict(
+        session_id="publication-2", base_stream_id="run-1", base_version=1, target_version=2
+    )
+    backend.error = error
+    failed = session.prepare(req).result(timeout=2)
+    assert failed["state"] == "FAILED" and failed["retryable_prepare_error"] is retryable
+    assert str(error) in failed["message"]
+    aborted = session.abort(req["session_id"])
+    assert aborted["state"] == "ABORTED" and aborted["retryable_prepare_error"] is retryable
+    assert session.clear()["version"] == 1
+    session.release_cache()
+    assert backend.payload.applications == 1
+    backend = Backend()
+    session.reattach(lambda *_: backend)
     backend.ready.set()
-    assert wait_state(session, "FAILED")["message"] == "preparation failed: ValueError: encoded checksum mismatch"
-    assert backend.payload.applications == 0
-    session.abort("publication-1")
-    assert session.status()["state"] == "ABORTED"
+    assert session.prepare(req).result(timeout=2)["state"] == "PREPARED"
+    session.apply("publication-2", lambda: None, lambda: None, None)
+    assert session.resume("publication-2", lambda _: None)["version"] == 2
+    assert backend.payload.applications == 1
 
 
 def test_wrong_or_repeated_transaction_never_replays_xor(make_session):
@@ -335,6 +357,8 @@ def test_wrong_or_repeated_transaction_never_replays_xor(make_session):
         session.prepare(req)
     with pytest.raises(ValueError, match="different session"):
         session.apply("stale", lambda: None, lambda: None, None)
+    with pytest.raises(ValueError, match="different session"):
+        session.abort("stale")
     assert backend.payload.applications == 0
     session.apply("publication-1", lambda: None, lambda: None, None)
     with pytest.raises(ValueError, match="prepared session"):
@@ -713,7 +737,7 @@ def test_clear_cannot_discard_an_unsettled_update(make_session, state):
     session, backend = make_session()
     prepare_ready(session, backend)
     session._update.state = state
-    with pytest.raises(ValueError, match="idle or resumed"):
+    with pytest.raises(ValueError, match="can only be cleared"):
         session.clear()
     assert not backend.closed and session.backend is backend
     assert not backend.payload.closed.is_set()
@@ -736,17 +760,16 @@ def test_failed_async_release_prevents_resource_reuse(make_session, next_operati
     if next_operation == "clear":
         with pytest.raises(OSError, match="state release failed"):
             session.clear()
-        # That clear stopped the worker; a rejected prepare leaves the settled update current.
-        with pytest.raises(RuntimeError, match="after shutdown"):
+        with pytest.raises(ValueError, match="unsettled"):
             session.prepare(following)
-        assert session.status()["state"] == "RESUMED"
     else:
         backend.started.clear()
         session.prepare(following)
-        receipt = wait_state(session, "FAILED")
+        receipt = wait_state(session, "POISONED")
         assert "state release failed" in receipt["message"]
         assert not backend.started.is_set()
         assert backend.payload.applications == 1
+    assert session.status()["state"] == "POISONED"
     assert session.committed == ("run-1", 1) and not backend.closed
     assert session.backend is backend
 

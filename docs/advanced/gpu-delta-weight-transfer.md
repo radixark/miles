@@ -160,7 +160,15 @@ transfer modes. Replacement recovery and dedicated eval pins always use the rece
 defaults, retract and flush, so eval never reuses KV or prefix cache computed with older
 weights.
 
-Every rank checks the publication's source stream and version during preparation.
+Every rank checks the publication's source stream and version before writing weights.
+If preparation fails before apply dispatch, the tokenizer cancels the attempt, drains
+every original rank, clears its host arena and verifies the same checkpoint and
+committed version after reattachment. A transient storage error or prepare deadline
+can then retry preparation once on the same engine. Permanent errors and exhausted
+retries surface as failed updates to Miles, whose existing fault-tolerance policy
+may replace that engine. An unverified cleanup or an uncertain apply disables
+further updates on the affected engine.
+
 After a transport failure, Miles reads the original ranks' committed state. If the
 requested session finished, the receiver returns its original receipts and timings.
 If all original ranks still report the exact source, Miles can resend once.

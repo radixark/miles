@@ -91,6 +91,7 @@ class GpuDeltaTokenizerControl:
         self.manager = manager
         self._control_lock = asyncio.Lock()
         self._last_activation = None
+        self._unsettled = False
         self.reply_endpoint = manager.recv_from_detokenizer.getsockopt_string(zmq.LAST_ENDPOINT)
         self.communicator = GpuDeltaCommunicator(manager._dispatch_to_scheduler, fan_out)
         manager._result_dispatcher += TypeBasedDispatcher([(GpuDeltaReqOutput, self.communicator.handle_recv)])
@@ -108,6 +109,10 @@ class GpuDeltaTokenizerControl:
             # This control-plane lock is independent of generation.
             async with self._control_lock:
                 if isinstance(obj, UpdateWeightsFromGpuDeltaReqInput):
+                    if self._unsettled:
+                        raise RuntimeError(
+                            "GPU-delta activation is unsettled; replace the engine before another update"
+                        )
                     result = await self._update(obj)
                     if result["success"]:
                         self._last_activation = obj.session_id, result
@@ -137,30 +142,102 @@ class GpuDeltaTokenizerControl:
             return result
 
     async def _apply(self, obj):
-        async with self.manager.is_pause_cond:
-            was_paused = self.manager.is_pause
-            self.manager.is_pause = True
-            if obj.abort_all_requests:
-                self.manager.abort_request(abort_all=True)
-            result = await self._request(ApplyGpuDeltaReqInput(session_id=obj.session_id, pause_mode=obj.pause_mode))
-            if result["success"] and obj.pause_mode == "retract" and self.manager.mm_processor is not None:
-                self.manager.mm_processor.clear_preprocess_cache()
-            return result, was_paused
+        try:
+            # Waiting for the admission lock still leaves every rank pre-write.
+            async with self.manager.is_pause_cond:
+                was_paused = self.manager.is_pause
+                if obj.abort_all_requests:
+                    self.manager.abort_request(abort_all=True)
+                self.manager.is_pause = True
+                # Even a lost dispatch can still arrive after this HTTP call ends.
+                self._unsettled = True
+                result = await self._request(
+                    ApplyGpuDeltaReqInput(session_id=obj.session_id, pause_mode=obj.pause_mode)
+                )
+                if result["success"] and obj.pause_mode == "retract" and self.manager.mm_processor is not None:
+                    self.manager.mm_processor.clear_preprocess_cache()
+                return result, was_paused
+        except BaseException:
+            if not self._unsettled:
+                await self._reset_preparation(obj)
+            raise
+
+    async def _reset_preparation(self, obj):
+        """Keep the transaction lock through all-rank drain, cache release and reattachment."""
+        self._unsettled = True
+        reset = asyncio.create_task(asyncio.wait_for(self._drain_preparation(obj), timeout=_PREPARE_TIMEOUT_S))
+        try:
+            return await asyncio.shield(reset)
+        except asyncio.CancelledError:
+            await reset
+            raise
+
+    async def _drain_preparation(self, obj):
+        expected = {identity["rank_id"]: identity for identity in obj.participants}
+        source = (obj.stream_id, obj.target_version) if obj.reverse else (obj.base_stream_id, obj.base_version)
+        info = GetGpuDeltaInfoReqInput(engine_id=obj.participants[0]["engine_id"])
+        abort = AbortGpuDeltaReqInput(session_id=obj.session_id)
+        for control, states in (
+            (abort, {"ABORTED", "IDLE", "RESUMED", "CLEARED"}),
+            (ClearGpuDeltaStateReqInput(), {"CLEARED"}),
+            (ReleaseGpuDeltaCacheReqInput(), {"CLEARED"}),
+            (info, {"IDLE"}),
+        ):
+            result = await self._request(control)
+            if not result["success"]:
+                raise RuntimeError(
+                    f"GPU-delta pre-apply recovery failed at {type(control).__name__}: {result['message']}"
+                )
+            rows = result["participants"]
+            identities = {r["identity"]["rank_id"]: r["identity"] for r in rows if r.get("identity") is not None}
+            stream = "stream_id" if control is info else "committed_stream_id"
+            if (
+                len(rows) != len(expected)
+                or identities != expected
+                or any(r["state"] not in states or (r[stream], r["version"]) != source for r in rows)
+                or (control is info and any(r["plan_digest"] != obj.plan_digest for r in rows))
+            ):
+                raise RuntimeError(
+                    f"GPU-delta pre-apply recovery could not verify original receivers at {type(control).__name__}"
+                )
+            if control is abort:
+                # A different rank may already have reported a permanent validation failure.
+                retry_allowed = not any(r.get("retryable_prepare_error") is False for r in rows)
+        self._unsettled = False
+        return retry_allowed
 
     async def _update(self, obj):
         started = time.monotonic()
         prepare = PrepareGpuDeltaReqInput(http_worker_ipc=self.reply_endpoint, **obj.publication())
-        # Preparation can fail safely while the engine still serves base weights.
-        # After apply dispatch, neither cancellation nor failure may replay XOR
-        # or reopen admission: a participant may already have modified weights.
-        try:
-            result = await asyncio.wait_for(self._request(prepare), timeout=_PREPARE_TIMEOUT_S)
-        except BaseException:
-            await self._request(AbortGpuDeltaReqInput(session_id=obj.session_id))
-            raise
-        if not result["success"]:
-            await self._request(AbortGpuDeltaReqInput(session_id=obj.session_id))
-            return result
+        for attempt in range(2):
+            try:
+                result = await asyncio.wait_for(self._request(prepare), timeout=_PREPARE_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                result = {
+                    "success": False,
+                    "message": "TimeoutError: GPU-delta preparation timed out",
+                    "participants": [],
+                }
+                retryable = True
+            except BaseException:
+                await self._reset_preparation(obj)
+                raise
+            else:
+                if result["success"]:
+                    break
+                retryable = any(
+                    r.get("retryable_prepare_error") is True
+                    and r["state"] == "FAILED"
+                    and r.get("session_id") == obj.session_id
+                    and r.get("identity") in obj.participants
+                    for r in result["participants"]
+                )
+            try:
+                retry_allowed = await self._reset_preparation(obj)
+            except Exception as exc:
+                raise RuntimeError(f"{result['message']}; {exc}") from exc
+            if attempt or not retryable or not retry_allowed:
+                return result
         prepared_at = time.monotonic()
         applied, was_paused = await self._apply(obj)
         if not applied["success"]:
@@ -187,6 +264,7 @@ class GpuDeltaTokenizerControl:
             cleared = await self._clear()
             if not cleared["success"]:
                 return cleared
+        self._unsettled = False
         return result
 
     async def _clear(self):

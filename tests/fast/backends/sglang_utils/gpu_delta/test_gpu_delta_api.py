@@ -165,6 +165,38 @@ def publication():
     )
 
 
+_RESET_PHASES = (
+    io.AbortGpuDeltaReqInput,
+    io.ClearGpuDeltaStateReqInput,
+    io.ReleaseGpuDeltaCacheReqInput,
+    io.GetGpuDeltaInfoReqInput,
+)
+
+
+def reset_reply(obj, publication):
+    state = dict(zip(_RESET_PHASES, ("ABORTED", "CLEARED", "CLEARED", "IDLE"), strict=True))[type(obj)]
+    stream, version = (
+        (publication["stream_id"], publication["target_version"])
+        if publication.get("reverse")
+        else (publication["base_stream_id"], publication["base_version"])
+    )
+    return {
+        "success": True,
+        "message": "",
+        "participants": [
+            dict(
+                identity=rank,
+                state=state,
+                committed_stream_id=stream,
+                stream_id=stream,
+                version=version,
+                plan_digest=publication["plan_digest"],
+            )
+            for rank in publication["participants"]
+        ],
+    }
+
+
 def reply(control, obj, state, ranks=(0,)):
     control.manager._result_dispatcher(
         io.GpuDeltaReqOutput(
@@ -296,13 +328,15 @@ def test_update_preserves_receipts_options_and_failure_boundaries(
         facade.manager.mm_processor = SimpleNamespace(clear_preprocess_cache=lambda: cache_clears.append("clear"))
 
         def abort(abort_all):
-            assert abort_all and facade.manager.is_pause
+            assert abort_all and facade.manager.is_pause_cond.locked()
             aborted.append("abort")
 
         facade.manager.abort_request = abort
 
         async def request(obj):
             calls.append(obj)
+            if failure == "prepare" and isinstance(obj, _RESET_PHASES):
+                return reset_reply(obj, publication)
             if type(obj) is io.PrepareGpuDeltaReqInput:
                 assert not facade.manager.is_pause_cond.locked()
                 assert facade.manager.is_pause is (pause_at == "entry")
@@ -392,9 +426,13 @@ def test_update_preserves_receipts_options_and_failure_boundaries(
             assert facade.manager.is_pause is (failure in {"apply", "resume", "uncertain_apply"})
             if failure == "clear":
                 assert not any(isinstance(obj, io.ReleaseGpuDeltaCacheReqInput) for obj in calls)
-            elif failure != "release":
+            elif failure not in {"release", "prepare"}:
                 assert not any(isinstance(obj, io.ClearGpuDeltaStateReqInput) for obj in calls)
             assert versions == ([serving_version] if failure in {"clear", "release"} else [])
+            if failure != "prepare":
+                count = len(calls)
+                denied = await facade.request(io.UpdateWeightsFromGpuDeltaReqInput(**publication))
+                assert not denied["success"] and "replace the engine" in denied["message"] and len(calls) == count
 
     asyncio.run(run())
 
@@ -407,8 +445,8 @@ def test_public_request_rejects_multiple_tokenizer_workers_before_dispatch(contr
     assert sent == versions == [] and not facade.manager.is_pause
 
 
-def test_unsettled_preparation_is_aborted_and_named(control, publication, monkeypatch):
-    # The timeout carries no message; the reply still names its type.
+@pytest.mark.parametrize("still_timed_out", [False, True])
+def test_unsettled_preparation_can_retry_once_after_verified_reset(control, publication, monkeypatch, still_timed_out):
     monkeypatch.setattr(tokenizer, "_PREPARE_TIMEOUT_S", 0.01)
 
     async def run():
@@ -417,50 +455,153 @@ def test_unsettled_preparation_is_aborted_and_named(control, publication, monkey
 
         async def request(obj):
             calls.append(type(obj))
-            if isinstance(obj, io.PrepareGpuDeltaReqInput):
+            if type(obj) is io.PrepareGpuDeltaReqInput and (still_timed_out or len(calls) == 1):
                 await asyncio.Future()
-            return {"success": True, "message": "", "participants": []}
+            if isinstance(obj, _RESET_PHASES):
+                return reset_reply(obj, publication)
+            return {"success": True, "message": "", "participants": [{"version": publication["target_version"]}]}
 
         facade._request = request
         result = await facade.request(io.UpdateWeightsFromGpuDeltaReqInput(**publication))
-        assert result == {"success": False, "message": "TimeoutError: ", "participants": []}
-        assert calls == [io.PrepareGpuDeltaReqInput, io.AbortGpuDeltaReqInput]
-        assert not facade.manager.is_pause and versions == []
+        assert result["success"] is (not still_timed_out)
+        if still_timed_out:
+            assert "TimeoutError" in result["message"]
+        expected = [io.PrepareGpuDeltaReqInput, *_RESET_PHASES, io.PrepareGpuDeltaReqInput]
+        expected += list(_RESET_PHASES) if still_timed_out else [io.ApplyGpuDeltaReqInput, io.ResumeGpuDeltaReqInput]
+        assert calls == expected
+        assert not facade.manager.is_pause and versions == ([] if still_timed_out else ["7"])
 
     asyncio.run(asyncio.wait_for(run(), timeout=2))
 
 
-@pytest.mark.parametrize("phase", ["prepare", "apply"])
+@pytest.mark.parametrize("phase", ["prepare", "pause_lock", "apply"])
 def test_cancel_only_aborts_before_apply_and_never_reopens_admission(control, publication, phase):
     async def run():
         facade, _, versions = control
         reached = asyncio.Event()
-        calls = []
+        sent = asyncio.Queue()
+        facade.communicator._send = sent.put_nowait
+        if phase == "pause_lock":
 
-        async def request(obj):
-            calls.append(obj)
-            if isinstance(obj, io.PrepareGpuDeltaReqInput):
-                state, current = "PREPARED", "prepare"
-            elif isinstance(obj, io.ApplyGpuDeltaReqInput):
-                state, current = "APPLIED", "apply"
+            class BusyPauseCondition(asyncio.Condition):
+                async def __aenter__(self):
+                    reached.set()
+                    return await super().__aenter__()
+
+            facade.manager.is_pause_cond = BusyPauseCondition()
+            await facade.manager.is_pause_cond.acquire()
+
+        update = io.UpdateWeightsFromGpuDeltaReqInput(**publication)
+        task = asyncio.create_task(facade.request(update))
+        prepare = await sent.get()
+        assert type(prepare) is io.PrepareGpuDeltaReqInput
+        ranks = range(len(publication["participants"]))
+        if phase != "prepare":
+            reply(facade, prepare, "PREPARED", ranks)
+            if phase == "pause_lock":
+                await reached.wait()
             else:
-                assert isinstance(obj, io.AbortGpuDeltaReqInput)
-                state, current = "ABORTED", "abort"
-            if current == phase:
-                reached.set()
-                await asyncio.Future()
-            return {"success": True, "participants": [{"state": state}]}
-
-        facade._request = request
-        task = asyncio.create_task(facade.request(io.UpdateWeightsFromGpuDeltaReqInput(**publication)))
-        await reached.wait()
+                delayed_apply = await sent.get()
+                assert type(delayed_apply) is io.ApplyGpuDeltaReqInput
         task.cancel()
+        if phase != "apply":
+            for expected in _RESET_PHASES:
+                cleanup = await sent.get()
+                assert type(cleanup) is expected
+                facade.communicator.handle_recv(
+                    io.GpuDeltaReqOutput(rid=cleanup.rid, **reset_reply(cleanup, publication))
+                )
         with pytest.raises(asyncio.CancelledError):
             await task
         assert facade.manager.is_pause is (phase == "apply")
-        assert versions == []
-        assert any(isinstance(obj, io.AbortGpuDeltaReqInput) for obj in calls) is (phase == "prepare")
-        assert not any(isinstance(obj, io.ResumeGpuDeltaReqInput) for obj in calls)
+        assert versions == [] and sent.empty()
+        if phase == "pause_lock":
+            facade.manager.is_pause_cond.release()
+
+        if phase == "apply":
+            # The original apply is still in transit. A later HTTP request cannot trust
+            # a PREPARED reply as proof that sending the same XOR again would be safe.
+            lookup = asyncio.create_task(
+                facade.request(io.GetGpuDeltaInfoReqInput(engine_id="e0", session_id=update.session_id))
+            )
+            info = await sent.get()
+            description = reset_reply(info, publication)
+            for row in description["participants"]:
+                row["state"] = "PREPARED"
+            facade.communicator.handle_recv(io.GpuDeltaReqOutput(rid=info.rid, **description))
+            assert (await lookup)["participants"] == description["participants"]
+            denied = await facade.request(update)
+            assert not denied["success"] and "replace the engine" in denied["message"] and sent.empty()
+            reply(facade, delayed_apply, "APPLIED", ranks)
+        else:
+            # Verified pre-write cancellation permits the caller's next activation.
+            next_update = asyncio.create_task(facade.request(update))
+            for request_type, state in (
+                (io.PrepareGpuDeltaReqInput, "PREPARED"),
+                (io.ApplyGpuDeltaReqInput, "APPLIED"),
+                (io.ResumeGpuDeltaReqInput, "RESUMED"),
+            ):
+                obj = await sent.get()
+                assert type(obj) is request_type
+                reply(facade, obj, state, ranks)
+            assert (await next_update)["success"]
+
+    asyncio.run(asyncio.wait_for(run(), timeout=2))
+
+
+@pytest.mark.parametrize("outcome", ["recovered", "still_failing", "permanent_peer", "changed_source", "failed_drain"])
+def test_retry_only_verified_prewrite_storage_failures(control, publication, outcome):
+    # Reverse application reads the target endpoint. Original-rank verification must use that same endpoint.
+    publication["reverse"] = True
+
+    async def run():
+        facade, _, versions = control
+        calls = []
+
+        async def request(obj):
+            calls.append(type(obj))
+            if isinstance(obj, _RESET_PHASES):
+                result = reset_reply(obj, publication)
+                if outcome == "permanent_peer" and isinstance(obj, io.AbortGpuDeltaReqInput):
+                    result["participants"][-1]["retryable_prepare_error"] = False
+                elif outcome == "changed_source" and isinstance(obj, io.GetGpuDeltaInfoReqInput):
+                    result["participants"][-1]["stream_id"] = "foreign"
+                elif outcome == "failed_drain" and isinstance(obj, io.ClearGpuDeltaStateReqInput):
+                    result.update(success=False, message="drain failed")
+                return result
+            if type(obj) is io.PrepareGpuDeltaReqInput:
+                assert obj.session_id == publication["session_id"]
+                if calls.count(type(obj)) == 1 or outcome == "still_failing":
+                    return {
+                        "success": False,
+                        "message": "storage read failed",
+                        "participants": [
+                            dict(
+                                identity=obj.participants[0],
+                                session_id=obj.session_id,
+                                state="FAILED",
+                                retryable_prepare_error=True,
+                            )
+                        ],
+                    }
+            return {"success": True, "message": "", "participants": [{"version": publication["base_version"]}]}
+
+        facade._request = request
+        result = await facade.request(io.UpdateWeightsFromGpuDeltaReqInput(**publication))
+        assert result["success"] is (outcome == "recovered")
+        reset = list(_RESET_PHASES)
+        if outcome == "failed_drain":
+            reset = reset[:2]
+        expected = [io.PrepareGpuDeltaReqInput, *reset]
+        if outcome in {"recovered", "still_failing"}:
+            expected.append(io.PrepareGpuDeltaReqInput)
+            expected += [io.ApplyGpuDeltaReqInput, io.ResumeGpuDeltaReqInput] if outcome == "recovered" else reset
+        assert calls == expected
+        assert versions == ([str(publication["base_version"])] if outcome == "recovered" else [])
+        assert not facade.manager.is_pause
+        if outcome in {"changed_source", "failed_drain"}:
+            denied = await facade.request(io.UpdateWeightsFromGpuDeltaReqInput(**publication))
+            assert not denied["success"] and "replace the engine" in denied["message"] and calls == expected
 
     asyncio.run(asyncio.wait_for(run(), timeout=2))
 

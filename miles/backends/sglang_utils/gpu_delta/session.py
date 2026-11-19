@@ -33,6 +33,10 @@ _PROVENANCE = (
 )
 
 
+class PreparationDrainError(RuntimeError):
+    """A failed discard may still have CUDA readers of this publication."""
+
+
 @dataclass
 class _Transaction:
     request: dict
@@ -41,12 +45,17 @@ class _Transaction:
     cancelled: threading.Event = field(default_factory=threading.Event)
     state: str = "PREPARING"
     message: str = ""
+    retryable_prepare_error: bool | None = None
     prepared: Any = None
     result: dict = field(default_factory=dict)
     pause_started_ns: int | None = None
     reader_fence_completed_ns: int | None = None
     resumed_ns: int | None = None
     nvtx_pause_id: int | None = None
+
+    def poison_release(self, error: BaseException) -> None:
+        self.state = "POISONED"
+        self.message = f"GPU-delta resource release failed: {type(error).__name__}: {error}; restart required"
 
 
 class DeltaSession:
@@ -85,6 +94,8 @@ class DeltaSession:
                 receipt["state"] = transaction.state
             if transaction is None:
                 return receipt
+            if transaction.retryable_prepare_error is not None and transaction.state in {"FAILED", "ABORTED"}:
+                receipt["retryable_prepare_error"] = transaction.retryable_prepare_error
             started, resumed = transaction.pause_started_ns, transaction.resumed_ns
             return receipt | {
                 "message": transaction.message,
@@ -107,7 +118,7 @@ class DeltaSession:
             if previous is not None:
                 if previous.state not in {"RESUMED", "CLEARED"}:
                     raise ValueError("unsettled delta session requires restart")
-                if request["session_id"] == previous.request["session_id"]:
+                if request["session_id"] == previous.request["session_id"] and not previous.cancelled.is_set():
                     raise ValueError("completed delta session must not be replayed")
             if self.backend is None:
                 raise ValueError("cleared delta receiver must be described before its next update")
@@ -123,6 +134,8 @@ class DeltaSession:
             # Submit first: a rejected submission must not replace the settled record. The lock keeps
             # the worker from publishing this transaction's state before it becomes current.
             completion = self._executor.submit(self._prepare, transaction, released)
+            # An abort racing PREPARING must join its late discard before clearing the shared arena.
+            transaction.release_future = completion
             self._update = transaction
             return completion
 
@@ -135,24 +148,33 @@ class DeltaSession:
     @profiling.annotate("gpu_delta.prepare")
     def _prepare(self, transaction: _Transaction, released: Future | None) -> dict:
         try:
-            # Propagate a failed release before reusing persistent backend resources.
             if released is not None:
                 released.result()
-            prepared = self.backend.prepare(transaction.request, transaction.cancelled)
-        except Exception as exc:
-            with self._lock:
-                if transaction.state == "PREPARING":
-                    transaction.state = "FAILED"
-                    transaction.message = f"preparation failed: {type(exc).__name__}: {exc}"
-        else:
+            try:
+                prepared = self.backend.prepare(transaction.request, transaction.cancelled)
+            except PreparationDrainError:
+                raise
+            except Exception as exc:
+                from miles.utils.gpu_delta.host_worker import retryable_prepare_errno
+
+                with self._lock:
+                    if transaction.state == "PREPARING":
+                        transaction.state = "FAILED"
+                        transaction.message = f"preparation failed: {type(exc).__name__}: {exc}"
+                        transaction.retryable_prepare_error = retryable_prepare_errno(exc) is not None
+                    return self.status()
             with self._lock:
                 if transaction.state == "PREPARING":
                     transaction.prepared = prepared
                     transaction.state = "PREPARED"
-                    prepared = None
-            # Only abort can settle an in-flight preparation. Drain its late result off the scheduler.
-            if prepared is not None:
-                self.backend.discard(prepared)
+                    return self.status()
+            prepared.close()
+        except BaseException as exc:
+            # This includes a failed previous release, partial-prepare drain, or late discard after abort.
+            # Keep the failed future (and its resources) until the engine is replaced.
+            with self._lock:
+                transaction.poison_release(exc)
+            raise
         return self.status()
 
     @profiling.annotate("gpu_delta.scheduler.apply")
@@ -245,7 +267,13 @@ class DeltaSession:
 
     def abort(self, session_id: str) -> dict:
         with self._lock:
-            if self._update is None:
+            transaction = self._update
+            if transaction is None:
+                return self.status()
+            # A peer may have rejected admission before this rank accepted the new session.
+            if transaction.state in {"CLEARED", "RESUMED"} and (
+                transaction.request["session_id"] != session_id or transaction.cancelled.is_set()
+            ):
                 return self.status()
             transaction = self._transaction(session_id)
             if transaction.state not in {"PREPARING", "PREPARED", "FAILED", "ABORTED"}:
@@ -256,24 +284,29 @@ class DeltaSession:
             transaction.cancelled.set()
             if transaction.prepared is not None:
                 prepared, transaction.prepared = transaction.prepared, None
-                transaction.release_future = self._executor.submit(self.backend.discard, prepared)
+                transaction.release_future = self._executor.submit(prepared.close)
             return self.status()
 
     def clear(self) -> dict:
         with self._lock:
-            if self._update is not None and self._update.state not in {"RESUMED", "CLEARED"}:
-                raise ValueError("delta state can only be cleared when idle or resumed")
-        # Do not hold the session lock while joining its background worker. The
-        # queued resume release must finish before closing the arena or unlinking
-        # the shared READY state that other ranks' releases still need.
+            transaction = self._update
+            if transaction is not None and transaction.state not in {"RESUMED", "CLEARED", "ABORTED"}:
+                raise ValueError("delta state can only be cleared when idle, resumed or aborted before apply")
+        # Joining outside the lock lets an aborted prepare finish draining on its worker.
         self._executor.shutdown(wait=True)
-        if self._update is not None and self._update.release_future is not None:
-            self._update.release_future.result()
-        if self.backend is not None:
-            arena = self.backend.host_arena
-            self._closed_cache, self._cache_owner = arena.directory, arena.owner
-            self.backend.close()
-            self.backend = None
+        try:
+            if transaction is not None and transaction.release_future is not None:
+                transaction.release_future.result()
+            if self.backend is not None:
+                arena = self.backend.host_arena
+                self._closed_cache, self._cache_owner = arena.directory, arena.owner
+                self.backend.close()
+                self.backend = None
+        except BaseException as exc:
+            if transaction is not None:
+                with self._lock:
+                    transaction.poison_release(exc)
+            raise
         with self._lock:
             if self._update is not None:
                 self._update.state = "CLEARED"

@@ -472,11 +472,17 @@ class TestReceiverPreparation(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "bad manifest"):
                     backend.prepare({})
             fake_plan.finish.assert_not_called()
-            backend.host_arena.close.assert_called_once()
+            backend.host_arena.close.assert_not_called()
+            with (
+                patch.object(torch.cuda, "device", return_value=nullcontext()),
+                patch.object(
+                    receiver.PreparedDelta, "close", side_effect=RuntimeError("partial prepare drain failed")
+                ),
+            ):
+                with self.assertRaisesRegex(receiver.PreparationDrainError, "partial prepare drain failed"):
+                    backend.prepare({})
 
         drains = []
-        backend = receiver.GpuDeltaBackend.__new__(receiver.GpuDeltaBackend)
-        backend.host_arena = SimpleNamespace(close=lambda: drains.append("backend"))
 
         def decode_failure():
             drains.append("decode")
@@ -490,17 +496,17 @@ class TestReceiverPreparation(unittest.TestCase):
         prepared.host_snapshot = SimpleNamespace(close=lambda reuse: drains.append(("snapshot", reuse)))
         prepared.raw_pinned = object()
         with self.assertRaisesRegex(RuntimeError, "decode stream failed"):
-            backend.discard(prepared)
+            prepared.close()
         self.assertEqual(drains, ["decode", "compute"])
         self.assertIsNotNone(prepared.raw_pinned)
         self.assertIsNotNone(prepared.host_snapshot)
 
         drains.clear()
         prepared.io_stream.synchronize = lambda: drains.append("decode")
-        backend.discard(prepared)
+        prepared.close()
         self.assertEqual(
             drains,
-            ["decode", "compute", "release-gpu", ("snapshot", False), "backend"],
+            ["decode", "compute", "release-gpu", ("snapshot", False)],
         )
         self.assertIsNone(prepared.raw_pinned)
         self.assertIsNone(prepared.host_snapshot)

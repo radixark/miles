@@ -15,6 +15,7 @@ from miles.backends.sglang_utils.gpu_delta.byte_views import _byte_view
 from miles.backends.sglang_utils.gpu_delta.checkpoint import read_canonical_checkpoint
 from miles.backends.sglang_utils.gpu_delta.derived import prepare_updates
 from miles.backends.sglang_utils.gpu_delta.layout import GpuDeltaLayout
+from miles.backends.sglang_utils.gpu_delta.session import PreparationDrainError
 from miles.utils.gpu_delta import profiling
 from miles.utils.gpu_delta.codec import NvcompDecoder
 from miles.utils.gpu_delta.host import HostArena
@@ -62,13 +63,12 @@ class GpuDeltaBackend:
                 prepared.prepare(request, cancelled)
                 return prepared
             except BaseException:
-                self.discard(prepared)
+                # The all-rank reset closes the shared arena only after its readers drain.
+                try:
+                    prepared.close()
+                except Exception as exc:
+                    raise PreparationDrainError(str(exc)) from exc
                 raise
-
-    def discard(self, prepared):
-        # A failed GPU drain must retain every host mapping its readers may use.
-        prepared.close()
-        self.close()
 
     def close(self):
         self.host_arena.close()

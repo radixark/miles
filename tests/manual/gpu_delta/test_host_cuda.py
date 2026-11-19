@@ -510,6 +510,75 @@ def test_bitcomp_failed_transaction_requires_fresh_receiver_recovery(failure, mo
                     session.backend.close()
 
 
+@pytest.mark.parametrize("orphaned", [False, True], ids=["prepare-failure", "prepared-orphan"])
+def test_bitcomp_prewrite_reset_reuses_committed_receiver(orphaned, monkeypatch):
+    import torch
+
+    from miles.backends.sglang_utils.gpu_delta.bindings import CanonicalShadows
+    from miles.backends.sglang_utils.gpu_delta.receiver import GpuDeltaBackend
+    from miles.backends.sglang_utils.gpu_delta.session import DeltaSession
+    from miles.utils.gpu_delta.encoder import GpuBatchEncoder
+
+    device = torch.device("cuda", torch.cuda.current_device())
+    codec, stream, frame_bytes = "bitcomp-zstd", "same-engine", 1 << 16
+    encoder = GpuBatchEncoder(device, codec=codec, frame_bytes=frame_bytes)
+    with tempfile.TemporaryDirectory(prefix="gpu-delta-prewrite-", dir="/dev/shm") as directory:
+        model, inventory, identity, backend, originals, shadows = tiny_receiver(
+            monkeypatch, directory, "rank", [torch.zeros((1, frame_bytes), device=device, dtype=torch.uint8)], {}
+        )
+        session = DeltaSession(identity, backend, shadows)
+        name, weight = next(model.named_parameters())
+        runner = SimpleNamespace(model=model, device="cuda", gpu_id=device.index)
+        try:
+            for version in (1, 2):
+                before = weight.detach().cpu().flatten().pin_memory()
+                after = torch.full_like(before, version).pin_memory()
+                publication = publish(
+                    encoder,
+                    codec,
+                    Path(directory) / str(version),
+                    stream,
+                    version - 1,
+                    version,
+                    inventory,
+                    {name: before},
+                    {name: after},
+                    base_stream_id=stream if version == 2 else None,
+                )
+                request = dict(
+                    publication,
+                    session_id=f"apply-{version}",
+                    reverse=False,
+                    validate_payload_hash=True,
+                    participants=[identity],
+                )
+                if version == 2:
+                    attempted = request if orphaned else request | {"manifest_sha256": "0" * 64}
+                    receipt = session.prepare(attempted).result(timeout=90)
+                    assert receipt["state"] == ("PREPARED" if orphaned else "FAILED")
+                    cohort = session.backend.host_arena.directory
+                    assert cohort.is_dir()
+                    assert session.abort(request["session_id"])["state"] == "ABORTED"
+                    assert session.clear()["version"] == 1
+                    session.release_cache()
+                    assert not cohort.exists()
+                    assert session.committed == (stream, 1) and torch.equal(weight.detach().cpu().flatten(), before)
+                    session.reattach(
+                        lambda rank, store, create: GpuDeltaBackend(runner, rank, CanonicalShadows(store, create))
+                    )
+                assert session.prepare(request).result(timeout=90)["state"] == "PREPARED"
+                session.apply(request["session_id"], lambda: None, lambda: None, None)
+                assert session.resume(request["session_id"], lambda _: None)["version"] == version
+                assert torch.equal(weight.detach().cpu().flatten(), after)
+                assert session.identity == identity and storage_identity(weight) == originals[name]
+        finally:
+            session._executor.shutdown(wait=True)
+            if session._update is not None and session._update.prepared is not None:
+                session._update.prepared.close()
+            if session.backend is not None:
+                session.backend.close()
+
+
 def _pinned_mapping_consumer(rank, path, expected, barrier, output):
     import torch
 

@@ -1,5 +1,6 @@
 """Engine-host sharing, DE-local preparation, and failure lifetimes."""
 
+import errno
 import fcntl
 import hashlib
 import json
@@ -504,6 +505,22 @@ class TestHostSnapshot(unittest.TestCase):
         prior = owner.prepare_local(prior_publication, [TENSOR_IDS["dense"]], prior_metrics, False)
         prior.close(True)
         path, digest, _ = fixture(self.root / "v2", 2, "bitcomp-zstd")
+        # A transient error publishing READY must reach a follower that gets the lock before
+        # the owner can return its own RPC error. BUILDING alone would look like a permanent failure.
+        write_record = worker._write_record
+
+        def fail_ready(directory, name, record):
+            if name == "state" and record["state"] == "READY":
+                raise OSError(errno.EIO, "failed to publish READY")
+            return write_record(directory, name, record)
+
+        recovery = metadata(2, "b") | dict(manifest_path=str(path), manifest_sha256=digest)
+        with patch.object(worker, "_write_record", side_effect=fail_ready):
+            for rank in (0, 1):
+                with self.assertRaises(OSError) as failed:
+                    self.arena("b", rank).prepare_publication(recovery, {})
+                self.assertEqual(failed.exception.errno, errno.EIO)
+
         request = metadata(2) | dict(participants=participants)
         with patch.object(worker, "_prepare_arena", side_effect=RuntimeError("decode failed")):
             with self.assertRaisesRegex(RuntimeError, "decode failed"):
@@ -937,7 +954,7 @@ def test_failed_tensor_drains_other_groups_before_releasing_views(codec, tmp_pat
     assert sorted(attempted) == [i for i in range(20) if i not in {8, 16}]
 
 
-@pytest.mark.parametrize("finish", ["close", "failure"])
+@pytest.mark.parametrize("finish", ["close", "failure", "missing"])
 def test_cpu_process_reuses_exact_publications_without_torch(tmp_path, monkeypatch, finish):
     monkeypatch.setattr(host, "configured_cpu_workers", lambda: 2)
     cache = tmp_path / "cache"
@@ -1014,15 +1031,22 @@ runpy.run_path(entry, run_name='__main__')
             previous = current
         assert identities[0] == identities[1] and guard.exists()
         assert metrics_by_version[0]["host_cpu_worker_spawn_s"] > 0
-        if finish == "failure":
+        if finish != "close":
             bad = expected_publication | {
                 "session_id": "bad-publication",
                 "manifest_sha256": "0" * 64,
                 "base_version": 2,
                 "target_version": 3,
             }
-            with pytest.raises(ValueError, match="manifest SHA256 mismatch"):
-                client.prepare(bad, namespace, {}, None)
+            if finish == "missing":
+                bad["manifest_path"] = str(tmp_path / "unavailable" / "manifest.json")
+                with pytest.raises(FileNotFoundError):
+                    client.prepare(bad, namespace, {}, None)
+                state = json.loads((cache / "state.json").read_bytes())
+                assert state == {"token": host.publication_token(bad), "state": "FAILED", "errno": errno.ENOENT}
+            else:
+                with pytest.raises(ValueError, match="manifest SHA256 mismatch"):
+                    client.prepare(bad, namespace, {}, None)
             with pytest.raises(RuntimeError, match="cannot restart"):
                 client.prepare(expected_publication, namespace, {}, None)
         client.close()

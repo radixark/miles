@@ -191,7 +191,7 @@ The update request carries the admitted participants, caller-generated session
 ID, manifest path/SHA256, base and target stream/version pairs, and plan digest.
 `validate_payload_hash` defaults to true and `reverse` to false. Rolling updates and
 HF-base recovery use the same request shape;
-the tokenizer does not reread the manifest or repeat admission. Each engine's
+successful updates reuse the original admission. Each engine's
 tokenizer owns the following internal phases:
 
 1. **Prepare:** the CPU process authenticates the manifest and builds shared
@@ -232,9 +232,15 @@ describes.
 The tokenizer serializes update, info and clear controls independently of generation.
 After a lost HTTP reply, Miles can read the original activation receipts when the
 session and all committed ranks match. A stale source is rejected before preparation
-and leaves the last committed state intact. An aborted preparation or a partially
-applied update requires receiver replacement. Internal apply/resume failures leave
-admission closed.
+and leaves the last committed state intact. Before apply dispatch, the tokenizer
+can abort the matching preparation, including one cancelled while waiting for
+pause admission. It waits for every original rank to drain its work and close the
+backend, releases the shared host cache, then reattaches at the verified checkpoint
+and source version. The live weights and committed canonical shadows survive this
+reset. A transient storage error or prepare deadline permits one new preparation
+attempt. Caller cancellation and invalid publications propagate to the caller.
+An unverified reset, a failed drain or an uncertain write requires receiver
+replacement. Apply/resume failures keep admission closed.
 
 Updates default to `pause_mode="retract"` and `abort_all_requests=false`.
 `pause_mode` selects SGLang's own scheduler pause, run after the reader fence.
@@ -254,7 +260,7 @@ and releases per-update resources without reopening generation; its
 The optional `weight_version` labels admitted generations independently of the
 transport's target sequence; omission uses the transport target version.
 
-`clear_gpu_delta_state` is valid when idle or successfully resumed. It drains each
+`clear_gpu_delta_state` is valid when idle, successfully resumed, or draining an aborted pre-apply session. It drains each
 rank's FIFO release work, closes workers/host allocations and drops
 planning, decoder and stream objects. After every rank acknowledges, each
 engine-host's arena owner (the rank that ran its CPU child) deletes the shared encoded

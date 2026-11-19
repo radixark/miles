@@ -187,6 +187,8 @@ class CpuWorker:
             if cancelled is not None and cancelled.is_set():
                 raise RuntimeError("GPU-delta host preparation aborted")
             if response["status"] != "OK":
+                if response["errno"] is not None:
+                    raise OSError(response["errno"], response["error"])
                 error = ValueError if response["error_type"] == "ValueError" else RuntimeError
                 raise error(response["error"])
             return response
@@ -356,6 +358,8 @@ class HostArena(_MetadataMapping):
                         state_path = self.directory / "state.json"
                         state = orjson.loads(state_path.read_bytes()) if state_path.exists() else None
                         if state is not None and state["token"] == token:
+                            if state["state"] == "FAILED":
+                                raise OSError(state["errno"], "engine-host publication preparation failed")
                             if state["state"] != "READY":
                                 raise ValueError("encoded publication is failed or already released")
                             index = orjson.loads((self.directory / "index.json").read_bytes())
