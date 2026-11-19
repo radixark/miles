@@ -31,7 +31,7 @@ def tree_metadata(state: SessionStateV2) -> dict:
             "truncated": node.truncated,
             "committed_at": node.committed_at,
             "completion_span": list(node.completion_span),
-            "num_tokens": len(node.token_ids),
+            "num_tokens": node.num_tokens,
             "response_id": node.response_id,
             "turn_args": filter_turn_args(node.turn_args),
         }
@@ -71,26 +71,31 @@ def build_leaf_material(
     for leaf in state.tree.leaves():
         path = leaf.path_nodes()
         records = [node.record for node in path]
+        accumulated_token_ids = leaf.token_ids
+        prompt_lengths = [node.completion_span[0] for node in path]
         turns = compute_samples_from_openai_records(
             args,
             records,
             registry.tokenizer,
-            accumulated_token_ids=leaf.token_ids,
+            accumulated_token_ids=accumulated_token_ids,
             max_trim_tokens=registry.tito_tokenizer.max_trim_tokens,
             use_addition_r3=use_addition_r3,
             evaluation=state.evaluation,
+            prompt_lengths=prompt_lengths,
         )
         if max_seq_len is not None:
             turns = truncate_samples_by_total_tokens(turns, max_seq_len, registry.tokenizer)
         if not turns:
             continue
         if use_addition_r3:
-            sample = merge_samples_with_addition_r3(args, turns, records, registry.tokenizer)
+            sample = merge_samples_with_addition_r3(
+                args, turns, records, registry.tokenizer, prompt_lengths=prompt_lengths
+            )
         else:
             sample = merge_samples(turns, registry.tokenizer)
-        adopt_session_records(sample, records)
+        adopt_session_records(sample, records, prompt_lengths=prompt_lengths)
         flat: dict[str, Any] = {
-            "accumulated_token_ids": list(leaf.token_ids),
+            "accumulated_token_ids": accumulated_token_ids,
             "turn_args": filter_turn_args(leaf.turn_args),
             "leaf": {
                 "node_id": leaf.seq,
@@ -103,7 +108,9 @@ def build_leaf_material(
             mismatch = computed_mismatch[leaf.seq]
         else:
             try:
-                mismatch = registry.compute_mismatch(leaf.path_messages(), leaf.token_ids, turn_args=leaf.turn_args)
+                mismatch = registry.compute_mismatch(
+                    leaf.path_messages(), accumulated_token_ids, turn_args=leaf.turn_args
+                )
             except TokenizationError:
                 logger.exception("Failed to compute tito_session_mismatch for session %s", session_id)
                 mismatch = None
