@@ -1,4 +1,7 @@
 import concurrent.futures
+import ctypes
+import logging
+import mmap
 import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future
@@ -7,6 +10,11 @@ from dataclasses import dataclass
 import torch
 
 from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
+from miles.platforms import current_platform
+
+logger = logging.getLogger(__name__)
+_MADV_HUGEPAGE = 14
+_THP_ENABLED = "/sys/kernel/mm/transparent_hugepage/enabled"
 
 
 @dataclass(frozen=True)
@@ -91,5 +99,43 @@ def _wait_for_healthy_cells(pending_writes: list[PendingWrite], timeout: float) 
 
 
 def _allocate_transfer_buffer(buffer_nbytes: int, device: torch.device) -> torch.Tensor:
+    if device.type == "cpu" and current_platform.pin_host_buffers_on_huge_pages:
+        return _allocate_huge_page_host_buffer(buffer_nbytes)
     # host buffers are pinned in place: a pageable copy first would stay resident on aarch64 hosts
     return torch.empty(buffer_nbytes, dtype=torch.uint8, device=device, pin_memory=device.type == "cpu")
+
+
+class _PageLockedMapping(mmap.mmap):
+    """Anonymous memory page-locked for DMA. The tensors torch.frombuffer makes of it, and all their views, keep it
+    alive: it is unlocked after the last of them is gone, before it is unmapped."""
+
+    address: int | None = None
+
+    def __del__(self) -> None:
+        if self.address is not None:
+            torch.cuda.cudart().cudaHostUnregister(self.address)
+
+
+def _allocate_huge_page_host_buffer(buffer_nbytes: int) -> torch.Tensor:
+    """Page-locked host memory on 2 MiB pages. An AMD AI NIC (ionic) holds about 2^20 registered pages for all
+    processes on the node: 3.75 GiB of torch's 4 KiB pinned pages, which a node's trainer ranks, each registering two
+    transfer buffers, can run past (ibv_reg_mr fails with EINVAL)."""
+    mapping = _PageLockedMapping(-1, buffer_nbytes, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
+    buffer = torch.frombuffer(mapping, dtype=torch.uint8)
+    advise = ctypes.CDLL(None).madvise
+    if advise(ctypes.c_void_p(buffer.data_ptr()), ctypes.c_size_t(buffer_nbytes), _MADV_HUGEPAGE) != 0 or (
+        _transparent_huge_pages_off()
+    ):
+        logger.warning(f"Transfer buffers stay on 4 KiB pages: no transparent huge pages ({_THP_ENABLED})")
+    if (rc := int(torch.cuda.cudart().cudaHostRegister(buffer.data_ptr(), buffer_nbytes, 0))) != 0:
+        raise RuntimeError(f"cudaHostRegister of a {buffer_nbytes}-byte transfer buffer failed: error {rc}")
+    mapping.address = buffer.data_ptr()
+    return buffer
+
+
+def _transparent_huge_pages_off() -> bool:
+    try:
+        with open(_THP_ENABLED) as enabled:
+            return "[never]" in enabled.read()
+    except OSError:
+        return True
