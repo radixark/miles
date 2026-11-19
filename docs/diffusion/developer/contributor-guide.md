@@ -28,7 +28,6 @@ miles_diffusion/
 │   │   └── data_conversion_hub/   # samples → train pairs
 │   ├── rollout/                   # rollout fn, data source, rm_hub, filters, step strategies
 │   ├── router/                    # miles router
-│   ├── dashboard/                 # offline telemetry
 │   └── utils/                     # arguments.py, types, metrics, debug tooling
 ├── scripts/                       # run_*.py launchers — Typer CLIs, also the e2e entry points
 ├── tests/                         # fast / fast-gpu / e2e / ci

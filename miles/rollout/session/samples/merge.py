@@ -13,6 +13,7 @@ from dataclasses import replace
 
 import numpy as np
 
+from miles.ray.rollout.debug_data import records_conversations
 from miles.rollout.generate_utils.generate_endpoint_utils import (
     get_indexer_topk_from_response,
     get_routed_experts_from_response,
@@ -96,7 +97,7 @@ def compute_samples_from_openai_records(
             args, record, tokenizer, trim_count, use_addition_r3=use_addition_r3, evaluation=evaluation
         )
         attach_lifecycle_metadata(sample, record, records[i - 1] if i else None, turn=i + 1)
-        if is_last and args.save_debug_trajectory_data is not None:
+        if is_last and records_conversations(args):
             # A copy: sample hooks may edit the exported messages, which must not reach the session's records.
             sample.metadata["messages"] = deepcopy(
                 record.request["messages"] + [record.response["choices"][0]["message"]]
