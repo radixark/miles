@@ -6,17 +6,17 @@ across miles versions. Installing a package that registers an entry point in
 ``ENTRY_POINT_GROUP`` is all it takes; with none installed every report is a
 no-op. An observer that raises is logged at most once per ``WARN_INTERVAL_S``
 and the run goes on, with one exception: ``RunRefusedError`` raised from
-``start_run`` stops the run before any worker starts.
+``enabled`` or ``start_run`` stops the run.
 
 The order within one process: ``start_run`` (driver only) and
-``start_process`` come first, then any events, then ``end_process``. Before
-miles stops a worker it launched, it calls ``end_process`` there and kills the
-worker once that returns or ``END_PROCESS_TIMEOUT_S`` passes. The driver's
-``end_process`` and then ``end_run`` come after every worker has stopped, so
-every worker's ``end_process`` has returned or timed out before ``end_run``. A
-process that crashes, a worker that fault tolerance kills to recover from an
-error, and a worker the driver does not launch (a Kubernetes run's) get no
-``end_process``.
+``start_process`` come first, then any events, then ``end_process``. When the
+run ends, miles calls ``end_process`` in every worker it launched that is still
+running, and kills each once that returns or ``END_PROCESS_TIMEOUT_S`` passes.
+The driver's ``end_process`` and then ``end_run`` come after every worker has
+stopped, so every worker's ``end_process`` has returned or timed out before
+``end_run``. A worker stopped earlier (by fault tolerance, or because its cell
+failed to start), a process that crashes, and a worker the driver does not
+launch (a Kubernetes run's) get no ``end_process``.
 
 The environment variables ``start_run`` returns are set in every worker process
 the driver launches; they are logged and kept in Ray's job metadata, so they
@@ -54,7 +54,7 @@ END_RUN_TIMEOUT_S = 300.0
 
 
 class RunRefusedError(Exception):
-    """Raised from an observer's ``start_run`` to stop a run whose configuration it cannot serve."""
+    """Raised from an observer's ``enabled`` or ``start_run`` to stop a run whose configuration it cannot serve."""
 
 
 class RunStart(TypedDict):
@@ -160,7 +160,7 @@ class Observer:
 
     def enabled(self) -> bool:
         """Whether this observer takes part in this process. One that does not is dropped,
-        and miles runs exactly as if its package were not installed."""
+        and miles runs exactly as if its package were not installed; raising ``RunRefusedError`` stops the run."""
         return True
 
     def start_run(self, run: RunStart) -> dict[str, str]:
@@ -310,6 +310,8 @@ def _load_observers() -> list[tuple[str, Observer]]:
             observer = entry_point.load()()
             if observer.enabled():
                 observers.append((entry_point.name, observer))
+        except RunRefusedError:
+            raise
         except Exception:
             logger.exception(f"observer {entry_point.name!r} failed to load; the run continues without it")
     if observers:

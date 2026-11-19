@@ -15,7 +15,8 @@ from miles.utils.workers.types import ClusterBackend, WorkerCommBackend
 
 def launch_worker_manager(args, *, worker_env: dict[str, str] | None = None, report_process_ends: bool = False):
     """``worker_env`` is set in every worker the manager launches, on top of each spec's own;
-    with ``report_process_ends``, each worker reports its end to the run observers before it is killed."""
+    with ``report_process_ends``, the workers still running when the run ends report their end
+    to the run observers before they are killed."""
     match ClusterBackend(args.cluster_backend):
         case ClusterBackend.KUBERNETES:
             return None

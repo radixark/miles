@@ -97,7 +97,7 @@ def test_a_failing_observer_breaks_neither_the_run_nor_the_other_observers(insta
     assert len(warnings) == 1, "a repeating failure must warn once per interval, not once per event"
 
 
-def test_only_start_run_can_refuse_the_run(install):
+def test_a_refusal_only_stops_a_run_that_has_not_started(install):
     """A refusal stops the run before it starts; raised any later, it is isolated like any other failure."""
 
     class _Refusing(Observer):
@@ -278,6 +278,29 @@ def test_an_observer_that_does_not_take_part_is_dropped_as_if_never_installed(mo
     monkeypatch.setattr(observers_module, "entry_points", lambda group: installed)
 
     assert [name for name, _ in observers_module._load_observers()] == ["on"]
+
+
+def test_enabled_can_refuse_the_run_but_a_bug_in_it_only_drops_the_observer(monkeypatch):
+    """An observer that cannot read its own settings must stop the run, not let it train unobserved."""
+
+    class _Refusing(Observer):
+        def enabled(self):
+            raise RunRefusedError("MILES_X must be 0 or 1")
+
+    class _Buggy(Observer):
+        def enabled(self):
+            raise RuntimeError("observer bug")
+
+    installed = [
+        SimpleNamespace(name="buggy", load=lambda: _Buggy),
+        SimpleNamespace(name="on", load=lambda: _Recorder),
+    ]
+    monkeypatch.setattr(observers_module, "entry_points", lambda group: installed)
+    assert [name for name, _ in observers_module._load_observers()] == ["on"]
+
+    installed.append(SimpleNamespace(name="refusing", load=lambda: _Refusing))
+    with pytest.raises(RunRefusedError, match="MILES_X"):
+        observers_module._load_observers()
 
 
 def test_only_events_some_observer_implements_are_heard(install):

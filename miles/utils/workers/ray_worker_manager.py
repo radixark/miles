@@ -131,7 +131,9 @@ class RayWorkerManager:
 
     async def shutdown(self) -> None:
         async with self._membership_lock:
-            await asyncio.gather(*[cell.stop() for cell in self._all_cells()])
+            await asyncio.gather(
+                *[cell.stop(report_process_end=self.report_process_ends) for cell in self._all_cells()]
+            )
 
     def observe_fault_target(self, cell_id: str, *, rank: int) -> ObservedFaultHookTarget:
         cell = self._find_cell(cell_id)
@@ -289,10 +291,10 @@ class _CellManager(Generic[SpecT]):
     async def post_setup(self) -> None:
         await self._for_all_actors(lambda a: a.post_setup())
 
-    async def stop(self) -> None:
+    async def stop(self, *, report_process_end: bool = False) -> None:
         if self.actors is None:
             return
-        await self._for_all_actors(lambda a: a.stop())
+        await self._for_all_actors(lambda a: a.stop(report_process_end=report_process_end))
         self.actors = None
 
     async def _scan_liveness_forever(self, generation: int) -> None:
@@ -443,13 +445,13 @@ class _BaseActorManager(Generic[SpecT]):
             return False
         return await RayWorkerHandle(self.actor_handle).probe_is_dead()
 
-    async def stop(self) -> None:
+    async def stop(self, *, report_process_end: bool = False) -> None:
         if self.actor_handle is None:
             return
 
         await self._shutdown_gracefully()
-        # a worker stuck in a long call can make this wait the whole timeout; only runs observing process ends pay it
-        if self.manager.report_process_ends:
+        # only at the run's end: a stop holds the membership lock, so mid-run a stuck worker would block recovery
+        if report_process_end:
             await self._report_process_end()
 
         try:

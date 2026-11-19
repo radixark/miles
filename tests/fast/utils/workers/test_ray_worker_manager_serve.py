@@ -431,7 +431,7 @@ class TestServeWorkersAreStopped:
         """The actor of either wire has to answer the call, or its observers lose what they still buffer."""
         manager = await _launch([_make_spec()], comm_backend=comm_backend, report_process_ends=True)
 
-        await manager.stop_cells(["trainer-00000"])
+        await manager.shutdown()
 
         assert fake_ray_cluster.events[-2:] == ["report_process_end", EVENT_KILL]
         assert callable(getattr(_actor_classes(fake_ray_cluster)[0], "report_process_end", None))
