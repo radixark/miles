@@ -40,7 +40,10 @@ class _GroupedLinear(nn.Module):
     def __init__(self, num_experts, out_features, in_features):
         super().__init__()
         for index in range(num_experts):
-            self.register_parameter(f"weight{index}", nn.Parameter(torch.randn(out_features, in_features)))
+            weight = nn.Parameter(torch.randn(out_features, in_features))
+            # MCore reduces expert weights over expert DP under EP > 1 or ETP != TP, the cases these tests build
+            weight.allreduce = False
+            self.register_parameter(f"weight{index}", weight)
 
     def forward(self, x, tokens_per_expert):
         weights = torch.stack([getattr(self, f"weight{i}") for i in range(len(tokens_per_expert))])
@@ -379,8 +382,9 @@ def test_expert_grad_flags():
     assert experts.lora_fc1_adapter.w1_B.allreduce is False
 
 
-def test_expert_params_skip_the_dense_all_reduce_without_ep(monkeypatch):
-    """At EP 1 the TP ranks' experts see different sequence-parallel tokens; only the expert DP group spans them."""
+def test_expert_adapters_reduce_like_their_expert_weights_without_ep(monkeypatch):
+    """At EP 1 the TP ranks' experts see different sequence-parallel tokens; MCore reduces the expert weights over
+    expert DP, which spans them, and the adapters must follow."""
     from megatron.core import parallel_state
 
     monkeypatch.setattr(parallel_state, "get_expert_model_parallel_world_size", lambda: 1)

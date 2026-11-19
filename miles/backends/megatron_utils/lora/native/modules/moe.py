@@ -22,9 +22,11 @@ def _grouped_linear(inputs: torch.Tensor, weights: torch.Tensor, tokens_per_expe
     return torch.cat([F.linear(segment, weights[idx]) for idx, segment in enumerate(segments)], dim=0)
 
 
-def _mark_expert_param(parameter: nn.Parameter) -> nn.Parameter:
-    # like the expert weights at any EP size: at EP 1 the expert DP group still spans the TP ranks' different tokens
-    parameter.allreduce = False
+def _mark_expert_param(parameter: nn.Parameter, reference: torch.Tensor) -> nn.Parameter:
+    # reduced over the group MCore reduces the expert weight over, which spans the TP ranks once EP > 1 or ETP != TP
+    parameter.allreduce = getattr(
+        reference, "allreduce", True
+    )  # config-access-exempt: Megatron's DDP reads allreduce with this default
     return parameter
 
 
@@ -59,24 +61,26 @@ class LoRAGroupedFC1(NativeLoRAAdapter):
             "w1_A",
             _mark_expert_param(
                 new_lora_parameter(reference, (rank, width), init=context.lora.a_init_method, grad_sum_group=ep_group),
+                reference,
             ),
         )
         self.register_parameter(
             "w3_A",
             _mark_expert_param(
                 new_lora_parameter(reference, (rank, width), init=context.lora.a_init_method, grad_sum_group=ep_group),
+                reference,
             ),
         )
         self.register_parameter(
             "w1_B",
             _mark_expert_param(
-                new_lora_parameter(reference, (num_local_experts, moe_intermediate, rank), init="zero")
+                new_lora_parameter(reference, (num_local_experts, moe_intermediate, rank), init="zero"), reference
             ),
         )
         self.register_parameter(
             "w3_B",
             _mark_expert_param(
-                new_lora_parameter(reference, (num_local_experts, moe_intermediate, rank), init="zero")
+                new_lora_parameter(reference, (num_local_experts, moe_intermediate, rank), init="zero"), reference
             ),
         )
 
@@ -143,11 +147,14 @@ class LoRAGroupedFC2(NativeLoRAAdapter):
                 new_lora_parameter(
                     reference, (num_local_experts, rank, moe_intermediate), init=context.lora.a_init_method
                 ),
+                reference,
             ),
         )
         self.register_parameter(
             "w2_B",
-            _mark_expert_param(new_lora_parameter(reference, (width, rank), init="zero", grad_sum_group=ep_group)),
+            _mark_expert_param(
+                new_lora_parameter(reference, (width, rank), init="zero", grad_sum_group=ep_group), reference
+            ),
         )
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *host_args) -> torch.Tensor:
