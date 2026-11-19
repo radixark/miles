@@ -61,6 +61,8 @@ class WeightUpdater:
         self.args = args
         self.parallel_state = parallel_state
         self.protocol = get_weight_transfer_protocol(args)
+        # Match the factory's fixed mode without importing the GPU-delta protocol for other transports.
+        self._uses_gpu_delta = args.update_weight_transfer_mode == "gpu-delta" and not args.colocate
         self.conn_status = ConnStatusManager()
         assert (
             not is_lora or self.protocol.supports_lora
@@ -72,6 +74,8 @@ class WeightUpdater:
             model_name=model_name,
             quantization_config=quantization_config,
         )
+        if self._uses_gpu_delta:
+            self._hf_weight_iterator.local_consumer = self.protocol
         self.weights_getter = weights_getter
         self.is_lora = is_lora
         if is_lora:
@@ -137,10 +141,32 @@ class WeightUpdater:
         return self.protocol.pop_metrics()
 
     @torch.no_grad()
-    def update_weights(self, weight_version: int) -> bool:
+    def restore_gpu_delta_checkpoint(self, checkpoint_dir, rollout_id, publish_eval_stream):
+        self.protocol.initialize_export(self.parallel_state, self._hf_weight_iterator.placement)
+        self.protocol.restore_checkpoint(checkpoint_dir, rollout_id, self._iter_base_buckets, publish_eval_stream)
+
+    @torch.no_grad()
+    def prepare_gpu_delta_checkpoint(self, checkpoint_dir: str, rollout_id: int, weight_version: int) -> None:
+        if self._uses_gpu_delta:
+            self.protocol.initialize_export(self.parallel_state, self._hf_weight_iterator.placement)
+            self.protocol.prepare_checkpoint(checkpoint_dir, rollout_id, weight_version, self._iter_base_buckets)
+
+    @torch.no_grad()
+    def export_gpu_delta_snapshot(self, path: str, rollout_id: int, weight_version: int, in_hf_export: bool = False):
+        self.protocol.initialize_export(self.parallel_state, self._hf_weight_iterator.placement)
+        return self.protocol.export_snapshot(path, rollout_id, weight_version, self._iter_base_buckets, in_hf_export)
+
+    def finalize_gpu_delta_checkpoint(self) -> None:
+        if self._uses_gpu_delta:
+            self.protocol.finalize_checkpoint()
+
+    @torch.no_grad()
+    def update_weights(self, weight_version: int, rollout_id: int | None = None) -> bool:
         """Run one weight sync: session frame + base-bucket stream + adapter pushes for LoRA."""
         protocol = self.protocol
-        if not protocol.begin_sync(weight_version, self._iter_base_buckets):
+        # GPU delta alone takes the rollout: its sync reuses a target that a checkpoint of that rollout captured.
+        rollout = (rollout_id,) if self._uses_gpu_delta else ()
+        if not protocol.begin_sync(weight_version, self._iter_base_buckets, *rollout):
             return False
 
         sync_base = not self.is_lora or protocol.needs_base_resync_for_lora

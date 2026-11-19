@@ -1,0 +1,1056 @@
+"""CPU tests for distributed delta transaction failure boundaries."""
+
+import errno
+import hashlib
+import io
+import json
+import os
+import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
+
+import pytest
+
+from miles.backends.sglang_utils.gpu_delta import io as delta_io
+from miles.backends.sglang_utils.gpu_delta import scheduler as delta_scheduler
+from miles.backends.sglang_utils.gpu_delta import session as delta_runtime
+from miles.backends.sglang_utils.gpu_delta.scheduler import GpuDeltaSchedulerControl
+from miles.backends.sglang_utils.gpu_delta.session import DeltaSession
+
+
+class Payload:
+    def __init__(self, fail=False):
+        self.fail = fail
+        self.applications = 0
+        self.closed = threading.Event()
+        self.released = threading.Event()
+
+    def apply(self):
+        self.applications += 1
+        if self.fail:
+            raise RuntimeError("device verdict failed after a possible write")
+        return {
+            "applied": True,
+            "target_version": self.target_version,
+            "timings": {"host_prepare_s": 0.25},
+        }
+
+    def close(self, reuse_host=False):
+        if reuse_host:
+            self.released.set()
+        self.closed.set()
+
+
+class Backend:
+    def __init__(self, payload=None):
+        self.payload = payload or Payload()
+        self.plan_digest = "b" * 64
+        self.started = threading.Event()
+        self.ready = threading.Event()
+        self.error = None
+        self.host_arena = SimpleNamespace(directory=None, owner=False)
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+    def prepare(self, request, cancelled):
+        self.started.set()
+        assert self.ready.wait(5)
+        if self.error:
+            raise self.error
+        self.payload.target_version = request["target_version"]
+        return self.payload
+
+
+def identity(engine="a", rank=0):
+    return dict(
+        engine_id=engine,
+        rank_id=f"{engine}-{rank}-original",
+        pid=10 + rank,
+        start_ticks=42,
+        tp_rank=rank,
+    )
+
+
+def request(participants):
+    return dict(
+        session_id="publication-1",
+        manifest_path="/immutable/manifest.json",
+        manifest_sha256="a" * 64,
+        stream_id="run-1",
+        base_stream_id=None,
+        base_version=0,
+        reverse=False,
+        target_version=1,
+        plan_digest="b" * 64,
+        participants=participants,
+    )
+
+
+def wait_state(session, state, timeout=5):
+    until = time.monotonic() + timeout
+    while time.monotonic() < until:
+        receipt = session.status()
+        if receipt["state"] == state:
+            return receipt
+        time.sleep(0.001)
+    pytest.fail(f"state did not reach {state}: {receipt}")
+
+
+@pytest.fixture
+def make_session():
+    instances = []
+
+    def make(who=None, backend=None):
+        backend = backend or Backend()
+        session = DeltaSession(who or identity(), backend, {})
+        instances.append((session, backend))
+        return session, backend
+
+    yield make
+    for session, backend in instances:
+        backend.ready.set()
+        session._executor.shutdown(wait=True)
+
+
+def prepare_ready(session, backend, req=None, timeout=5):
+    session.prepare(req or request([session.identity]))
+    backend.ready.set()
+    return wait_state(session, "PREPARED", timeout)
+
+
+def applied(session, backend, req=None):
+    prepare_ready(session, backend, req)
+    return session.apply("publication-1", lambda: None, lambda: None, lambda: True)
+
+
+def block_release(backend, check=lambda: None):
+    """Hold the resumed payload's host release on the session worker until the returned event is set."""
+    entered, release, scheduler_thread = threading.Event(), threading.Event(), threading.get_ident()
+
+    def close(reuse_host=False):
+        assert reuse_host and threading.get_ident() != scheduler_thread
+        entered.set()
+        assert release.wait(5)
+        check()
+        Payload.close(backend.payload, reuse_host)
+
+    backend.payload.close = close
+    return entered, release
+
+
+def test_prepare_completion_uses_request_route_without_scheduler_socket(make_session):
+    import zmq
+    from sglang.srt.managers.io_struct import sock_recv
+
+    session, backend = make_session()
+    control = GpuDeltaSchedulerControl(SimpleNamespace(_engine_paused=False))
+    control.session = session
+    with zmq.Context.instance().socket(zmq.PULL) as receiver:
+        endpoint = f"inproc://gpu-delta-{session.identity['rank_id']}"
+        receiver.bind(endpoint)
+        request_input = delta_io.PrepareGpuDeltaReqInput(
+            **request([session.identity]), rid="prepare", http_worker_ipc=endpoint
+        )
+        assert control.handle(request_input) is None
+        assert backend.started.wait(2)
+        assert receiver.poll(0) == 0
+        backend.ready.set()
+        assert receiver.poll(5000)
+        reply = sock_recv(receiver)
+        assert reply.rid == "prepare" and reply.http_worker_ipc == endpoint
+        assert reply.success and reply.participants[0]["state"] == "PREPARED"
+        assert reply.participants[0]["identity"] == session.identity
+        assert not reply.participants[0]["generation_paused"]
+
+
+@pytest.mark.parametrize(
+    "abort_state,drain_failure",
+    [("PREPARING", False), ("PREPARED", False), ("PREPARING", True), ("PREPARED", True)],
+)
+def test_prepare_and_status_do_not_wait_for_file_io(make_session, abort_state, drain_failure):
+    session, backend = make_session()
+    req = request([session.identity])
+    control = GpuDeltaSchedulerControl(SimpleNamespace(_engine_paused=False))
+    control.session = session
+    replies, replied = [], threading.Event()
+
+    def reply(request, receipt, success, message=""):
+        replies.append((receipt, success, message))
+        replied.set()
+
+    control._reply_prepare = reply
+    accepted = control.handle(delta_io.PrepareGpuDeltaReqInput(**req, validate_payload_hash=False))
+    assert accepted is None and replies == []
+    assert not replied.is_set()
+    preparing = session.status()
+    assert session._update.request["validate_payload_hash"] is False
+    assert preparing["state"] == "PREPARING"
+    assert backend.started.wait(2)
+    status = session.status()
+    assert status["state"] == "PREPARING"
+    assert backend.payload.applications == 0
+    for receipt in (preparing, status):
+        for key in req.keys() - {"manifest_path", "participants"}:
+            assert receipt[key] == req[key]
+    assert session.status()["state"] == "PREPARING"
+    if abort_state == "PREPARED":
+        backend.ready.set()
+        wait_state(session, "PREPARED")
+        assert replied.wait(2)
+        assert len(replies) == 1 and replies[0][1]
+        assert replies[0][0]["state"] == "PREPARED"
+    cleanup = []
+    close_payload, close_backend = backend.payload.close, backend.close
+
+    def drain():
+        assert not backend.closed
+        cleanup.append("drain")
+        if drain_failure:
+            raise RuntimeError("GPU drain failed")
+        close_payload()
+
+    def close():
+        assert backend.payload.closed.is_set()
+        cleanup.append("close")
+        close_backend()
+
+    backend.payload.close, backend.close = drain, close
+    assert session.abort("publication-1")["state"] == "ABORTED"
+    backend.ready.set()
+    if drain_failure:
+        with pytest.raises((ValueError, RuntimeError), match="GPU drain failed|can only be cleared"):
+            session.clear()
+        receipt = session.status()
+        assert receipt["state"] == "POISONED" and "GPU drain failed" in receipt["message"]
+        with pytest.raises(ValueError, match="unsettled"):
+            session.prepare(req)
+        assert cleanup == ["drain"]
+        assert not backend.closed and not backend.payload.closed.is_set()
+    else:
+        assert session.clear()["state"] == "CLEARED"
+        assert cleanup == ["drain", "close"]
+        assert backend.closed and backend.payload.closed.is_set()
+        session.release_cache()
+        fresh = Backend()
+        session.reattach(lambda *_: fresh)
+        fresh.ready.set()
+        assert session.prepare(req).result(timeout=2)["state"] == "PREPARED"
+        assert session.committed == (None, 0)
+    assert not backend.payload.released.is_set()
+
+
+def test_abort_unblocks_rank_waiting_for_shared_preparation_owner(make_session, monkeypatch, tmp_path):
+    from miles.utils.gpu_delta import host
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setattr(host, "_cache_base", lambda: cache)
+    manifest = {"codec": "bitcomp-zstd", "files": [], "tensors": []}
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest))
+    participants = [
+        identity(rank=rank) | dict(host_cache_id="shared-host", dp_rank=0, pid=os.getpid()) for rank in range(2)
+    ]
+    arena = host.HostArena("a", 0, participants[1])
+
+    class WaitingBackend(Backend):
+        def prepare(self, request, cancelled):
+            self.started.set()
+            return arena.prepare_publication(request, {}, cancelled)
+
+    backend = WaitingBackend()
+    backend.host_arena = arena
+    session, _ = make_session(participants[1], backend)
+    req = request(participants) | dict(
+        manifest_path=str(path),
+        manifest_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        validate_payload_hash=True,
+    )
+    try:
+        session.prepare(req)
+        assert backend.started.wait(2)
+        assert session.status()["state"] == "PREPARING"
+        assert arena._worker is None
+    finally:
+        session.abort(req["session_id"])
+        # A queued callback proves the blocked prepare actually exited.
+        session._executor.submit(lambda: None).result(timeout=2)
+        arena.close()
+    assert session.status()["state"] == "ABORTED"
+    assert arena.allocation is None and not backend.payload.released.is_set()
+
+
+def test_engine_release_runs_off_scheduler_and_before_next_prepare(make_session):
+    session, backend = make_session()
+    other, other_backend = make_session(identity("b"))
+    other.prepare(request([other.identity]))
+    assert other_backend.started.wait(2)
+    applied(session, backend)
+    entered, release = block_release(backend)
+    try:
+        assert session.resume("publication-1", lambda _: None)["state"] == "RESUMED"
+        assert entered.wait(2)
+        assert other.status()["state"] == "PREPARING"
+        assert not other_backend.payload.released.is_set()
+        backend.started.clear()
+        req = request([session.identity]) | dict(
+            session_id="publication-2",
+            manifest_sha256="c" * 64,
+            base_stream_id="run-1",
+            base_version=1,
+            target_version=2,
+        )
+        completion = session.prepare(req)
+        assert not completion.done()
+        receipt = session.status()
+        assert receipt["state"] == "PREPARING"
+        for key in req.keys() - {"manifest_path", "participants"}:
+            assert receipt[key] == req[key]
+        assert not backend.started.is_set()
+    finally:
+        release.set()
+    assert backend.started.wait(2)
+    assert backend.payload.released.is_set()
+    assert completion.result(timeout=2)["state"] == "PREPARED"
+
+
+@pytest.mark.parametrize(
+    "error,retryable",
+    [(ValueError("encoded checksum mismatch"), False), (OSError(errno.ESTALE, "stale handle"), True)],
+)
+def test_prepare_failure_preserves_committed_weights_and_retryability(make_session, error, retryable):
+    session, backend = make_session()
+    applied(session, backend)
+    session.resume("publication-1", lambda _: None)
+    # This rank never accepted the peer's rejected request.
+    assert session.abort("publication-2")["state"] == "RESUMED"
+    req = request([session.identity]) | dict(
+        session_id="publication-2", base_stream_id="run-1", base_version=1, target_version=2
+    )
+    backend.error = error
+    failed = session.prepare(req).result(timeout=2)
+    assert failed["state"] == "FAILED" and failed["retryable_prepare_error"] is retryable
+    assert str(error) in failed["message"]
+    aborted = session.abort(req["session_id"])
+    assert aborted["state"] == "ABORTED" and aborted["retryable_prepare_error"] is retryable
+    assert session.clear()["version"] == 1
+    session.release_cache()
+    assert backend.payload.applications == 1
+    backend = Backend()
+    session.reattach(lambda *_: backend)
+    backend.ready.set()
+    assert session.prepare(req).result(timeout=2)["state"] == "PREPARED"
+    session.apply("publication-2", lambda: None, lambda: None, None)
+    assert session.resume("publication-2", lambda _: None)["version"] == 2
+    assert backend.payload.applications == 1
+
+
+def test_wrong_or_repeated_transaction_never_replays_xor(make_session):
+    session, backend = make_session()
+    req = request([session.identity])
+    prepare_ready(session, backend, req)
+    with pytest.raises(ValueError, match="requires restart"):
+        session.prepare(req)
+    with pytest.raises(ValueError, match="different session"):
+        session.apply("stale", lambda: None, lambda: None, None)
+    with pytest.raises(ValueError, match="different session"):
+        session.abort("stale")
+    assert backend.payload.applications == 0
+    session.apply("publication-1", lambda: None, lambda: None, None)
+    with pytest.raises(ValueError, match="prepared session"):
+        session.apply("publication-1", lambda: None, lambda: None, None)
+    with pytest.raises(ValueError, match="cannot abort"):
+        session.abort("publication-1")
+    session.resume("publication-1", lambda _: None)
+    with pytest.raises(ValueError, match="applied session"):
+        session.resume("publication-1", lambda _: None)
+    assert backend.payload.applications == 1
+    with pytest.raises(ValueError, match="must not be replayed"):
+        session.prepare(req)
+    # A new request ID cannot turn a duplicate forward into a cancel, even after a lost reply.
+    for stale in (
+        req,
+        req | dict(base_stream_id="other-job", base_version=1, target_version=2),
+        req | dict(base_stream_id="run-1", base_version=2, target_version=3),
+    ):
+        with pytest.raises(ValueError, match="differs from committed"):
+            session.prepare(stale | dict(session_id="late"))
+    assert session.status()["state"] == "RESUMED"
+    assert backend.payload.applications == 1
+    assert session.prepare(req | dict(session_id="cancel", reverse=True)).result()["state"] == "PREPARED"
+    session.apply("cancel", lambda: None, lambda: None, None)
+    resumed = []
+    cancel = session.resume("cancel", resumed.append)
+    assert resumed == [0] and (cancel["committed_stream_id"], cancel["version"]) == (None, 0)
+    with pytest.raises(ValueError, match="differs from committed"):
+        session.prepare(req | dict(session_id="duplicate-cancel", reverse=True))
+
+
+@pytest.mark.parametrize("failure", ["fence", "retract", "flush", "apply"])
+def test_update_failure_is_terminal_and_never_reclaims_after_failed_fence(make_session, failure):
+    session, backend = make_session(backend=Backend(Payload(fail=failure == "apply")))
+    prepare_ready(session, backend)
+    events = []
+
+    def phase(name):
+        assert session.status()["state"] == "APPLYING"
+        events.append(name)
+        if name == failure:
+            raise RuntimeError(name + " failed")
+        return True
+
+    with pytest.raises(RuntimeError):
+        session.apply(
+            "publication-1",
+            lambda: phase("fence"),
+            lambda: phase("retract"),
+            lambda: phase("flush"),
+        )
+    expected = ["fence", "retract", "flush"]
+    assert events == expected[: expected.index(failure) + 1] if failure in expected else events == expected
+    assert backend.payload.applications == (1 if failure == "apply" else 0)
+    status = session.status()
+    assert status["state"] == "POISONED" and status["scheduler_timing"]["blocked_s"] is None
+    cause = "device verdict failed after a possible write" if failure == "apply" else f"{failure} failed"
+    assert status["message"] == f"update failed after pause: RuntimeError: {cause}; restart required"
+    assert not backend.payload.released.is_set()
+    count = backend.payload.applications
+    with pytest.raises(ValueError, match="prepared session"):
+        session.apply("publication-1", lambda: None, lambda: None, None)
+    with pytest.raises(ValueError, match="applied session"):
+        session.resume("publication-1", lambda _: None)
+    assert backend.payload.applications == count
+
+
+def test_resume_failure_retains_ownership(make_session):
+    session, backend = make_session()
+    applied(session, backend)
+    with pytest.raises(RuntimeError, match="resume failed"):
+        session.resume(
+            "publication-1",
+            lambda _: (_ for _ in ()).throw(RuntimeError("resume failed")),
+        )
+    assert session.status()["state"] == "POISONED"
+    assert session.status()["message"] == "resume failed: RuntimeError: resume failed; restart required"
+    assert not backend.payload.released.is_set()
+    assert session.status()["scheduler_timing"]["blocked_s"] is None
+
+
+def test_scheduler_blocked_timing_excludes_background_prepare(make_session, monkeypatch):
+    now = [1_000_000_000]
+    monkeypatch.setattr(delta_runtime, "time", SimpleNamespace(monotonic_ns=lambda: now[0]))
+    session, backend = make_session()
+    prepare_ready(session, backend)
+    assert session.status()["scheduler_timing"]["pause_started_ns"] is None
+    now[0] = 10_000_000_000
+
+    def fence():
+        assert session.status()["scheduler_timing"]["pause_started_ns"] == now[0]
+        now[0] = 20_000_000_000
+
+    receipt = session.apply("publication-1", fence, lambda: None, lambda: True)
+    assert receipt["state"] == "APPLIED"
+    assert receipt["identity"] == session.identity
+    assert receipt["result"] == {"applied": True, "target_version": 1}
+    full_result = session.status()["result"]
+    assert full_result["timings"] == {"host_prepare_s": 0.25}
+    now[0] = 60_000_000_000
+    resumed = session.resume("publication-1", lambda _: None)
+    assert resumed["result"] == full_result
+    assert (receipt["committed_stream_id"], receipt["version"]) == (None, 0)
+    assert (resumed["committed_stream_id"], resumed["version"]) == ("run-1", 1)
+    evolving = {"state", "result", "scheduler_timing", "committed_stream_id", "version"}
+    assert {k: v for k, v in receipt.items() if k not in evolving} == {
+        k: v for k, v in resumed.items() if k not in evolving
+    }
+    assert resumed["scheduler_timing"] == {
+        "clock": "monotonic_ns",
+        "pause_started_ns": 10_000_000_000,
+        "reader_fence_completed_ns": 20_000_000_000,
+        "resumed_ns": 60_000_000_000,
+        "blocked_s": 50.0,
+    }
+
+
+_ADMITTED_LAUNCH = dict(
+    enable_dp_attention_local_control_broadcast=False,
+    attn_tp_size=1,
+    attn_cp_size=1,
+    attn_dcp_size=1,
+    enable_cp_decode_attn_tp=False,
+    pp_size=1,
+    dwdp_size=1,
+    nnodes=1,
+    attn_dp_enabled=False,
+)
+_DSPARK, _TOKEN_MAP = "speculative_dspark_lm_head_dtype", "speculative_token_map"
+
+
+@pytest.fixture
+def describe_control(monkeypatch):
+    """Build a control whose describe sees one launch; also returns the spec fields it reads and its cache probes.
+
+    ``launch`` overrides the admitted topology; ``is_ep_scale_joiner`` sets the MoE config. A spec that names the
+    DSPARK lm_head dtype stands for SGLang main, whose spec namespace declares it; the companion tree declares none.
+    ``cache`` is the weight-cache verdict: "shared IPC" fails the shared-weight probe, any other string is the
+    derived-cache error.
+    """
+    from sglang.srt import runtime_context
+
+    def make(launch, spec, cache):
+        launch = _ADMITTED_LAUNCH | launch
+        moe = SimpleNamespace(is_ep_scale_joiner=launch.pop("is_ep_scale_joiner", False))
+        monkeypatch.setattr(runtime_context, "get_parallel", lambda: SimpleNamespace(**launch))
+        monkeypatch.setattr(runtime_context, "get_exec", lambda: SimpleNamespace(moe=moe))
+        declared = ("speculative_algorithm", *spec.keys() & {_DSPARK})
+        monkeypatch.setitem(
+            sys.modules,
+            "sglang.srt.arg_groups.fields.spec",
+            SimpleNamespace(Spec=SimpleNamespace(__struct_fields__=declared)),
+        )
+        values, reads, probes, model = {_TOKEN_MAP: None} | spec, [], [], object()
+
+        class Spec:
+            def __getattr__(self, field):
+                reads.append(field)
+                return values[field]
+
+        monkeypatch.setattr(runtime_context, "get_spec", Spec)
+
+        def check_shared(op):
+            assert op == "apply_gpu_delta"
+            probes.append("shared")
+            if cache == "shared IPC":
+                raise RuntimeError(cache)
+
+        def check_derived(candidate):
+            assert candidate is model
+            probes.append("derived")
+            return cache
+
+        monkeypatch.setitem(
+            sys.modules,
+            "sglang.srt.model_executor.model_runner_components.weight_updater",
+            SimpleNamespace(_unsupported_derived_weight_cache_error=check_derived),
+        )
+        runner = SimpleNamespace(
+            weight_updater=SimpleNamespace(_assert_weight_cache_inactive=check_shared), model=model
+        )
+        scheduler = SimpleNamespace(
+            enable_lora=False,
+            disaggregation_mode=SimpleNamespace(value="null"),
+            rust_server=None,
+            tp_worker=SimpleNamespace(model_runner=runner),
+        )
+        return GpuDeltaSchedulerControl(scheduler), reads, probes
+
+    return make
+
+
+@pytest.mark.parametrize(
+    "launch,spec,cache,message,reads",
+    [
+        # Topology and feature rejections precede every spec read and weight-cache probe.
+        ({"enable_dp_attention_local_control_broadcast": True}, {}, None, "global control", []),
+        ({"is_ep_scale_joiner": True}, {}, None, "global control", []),
+        ({"attn_cp_size": 2, "enable_cp_decode_attn_tp": True}, {}, None, "CP decode attention TP caches", []),
+        ({"attn_dcp_size": 2}, {}, None, "DCP groups inside attention TP", []),
+        ({"pp_size": 2}, {}, None, "PP1", []),
+        ({"dwdp_size": 2}, {}, None, "DWDP expert weight prefetch", []),
+        # DWDP's launch forces the local control broadcast; describe names DWDP itself.
+        ({"dwdp_size": 2, "enable_dp_attention_local_control_broadcast": True}, {}, None, "DWDP", []),
+        # Without attention DP, every rank's prepare reply targets the head node's IPC socket.
+        ({"nnodes": 2}, {}, None, "attention DP when an engine spans several nodes", []),
+        # SGLang main's DSPARK draft projects through a quantized lm_head cache once its dtype is set.
+        ({}, {_DSPARK: "fp8"}, None, "quantized lm_head cache; unset --speculative-dspark-lm-head", [_DSPARK]),
+        ({}, {_DSPARK: "mxfp8"}, None, "DSPARK's quantized lm_head cache", [_DSPARK]),
+        # Both trees' EAGLE workers give the draft a gathered copy of the target lm_head's hot-token rows.
+        ({}, {_TOKEN_MAP: "/hot.pt"}, None, "hot-token lm_head copy; unset --speculative-token-map$", [_TOKEN_MAP]),
+        # Admitted launches reach the weight-cache probes, shared IPC weights first.
+        ({}, {}, "shared IPC", "shared IPC", [_TOKEN_MAP]),
+        # Prefill CP without CP decode attention TP, multi-node attention DP and an unset DSPARK dtype are admitted.
+        ({"attn_cp_size": 2}, {}, "derived HPC", "derived HPC", [_TOKEN_MAP]),
+        ({"nnodes": 2, "attn_dp_enabled": True}, {}, "derived HPC", "derived HPC", [_TOKEN_MAP]),
+        ({}, {_DSPARK: None}, "derived HPC", "derived HPC", [_DSPARK, _TOKEN_MAP]),
+    ],
+)
+def test_describe_rejects_launches_and_weight_caches_before_plan_or_session(
+    describe_control, launch, spec, cache, message, reads
+):
+    control, spec_reads, probes = describe_control(launch, spec, cache)
+    with pytest.raises(RuntimeError if cache == "shared IPC" else ValueError, match=message):
+        control._describe("engine-0")
+    assert spec_reads == reads
+    assert probes == {None: [], "shared IPC": ["shared"], "derived HPC": ["shared", "derived"]}[cache]
+    assert control.session is None
+
+
+@pytest.mark.parametrize("cp_size,tp_size,rank", [(1, 1, 0), (2, 2, 0), (2, 2, 1), (2, 2, 3)])
+def test_cp_tp_replies_preserve_follower_failure_and_original_identity(monkeypatch, cp_size, tp_size, rank):
+    # Use a nonzero global root, as in another attention-DP shard.
+    cp_rank, tp_rank = divmod(rank, tp_size)
+    cp_ranks = [4 + cp * tp_size + tp_rank for cp in range(cp_size)]
+    tp_ranks = [4 + cp_rank * tp_size + tp for tp in range(tp_size)]
+    groups = tuple(
+        SimpleNamespace(
+            rank_in_group=local_rank,
+            world_size=len(ranks),
+            ranks=ranks,
+            cpu_group=object(),
+        )
+        for local_rank, ranks in ((cp_rank, cp_ranks), (tp_rank, tp_ranks))
+        if len(ranks) > 1
+    )
+    count = cp_size * tp_size
+    receipts = [
+        dict(
+            identity=identity(rank=4 + index),
+            session_id="publication-1",
+            state="POISONED" if count > 1 and index == count - 1 else "APPLIED",
+            message=("failed follower decode" if count > 1 and index == count - 1 else ""),
+            generation_paused=True,
+        )
+        for index in range(count)
+    ]
+    values = [(r["state"] == "APPLIED", r["message"], r) for r in receipts]
+    control = GpuDeltaSchedulerControl(SimpleNamespace(_engine_paused=True), groups)
+    control.session = SimpleNamespace(
+        abort=lambda session_id: receipts[rank].copy(),
+        status=lambda: receipts[rank].copy(),
+    )
+    calls = []
+
+    def gather_object(local, output, dst, group):
+        expected = groups[len(calls)]
+        assert dst == expected.ranks[0] and group is expected.cpu_group
+        if cp_size > 1 and not calls:
+            assert local == [values[rank]]
+            peer_values = [[values[peer - 4]] for peer in cp_ranks]
+        else:
+            assert cp_rank == 0
+            assert local == [values[cp * tp_size + tp_rank] for cp in range(cp_size)]
+            peer_values = [[values[cp * tp_size + tp] for cp in range(cp_size)] for tp in range(tp_size)]
+        calls.append(dst)
+        if expected.rank_in_group == 0:
+            output[:] = peer_values
+        else:
+            assert output is None
+
+    monkeypatch.setattr(delta_scheduler, "gather_object", gather_object)
+    result = control.handle(delta_io.AbortGpuDeltaReqInput(session_id="publication-1", rid="abort"))
+    if rank == 0:
+        assert len(calls) == len(groups)
+        assert result.success is (count == 1)
+        assert result.rid == "abort" and result.message == receipts[-1]["message"]
+        assert sorted(result.participants, key=lambda r: r["identity"]["pid"]) == receipts
+    else:
+        assert len(calls) == (1 if cp_rank else len(groups)) and result is None
+
+
+def test_clear_drains_release_before_private_close_and_shared_unlink(make_session, tmp_path):
+    session, backend = make_session()
+    directory = tmp_path / "own-stream-cache"
+    directory.mkdir()
+    (directory / "state.json").write_text("READY")
+    source = tmp_path / "immutable-publication"
+    source.write_bytes(b"retained")
+    backend.host_arena = SimpleNamespace(directory=directory, owner=True)
+    req = request([session.identity]) | dict(target_version=7)
+    applied(session, backend, req)
+
+    def still_shared():
+        assert not backend.closed
+        assert (directory / "state.json").read_text() == "READY"
+
+    entered, release = block_release(backend, still_shared)
+    session.resume("publication-1", lambda version: None)
+    assert entered.wait(2)
+    with ThreadPoolExecutor(1) as pool:
+        clearing = pool.submit(session.clear)
+        try:
+            assert not clearing.done()
+            assert not backend.closed and directory.exists()
+        finally:
+            release.set()
+        receipt = clearing.result(timeout=2)
+    assert receipt["state"] == "CLEARED" and receipt["version"] == 7
+    assert receipt["target_version"] == 7 and receipt["identity"] == session.identity
+    assert backend.closed and backend.payload.closed.is_set()
+    assert session.backend is None and session._update.state == "CLEARED"
+    assert session._update.prepared is None and session._update.result == {}
+    assert session._update.release_future is None
+    # Closing all rank-local resources does not itself unlink the shared cache; only its arena owner does.
+    follower, follower_backend = make_session(identity(rank=1))
+    follower_backend.host_arena = SimpleNamespace(directory=directory, owner=False)
+    follower.clear()
+    follower.release_cache()
+    assert directory.exists()
+    # Another cohort's owner may already have reclaimed a closed cohort; its removal is then complete.
+    reclaimed, reclaimed_backend = make_session(identity(rank=2))
+    reclaimed_backend.host_arena = SimpleNamespace(directory=tmp_path / "reclaimed-cohort", owner=True)
+    reclaimed.clear()
+    reclaimed.release_cache()
+    reclaimed.reattach(lambda *_: reclaimed_backend)
+    # A describe between the all-rank clear and the cache release must not attach over the closed cohort.
+    with pytest.raises(ValueError, match="cache removal has not completed"):
+        session.reattach(lambda *_: pytest.fail("attached before the cache removal"))
+    session.release_cache()
+    assert not directory.exists() and source.read_bytes() == b"retained"
+    assert session.clear()["version"] == 7
+    session.release_cache()
+    scheduler = SimpleNamespace(_engine_paused=False)
+    control = GpuDeltaSchedulerControl(scheduler)
+    control.session = session
+    replies = []
+    control._reply_prepare = lambda req, receipt, success, message: replies.append((receipt, success, message))
+    result = control.handle(delta_io.PrepareGpuDeltaReqInput(**request([session.identity])))
+    assert result is None
+    rejected, success, message = replies[0]
+    assert not success and message == "ValueError: completed delta session must not be replayed"
+    assert rejected["state"] == "CLEARED" and rejected["version"] == 7
+    assert rejected["identity"] == session.identity
+    for current_receipt in (receipt, session.status(), rejected):
+        for key in req.keys() - {"manifest_path", "participants"}:
+            assert current_receipt[key] == req[key]
+    # A fresh transaction waits for describe to attach a backend; the cleared record stays settled.
+    with pytest.raises(ValueError, match="must be described before its next update"):
+        session.prepare(
+            req | dict(session_id="publication-2", base_stream_id="run-1", base_version=7, target_version=8)
+        )
+    assert session.status()["state"] == "CLEARED" and session.status()["session_id"] == "publication-1"
+    # After an update only the retained shadows hold the committed version, so describe never recreates them.
+    changed = Backend()
+    changed.plan_digest = "reconverted-base"
+    with pytest.raises(ValueError, match="checkpoint changed since receiver admission"):
+        session.reattach(lambda *_: changed)
+    assert changed.closed and session.backend is None and session.committed == ("run-1", 7)
+    session.reattach(lambda identity, store, create: SimpleNamespace(create=create, plan_digest=backend.plan_digest))
+    assert session.backend.create is False
+
+
+@pytest.mark.parametrize("state", ["PREPARED", "POISONED"])
+def test_clear_cannot_discard_an_unsettled_update(make_session, state):
+    session, backend = make_session()
+    prepare_ready(session, backend)
+    session._update.state = state
+    with pytest.raises(ValueError, match="can only be cleared"):
+        session.clear()
+    assert not backend.closed and session.backend is backend
+    assert not backend.payload.closed.is_set()
+
+
+@pytest.mark.parametrize("next_operation", ["clear", "prepare"])
+def test_failed_async_release_prevents_resource_reuse(make_session, next_operation):
+    session, backend = make_session()
+    applied(session, backend)
+
+    def fail_release(reuse_host=False):
+        assert reuse_host
+        raise OSError("state release failed")
+
+    backend.payload.close = fail_release
+    session.resume("publication-1", lambda _: None)
+    following = request([session.identity]) | dict(
+        session_id="publication-2", base_stream_id="run-1", base_version=1, target_version=2
+    )
+    if next_operation == "clear":
+        with pytest.raises(OSError, match="state release failed"):
+            session.clear()
+        with pytest.raises(ValueError, match="unsettled"):
+            session.prepare(following)
+    else:
+        backend.started.clear()
+        session.prepare(following)
+        receipt = wait_state(session, "POISONED")
+        assert "state release failed" in receipt["message"]
+        assert not backend.started.is_set()
+        assert backend.payload.applications == 1
+    assert session.status()["state"] == "POISONED"
+    assert session.committed == ("run-1", 1) and not backend.closed
+    assert session.backend is backend
+
+
+@pytest.mark.parametrize("pause_mode", ["retract", "in_place"])
+@pytest.mark.parametrize("keep_pause", [True, False])
+@pytest.mark.parametrize("weight_version", [None, "0", "actor-42"])
+def test_update_owns_pause_fence_cache_and_resume_order(
+    make_session, monkeypatch, pause_mode, keep_pause, weight_version
+):
+    from sglang.utils import TypeBasedDispatcher
+
+    events = []
+    scheduler = SimpleNamespace(_engine_paused=False)
+
+    def fence():
+        assert scheduler._engine_paused
+        events.append("fence")
+
+    def pause(obj):
+        assert scheduler._engine_paused and obj.mode == pause_mode
+        events.append(pause_mode)
+
+    def flush(empty_cache):
+        assert not empty_cache
+        events.append("flush")
+        return True
+
+    def resume(obj):
+        assert not obj.torch_empty_cache
+        events.append("resume")
+        scheduler._engine_paused = False
+
+    scheduler.device_module = SimpleNamespace(synchronize=fence)
+    scheduler.pause_generation = pause
+    scheduler.flush_cache = flush
+    scheduler.continue_generation = resume
+    scheduler.record_weight_version_change = lambda version: events.append(("version", version))
+    control = delta_scheduler.GpuDeltaSchedulerControl(scheduler)
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_parallel",
+        lambda: SimpleNamespace(attn_cp_size=1, attn_tp_size=1),
+    )
+
+    def make_control(_, groups):
+        assert groups == ()
+        return control
+
+    monkeypatch.setattr(delta_scheduler, "GpuDeltaSchedulerControl", make_control)
+    wrapped = delta_scheduler.with_gpu_delta_controls(scheduler, TypeBasedDispatcher([]))
+    session, backend = make_session()
+    control.session = session
+
+    def recorded(name, call):
+        return lambda *args: events.append(name) or call(*args)
+
+    backend.payload.apply = recorded("apply", backend.payload.apply)
+    backend.payload.close = recorded("release", backend.payload.close)
+    backend.close = recorded("close", backend.close)
+    session.prepare(request([session.identity]))
+    # A rejected apply (still preparing, then another session's) never pauses, fences, retracts or flushes.
+    for session_id in ("publication-1", "another-session"):
+        rejected = wrapped(delta_io.ApplyGpuDeltaReqInput(session_id=session_id, rid="rejected"))
+        assert not rejected.success and not rejected.participants[0]["generation_paused"] and events == []
+        backend.ready.set()
+        wait_state(session, "PREPARED", timeout=2)
+    result = wrapped(
+        delta_io.ApplyGpuDeltaReqInput(session_id="publication-1", rid="apply-rid", pause_mode=pause_mode)
+    )
+    assert result.rid == "apply-rid" and scheduler._engine_paused
+    expected = ["fence", pause_mode] + (["flush"] if pause_mode == "retract" else []) + ["apply"]
+    assert result.success and events == expected
+    assert result.participants[0]["generation_paused"]
+    assert result.participants[0]["result"] == {"applied": True, "target_version": 1}
+    result = wrapped(
+        delta_io.ResumeGpuDeltaReqInput(
+            session_id="publication-1", keep_pause=keep_pause, weight_version=weight_version
+        )
+    )
+    assert result.success and result.participants[0]["state"] == "RESUMED"
+    assert result.participants[0]["result"]["timings"] == {"host_prepare_s": 0.25}
+    expected += [("version", "1" if weight_version is None else weight_version)] + ([] if keep_pause else ["resume"])
+    assert events[: len(expected)] == expected
+    assert scheduler._engine_paused is keep_pause
+    assert result.participants[0]["generation_paused"] is keep_pause
+    timing = result.participants[0]["scheduler_timing"]
+    assert (timing["resumed_ns"] is None) is keep_pause
+    assert (timing["blocked_s"] is None) is keep_pause
+    repeated = wrapped(
+        delta_io.ResumeGpuDeltaReqInput(session_id="publication-1", weight_version="conflicting-version")
+    )
+    assert not repeated.success and "requires an applied session" in repeated.message
+    assert events[: len(expected)] == expected
+    assert not any(event == ("version", "conflicting-version") for event in events)
+    assert scheduler._engine_paused is keep_pause
+    cleared = wrapped(delta_io.ClearGpuDeltaStateReqInput())
+    assert cleared.success and cleared.participants[0]["version"] == 1
+    assert events[len(expected) :] == ["release", "close"]
+    released = wrapped(delta_io.ReleaseGpuDeltaCacheReqInput())
+    assert released.success and released.participants[0]["state"] == "CLEARED"
+    assert scheduler._engine_paused is keep_pause
+    assert released.participants[0]["generation_paused"] is keep_pause
+
+
+@pytest.mark.parametrize(
+    "tp_size,dp_size,attn_dp_size,dcp_size,world_rank,dp_rank",
+    [
+        (8, 1, 8, 1, 7, 7),
+        (4, 1, 2, 1, 3, 1),
+        (2, 1, 1, 1, 1, None),
+        (4, 1, 2, 2, 3, 1),
+        (2, 1, 1, 2, 1, None),
+        (1, 2, 1, 1, 0, 1),
+        (1, 1, 1, 1, 0, None),
+    ],
+    ids=[
+        "attention-dp",
+        "attention-dp-tp",
+        "attention-tp",
+        "attention-dp-tp-dcp",
+        "attention-tp-dcp",
+        "replica-dp",
+        "singleton",
+    ],
+)
+def test_describe_binds_published_scheduler_ranks(
+    monkeypatch, tp_size, dp_size, attn_dp_size, dcp_size, world_rank, dp_rank
+):
+    from sglang.srt.disaggregation.utils import DisaggregationMode
+    from sglang.srt.managers.scheduler import Scheduler
+    from sglang.srt.runtime_context import SpawnRanks, publish, reset_context
+    from sglang.srt.server_args import ServerArgs
+
+    def launch(**nodes):
+        reset_context()
+        publish(
+            ServerArgs(
+                model_path="dummy",
+                tp_size=tp_size,
+                dp_size=dp_size,
+                attn_dp_size=attn_dp_size,
+                dcp_size=dcp_size,
+                ep_size=tp_size,
+                **nodes,
+            ),
+            role="test",
+            ranks=SpawnRanks(world_rank=world_rank, dp_rank=dp_rank),
+        )
+
+    try:
+        # Derive the serving identity from the published launch-time ranks.
+        launch()
+        runner = SimpleNamespace(
+            model=object(),
+            weight_updater=SimpleNamespace(_assert_weight_cache_inactive=lambda _: None),
+        )
+        scheduler = Scheduler.__new__(Scheduler)
+        scheduler.enable_lora = False
+        scheduler.disaggregation_mode = DisaggregationMode.NULL
+        scheduler.rust_server = None
+        scheduler.tp_worker = SimpleNamespace(model_runner=runner)
+
+        backends, shadows = [], []
+
+        def make_backend(model_runner, identity, store):
+            assert model_runner is runner
+            backends.append(identity.copy())
+            shadows.append(store)
+            return SimpleNamespace(
+                plan_digest="fixture", host_arena=SimpleNamespace(directory=None, owner=False), close=lambda: None
+            )
+
+        monkeypatch.setitem(
+            sys.modules,
+            "miles.backends.sglang_utils.gpu_delta.receiver",
+            SimpleNamespace(GpuDeltaBackend=make_backend),
+        )
+        monkeypatch.setattr(
+            "sglang.srt.model_executor.model_runner_components.weight_updater."
+            "_unsupported_derived_weight_cache_error",
+            lambda _: None,
+        )
+        # Linux starttime field; comm deliberately contains spaces and ')'.
+        stat = "123 (scheduler worker)) " + " ".join(["0"] * 19 + ["456"])
+        monkeypatch.setattr(
+            "miles.utils.gpu_delta.host_worker.open",
+            lambda path: io.StringIO(stat),
+            raising=False,
+        )
+        cache_engines = []
+
+        def cache_id(engine_id):
+            cache_engines.append(engine_id)
+            return "shared-host-test"
+
+        monkeypatch.setattr(
+            "miles.utils.gpu_delta.host.host_cache_id",
+            cache_id,
+        )
+        control = GpuDeltaSchedulerControl(scheduler)
+        receipt = control._describe("engine-0")
+        assert receipt["identity"] | {
+            "rank_id": "ignored",
+            "hostname": "ignored",
+            "pid": 0,
+        } == {
+            "engine_id": "engine-0",
+            "rank_id": "ignored",
+            "hostname": "ignored",
+            "host_cache_id": "shared-host-test",
+            "pid": 0,
+            "start_ticks": 456,
+            "tp_rank": world_rank,
+            "dp_rank": 0 if dp_rank is None else dp_rank,
+            "pp_rank": 0,
+        }
+        assert receipt["state"] == "IDLE" and receipt["version"] == 0
+        assert receipt["stream_id"] is None and receipt["plan_digest"] == "fixture"
+        assert control._describe("engine-0") == receipt
+        assert len(backends) == 1
+        assert cache_engines == ["engine-0"]
+        control.session.committed = ("run", 7)
+        assert control.session.clear()["version"] == 7
+        control.session.release_cache()
+        with pytest.raises(ValueError, match="another engine"):
+            control._describe("unused-new-engine-name")
+        fresh = control._describe("engine-0")
+        assert fresh["identity"] == receipt["identity"] and (fresh["stream_id"], fresh["version"]) == ("run", 7)
+        assert len(backends) == 2 and cache_engines == ["engine-0"]
+        # Both backends share the session's shadow store; only the version-0 one may create shadows.
+        assert [store.create for store in shadows] == [True, False]
+        assert all(store.store is control.session.shadow_store for store in shadows)
+        # A second node needs attention DP, whose prepare replies reach the head node over TCP.
+        launch(nnodes=2, dist_init_addr="127.0.0.1:5000")
+        if attn_dp_size > 1:
+            assert control._describe("engine-0") == fresh
+        else:
+            with pytest.raises(ValueError, match="attention DP when an engine spans several nodes"):
+                control._describe("engine-0")
+        control.session._executor.shutdown(wait=True)
+    finally:
+        reset_context()
+
+
+@pytest.mark.parametrize("outcome", ["resumed", "apply_failed"])
+def test_nvtx_pause_ends_only_after_successful_unpause(make_session, monkeypatch, outcome):
+    events = []
+    profiling = delta_runtime.profiling
+    monkeypatch.setattr(profiling, "ENABLED", True)
+
+    def start(name):
+        events.append(("start", name))
+        return 17
+
+    monkeypatch.setattr(
+        profiling,
+        "nvtx",
+        SimpleNamespace(
+            range_push=lambda name: None,
+            range_pop=lambda: None,
+            range_start=start,
+            range_end=lambda handle: events.append(("end", handle)),
+            mark=lambda name: events.append(("mark", name)),
+        ),
+        raising=False,
+    )
+    session, backend = make_session()
+    prepare_ready(session, backend)
+
+    def fail():
+        raise RuntimeError("control failure")
+
+    if outcome == "apply_failed":
+        with pytest.raises(RuntimeError, match="control failure"):
+            session.apply("publication-1", fail, lambda: None, None)
+        # The scheduler is still paused: the range stays open behind a poisoned mark.
+        assert events == [("start", "gpu_delta.pause"), ("mark", "gpu_delta.pause.poisoned")]
+        assert session._update.nvtx_pause_id == 17
+    else:
+        session.apply("publication-1", lambda: None, lambda: None, None)
+        session.resume("publication-1", lambda version: events.append(("resume", version)))
+        assert events == [("start", "gpu_delta.pause"), ("resume", 1), ("end", 17)]
+        assert session._update.nvtx_pause_id is None
+    assert (session.status()["scheduler_timing"]["blocked_s"] is None) is (outcome == "apply_failed")

@@ -107,6 +107,7 @@ miles-managed path:
 | `broadcast_packed` | Pack each weight bucket into one byte buffer and issue one NCCL broadcast | Non-colocated Megatron with SGLang mixed-dtype flattened-bucket support; trades contiguous bucket storage for fewer collectives |
 | `p2p` | Convert and re-shard weights, then write them directly to rollout-rank memory over RDMA | miles-managed, in-cluster jobs with direct rank-to-rank connectivity; see [P2P Weight Transfer](/advanced/p2p-weight-transfer) |
 | `disk-delta` | Publish changed canonical checkpoint bytes to shared storage, let rollout hosts materialize them locally, then reload | Trainer and rollout cannot share an NCCL fabric, or model-sized full-weight transfer dominates the update |
+| `gpu-delta` | Compress lossless XOR deltas on trainer GPUs and publish them to shared storage; each engine prepares them while serving, then XORs them into its live buffers during a short pause | Experimental Megatron-to-SGLang mode for separate GPUs that share storage and an immutable local HF base; see [GPU-Delta Weight Transfer](/advanced/gpu-delta-weight-transfer) |
 
 These are weight synchronization choices, not different rollout APIs. In the
 broadcast and P2P modes, miles transfers tensors into known engine ranks directly.
@@ -326,6 +327,7 @@ requires a brief engine pause.
 - [Fully Async RL](/user-guide/fully-async)
 - [Training Backends](/user-guide/training-backend)
 - [P2P Weight Transfer](/advanced/p2p-weight-transfer)
+- [GPU-Delta Weight Transfer](/advanced/gpu-delta-weight-transfer)
 - [PD Disaggregation](/advanced/pd-disaggregation)
 - [Stitch: open-source disaggregated rollout service](https://github.com/modal-projects/stitch)
 

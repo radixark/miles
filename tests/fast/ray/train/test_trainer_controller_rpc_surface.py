@@ -13,6 +13,7 @@ DRIVEN_METHODS = (
     "train",
     "save_model",
     "export_hf",
+    "export_eval_snapshot",
     "update_weights",
     "get_deployment_identity",
     "get_train_parallel_config",

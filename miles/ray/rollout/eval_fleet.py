@@ -14,6 +14,10 @@ import logging
 from argparse import Namespace
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.training_utils.weight_update.protocols.gpu_delta.eval import (
+    EvalSnapshotUpdater,
+    uses_gpu_delta_eval,
+)
 from miles.ray.specs.inference import inference_controller_worker_name
 from miles.rollout.checkpoint_eval import EvalSkip, retarget_args
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
@@ -97,6 +101,7 @@ class InferenceControllerEvalFleet:
     def __init__(self, args: Namespace, *, srv):
         self.args = args
         self._srv = srv
+        self._gpu_delta = EvalSnapshotUpdater(args) if uses_gpu_delta_eval(args) else None
 
     async def info(self) -> EvalFleetInfo:
         async with self._srv.context_lock:
@@ -137,20 +142,32 @@ class InferenceControllerEvalFleet:
     async def _pin_fleet(self, checkpoint_dir: str, weight_version: str, *, retries: int = 2) -> bool:
         """Load the snapshot into every fleet engine and confirm all report
         ``weight_version`` — the router load-balances across engines, so a single
-        stale engine would mix versions. Never raises: transient failures and
-        mismatches are retried, then ``False`` lets the caller skip the point."""
+        stale engine would mix versions. HF loads may retry; uncertain GPU-delta
+        applications never replay XOR. ``False`` lets the caller skip the point."""
+        if self._gpu_delta is not None:
+            retries = 1
         versions: list = []
         for attempt in range(retries):
             try:
-                await asyncio.wait_for(
-                    asyncio.gather(
-                        *[
-                            client.update_weights_from_disk(model_path=checkpoint_dir, weight_version=weight_version)
-                            for client in await self._fleet_api_clients()
-                        ]
-                    ),
-                    timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
-                )
+                if self._gpu_delta is not None:
+                    await self._gpu_delta.pin(
+                        await self._fleet_api_clients(),
+                        checkpoint_dir,
+                        weight_version,
+                        EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
+                    )
+                else:
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            *[
+                                client.update_weights_from_disk(
+                                    model_path=checkpoint_dir, weight_version=weight_version
+                                )
+                                for client in await self._fleet_api_clients()
+                            ]
+                        ),
+                        timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
+                    )
                 versions = await self._weight_versions()
             except Exception as e:
                 logger.warning(f"Weight pin to {checkpoint_dir} failed (attempt {attempt + 1}/{retries}): {e}")

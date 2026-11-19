@@ -7,6 +7,7 @@ from contextlib import ExitStack, nullcontext
 import torch
 import torch.distributed as dist
 from megatron.training.async_utils import maybe_finalize_async_save
+from megatron.training.checkpointing import get_checkpoint_name
 from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
@@ -44,6 +45,10 @@ from miles.backends.training_utils.replay.data import (
 )
 from miles.backends.training_utils.types import TrainStepOutput
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.protocols.gpu_delta.eval import (
+    uses_gpu_delta_eval,
+    write_eval_snapshot,
+)
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.ray.rollout.inference_controller import UpdatableEngines
@@ -294,6 +299,20 @@ class MegatronTrainRayActor(TrainRayActor):
             )
 
         self._init_training_state()
+        if (
+            self.weight_updater is not None
+            and args.update_weight_transfer_mode == "gpu-delta"
+            and ckpt_load_config.load is not None
+            and load_output.start_rollout_id == load_output.loaded_rollout_id + 1
+        ):
+            # Use the iteration Megatron actually restored, before the trainer can take another step.
+            checkpoint_dir = get_checkpoint_name(
+                ckpt_load_config.load, load_output.loaded_rollout_id, return_base_dir=True
+            )
+            with self._gpu_delta_allocations():
+                self.weight_updater.restore_gpu_delta_checkpoint(
+                    checkpoint_dir, load_output.loaded_rollout_id, publish_eval_stream=indep_dp_info.alive_rank == 0
+                )
 
         self.rollout_data_postprocess = None
         if (x := self.args.rollout_data_postprocess_path) is not None:
@@ -495,10 +514,14 @@ class MegatronTrainRayActor(TrainRayActor):
                 self.weights_backuper.backup("rollout_actor")
 
     def _finalize_pending_async_save(self) -> None:
-        if not self.args.backend.async_save:
-            return
+        if self.args.backend.async_save:
+            maybe_finalize_async_save(blocking=True)
+        if self.weight_updater is not None:
+            self.weight_updater.finalize_gpu_delta_checkpoint()
 
-        maybe_finalize_async_save(blocking=True)
+    def _gpu_delta_allocations(self):
+        # Keep persistent codec and recovery allocations outside the offloaded model allocator.
+        return torch_memory_saver.disable() if self.args.offload_train else nullcontext()
 
     @with_logs
     @timer
@@ -956,6 +979,16 @@ class MegatronTrainRayActor(TrainRayActor):
             adapter_slots=self.adapter_slots,
             schedule_first_rollout=self._schedule_first_rollout,
         )
+        if (
+            self.role == "actor"
+            and self.weight_updater is not None
+            and self.args.update_weight_transfer_mode == "gpu-delta"
+        ):
+            checkpoint_dir = get_checkpoint_name(self.args.backend.save, rollout_id, return_base_dir=True)
+            with self._gpu_delta_allocations():
+                self.weight_updater.prepare_gpu_delta_checkpoint(
+                    checkpoint_dir, rollout_id, self._get_actor_weight_version()
+                )
 
         if self.args.save_hf is not None and self.role == "actor":
             assert self.snapshot_publisher is not None, "HF export requires a snapshot publisher"
@@ -966,15 +999,21 @@ class MegatronTrainRayActor(TrainRayActor):
                 publisher=self.snapshot_publisher,
                 adapter_slots=self.adapter_slots,
             )
+            # Dedicated eval pins --save-hf only without --eval-hf-dir.
+            if uses_gpu_delta_eval(self.args) and self.args.eval_hf_dir is None:
+                with self._gpu_delta_allocations():
+                    self.weight_updater.export_gpu_delta_snapshot(
+                        self.args.save_hf.format(rollout_id=rollout_id),
+                        rollout_id,
+                        self._get_actor_weight_version(),
+                        in_hf_export=True,
+                    )
 
-        if force_sync:
+        # A collective finalize publishes the companion's READY once Megatron's writer has drained.
+        if force_sync or not self.args.backend.async_save or self.args.custom_megatron_post_save_hook_path is not None:
             self._finalize_pending_async_save()
 
         if (x := self.args.custom_megatron_post_save_hook_path) is not None and dist.get_rank() == 0:
-            self._finalize_pending_async_save()
-
-            from megatron.training.checkpointing import get_checkpoint_name
-
             from miles.utils.function_registry import load_function
 
             checkpoint_dir = get_checkpoint_name(self.args.backend.save, rollout_id, return_base_dir=True)
@@ -1008,6 +1047,18 @@ class MegatronTrainRayActor(TrainRayActor):
             path=path,
             raise_on_error=True,
         )
+
+    @with_logs
+    @timer
+    def export_eval_snapshot(self, rollout_id: int, path: str) -> None:
+        """Export an immutable publication for dedicated GPU-delta eval, otherwise HF."""
+        if not uses_gpu_delta_eval(self.args):
+            self.export_hf(rollout_id, path)
+            return
+        self._heartbeat.bump()
+        # EvalDispatcher onloads the trainer first.
+        with self._gpu_delta_allocations():
+            write_eval_snapshot(self.weight_updater, path, rollout_id, self._get_actor_weight_version())
 
     def _named_actor_weights(self, *, translate_gpu_to_cpu: bool = False, include_model_companion: bool = False):
         return named_params_and_buffers(
@@ -1086,7 +1137,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
                 )
             ):
-                self.weight_updater.update_weights(weight_version=weight_version)
+                self.weight_updater.update_weights(weight_version=weight_version, rollout_id=self._last_rollout_id)
             print_memory("after update_weights")
 
             cell_updaters = self.weight_updater.protocol.cell_updaters_of_cell_id
