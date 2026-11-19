@@ -5,6 +5,11 @@ as 4 ranks on devices 0-3 (chips 0-1), and sglang-torchtpu serves rollouts on de
 engine. The two jobs share the host's slice, so weights move from trainer to engine device to device over ICI
 (`--update-weight-transfer-mode ici`).
 
+`run_qwen3_0_6b_kuberay.py` is the other layout: it submits to an existing KubeRay cluster, launches vllm-torchtpu
+itself and syncs weights with tpu-sync. Its cluster setup and caveats are in
+[KubeRay on GKE (TPU7x)](../../docs/hardware-platforms/google-tpus.md#kuberay-on-gke-tpu7x); the rest of this README
+covers the single-host sglang launchers.
+
 ## Environment
 
 The engine and the trainer share one Python environment. `docker/Dockerfile.tpu` builds it on sglang-torchtpu's

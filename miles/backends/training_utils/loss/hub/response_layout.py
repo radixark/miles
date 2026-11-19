@@ -6,7 +6,7 @@ the layout's `sum_of_sample_mean`; only the layout knows which rows exist. The l
 
 - `PackedSlices`, on a platform with dynamic shapes: the rows are the responses, each sliced out of the packed
   logits and concatenated, `[sum(R)]` on this CP rank.
-- `PaddedRows`, on a platform without dynamic shapes with the torchtitan trainer. TorchTPU compiles every eager
+- `PaddedRows`, on a platform without dynamic shapes with the torchtitan or fsdp trainer. TorchTPU compiles every eager
   op per input shape, and RL responses rarely repeat a length, so slicing compiles thousands of programs per
   step. The rows are the `[T]` rows of the padded microbatch, which the trainer rounds to a few lengths:
   prompt and padding rows are masked out, and a per-row divisor reproduces the per-sample mean and its
@@ -145,10 +145,10 @@ class ResponseLayout(Protocol):
 
 
 def padded_rows_enabled(args: Namespace) -> bool:
-    """Whether losses run on `PaddedRows`: the torchtitan trainer pads every microbatch on such a platform."""
+    """Whether losses run on `PaddedRows`: torchtitan and fsdp pad every microbatch on such a platform."""
     return (
         not platforms.current_platform.dynamic_shapes
-        and args.train_backend == "torchtitan"
+        and args.train_backend in ("torchtitan", "fsdp")
         and args.loss_type in _PADDED_ROWS_LOSS_TYPES
     )
 

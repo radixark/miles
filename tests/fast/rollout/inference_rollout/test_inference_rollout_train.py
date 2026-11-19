@@ -18,6 +18,7 @@ class TestAbort:
             partial_rollout=True,
             sglang_router_ip="router",
             sglang_router_port=30000,
+            rollout_engine="sglang",
         )
         state = SimpleNamespace(args=args, aborted=False)
         sample = SimpleNamespace(response="partial", metadata={})

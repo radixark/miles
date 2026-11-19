@@ -5,7 +5,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args, track_server_cell
+from tests.fast.ray.rollout.conftest import _engine_client_factory, make_args, track_server_cell
 
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.ray.rollout import server_cell as server_cell_module
@@ -135,12 +135,12 @@ def cell_env(monkeypatch):
     async def _compute_addr_info(self) -> CellAddrInfo:
         return _ADDR_INFO
 
-    async def _probe(server_url: str, api_key, timeout: float = 5.0) -> bool:
+    async def _probe(server_url: str, api_key, timeout: float = 5.0, *, engine_type: str = "sglang") -> bool:
         return health["ready"]
 
     monkeypatch.setattr(server_cell_module, "activate_launch_gate", _activate)
     monkeypatch.setattr(server_cell_module, "probe_server_healthy", _probe)
-    monkeypatch.setattr(server_cell_module, "SGLangApiClient", _RecordingApiClient)
+    monkeypatch.setattr(server_cell_module, "make_engine_api_client", _engine_client_factory(_RecordingApiClient))
     monkeypatch.setattr(ServerCell, "_compute_addr_info", _compute_addr_info)
 
     return dict(activated=activated, health=health, memory_calls=_RecordingApiClient.calls)
@@ -152,7 +152,7 @@ def result_api_client(cell_env, monkeypatch):
     _ResultApiClient.calls = []
     _ResultApiClient.results = {}
     _ResultApiClient.errors = {}
-    monkeypatch.setattr(server_cell_module, "SGLangApiClient", _ResultApiClient)
+    monkeypatch.setattr(server_cell_module, "make_engine_api_client", _engine_client_factory(_ResultApiClient))
 
     return _ResultApiClient
 
@@ -462,7 +462,7 @@ class TestTick:
                     raise RuntimeError("engine could not snapshot its weights")
                 await super().check_weights(**kwargs)
 
-        monkeypatch.setattr(server_cell_module, "SGLangApiClient", _FlakyApiClient)
+        monkeypatch.setattr(server_cell_module, "make_engine_api_client", _engine_client_factory(_FlakyApiClient))
         cell = _make_cell(args_overrides=dict(check_weight_update_equal=True))
         await cell.init()
 

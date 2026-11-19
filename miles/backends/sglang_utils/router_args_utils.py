@@ -1,8 +1,13 @@
+from __future__ import annotations
+
 import argparse
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from sglang_router.launch_router import RouterArgs
+try:
+    from sglang_router.launch_router import RouterArgs
+except ImportError:
+    RouterArgs = None  # type: ignore[assignment,misc]
 
 from miles.utils.workers.argv_utils import render_cli_argv
 
@@ -10,8 +15,16 @@ if TYPE_CHECKING:
     from miles.utils.args.runtime import AllConfig
 
 
+def _require_router_args() -> Any:
+    if RouterArgs is None:
+        raise ImportError(
+            "sglang_router is required to launch sgl-router; install sglang-router or pass --router miles."
+        )
+    return RouterArgs
+
+
 def compute_sglang_router_args(
-    args: "AllConfig",
+    args: AllConfig,
     *,
     host: str,
     port: int,
@@ -35,31 +48,34 @@ def compute_sglang_router_args(
     return router_args
 
 
-def resolve_router_policies(args: "AllConfig") -> dict[str, str | None]:
+def resolve_router_policies(args: AllConfig) -> dict[str, str | None]:
     """The policies sgl-router is launched with; None leaves the router's default."""
     return dict(
         # --sglang-router-policy overrides the pass-through --router-policy
-        policy=args.sglang_router_policy or args.router_args["policy"],
+        policy=args.sglang_router_policy or args.router_args.get("policy"),
         # PD runs route their prefill and decode pools by their own policies
-        prefill_policy=args.router_args["prefill_policy"],
-        decode_policy=args.router_args["decode_policy"],
+        prefill_policy=args.router_args.get("prefill_policy"),
+        decode_policy=args.router_args.get("decode_policy"),
     )
 
 
 def router_args_to_argv(router_args: Mapping[str, object]) -> list[str]:
+    router_args_cls = _require_router_args()
     return render_cli_argv(
         router_args,
-        expected_obj=RouterArgs.from_cli_args(argparse.Namespace(**router_args)),
+        expected_obj=router_args_cls.from_cli_args(argparse.Namespace(**router_args)),
         make_parser=_make_cli_parser,
-        from_parsed=RouterArgs.from_cli_args,
+        from_parsed=router_args_cls.from_cli_args,
     )
 
 
-def parse_router_args_argv(argv: list[str]) -> RouterArgs:
-    return RouterArgs.from_cli_args(_make_cli_parser().parse_args(argv))
+def parse_router_args_argv(argv: list[str]) -> Any:
+    router_args_cls = _require_router_args()
+    return router_args_cls.from_cli_args(_make_cli_parser().parse_args(argv))
 
 
 def _make_cli_parser() -> argparse.ArgumentParser:
+    router_args_cls = _require_router_args()
     parser = argparse.ArgumentParser()
-    RouterArgs.add_cli_args(parser)
+    router_args_cls.add_cli_args(parser)
     return parser

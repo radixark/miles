@@ -259,11 +259,43 @@ class RolloutRelatedConfig(BaseConfig):
             ),
         ),
     ] = None
+    rollout_engine: A[
+        Literal["sglang", "vllm"],
+        Arg(
+            type_parser=str,
+            choices=["sglang", "vllm"],
+            help="Inference engine backend launched for rollout generation: 'sglang' (default) or 'vllm'.",
+        ),
+    ] = "sglang"
+    vllm_max_model_len: A[
+        int | None,
+        Arg(help="Maximum model context length passed to vLLM rollout engines (--max-model-len)."),
+    ] = None
+    vllm_gpu_memory_utilization: A[
+        float,
+        Arg(help="Fraction of accelerator HBM reserved by vLLM rollout engines (--gpu-memory-utilization)."),
+    ] = 0.85
+    vllm_max_num_seqs: A[
+        int | None,
+        Arg(help="Maximum concurrent sequences per vLLM rollout engine (--max-num-seqs)."),
+    ] = None
+    vllm_dtype: A[
+        str,
+        Arg(help="Model weight/compute dtype passed to vLLM rollout engines (--dtype)."),
+    ] = "bfloat16"
+    vllm_enforce_eager: A[
+        bool,
+        Arg(help="Disable compilation/graph capture in vLLM rollout engines (--enforce-eager)."),
+    ] = False
+    vllm_extra_args: A[
+        str | None,
+        Arg(help="Extra CLI flags passed verbatim to vLLM rollout engines (shlex-split)."),
+    ] = None
     update_weight_transfer_mode: A[
         str,
         Arg(
             type_parser=None,
-            choices=["broadcast", "broadcast_packed", "p2p", "disk-delta", "ici", "http-lora"],
+            choices=["broadcast", "broadcast_packed", "p2p", "disk-delta", "ici", "tpu-sync", "http-lora"],
             help=(
                 "The method to transfer weights to remote rollout engines during update weight. "
                 "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
@@ -272,6 +304,8 @@ class RolloutRelatedConfig(BaseConfig):
                 "'ici' sends each bucket device to device over the ICI links of a TPU slice the trainer "
                 "shares with one engine (MILES_TPU_SHARED_SLICE on the trainer, SGLANG_TPU_SHARED_SLICE "
                 "on the engine). "
+                "'tpu-sync' transfers sharded TPU weights over host TCP/DRAM using Raiden (tpu_sync), "
+                "supporting cross-slice and sub-host disaggregated TPU runs. "
                 "'http-lora' is LoRA-only: rank 0 hands the adapter to each engine's LoRA load route over "
                 "HTTP (see --http-lora-ship), so the trainer and the engines need not share a vendor, an "
                 "interconnect, or a host."

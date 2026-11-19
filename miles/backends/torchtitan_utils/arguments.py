@@ -150,14 +150,7 @@ def _validate_platform_args(args) -> None:
         raise ValueError(
             f"--log-probs-backend fused is a Triton kernel; on {platform.device_type} use --log-probs-backend torch"
         )
-    # colocate syncs through CUDA IPC, outside the transfer modes
-    modes = platform.weight_transfer_modes
-    if modes is not None and (args.colocate or args.update_weight_transfer_mode not in modes):
-        raise ValueError(
-            f"on {platform.device_type} the trainer syncs weights with --update-weight-transfer-mode "
-            f"{' or '.join(sorted(modes))} to disaggregated engines; got "
-            f"{args.update_weight_transfer_mode!r}{' with --colocate' if args.colocate else ''}"
-        )
+    platform.check_weight_transfer(mode=args.update_weight_transfer_mode, colocate=args.colocate)
     if platform.dynamic_shapes:
         return
     # without dynamic shapes, every packed microbatch is padded to --seq-length, the one compiled shape

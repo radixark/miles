@@ -7,7 +7,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args, track_server_cell
+from tests.fast.ray.rollout.conftest import _engine_client_factory, make_args, track_server_cell
 
 from miles.ray.rollout import server_cell as server_cell_module
 from miles.ray.rollout.cell_state import (
@@ -168,7 +168,7 @@ class TestRolloutCellHealthCheckerProbeEndpoint:
     async def test_the_probe_hits_health_generate_on_the_cells_own_engine(self, monkeypatch):
         """A probe aimed at another endpoint or another engine would never notice this engine dying."""
         _ENDPOINT_CALLS.clear()
-        monkeypatch.setattr(server_cell_module, "SGLangApiClient", _RecordingApiClient)
+        monkeypatch.setattr(server_cell_module, "make_engine_api_client", _engine_client_factory(_RecordingApiClient))
         cell = _make_cell(ft_components=["rollout"])
         cell._state = StateServing(addr_info=_addr_info())
 
@@ -287,7 +287,7 @@ class TestRolloutCellHealthConditionDuringPause:
 class TestRolloutCellHealthCheckerAfterAnError:
     async def test_marking_a_cell_errored_stops_its_checker(self, monkeypatch):
         """A cell taken out of service is never healed back, so its probe loop would poll a dead engine forever."""
-        monkeypatch.setattr(server_cell_module, "SGLangApiClient", _NoopEngineApiClient)
+        monkeypatch.setattr(server_cell_module, "make_engine_api_client", _engine_client_factory(_NoopEngineApiClient))
         cell = _make_cell(ft_components=["rollout"])
         cell.router_api_client = _NoopRouterApiClient()
         cell._state = StateServing(addr_info=_addr_info())
@@ -299,7 +299,7 @@ class TestRolloutCellHealthCheckerAfterAnError:
 
     async def test_an_errored_cell_is_never_probed_again_even_while_the_controller_is_active(self, monkeypatch):
         """The global activeness flips back on after every weight update, and must not revive this cell."""
-        monkeypatch.setattr(server_cell_module, "SGLangApiClient", _NoopEngineApiClient)
+        monkeypatch.setattr(server_cell_module, "make_engine_api_client", _engine_client_factory(_NoopEngineApiClient))
         cell = _make_cell(ft_components=["rollout"], global_activeness=True)
         cell.router_api_client = _NoopRouterApiClient()
         cell._state = StateServing(addr_info=_addr_info())
@@ -337,7 +337,7 @@ class TestRolloutCellHealthCheckerDisposal:
 async def _make_controller_with_serving_cell(
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[InferenceController, ServerCell]:
-    monkeypatch.setattr(server_cell_module, "SGLangApiClient", _NoopEngineApiClient)
+    monkeypatch.setattr(server_cell_module, "make_engine_api_client", _engine_client_factory(_NoopEngineApiClient))
     args: Any = make_args(ft_components=["rollout"], colocate=True)
     controller = InferenceController.__new__(InferenceController)
     controller.args = args

@@ -1,11 +1,47 @@
 import argparse
+from typing import Any
 
-from sglang.srt.server_args import ServerArgs
+try:
+    from sglang.srt.server_args import ServerArgs
+except ImportError:
+    ServerArgs = None  # type: ignore[assignment,misc]
 
 from miles.platforms import current_platform
 from miles.utils.args.utils import config_values
 from miles.utils.http_utils import wrap_ipv6
 from miles.utils.output_store.config import SGLANG_OUTPUT_STORE_FIELDS
+
+# Minimal fallback subset of SGLang ServerArgs registered when `sglang` is not installed
+# (e.g. TPU environments running `--rollout-engine vllm`), so shared args validation and
+# `args.sglang.base_args` / `common_value` / `get_value` callers receive safe defaults.
+_FALLBACK_SERVER_ARGS: tuple[tuple[str, type, Any], ...] = (
+    ("tp_size", int, 1),
+    ("dp_size", int, 1),
+    ("pp_size", int, 1),
+    ("ep_size", int, 1),
+    ("attn_dp_size", int, 1),
+    ("enable_dp_attention", bool, False),
+    ("api_key", str, None),
+    ("speculative_algorithm", str, None),
+    ("enable_metrics", bool, False),
+    ("enable_deterministic_inference", bool, False),
+    ("enable_prefill_only_deterministic_inference", bool, False),
+    ("enable_prefill_weight_versions", bool, False),
+    ("enable_streaming_session", bool, False),
+    ("enable_fp32_lm_head", bool, False),
+    ("enable_token_space_processor", bool, False),
+    ("kv_cache_dtype", str, "auto"),
+    ("cuda_graph_backend_prefill", str, None),
+    ("chat_template", str, None),
+    ("true_on_policy_contract", str, None),
+    ("rl_on_policy_target", str, None),
+    ("decrypted_config_file", str, None),
+    ("mm_attention_backend", str, None),
+    ("moe_runner_backend", str, "auto"),
+    ("moe_a2a_backend", str, "none"),
+    ("tokenizer_worker_num", int, 1),
+    ("dtype", str, "auto"),
+)
 
 
 _SKIPPED_SERVER_ARGS = [
@@ -36,11 +72,44 @@ _SKIPPED_SERVER_ARGS = [
 _EVAL_SKIPPED_SERVER_ARGS = _SKIPPED_SERVER_ARGS + ["tp_size"]
 
 
+def _add_fallback_prefixed_server_args(
+    parser: argparse.ArgumentParser,
+    *,
+    flag_prefix: str,
+    dest_prefix: str,
+    skipped_args: list[str],
+    inherit: bool,
+) -> None:
+    for name, arg_type, default in _FALLBACK_SERVER_ARGS:
+        if name in skipped_args:
+            continue
+        flag = f"--{flag_prefix}-{name.replace('_', '-')}"
+        dest = f"{dest_prefix}{name}"
+        kwargs: dict[str, Any] = {"dest": dest}
+        if arg_type is bool:
+            kwargs["action"] = argparse.BooleanOptionalAction if inherit else "store_true"
+            kwargs["default"] = argparse.SUPPRESS if inherit else default
+        else:
+            kwargs["type"] = arg_type
+            kwargs["default"] = argparse.SUPPRESS if inherit else default
+        parser.add_argument(flag, **kwargs)
+
+
 def _add_prefixed_server_args(parser, *, flag_prefix: str, dest_prefix: str, skipped_args: list[str], inherit: bool):
     """Register ``ServerArgs.add_cli_args`` as ``--{flag_prefix}-*`` -> ``args.{dest_prefix}*``.
 
     ``inherit=True`` defaults to SUPPRESS, so an unset flag leaves no attribute to inherit over.
     """
+    if ServerArgs is None:
+        _add_fallback_prefixed_server_args(
+            parser,
+            flag_prefix=flag_prefix,
+            dest_prefix=dest_prefix,
+            skipped_args=skipped_args,
+            inherit=inherit,
+        )
+        return
+
     old_add_argument = parser.add_argument
 
     def new_add_argument_wrapper(*name_or_flags, **kwargs):

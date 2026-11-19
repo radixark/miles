@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from miles import platforms
 from miles.utils.memory_utils import print_memory
 
 if TYPE_CHECKING:
@@ -92,6 +93,11 @@ def _create_torch_profiler(args: "TrainerConfig", name: str) -> torch.profiler.p
 class _BaseMemoryProfiler:
     @staticmethod
     def create(args):
+        if args.memory_recorder == "torch" and not platforms.current_platform.torch_memory_history:
+            raise ValueError(
+                f"--memory-recorder torch records the CUDA allocator history, which "
+                f"{platforms.current_platform.device_type} does not have; use --memory-recorder memray"
+            )
         c = {
             "torch": _TorchMemoryProfiler,
             "memray": _MemrayMemoryProfiler,

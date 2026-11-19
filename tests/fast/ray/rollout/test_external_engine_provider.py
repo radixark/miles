@@ -51,7 +51,7 @@ def _decode_payload(*, num_gpus: int = 1) -> dict[str, Any]:
 
 
 def _install_payloads(monkeypatch, payloads: dict[str, dict[str, Any]]) -> None:
-    async def _fetch(url: str, *, api_key: str | None) -> dict[str, Any]:
+    async def _fetch(url: str, *, api_key: str | None, engine_type: str = "sglang") -> dict[str, Any]:
         return payloads[url]
 
     monkeypatch.setattr(external_engine_provider_module, "_fetch_server_info_with_retry", _fetch)
@@ -185,7 +185,11 @@ def fake_api_client(monkeypatch):
     _FakeApiClient.calls = []
     _FakeApiClient.api_keys = []
     _FakeApiClient.answers = []
-    monkeypatch.setattr(external_engine_provider_module, "SGLangApiClient", _FakeApiClient)
+    monkeypatch.setattr(
+        external_engine_provider_module,
+        "make_engine_api_client",
+        lambda engine_type, server_url, api_key=None: _FakeApiClient(server_url=server_url, api_key=api_key),
+    )
     return _FakeApiClient
 
 
@@ -234,7 +238,7 @@ class TestStaticInferenceEngineWorkerProvider:
         on ranks the missing engine was supposed to claim."""
         args = _make_args(["host1:8000", "host2:8000"])
 
-        async def _fetch(url: str, *, api_key: str | None) -> dict[str, Any]:
+        async def _fetch(url: str, *, api_key: str | None, engine_type: str = "sglang") -> dict[str, Any]:
             if url == "http://host2:8000":
                 raise TimeoutError(f"External engine {url} did not answer /server_info")
             return _regular_payload()
@@ -264,6 +268,7 @@ class TestStaticInferenceEngineWorkerProvider:
             sglang_api_key="secret",
             needs_offload=False,
             update_weights=True,
+            engine_type="sglang",
         )
 
     async def test_discovery_log_omits_the_engine_api_key(self, monkeypatch, caplog):
@@ -381,7 +386,7 @@ class TestStaticInferenceEngineWorkerProvider:
         }
         provider = await self._make_provider(monkeypatch, args, payloads)
 
-        (prefill_info, _decode_info) = provider.cell_infos
+        prefill_info, _decode_info = provider.cell_infos
         addrs = await provider.get_addrs(worker_name=prefill_info.worker_names[0])
 
         assert addrs["disaggregation_bootstrap"].port == 12090
@@ -425,7 +430,7 @@ class TestStaticInferenceEngineWorkerProvider:
         }
         provider = await self._make_provider(monkeypatch, args, payloads)
 
-        (info, _prefill_info) = provider.cell_infos
+        info, _prefill_info = provider.cell_infos
         meta = _compute_server_cell_meta_from_info(info)
 
         assert (meta.worker_type, meta.num_gpus_per_engine, meta.workers_hash) == (

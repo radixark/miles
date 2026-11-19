@@ -4,8 +4,9 @@ from collections.abc import Iterator
 import torch
 from torch.distributed._functional_collectives import AsyncCollectiveTensor
 
+from miles import platforms
 from miles.backends.fsdp_utils.adaptations.specs import resolve_arch_adapter
-from miles.backends.fsdp_utils.dtensor import gather_full_param
+from miles.backends.fsdp_utils.dtensor import fsdp_dim0_block, gather_full_param, own_contiguous_on_device
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
 from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
 
@@ -48,6 +49,32 @@ class FSDPHfWeightIterator(HfWeightIteratorBase):
                     (hf_name, self._to_sync_dtype(hf_name, tensor))
                     for hf_name, tensor in expand(name, full, self.model)
                 ]
+
+    def iter_local_weights(self) -> Iterator[tuple[str, torch.Tensor, tuple[int, int] | None]]:
+        """Yield every HF weight as this rank holds it, for transfers that reshard themselves (e.g. tpu-sync).
+
+        Yields ``(hf_name, local_tensor, dim0_shard)`` where ``dim0_shard`` is ``(num_shards, shard_idx)`` for an
+        evenly sharded 1-D FSDP ``Shard(0)`` tensor (``ndim >= 2``) with no ``param_transform``, and ``None`` when
+        the full tensor is materialized (1-D tensors, uneven shapes, 2-D meshes, non-sharded or transformed params).
+        Every yielded tensor is contiguous, in sync dtype, on the current accelerator, and owns its storage.
+        """
+        device = platforms.current_platform.current_device()
+        seen_data_ptrs: set[int] = set()
+        for name, param in sorted(self.model.state_dict().items()):
+            expand = self._arch_adapter.param_transform(name, param)
+            block = fsdp_dim0_block(param) if expand is None else None
+            if block is not None:
+                local = self._to_sync_dtype(name, param.to_local())
+                yield name, own_contiguous_on_device(local, device, seen_data_ptrs), block
+                continue
+
+            full = self._to_sync_dtype(name, gather_full_param(param))
+            if expand is None:
+                yield name, own_contiguous_on_device(full, device, seen_data_ptrs), None
+            else:
+                for hf_name, tensor in expand(name, full, self.model):
+                    converted = self._to_sync_dtype(hf_name, tensor)
+                    yield hf_name, own_contiguous_on_device(converted, device, seen_data_ptrs), None
 
     def _to_sync_dtype(self, name: str, tensor: torch.Tensor) -> torch.Tensor:
         target = self._sync_dtypes.get(name)

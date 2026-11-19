@@ -20,6 +20,15 @@ from miles.utils.args.runtime import AllConfig, InferenceControllerConfig, Rollo
 from miles.utils.types import Sample
 
 
+def _engine_client_factory(client_class: type) -> Any:
+    """Stand-in for ``make_engine_api_client`` that builds ``client_class`` for every engine type."""
+
+    def _make(engine_type: str, server_url: str, api_key: str | None = None) -> Any:
+        return client_class(server_url=server_url, api_key=api_key)
+
+    return _make
+
+
 def make_args(**overrides: Any) -> Namespace:
     """Args namespace covering every field touched by ``miles/ray/rollout/``.
     Adding a new field is fine; deleting one likely breaks tests."""
@@ -99,6 +108,7 @@ def make_args(**overrides: Any) -> Namespace:
         use_critic=False,
         megatron_config=None,
         # sglang router
+        rollout_engine="sglang",
         sglang_router_ip=None,
         sglang_router_port=None,
         sglang_router_policy=None,

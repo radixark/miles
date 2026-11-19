@@ -1,14 +1,13 @@
 import os
 import shlex
-from typing import Any, ClassVar
-
-from typing_extensions import Self
+from typing import Any, ClassVar, Self
 
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig
 from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
 from miles.backends.sglang_utils.sglang_scaling_config import ServerGroupScalingConfig
-from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
+from miles.backends.vllm_utils.launch_server import compute_vllm_launch_cmd
+from miles.platforms import current_platform
 from miles.rollout.session.config import compute_session_server_config
 from miles.router.backend import make_router_backend
 from miles.utils.args.configs.scaling import ScalingConfig
@@ -328,7 +327,11 @@ class InferenceEngineSpec(BaseCommandSpec):
         )
 
     def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
-        return compute_inference_engine_env_vars(ctx.args)
+        return compute_inference_engine_env_vars(
+            ctx.args,
+            ctx=ctx,
+            tp_size=self.server_group_config.num_gpus_per_engine,
+        )
 
     def launch_command(self, ctx: LaunchCommandContext) -> str:
         args = ctx.args
@@ -336,11 +339,23 @@ class InferenceEngineSpec(BaseCommandSpec):
         num_workers_per_cell = ctx.num_workers_per_cell
         group_scaling = ctx.scaling.sglang_scaling.group(model_name=self.model_cfg.name, group_index=self.group_index)
         interpreter_prefix = self.interpreter_prefix
-        dist_init = ctx.self_addrs["dist_init"]
         # TODO: only node 0's seed is used by sglang; node != 0 should get node 0's number
         random_seed = (
             args.seed + group_scaling.engine_offset + ctx.cell_index * num_workers_per_cell + ctx.worker_in_cell_index
         )
+        if args.rollout_engine == "vllm":
+            model_path = server_group_config.overrides.get("model_path") or args.hf_checkpoint
+            return compute_vllm_launch_cmd(
+                args,
+                interpreter_prefix=interpreter_prefix,
+                model_path=model_path,
+                tp_size=server_group_config.num_gpus_per_engine,
+                host=ctx.self_addrs["primary"].host,
+                port=ctx.self_addrs["primary"].port,
+                random_seed=random_seed,
+            )
+
+        dist_init = ctx.self_addrs["dist_init"]
         return compute_engine_launch_cmd(
             args=args,
             interpreter_prefix=interpreter_prefix,
@@ -373,6 +388,8 @@ def _compute_inference_engine_scheduling(
         num_gpus_per_node=args.num_gpus_per_node,
         pg_name="rollout",
         pg_slot_offset=group_scaling.gpu_offset,
+        # On TPU the STRICT_PACK rollout PG holds the TPU bundles; the launcher actor claims 0 TPUs.
+        claim_whole_device=False,
     )
 
 
@@ -401,16 +418,11 @@ def _compute_spec_inference_engine(
         f"remaining ranks"
     )
 
-    return InferenceEngineSpec(
-        args=args,
-        model_cfg=model_cfg,
-        server_group_config=server_group_config,
-        group_index=group_index,
-        interpreter_prefix=python_argv_prefix(),
-        name=compute_engine_pool_id(args, model_idx=model_idx, group_index=group_index),
-        category=POOL_CATEGORY_INFERENCE_ENGINE,
-        deploy_component=DeployComponent.INFERENCE,
-        port_infos=[
+    engine_type = args.rollout_engine
+    if engine_type == "vllm":
+        port_infos = [PortInfo(name="primary", static_port=8000, allow_dynamic=True)]
+    else:
+        port_infos = [
             PortInfo(name="primary", static_port=8000, allow_dynamic=True),
             PortInfo(
                 name="dist_init",
@@ -427,25 +439,66 @@ def _compute_spec_inference_engine(
             ),
             PortInfo(name="engine_info_bootstrap", static_port=12000, mode="master", allow_dynamic=True),
             PortInfo(name=GATE_PORT_NAME, static_port=13000, mode="master", allow_dynamic=True),
-        ],
+        ]
+
+    sglang_api_key = server_group_config.overrides.get("api_key", args.sglang.base_args.get("api_key"))
+
+    return InferenceEngineSpec(
+        args=args,
+        model_cfg=model_cfg,
+        server_group_config=server_group_config,
+        group_index=group_index,
+        interpreter_prefix=python_argv_prefix(),
+        name=compute_engine_pool_id(args, model_idx=model_idx, group_index=group_index),
+        category=POOL_CATEGORY_INFERENCE_ENGINE,
+        deploy_component=DeployComponent.INFERENCE,
+        port_infos=port_infos,
         # TODO: reduce complexity around passing around configs later during arguments refactor
         partial_static_meta=StaticMeta(
             values=dict(
                 model_id=model_cfg.name,
                 worker_type=server_group_config.worker_type.value,
                 num_gpus_per_engine=server_group_config.num_gpus_per_engine,
-                sglang_api_key=args.sglang.get_value("api_key", group=server_group_config),
+                sglang_api_key=sglang_api_key,
                 needs_offload=server_group_config.needs_offload,
                 update_weights=model_cfg.update_weights,
+                engine_type=engine_type,
             ),
         ),
     )
 
 
-def compute_inference_engine_env_vars(args) -> dict[str, str]:
-    env_vars = {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
-        key: os.environ.get(key, default_val)
-        for key, default_val in {
+def compute_inference_engine_env_vars(
+    args,
+    *,
+    ctx: WorkerLaunchContext | None = None,
+    tp_size: int | None = None,
+) -> dict[str, str]:
+    engine_type = args.rollout_engine
+    env_vars = dict(current_platform.noset_visible_devices_env_vars)
+
+    effective_tp_size = tp_size if tp_size is not None else args.rollout_num_gpus_per_engine
+    bundle_node_ips = list(ctx.bundle_node_ips) if ctx is not None else []
+    # the cell's first local device, which RayWorkerManager derives once from the placement group
+    subhost_offset = ctx.subhost_device_offset if ctx is not None else 0
+    devices_per_node = (
+        ctx.devices_per_node if (ctx is not None and ctx.devices_per_node > 0) else args.num_gpus_per_node
+    )
+    env_vars.update(
+        current_platform.rollout_worker_env_vars(
+            bundle_node_ips=bundle_node_ips,
+            tp_size=effective_tp_size,
+            devices_per_node=devices_per_node,
+            subhost_offset=subhost_offset,
+        )
+    )
+
+    if engine_type == "vllm":
+        env_vars.setdefault("VLLM_SERVER_DEV_MODE", "1")
+        return env_vars
+
+    if current_platform.triton_kernels:
+        sglang_defaults: dict[str, str] = {
             # DeepEP/NVSHMEM's internal NCCL conflicts with our NCCL and hangs under CUDA graphs.
             "NVSHMEM_DISABLE_NCCL": "1",
             "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
@@ -463,8 +516,15 @@ def compute_inference_engine_env_vars(args) -> dict[str, str]:
             # client: https://github.com/radixark/miles/pull/3982
             "SGLANG_TIMEOUT_KEEP_ALIVE": "60",
             "SGLANG_EXPOSE_OWN_ENV_VARS": "1",
-        }.items()
-    }
+        }
+    else:
+        sglang_defaults = {
+            "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
+            "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
+            "SGLANG_TIMEOUT_KEEP_ALIVE": "60",
+            "SGLANG_EXPOSE_OWN_ENV_VARS": "1",
+        }
+    env_vars.update({key: os.environ.get(key, default_val) for key, default_val in sglang_defaults.items()})
     if args.dumper_enable or args.dumper_inference:
         from miles.utils import dumper_utils
 

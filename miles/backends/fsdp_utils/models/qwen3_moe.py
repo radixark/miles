@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeMLP
 
+from miles import platforms
 from miles.kernels.moe.fused_experts import fused_experts
 
 
@@ -15,10 +16,11 @@ class StandardDispatcher:
         self.local_expert_mapping = None
 
         if self.moe_ep_size > 1:
-            self.local_expert_mapping = torch.full((self.num_experts,), -1, dtype=torch.int32, device="cuda")
+            device = platforms.current_platform.current_device()
+            self.local_expert_mapping = torch.full((self.num_experts,), -1, dtype=torch.int32, device=device)
             self.local_expert_mapping[
                 self.moe_ep_rank * self.num_local_experts : (self.moe_ep_rank + 1) * self.num_local_experts
-            ] = torch.arange(0, self.num_local_experts, dtype=torch.int32, device="cuda")
+            ] = torch.arange(0, self.num_local_experts, dtype=torch.int32, device=device)
 
     def dispatch(self, topk_ids) -> torch.Tensor:
         if self.local_expert_mapping is not None:

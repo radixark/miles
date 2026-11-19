@@ -55,6 +55,7 @@ class SchedulingSpec(FrozenStrictBaseModel):
     pg_name: str | None = None
     pg_slot_offset: int = 0
     pin_to_head: bool = False
+    claim_whole_device: bool = False
 
     def gpus_per_cell(self) -> int:
         return self.num_workers_per_cell * self.num_gpu_slots_per_worker
@@ -105,6 +106,10 @@ class WorkerLaunchContext(FrozenStrictBaseModel):
     worker_in_cell_index: int
     num_workers_per_cell: int
     gpu_ids: list[int]
+    bundle_node_ips: list[str] = []
+    subhost_device_offset: int = 0
+    devices_per_node: int = 0
+    slice_label: str | None = None
 
 
 class WorkerCtorContext(WorkerLaunchContext):

@@ -4,6 +4,7 @@ from argparse import Namespace
 import torch.distributed as dist
 from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
 
+from miles import platforms
 from miles.backends.training_utils.parallel import ParallelState
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.process_group_utils import GroupInfo
@@ -51,7 +52,7 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
     rank = dist.get_rank()
 
     meshes = build_fsdp_meshes(
-        device_type="cuda",
+        device_type=platforms.current_platform.device_type,
         world_size=world_size,
         dp_replicate_size=args.backend.dp_replicate_size,
     )
@@ -67,19 +68,24 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
 
     # The FSDP backend is pure data parallel: every parallelism axis other than dp is
     # a single-rank group, so collectives issued on them are no-ops.
-    self_group = dist.new_group([rank])
+    # Every rank creates all world_size singleton groups in the same order. tpu_dist enforces this, and the
+    # per-rank new_group([rank]) it replaces broke new_group's every-rank contract. The cost is world_size
+    # group creations at startup on every platform.
+    self_group, _ = dist.new_subgroups_by_enumeration([[r] for r in range(world_size)])
+    gloo_group = get_gloo_group()
 
     parallel_state = ParallelState(
         intra_dp=GroupInfo(
             rank=rank,
             size=world_size,
             group=dp_mesh.get_group(),
+            gloo_group=gloo_group,
         ),
         intra_dp_cp=GroupInfo(
             rank=rank,
             size=world_size,
             group=dist.group.WORLD,
-            gloo_group=get_gloo_group(),
+            gloo_group=gloo_group,
         ),
         cp=GroupInfo(
             rank=0,

@@ -17,8 +17,23 @@ import re
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
-from sglang.srt.entrypoints.openai.protocol import Tool
 from tokenizers import Tokenizer
+
+try:
+    from sglang.srt.entrypoints.openai.protocol import Tool
+except ImportError:
+    from pydantic import BaseModel, Field
+
+    class _ToolFunction(BaseModel):
+        description: str | None = None
+        name: str
+        parameters: dict[str, Any] | None = None
+        strict: bool | None = None
+
+    class Tool(BaseModel):
+        type: str = Field(default="function")
+        function: _ToolFunction
+
 
 from miles.utils.chat_template_utils.templates import encoding_dsv32
 

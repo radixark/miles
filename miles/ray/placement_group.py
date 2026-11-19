@@ -8,6 +8,7 @@ import ray
 from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from miles import platforms
 from miles.backends.megatron_utils.megatron_config import MegatronTrainerConfig
 from miles.backends.training_utils.checkpoint.tracker import read_checkpoint_tracker_iteration
 from miles.ray.rollout.inference_controller import UpdatableEngines
@@ -58,15 +59,9 @@ from miles.utils.workers.worker_provider.static import wait_static_addrs_ready
 logger = logging.getLogger(__name__)
 
 
-@ray.remote(num_gpus=1)
-class InfoActor:
-    def get_ip_and_gpu_id(self):
-        return ray.util.get_node_ip_address(), ray.get_gpu_ids()[0]
-
-
 def sort_key(x):
     index, node_identifier, gpu_id = x
-    # Sort by node IP number and then by GPU ID
+    # Sort by node IP number and then by device ID
     try:
         # try to parse it as an IP address.
         ip_address = node_identifier
@@ -86,50 +81,127 @@ def sort_key(x):
 
 
 class PlacementGroupInfo(NamedTuple):
-    pg: PlacementGroup
+    pg: PlacementGroup | None
     pg_reordered_bundle_indices: list[int]
     pg_reordered_gpu_ids: list[int]
+    pg_reordered_node_ips: list[str] = []
+    devices_per_node: int = 0
+    slice_label: str | None = None
 
 
-def _create_placement_group(num_gpus) -> PlacementGroupInfo:
-    """Create a placement group with the specified number of GPUs."""
+def _ray_nodes() -> list[dict]:
+    """`ray.nodes()`, initializing ray first: unlike `placement_group()` or `ray.get`, a state API never auto-inits."""
+    if not ray.is_initialized():
+        ray.init()
+    return ray.nodes()
+
+
+def _resolve_host_devices_per_node(node_ips: list[str], *, fallback: int) -> int:
+    platform = platforms.current_platform
+    if not platform.separate_role_placement_groups or not node_ips:
+        return fallback
+    target_ips = set(node_ips)
+    host_counts = [
+        int(node.get("Resources", {}).get(platform.ray_accelerator_resource, 0))
+        for node in _ray_nodes()
+        if node.get("Alive", True) and node.get("NodeManagerAddress") in target_ips
+    ]
+    host_counts = [count for count in host_counts if count > 0]
+    return max(host_counts) if host_counts else fallback
+
+
+@ray.remote(num_gpus=1)
+class _InfoActor:
+    def get_ip_and_gpu_id(self):
+        return ray.util.get_node_ip_address(), ray.get_gpu_ids()[0]
+
+
+def _probe_bundle_devices(pg: PlacementGroup, num_bundles: int) -> list[tuple[int, str, int]]:
+    """`(bundle_idx, node_ip, device_id)` per bundle, asking an actor in each bundle which device Ray gave it."""
+    info_actors = [
+        _InfoActor.options(
+            scheduling_strategy=PlacementGroupSchedulingStrategy(placement_group=pg, placement_group_bundle_index=i)
+        ).remote()
+        for i in range(num_bundles)
+    ]
+    try:
+        ips_and_ids = ray.get([actor.get_ip_and_gpu_id.remote() for actor in info_actors])
+    finally:
+        for actor in info_actors:
+            ray.kill(actor)
+    return [(i, ip, device_id) for i, (ip, device_id) in enumerate(ips_and_ids)]
+
+
+def _number_bundle_devices(pg: PlacementGroup, num_bundles: int, *, first_device: int) -> list[tuple[int, str, int]]:
+    """`(bundle_idx, node_ip, device_id)` per bundle, numbering each node's bundles from `first_device`.
+
+    For platforms whose devices Ray does not assign (the launcher sets visibility itself), so no device-claiming
+    probe actor is spawned.
+    """
+    bundles_to_node_id = ray.util.placement_group_table(pg)["bundles_to_node_id"]
+    node_ips = {node["NodeID"]: node["NodeManagerAddress"] for node in _ray_nodes() if node["Alive"]}
+    next_device: dict[str, int] = {}
+    placements: list[tuple[int, str, int]] = []
+    for bundle_idx in range(num_bundles):
+        node_id = bundles_to_node_id[bundle_idx]
+        if node_id not in node_ips:
+            raise RuntimeError(f"bundle {bundle_idx} was placed on node {node_id!r}, which is not an alive Ray node")
+        device = next_device.get(node_id, first_device)
+        next_device[node_id] = device + 1
+        placements.append((bundle_idx, node_ips[node_id], device))
+    return placements
+
+
+def _create_placement_group(
+    num_gpus: int,
+    *,
+    role: str = "shared",
+    devices_per_node: int = 0,
+    allocated_slices: dict[str, int] | None = None,
+) -> PlacementGroupInfo:
+    """Create a placement group with the specified number of accelerator devices."""
     if num_gpus == 0:
-        return None, [], []
+        return PlacementGroupInfo(None, [], [])
 
-    bundles = [{"GPU": 1, "CPU": 1} for _ in range(num_gpus)]
-    pg = placement_group(bundles, strategy="PACK")
+    platform = platforms.current_platform
+    slices = allocated_slices if allocated_slices is not None else {}
+    bundles, strategy, slice_label, subhost_offset = platform.create_placement_group_bundles(
+        role=role,
+        num_devices=num_gpus,
+        devices_per_node=devices_per_node,
+        allocated_slices=slices,
+        ray_nodes=_ray_nodes(),
+    )
+    pg = placement_group(bundles, strategy=strategy)
     num_bundles = len(bundles)
 
     ray.get(pg.ready())
-    # use info actor to get the GPU id
-    info_actors = []
-    for i in range(num_bundles):
-        info_actors.append(
-            InfoActor.options(
-                scheduling_strategy=PlacementGroupSchedulingStrategy(
-                    placement_group=pg,
-                    placement_group_bundle_index=i,
-                )
-            ).remote()
-        )
-    gpu_ids = ray.get([actor.get_ip_and_gpu_id.remote() for actor in info_actors])
-    for actor in info_actors:
-        ray.kill(actor)
-
-    bundle_infos = [(i, gpu_ids[i][0], gpu_ids[i][1]) for i in range(num_bundles)]
+    if platform.ray_assigns_device_ids:
+        bundle_infos = _probe_bundle_devices(pg, num_bundles)
+    else:
+        bundle_infos = _number_bundle_devices(pg, num_bundles, first_device=subhost_offset)
     sorted_bundle_infos = sorted(bundle_infos, key=sort_key)
     pg_reordered_bundle_indices = [info[0] for info in sorted_bundle_infos]
-    # Map from logical index -> physical GPU ID
-    pg_reordered_gpu_ids = [gpu_ids[info[0]][1] for info in sorted_bundle_infos]
+    pg_reordered_node_ips = [info[1] for info in sorted_bundle_infos]
+    # Map from logical index -> physical device ID
+    pg_reordered_gpu_ids = [info[2] for info in sorted_bundle_infos]
+    resolved_devices_per_node = _resolve_host_devices_per_node(pg_reordered_node_ips, fallback=devices_per_node)
 
     for i in range(num_bundles):
         actual_bundle_index = pg_reordered_bundle_indices[i]
         logger.info(
             f"  bundle {i:4}, actual_bundle_index: {actual_bundle_index:4}, "
-            f"node: {gpu_ids[actual_bundle_index][0]}, gpu: {gpu_ids[actual_bundle_index][1]}"
+            f"node: {pg_reordered_node_ips[i]}, device: {pg_reordered_gpu_ids[i]}"
         )
 
-    return PlacementGroupInfo(pg, pg_reordered_bundle_indices, pg_reordered_gpu_ids)
+    return PlacementGroupInfo(
+        pg=pg,
+        pg_reordered_bundle_indices=pg_reordered_bundle_indices,
+        pg_reordered_gpu_ids=pg_reordered_gpu_ids,
+        pg_reordered_node_ips=pg_reordered_node_ips,
+        devices_per_node=resolved_devices_per_node,
+        slice_label=slice_label,
+    )
 
 
 def _get_placement_group_layout(args) -> tuple[int, int]:
@@ -158,17 +230,48 @@ def _compute_trainer_num_gpus(args) -> int:
 
 def create_placement_groups(args) -> dict[str, PlacementGroupInfo]:
     """Create placement groups for actor and rollout engines."""
+    platform = platforms.current_platform
+    if platform.separate_role_placement_groups:
+        num_gpus, rollout_offset = _get_placement_group_layout(args)
+        actor_devices, rollout_devices = rollout_offset, num_gpus - rollout_offset
+        allocated_slices: dict[str, int] = {}
+        logger.info(
+            f"Creating separate placement groups for actor ({actor_devices}) and rollout ({rollout_devices}) "
+            f"{platform.ray_accelerator_resource}s..."
+        )
+        actor_pg = _create_placement_group(
+            actor_devices,
+            role="actor",
+            devices_per_node=args.actor_num_gpus_per_node,
+            allocated_slices=allocated_slices,
+        )
+        rollout_pg = _create_placement_group(
+            rollout_devices,
+            role="rollout",
+            devices_per_node=args.num_gpus_per_node,
+            allocated_slices=allocated_slices,
+        )
+        ans = {"actor": actor_pg, "rollout": rollout_pg}
+        if args.use_critic:
+            ans["critic"] = ans["actor"]
+        return ans
 
     num_gpus, rollout_offset = _get_placement_group_layout(args)
 
-    logger.info(f"Creating placement group with {num_gpus} GPUs...")
-    pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids = _create_placement_group(num_gpus)
+    logger.info(f"Creating placement group with {num_gpus} {platform.ray_accelerator_resource}s...")
+    actor_pg = _create_placement_group(num_gpus)
 
-    rollout_pg_reordered_bundle_indices = actor_pg_reordered_bundle_indices[rollout_offset:]
-    rollout_pg_reordered_gpu_ids = actor_pg_reordered_gpu_ids[rollout_offset:]
+    rollout_pg = PlacementGroupInfo(
+        pg=actor_pg.pg,
+        pg_reordered_bundle_indices=actor_pg.pg_reordered_bundle_indices[rollout_offset:],
+        pg_reordered_gpu_ids=actor_pg.pg_reordered_gpu_ids[rollout_offset:],
+        pg_reordered_node_ips=actor_pg.pg_reordered_node_ips[rollout_offset:],
+        devices_per_node=actor_pg.devices_per_node,
+        slice_label=actor_pg.slice_label,
+    )
     ans = {
-        "actor": PlacementGroupInfo(pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids),
-        "rollout": PlacementGroupInfo(pg, rollout_pg_reordered_bundle_indices, rollout_pg_reordered_gpu_ids),
+        "actor": actor_pg,
+        "rollout": rollout_pg,
     }
     if args.use_critic:
         ans["critic"] = ans["actor"]

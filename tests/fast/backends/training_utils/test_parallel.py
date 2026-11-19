@@ -133,9 +133,11 @@ def test_the_degree_one_axes_get_their_own_single_rank_group():
     ):
         dist.get_world_size.return_value = 4
         dist.get_rank.return_value = 3
-        dist.new_group.return_value = self_group
+        dist.new_subgroups_by_enumeration.return_value = (self_group, [object(), object(), object(), self_group])
         state = parallel_module.create_fsdp_parallel_state(Namespace(backend=Namespace(dp_replicate_size=1)))
-    dist.new_group.assert_called_once_with([3])
+    # every rank creates every singleton group, in the same order (tpu_dist requires it)
+    dist.new_subgroups_by_enumeration.assert_called_once_with([[0], [1], [2], [3]])
+    dist.new_group.assert_not_called()
     for axis in (state.pp, state.ep, state.etp, state.indep_dp, state.tp, state.cp):
         assert axis.group is self_group
         assert (axis.rank, axis.size) == (0, 1)

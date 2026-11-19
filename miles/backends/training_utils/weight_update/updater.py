@@ -16,8 +16,7 @@ import torch
 import torch.distributed as dist
 from tqdm import tqdm
 
-from miles.backends.sglang_utils.arguments import sglang_attention_dp_enabled
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.sglang_utils.sglang_api_client import EngineApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.conn_status import ConnStatusManager
 from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
@@ -88,7 +87,7 @@ class WeightUpdater:
 
     def connect_rollout_engines(
         self,
-        rollout_engines: Sequence[SGLangApiClient],
+        rollout_engines: Sequence[EngineApiClient],
         engine_gpu_counts: Sequence[int] | None,
         engine_gpu_offsets: Sequence[int] | None,
         engine_cell_ids: Sequence[str],
@@ -124,7 +123,7 @@ class WeightUpdater:
         self.conn_status.mark_reconnected(info.snapshot_cell_id_to_hashes)
         dist.barrier(group=get_gloo_group())
 
-    def verify_engine_version(self, rollout_engines: Sequence[SGLangApiClient], *, weight_version: int) -> None:
+    def verify_engine_version(self, rollout_engines: Sequence[EngineApiClient], *, weight_version: int) -> None:
         if not rollout_engines:
             return
         engine = random.choice(list(rollout_engines))
@@ -166,18 +165,15 @@ class WeightUpdater:
         # a full gather gives rank 0 the whole adapter; a PP-local sync splits it across senders
         records_checksums = protocol.is_sender and (driver or not self._hf_weight_iterator.placement.gather_pp)
         with timer("update_weights_implementation"):
-            pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
-            for bucket in self._hf_weight_iterator.iter_hf_weights(
-                self.weights_getter(),
-                include_base=sync_base,
-                adapters=adapters,
-                materialize=protocol.is_sender,
-            ):
-                if protocol.is_sender:
-                    if checksums is not None and records_checksums:
-                        record_lora_checksums(bucket, checksums)
-                    protocol.send_bucket(bucket)
-                    pbar.update(1)
+            if protocol.streams_buckets:
+                self._stream_buckets(
+                    sync_base=sync_base,
+                    adapters=adapters,
+                    checksums=checksums,
+                    records_checksums=records_checksums,
+                )
+            else:
+                protocol.transfer(self._hf_weight_iterator)
             protocol.after_base_weights()
             dist.barrier(group=get_gloo_group())
         if checksums is not None:
@@ -195,6 +191,28 @@ class WeightUpdater:
         protocol.after_engines_resumed()
         return True
 
+    def _stream_buckets(
+        self,
+        *,
+        sync_base: bool,
+        adapters: list[tuple[str, object]],
+        checksums: dict[str, dict[str, str]] | None,
+        records_checksums: bool,
+    ) -> None:
+        protocol = self.protocol
+        pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
+        for bucket in self._hf_weight_iterator.iter_hf_weights(
+            self.weights_getter(),
+            include_base=sync_base,
+            adapters=adapters,
+            materialize=protocol.is_sender,
+        ):
+            if protocol.is_sender:
+                if checksums is not None and records_checksums:
+                    record_lora_checksums(bucket, checksums)
+                protocol.send_bucket(bucket)
+                pbar.update(1)
+
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)
 
@@ -208,6 +226,11 @@ class WeightUpdater:
     def _register_new_lora_adapters(self, rollout_engines, adapters: list[tuple[str, object]]) -> None:
         """Register adapters the current engine set has not seen, with their
         per-adapter config; eager so the engine validates rank before any bytes move."""
+        if not adapters:
+            return
+        # Deferred: sglang_utils.arguments imports sglang, which is absent on vLLM-only environments.
+        from miles.backends.sglang_utils.arguments import sglang_attention_dp_enabled
+
         for lora_name, adapter in adapters:
             if lora_name in self._registered_adapters:
                 continue

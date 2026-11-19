@@ -10,6 +10,7 @@ from typing import Any
 
 import yaml
 
+from miles import platforms
 from miles.backends.fsdp_utils.config import FsdpArgsNamespace
 from miles.backends.megatron_utils.megatron_config import (
     ACTOR_ROLE,
@@ -507,14 +508,17 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
 
 
 _DEFAULT_GENERATE_FUNCTION_PATH = "miles.rollout.generate_hub.single_turn.generate"
-# built-in generate functions that never read a sample's metadata["agent_config"]
-_GENERATE_FUNCTIONS_WITHOUT_AGENT_CONFIG = frozenset(
+_VLLM_GENERATE_FUNCTION_PATH = "miles.rollout.generate_hub.vllm_single_turn.generate"
+# built-in generate functions that speak SGLang's /generate protocol, which vLLM engines do not serve
+_SGLANG_GENERATE_FUNCTION_PATHS = frozenset(
     {
         _DEFAULT_GENERATE_FUNCTION_PATH,
         "miles.rollout.generate_hub.multi_turn.generate",
         "miles.rollout.sglang_rollout.generate",
     }
 )
+# built-in generate functions that never read a sample's metadata["agent_config"]
+_GENERATE_FUNCTIONS_WITHOUT_AGENT_CONFIG = _SGLANG_GENERATE_FUNCTION_PATHS | {_VLLM_GENERATE_FUNCTION_PATH}
 _DEFAULT_DATA_SOURCE_PATH = DataConfig.model_fields["data_source_path"].default.path
 _DATASET_AGENT_FIELDS = ("agent", "custom_agent_function_path", "max_seq_len")
 
@@ -1139,6 +1143,50 @@ def _check_multimodal_token_space_processing_args(args, *, sglang: SglangConfig)
     RolloutEngineProcessorArgs.from_sglang_config(sglang, hf_checkpoint=args.hf_checkpoint)
 
 
+def _validate_rollout_engine_and_platform_args(args) -> None:
+    """Startup checks for the accelerator platform, the tpu-sync transfer mode, and the vLLM rollout engine."""
+    platforms.current_platform.check_weight_transfer(mode=args.update_weight_transfer_mode, colocate=args.colocate)
+    if args.update_weight_transfer_mode == "tpu-sync":
+        if args.train_backend not in ("torchtitan", "fsdp"):
+            raise ValueError(
+                f"--update-weight-transfer-mode tpu-sync needs --train-backend torchtitan or fsdp, "
+                f"got {args.train_backend!r}"
+            )
+        if args.prefill_num_servers is not None:
+            raise ValueError("--update-weight-transfer-mode tpu-sync does not support PD disaggregation")
+        if args.lora_rank > 0:
+            raise ValueError("--update-weight-transfer-mode tpu-sync does not sync LoRA adapters")
+        if args.sglang_speculative_algorithm is not None:
+            raise ValueError("--update-weight-transfer-mode tpu-sync does not sync speculative draft weights")
+        if args.sglang_pp_size != 1:
+            raise ValueError("--update-weight-transfer-mode tpu-sync needs --sglang-pp-size 1")
+    if args.rollout_engine == "vllm":
+        _validate_vllm_rollout_engine_args(args)
+
+
+def _validate_vllm_rollout_engine_args(args) -> None:
+    """Reject features the vLLM rollout path would otherwise silently ignore."""
+    generate_path = getattr(  # config-access-exempt: still a path string before custom hooks resolve
+        args.custom_generate_function_path, "path", args.custom_generate_function_path
+    )
+    unsupported = [
+        (args.train_backend not in ("fsdp", "torchtitan"), f"--train-backend {args.train_backend}"),
+        (args.prefill_num_servers is not None, "PD disaggregation (--prefill-num-servers)"),
+        (args.rollout_top_logprobs_num > 0, "--rollout-top-logprobs-num > 0"),
+        (args.use_rollout_routing_replay, "--use-rollout-routing-replay"),
+        (
+            args.check_weight_update_equal,
+            "--check-weight-update-equal (also set by --ci-test; pass --ci-disable-weight-update-checker)",
+        ),
+        (
+            generate_path in _SGLANG_GENERATE_FUNCTION_PATHS,
+            f"the SGLang generate function {generate_path} (use {_VLLM_GENERATE_FUNCTION_PATH})",
+        ),
+    ]
+    if rejected := [name for bad, name in unsupported if bad]:
+        raise ValueError(f"--rollout-engine vllm does not support: {'; '.join(rejected)}")
+
+
 def miles_validate_args(args):
     from miles.backends.training_utils.weight_update.session import weight_update_selector
 
@@ -1147,8 +1195,21 @@ def miles_validate_args(args):
         _apply_custom_config(args, yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {})
 
     validate_length_penalty_args(args)
+    if args.rollout_engine == "vllm":
+        if args.router in (RouterKind.SGLANG, RouterKind.SGLANG.value):
+            # vLLM engines do not serve sgl-router's protocol; override the global --router=sglang default
+            # to MilesRouter so callers only need to pass --rollout-engine vllm.
+            args.router = RouterKind.MILES
+            logger.info("--rollout-engine vllm: defaulting --router to miles")
+        if args.custom_generate_function_path is None:
+            args.custom_generate_function_path = _VLLM_GENERATE_FUNCTION_PATH
+            logger.info(
+                "--rollout-engine vllm: defaulting --custom-generate-function-path to "
+                f"{args.custom_generate_function_path}"
+            )
+
     mode = args.update_weight_transfer_mode
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "ici", "http-lora"):
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "ici", "tpu-sync", "http-lora"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
@@ -1581,6 +1642,7 @@ def miles_validate_args(args):
         args.check_weight_update_equal = True
     if args.check_weight_transfer_checksum is None:
         args.check_weight_transfer_checksum = args.ci_test
+    _validate_rollout_engine_and_platform_args(args)
 
     if args.check_weight_update_selector is None:
         # reset_tensors scrambles every tensor it covers, so it must cover only what the sync rewrites
