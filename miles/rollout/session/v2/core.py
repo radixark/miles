@@ -29,6 +29,7 @@ from miles.rollout.session.v2.session_state import (
     prepare_token_ids_and_request_args,
 )
 from miles.rollout.session.v2.utils import build_leaf_material, tree_metadata
+from miles.utils.chat_template_utils.tito_tokenizer import extract_template_args
 from miles.utils.function_registry import load_function
 from miles.utils.output_store.plan import StorePlanError
 
@@ -243,6 +244,7 @@ class SessionCoreV2(SessionCore):
             choice=choice,
             assistant_message=assistant_message,
             completion_token_ids=completion_token_ids,
+            template_args=extract_template_args(request_body),
         )
 
         # --- Phase 3: update state (lock held briefly) ---

@@ -39,6 +39,7 @@ from miles.rollout.session.samples.merge import (
 )
 from miles.rollout.session.store_refs import response_store_ref
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
+from miles.utils.chat_template_utils.tito_tokenizer import extract_template_args
 from miles.utils.output_store.plan import StorePlanError
 
 logger = logging.getLogger(__name__)
@@ -451,6 +452,7 @@ class SessionCore:
             choice=choice,
             assistant_message=assistant_message,
             completion_token_ids=completion_token_ids,
+            template_args=extract_template_args(request_body),
         )
 
         # --- Phase 3: update state (lock held briefly) ---
