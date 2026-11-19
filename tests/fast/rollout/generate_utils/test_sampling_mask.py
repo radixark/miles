@@ -138,7 +138,7 @@ def test_filtered_request_without_replay_asks_for_the_sampler_logprobs(sampling,
 
 
 def test_filtered_request_without_replay_reads_the_sampler_logprobs():
-    """A response to selected mode without the mask stores output_token_sampling_logprobs."""
+    """A response to selected mode without the mask stores output_token_sampling_logprobs, one per output token."""
     sample = Sample(tokens=[1, 2], response="", response_length=0)
     output = {
         "text": "ab",
@@ -160,9 +160,6 @@ def test_filtered_request_without_replay_reads_the_sampler_logprobs():
 
     assert sample.rollout_log_probs == [-0.5, -1.25]
     assert sample.rollout_sampling_mask is None
-
-
-def test_selected_sampling_logprobs_must_cover_every_output_token():
     with pytest.raises(ValueError, match="1 values for 2 output tokens"):
         read_selected_sampling_logprobs({"output_token_sampling_logprobs": [-0.5]}, [10, 11])
 

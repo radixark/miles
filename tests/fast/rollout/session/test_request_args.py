@@ -188,11 +188,15 @@ class TestPrepareChatRequest:
         assert prepared.body.get(REPLAY_LAYER_SPLITS_KEY) == ([12, 24, 36] if expected else None)
 
     @pytest.mark.parametrize(
-        ("sampling", "mode"),
-        [({"top_p": 1.0, "top_k": 32}, "selected"), ({"top_p": 1.0, "top_k": -1}, None)],
-        ids=["filtered", "unfiltered"],
+        ("sampling", "evaluation", "mode"),
+        [
+            ({"top_p": 1.0, "top_k": 32}, False, "selected"),
+            ({"top_p": 1.0, "top_k": -1}, False, None),
+            ({"top_p": 1.0, "top_k": 32}, True, None),
+        ],
+        ids=["filtered", "unfiltered", "evaluation"],
     )
-    def test_filtered_request_without_replay_asks_for_the_sampler_logprobs(self, sampling, mode):
+    def test_filtered_request_without_replay_asks_for_the_sampler_logprobs(self, sampling, evaluation, mode):
         """Without replay a filtered training request returns no mask but asks for the
         sampler's own log-probs; a client cannot choose the mode."""
         prepared = prepare_chat_request(
@@ -200,9 +204,10 @@ class TestPrepareChatRequest:
             self._tito(),
             config=make_session_server_config(rollout_top_k=32),
             turn_args=None,
+            evaluation=evaluation,
         )
 
-        assert "return_sampling_mask" not in prepared.body
+        assert not prepared.body.get("return_sampling_mask")
         assert prepared.body.get("sampling_logprobs_mode") == mode
 
     def test_unbounded_run_rejects_bounded_training_request(self):
@@ -213,17 +218,6 @@ class TestPrepareChatRequest:
                 config=make_session_server_config(),
                 turn_args=None,
             )
-
-    def test_evaluation_requests_no_sampler_logprobs(self):
-        prepared = prepare_chat_request(
-            {"temperature": 1.0, "top_p": 0.9, "top_k": 32},
-            self._tito(),
-            config=make_session_server_config(),
-            turn_args=None,
-            evaluation=True,
-        )
-
-        assert "sampling_logprobs_mode" not in prepared.body
 
     @pytest.mark.parametrize("client_tools", [None, [], [{"function": {"name": "override"}}]])
     def test_launch_tools_stay_top_level_and_client_tools_override_them(self, client_tools):
