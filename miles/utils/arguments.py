@@ -1161,6 +1161,8 @@ def miles_validate_args(args):
         )
     validate_dashboard_args(args)
     validate_miles_ext_kernels_args(args)
+    if args.trainer_cpu_threads is not None and args.trainer_cpu_threads < 1:
+        raise ValueError(f"--trainer-cpu-threads must be >= 1, got {args.trainer_cpu_threads}")
 
     args.ft_components = _resolve_ft_components(args)
     assert "rollout" not in args.ft_components or supports_partial_target_weight_update(args), (

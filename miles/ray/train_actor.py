@@ -3,7 +3,7 @@ import functools
 import logging
 import os
 import random
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Literal
@@ -94,11 +94,52 @@ def _get_nvml_pci_bus_id(device: int) -> str:
     return f"{props.pci_domain_id:08X}:{props.pci_bus_id:02X}:{props.pci_device_id:02X}.0"
 
 
+_MAX_AUTO_TRAINER_CPU_THREADS = 48
+
+
+def _available_host_cpus() -> int:
+    try:
+        count = len(os.sched_getaffinity(0))
+        if count > 0:
+            return count
+    except (AttributeError, OSError):
+        pass
+    return os.cpu_count() or 1
+
+
+def resolve_trainer_cpu_threads(
+    *,
+    trainer_cpu_threads: int | None,
+    optimizer_cpu_offload: bool,
+    train_env_vars: Mapping[str, str] | str,
+    avail_cpus: int,
+    workers_on_node: int,
+    numa_cpus: int | None = None,
+    max_auto_threads: int = _MAX_AUTO_TRAINER_CPU_THREADS,
+) -> int | None:
+    # Ray reserves num_cpus=0.4 per trainer actor so rollout engines can co-schedule, which makes Ray set
+    # OMP_NUM_THREADS=1 and leaves torch with 1 intra-op thread unless --optimizer-cpu-offload or --trainer-cpu-threads
+    # asks for host parallelism.
+    if trainer_cpu_threads is not None:
+        return trainer_cpu_threads
+    if isinstance(train_env_vars, Mapping) and "OMP_NUM_THREADS" in train_env_vars:
+        return None
+    if not optimizer_cpu_offload:
+        return None
+    per_worker_cpus = avail_cpus // max(1, workers_on_node)
+    threads = max(1, min(per_worker_cpus, max_auto_threads))
+    if numa_cpus is not None and numa_cpus > 0:
+        threads = max(1, min(threads, numa_cpus))
+    return threads
+
+
 class TrainRayActor(NodeProbeMixin):
     # The trainer's token-space processor, built once in load_hf_assets when --multimodal-token-space-processing is on.
     token_space_processor: TrainerProcessor | None = None
     # This worker's client of the SGLang output store; set in __init__ with --use-output-store.
     output_store: "OutputStore | None" = None
+    # Local trainer worker count on this host/pod from the launch context; None in tests constructing via __new__.
+    _num_workers_per_node: int | None = None
 
     def __init__(
         self,
@@ -108,6 +149,7 @@ class TrainRayActor(NodeProbeMixin):
         rank: int,
         role: Literal["actor", "critic"],
         cell_index: int,
+        num_workers_per_node: int | None = None,
     ):
         self._init_once = InitOnce(type(self).__name__)
 
@@ -115,6 +157,7 @@ class TrainRayActor(NodeProbeMixin):
         self._heartbeat = SimpleHeartbeat()
         self._world_size = world_size
         self._rank = rank
+        self._num_workers_per_node = num_workers_per_node
         if SNAPSHOT_TESTING_ENABLED:
             self._config_snapshot_train_recorded = False
 
@@ -264,6 +307,11 @@ class TrainRayActor(NodeProbeMixin):
             args.backend.world_size = dist.get_world_size()
         rebind_env_reporting(args)
 
+        # Sample container/host CPU affinity before NVML pins this process to a single socket's NUMA node, so
+        # dividing by node-wide local trainer workers does not halve the per-worker thread budget on multi-socket hosts.
+        host_avail_cpus = _available_host_cpus()
+        numa_bound = False
+
         try:
             if not current_platform.nvml_numa_affinity:
                 logger.info(f"{current_platform.device_type} trainer: no NVML device to bind NUMA affinity to")
@@ -282,6 +330,7 @@ class TrainRayActor(NodeProbeMixin):
                 handle = pynvml.nvmlDeviceGetHandleByPciBusId(bus_id)
                 nvml_index = pynvml.nvmlDeviceGetIndex(handle)
                 pynvml.nvmlDeviceSetCpuAffinity(handle)
+                numa_bound = True
 
                 logger.info(f"Set NUMA affinity for cuda:{device} (NVML index {nvml_index}, PCI bus id {bus_id})")
                 pynvml.nvmlShutdown()
@@ -290,6 +339,27 @@ class TrainRayActor(NodeProbeMixin):
             logger.info("Warning: pynvml not available, skipping NUMA affinity setup")
         except Exception as e:
             logger.info(f"Warning: Failed to set NUMA affinity: {e}")
+
+        workers_on_node = (
+            self._num_workers_per_node if self._num_workers_per_node is not None else args.backend.world_size
+        )
+        cpu_threads = resolve_trainer_cpu_threads(
+            trainer_cpu_threads=args.trainer_cpu_threads,
+            optimizer_cpu_offload=args.backend.optimizer_cpu_offload,
+            train_env_vars=args.train_env_vars,
+            avail_cpus=host_avail_cpus,
+            workers_on_node=workers_on_node,
+            numa_cpus=_available_host_cpus() if numa_bound else None,
+        )
+        if cpu_threads is not None:
+            torch.set_num_threads(cpu_threads)
+            if args.backend.rank == 0:
+                source = (
+                    "--trainer-cpu-threads"
+                    if args.trainer_cpu_threads is not None
+                    else f"--optimizer-cpu-offload auto ({host_avail_cpus} host CPUs / {workers_on_node} local workers)"
+                )
+                logger.info(f"Configured PyTorch intra-op CPU threads to {cpu_threads} ({source})")
 
         self._heartbeat.bump()
 

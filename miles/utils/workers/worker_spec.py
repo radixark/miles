@@ -105,6 +105,7 @@ class WorkerLaunchContext(FrozenStrictBaseModel):
     worker_in_cell_index: int
     num_workers_per_cell: int
     gpu_ids: list[int]
+    num_workers_per_node: int | None = None
 
 
 class WorkerCtorContext(WorkerLaunchContext):
