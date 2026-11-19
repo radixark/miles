@@ -148,14 +148,96 @@ async def test_get_weight_version_falls_back_to_the_legacy_endpoint(client, monk
     ]
 
 
-async def test_release_memory_occupation_flushes_the_cache_first(client, recorder):
-    """Offload is only safe once the working queue is drained."""
+async def test_release_memory_occupation_aborts_then_flushes_the_cache_first(client, recorder):
+    """Offload is only safe once the working queue is drained: whatever still
+    runs is aborted, then the cache is flushed, then memory is released."""
     await client.release_memory_occupation(tags=["weights"])
+
+    assert [(verb, url) for verb, url, _ in recorder.calls] == [
+        ("post", f"{SERVER_URL}/abort_request"),
+        ("get", f"{SERVER_URL}/flush_cache"),
+        ("post", f"{SERVER_URL}/release_memory_occupation"),
+    ]
+    assert recorder.calls[0][2]["json"] == {"abort_all": True}
+
+
+_PENDING = "Cache not flushed because there are pending requests. #queue-req: 0, #running-req: 1"
+
+
+class _EngineWithASurvivor:
+    """An engine whose running request outlived the rollout's abort: the
+    flush is refused until an abort_all reaches it (dies_on_abort) or forever."""
+
+    def __init__(self, dies_on_abort: int):
+        self.dies_on_abort = dies_on_abort
+        self.aborts = 0
+        self.flushes = 0
+        self.calls: list[str] = []
+
+    async def post(self, url, **kwargs):
+        self.calls.append("post " + url.rsplit("/", 1)[1])
+        if url.endswith("/abort_request"):
+            self.aborts += 1
+            assert kwargs["json"] == {"abort_all": True}
+        return _FakeResponse()
+
+    async def get(self, url, **kwargs):
+        self.calls.append("get " + url.rsplit("/", 1)[1])
+        self.flushes += 1
+        if self.aborts >= self.dies_on_abort:
+            return _FakeResponse()
+        return _FakeResponse(status_code=400, text=_PENDING)
+
+
+async def test_release_memory_occupation_keeps_paused_requests_without_abort(client, recorder):
+    """Under a driver-owned pause (--fully-async --colocate) the retracted
+    requests must survive the offload: no abort, the paused engine flushes
+    with them waiting, then memory is released."""
+    await client.release_memory_occupation(tags=["kv_cache"], abort_running=False)
 
     assert [(verb, url) for verb, url, _ in recorder.calls] == [
         ("get", f"{SERVER_URL}/flush_cache"),
         ("post", f"{SERVER_URL}/release_memory_occupation"),
     ]
+
+
+async def test_release_memory_occupation_re_aborts_a_request_that_survived_the_first_abort(client, monkeypatch):
+    """miles-legal-cd2t32k (2026-10-18): one engine kept a request decoding
+    through the rollout's abort_all; the 60 x 1 s flush poll then timed out
+    and the actor died. The flush now re-posts abort_all every
+    FLUSH_CACHE_REABORT_EVERY refusals, and an engine whose request dies on
+    the second abort is offloaded."""
+    engine = _EngineWithASurvivor(dies_on_abort=2)
+    monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: engine)
+    monkeypatch.setattr(asyncio, "sleep", _noop_sleep)
+
+    await client.release_memory_occupation(tags=["weights"])
+
+    every = sglang_api_client.FLUSH_CACHE_REABORT_EVERY
+    assert engine.aborts == 2
+    assert engine.flushes == every + 1
+    assert engine.calls[0] == "post abort_request"
+    assert engine.calls[every + 1] == "post abort_request"
+    assert engine.calls[-1] == "post release_memory_occupation"
+
+
+async def test_release_memory_occupation_reports_a_request_that_never_dies(client, monkeypatch):
+    """A request no abort ends is still fatal, and the error says how many
+    aborts were posted and what the engine answered."""
+    engine = _EngineWithASurvivor(dies_on_abort=10**9)
+    monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: engine)
+    monkeypatch.setattr(asyncio, "sleep", _noop_sleep)
+
+    with pytest.raises(TimeoutError) as caught:
+        await client.release_memory_occupation(tags=["weights"])
+
+    attempts, every = sglang_api_client.FLUSH_CACHE_ATTEMPTS, sglang_api_client.FLUSH_CACHE_REABORT_EVERY
+    assert engine.flushes == attempts
+    assert engine.aborts == 1 + attempts // every
+    message = str(caught.value)
+    assert f"after {attempts} attempts and {attempts // every} abort_all posts" in message
+    assert "#running-req: 1" in message
+    assert "release_memory_occupation" not in engine.calls
 
 
 async def test_destroy_weights_update_group_swallows_request_errors(client, monkeypatch):
@@ -840,7 +922,8 @@ class TestWeightControlPayloads:
         """Multi-stage offload releases weights and kv_cache separately."""
         await client.release_memory_occupation(tags=["weights", "kv_cache"])
 
-        assert recorder.calls[1][2]["json"] == {"tags": ["weights", "kv_cache"]}
+        release = [kwargs for _, url, kwargs in recorder.calls if url.endswith("/release_memory_occupation")]
+        assert [kwargs["json"] for kwargs in release] == [{"tags": ["weights", "kv_cache"]}]
 
 
 class TestStartProfile:
