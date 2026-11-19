@@ -40,6 +40,10 @@ from miles.rollout.base_types import (
 from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
+from miles.rollout.generate_utils.sampling_mask import (
+    configure_sampling_logprobs_request,
+    read_selected_sampling_logprobs,
+)
 from miles.router.backend import make_router_backend
 from miles.utils.args.custom_view import ImmutableNamespace
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, is_lora_enabled
@@ -348,6 +352,7 @@ class MilesSGLangTransport:
             "sampling_params": self._sampling_params(body.get("sampling_params") or {}, len(prompt_ids)),
             "return_logprob": True,
         }
+        configure_sampling_logprobs_request(payload, payload["sampling_params"])
         if is_lora_enabled(self.args):
             payload["lora_path"] = LORA_ADAPTER_NAME
         if body.get("priority") is not None:
@@ -367,7 +372,11 @@ class MilesSGLangTransport:
         meta_info = dict(output.get("meta_info") or {})
         token_logprobs = list(meta_info.get("output_token_logprobs") or [])
         completion_ids = [int(item[1]) for item in token_logprobs]
-        completion_logprobs = [float(item[0]) for item in token_logprobs]
+        completion_logprobs = (
+            read_selected_sampling_logprobs(meta_info, completion_ids)
+            if payload.get("sampling_logprobs_mode") == "selected"
+            else [float(item[0]) for item in token_logprobs]
+        )
         expected = int(meta_info.get("completion_tokens", len(completion_ids)))
         if len(completion_ids) != expected:
             raise RuntimeError(

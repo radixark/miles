@@ -7,6 +7,10 @@ import re
 from qa_em_format import compute_score_em
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
+from miles.rollout.generate_utils.sampling_mask import (
+    configure_sampling_logprobs_request,
+    read_selected_sampling_logprobs,
+)
 from miles.utils.http_utils import post
 from miles.utils.types import Sample
 
@@ -166,6 +170,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         # Add log probability collection if enabled
         if SEARCH_R1_CONFIGS["return_logprob"]:
             payload["return_logprob"] = True
+            configure_sampling_logprobs_request(payload, sampling_params)
 
         output = await post(url, payload)
 
@@ -189,7 +194,11 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             # This ensures perfect alignment between tokens and log probs
             # output_token_logprobs format: [[log_prob, token_id, ...], ...]
             cur_response_token_ids = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
-            cur_response_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
+            cur_response_log_probs = (
+                read_selected_sampling_logprobs(output["meta_info"], cur_response_token_ids)
+                if payload.get("sampling_logprobs_mode") == "selected"
+                else [item[0] for item in output["meta_info"]["output_token_logprobs"]]
+            )
         else:
             # When not collecting log probs, we can safely postprocess the response
             cur_response = postprocess_responses(cur_response)
