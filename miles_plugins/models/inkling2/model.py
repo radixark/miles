@@ -140,6 +140,12 @@ def build_inkling2_config(text_cfg: dict, args) -> TransformerConfig:
     )
     assert config.context_parallel_size == 1, "Inkling2 supports CP=1"
     assert args.virtual_pipeline_model_parallel_size is None, "Inkling2 does not support VPP"
+    # This config carries only the first/last stage sizes; other split flags would be dropped.
+    assert (
+        args.pipeline_model_parallel_layout is None
+        and not args.account_for_embedding_in_pipeline_split
+        and not args.account_for_loss_in_pipeline_split
+    ), "Inkling2 splits pipeline stages by --decoder-first/last-pipeline-num-layers only"
     assert not config.sequence_parallel, "Inkling2 does not support sequence parallelism"
     config.inkling2 = Inkling2Config.from_text_config(text_cfg)
     return config
