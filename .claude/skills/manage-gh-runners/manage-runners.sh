@@ -166,7 +166,7 @@ cmd_add() {
   fi
   trap "rm -rf '$token_dir'" EXIT
 
-  if [ ${#hook_args[@]} -gt 0 ]; then
+  if [[ ",$TAGS," == *",aliyun,"* ]]; then
     [ "$(docker exec "$NAME" sh -c 'command -v docker')" = /opt/runner-hooks/aliyun/docker ] \
       || die "$NAME does not resolve docker to the aliyun hook"
   fi
