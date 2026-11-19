@@ -1086,7 +1086,7 @@ def _check_stop_token_replace_streaming_session(args: argparse.Namespace, *, sgl
 
 
 _REMOVED_DASHBOARD_ARGS = {
-    "use_miles_dashboard": "set MILES_DASHBOARD=1 instead",
+    "use_miles_dashboard": "install packages/miles-dashboard and set MILES_DASHBOARD=1 instead",
     "dashboard_flush_interval": "set MILES_DASHBOARD_FLUSH_INTERVAL instead",
     "dashboard_gpu_sample_interval": "set MILES_DASHBOARD_GPU_SAMPLE_INTERVAL instead",
     "dashboard_sglang_scrape_interval": "set MILES_DASHBOARD_SGLANG_SCRAPE_INTERVAL instead",
