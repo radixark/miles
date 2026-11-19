@@ -70,37 +70,22 @@ def _per_document_gated_delta(q_THK, k_THK, v_THV, g_TH, beta_TH, doc_lengths):
 _CHUNKED_DOC_LENGTHS = [1, 7, 8, 13, 3, 20, 5]
 
 
-@pytest.mark.parametrize("chunk_size", [8, 16, 32, 64, 128])
-@pytest.mark.parametrize("num_key_heads", [4, 2], ids=["mha", "grouped_values"])
-def test_chunked_delta_rule_matches_the_recurrence_run_on_each_document(num_key_heads, chunk_size):
+def _inputs(doc_lengths: list[int], *, num_key_heads: int = 2, decay: float | None = None):
+    """q, k, v, g, beta for the packed documents; `decay` fixes every token's log decay instead of drawing it."""
     torch.manual_seed(0)
-    seq_len = sum(_CHUNKED_DOC_LENGTHS)
+    seq_len = sum(doc_lengths)
     q, k = (torch.randn(seq_len, num_key_heads, 16, requires_grad=True) for _ in range(2))
     v = torch.randn(seq_len, 4, 8, requires_grad=True)
-    g = (-F.softplus(torch.randn(seq_len, 4))).requires_grad_()
+    if decay is None:
+        g = (-F.softplus(torch.randn(seq_len, 4))).requires_grad_()
+    else:
+        g = torch.full((seq_len, 4), decay, requires_grad=True)
     beta = torch.rand(seq_len, 4, requires_grad=True)
-    inputs = (q, k, v, g, beta)
-
-    out = gated_delta_rule(*inputs, segment_ids=_segment_ids(_CHUNKED_DOC_LENGTHS), chunk_size=chunk_size)
-    expected = _per_document_gated_delta(*inputs, _CHUNKED_DOC_LENGTHS)
-    torch.testing.assert_close(out, expected, atol=1e-5, rtol=1e-4)
-
-    grad = torch.randn_like(out)
-    got, want = torch.autograd.grad(out, inputs, grad), torch.autograd.grad(expected, inputs, grad)
-    torch.testing.assert_close(got, want, atol=1e-4, rtol=1e-4)
+    return q, k, v, g, beta
 
 
-def test_chunk128_matches_recurrence_across_multiple_chunks():
-    torch.manual_seed(0)
-    doc_lengths = [1, 127, 128, 129, 3, 260]
-    seq_len = sum(doc_lengths)
-    q, k = (torch.randn(seq_len, 2, 16, requires_grad=True) for _ in range(2))
-    v = torch.randn(seq_len, 4, 8, requires_grad=True)
-    g = (-F.softplus(torch.randn(seq_len, 4))).requires_grad_()
-    beta = torch.rand(seq_len, 4, requires_grad=True)
-    inputs = (q, k, v, g, beta)
-
-    out = gated_delta_rule(*inputs, segment_ids=_segment_ids(doc_lengths), chunk_size=128)
+def _assert_matches_the_recurrence(inputs, doc_lengths: list[int], *, chunk_size: int) -> None:
+    out = gated_delta_rule(*inputs, segment_ids=_segment_ids(doc_lengths), chunk_size=chunk_size)
     expected = _per_document_gated_delta(*inputs, doc_lengths)
     torch.testing.assert_close(out, expected, atol=1e-5, rtol=1e-4)
 
@@ -109,23 +94,22 @@ def test_chunk128_matches_recurrence_across_multiple_chunks():
     torch.testing.assert_close(got, want, atol=1e-4, rtol=1e-4)
 
 
+@pytest.mark.parametrize("chunk_size", [8, 16, 32, 64, 128])
+@pytest.mark.parametrize("num_key_heads", [4, 2], ids=["mha", "grouped_values"])
+def test_chunked_delta_rule_matches_the_recurrence_run_on_each_document(num_key_heads, chunk_size):
+    inputs = _inputs(_CHUNKED_DOC_LENGTHS, num_key_heads=num_key_heads)
+    _assert_matches_the_recurrence(inputs, _CHUNKED_DOC_LENGTHS, chunk_size=chunk_size)
+
+
+def test_chunk128_matches_recurrence_across_multiple_chunks():
+    doc_lengths = [1, 127, 128, 129, 3, 260]
+    _assert_matches_the_recurrence(_inputs(doc_lengths), doc_lengths, chunk_size=128)
+
+
 @pytest.mark.parametrize("decay", [-0.01, -150.0], ids=["weak_decay", "strong_decay"])
 def test_chunked_delta_rule_matches_recurrence_at_decay_limits(decay):
-    torch.manual_seed(0)
-    seq_len = sum(_CHUNKED_DOC_LENGTHS)
-    q, k = (torch.randn(seq_len, 2, 16, requires_grad=True) for _ in range(2))
-    v = torch.randn(seq_len, 4, 8, requires_grad=True)
-    g = torch.full((seq_len, 4), decay, requires_grad=True)
-    beta = torch.rand(seq_len, 4, requires_grad=True)
-    inputs = (q, k, v, g, beta)
-
-    out = gated_delta_rule(*inputs, segment_ids=_segment_ids(_CHUNKED_DOC_LENGTHS), chunk_size=16)
-    expected = _per_document_gated_delta(*inputs, _CHUNKED_DOC_LENGTHS)
-    torch.testing.assert_close(out, expected, atol=1e-5, rtol=1e-4)
-
-    grad = torch.randn_like(out)
-    got, want = torch.autograd.grad(out, inputs, grad), torch.autograd.grad(expected, inputs, grad)
-    torch.testing.assert_close(got, want, atol=1e-4, rtol=1e-4)
+    inputs = _inputs(_CHUNKED_DOC_LENGTHS, decay=decay)
+    _assert_matches_the_recurrence(inputs, _CHUNKED_DOC_LENGTHS, chunk_size=16)
 
 
 @pytest.mark.parametrize("compiled", [False, True], ids=["eager", "compiled"])
@@ -134,13 +118,7 @@ def test_chunked_delta_rule_runs_under_selective_activation_checkpointing(compil
     from torch.utils.checkpoint import CheckpointPolicy, checkpoint, create_selective_checkpoint_contexts
 
     allow_scan_in_selective_checkpoint()
-    torch.manual_seed(0)
-    seq_len = sum(_CHUNKED_DOC_LENGTHS)
-    q, k = (torch.randn(seq_len, 2, 16, requires_grad=True) for _ in range(2))
-    v = torch.randn(seq_len, 4, 8, requires_grad=True)
-    g = (-F.softplus(torch.randn(seq_len, 4))).requires_grad_()
-    beta = torch.rand(seq_len, 4, requires_grad=True)
-    inputs = (q, k, v, g, beta)
+    inputs = _inputs(_CHUNKED_DOC_LENGTHS)
     ids = _segment_ids(_CHUNKED_DOC_LENGTHS)
 
     def run(*xs):

@@ -39,6 +39,8 @@ class _TrainingEngine(TrainingEngine):
     """Reads the checkpoint through an adapter for the checkpoint's layout, which keeps parts the trained model drops
     (multimodal encoders on TPU); torchtitan builds the adapter from the trained model's config."""
 
+    # TODO: drop once torchtitan's adapters take the HF layout from the checkpoint instead of the model config
+
     def __init__(self, *args, checkpoint_model: BaseModel.Config, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._checkpoint_model = checkpoint_model

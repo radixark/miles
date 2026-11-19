@@ -190,10 +190,6 @@ def prepare_model_and_data(
         U.exec_command_cpu(command)
 
 
-def _aime_eval_data(args: ScriptArgs, model: TitanTpuModel) -> str:
-    return f"--eval-prompt-data aime {args.data_dir}/{model.eval_data}/{model.eval_data}.jsonl "
-
-
 def _trainer_env(args: ScriptArgs) -> dict[str, str]:
     compile_cache = (
         {"TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": args.compile_cache_dir} if args.compile_cache_dir else {}
@@ -242,7 +238,7 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
     if recipe.enable_eval:
         eval_args = (
             "--eval-interval 10 "
-            f"{_aime_eval_data(args, model)}"
+            f"--eval-prompt-data aime {args.data_dir}/{model.eval_data}/{model.eval_data}.jsonl "
             "--n-samples-per-eval-prompt 4 "
             f"--eval-max-response-len {recipe.max_response_len} "
             "--eval-top-p 1 "
