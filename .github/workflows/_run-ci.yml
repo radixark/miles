@@ -13,8 +13,7 @@ on:
         description: 'JSON-encoded list of runner labels (all required). e.g. ''["h100", "8gpu"]'' picks runners that carry BOTH labels. No default: GPU jobs must pass this explicitly.'
       container_image:
         type: string
-        required: false
-        default: 'radixark/miles:dev'
+        required: true
       num_gpus:
         description: 'Exact CUDA-visible device count for a dynamically allocated B200 job.'
         type: number
@@ -142,7 +141,7 @@ jobs:
 
       - name: Configure source paths
         shell: bash
-        run: echo "PYTHONPATH=$GITHUB_WORKSPACE:$GITHUB_WORKSPACE/3rdparty/miles-ext-kernels:$SGLANG_SOURCE_ROOT:$MEGATRON_SOURCE_ROOT" >> "$GITHUB_ENV"
+        run: echo "PYTHONPATH=$GITHUB_WORKSPACE:$GITHUB_WORKSPACE/3rdparty/miles-ext-kernels:$GITHUB_WORKSPACE/packages/miles-dashboard:$SGLANG_SOURCE_ROOT:$MEGATRON_SOURCE_ROOT" >> "$GITHUB_ENV"
 
       - name: Keep NVSHMEM on NVLink (RoCE-only runners)
         # NVSHMEM cannot connect over RoCE from this bridge-network container: a NIC

@@ -56,7 +56,6 @@ def _vocabulary_worker(*, actor_module: ModuleType, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(actor_module, "init", lambda *args, **kwargs: None)
     monkeypatch.setattr(actor_module, "fault_hook_controller", SimpleNamespace(configure=lambda **kwargs: None))
     monkeypatch.setattr(actor_module, "is_first_replica_megatron_main_rank", lambda: False)
-    monkeypatch.setattr(actor_module, "dashboard_hooks", SimpleNamespace(register_train_actor=lambda args: None))
     monkeypatch.setattr(actor_module, "TrainProfiler", lambda args: SimpleNamespace())
     monkeypatch.setattr(worker, "load_hf_assets", lambda: None)
     monkeypatch.setattr(actor_module, "get_parallel_state", lambda: parallel)

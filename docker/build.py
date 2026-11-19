@@ -20,34 +20,30 @@ import typer
 CACHE_DIR = "/tmp/miles-docker-cache"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# Variants without an "image" push to the --image-repo the caller names.
 VARIANTS = {
     "cu13": {
-        "image": "radixark/miles",
         "platforms": ["linux/amd64", "linux/arm64"],
         "tag_postfix": "",
         "build_args": {},
     },
     "cu13-x86": {
-        "image": "radixark/miles",
         "platforms": ["linux/amd64"],
         "tag_postfix": "",
         "build_args": {},
     },
     "cu13-aarch64": {
-        "image": "radixark/miles",
         "platforms": ["linux/arm64"],
         "tag_postfix": "",
         "build_args": {},
     },
     "rubin": {
-        "image": "radixark/miles",
         "platforms": ["linux/arm64"],
         "tag_postfix": "-rubin",
         "dockerfile": "docker/Dockerfile.rubin",
         "build_args": {},
     },
     "tpu": {
-        "image": "radixark/miles",
         "platforms": ["linux/amd64"],
         "tag_postfix": "-tpu",
         "dockerfile": "docker/Dockerfile.tpu",
@@ -98,6 +94,16 @@ VARIANTS = {
     },
 }
 
+# PR images live with Miles' CUDA/TPU PR tags; rolling ROCm tags keep their
+# existing repository and native-platform behavior. The PR tag carries its own
+# suffix (image_inputs.pr_image), so this variant adds none.
+VARIANTS["rocm10-mi35x-pr"] = {
+    **VARIANTS["rocm10-mi35x"],
+    "image": "radixark/miles",
+    "tag_postfix": "",
+    "platforms": ["linux/amd64"],
+}
+
 
 def run(cmd: list[str], dry_run: bool) -> None:
     print(f"+ {' '.join(cmd)}", flush=True)
@@ -116,12 +122,13 @@ def build_and_push(
     extra_build_args: list[str] | None = None,
     context: Path = REPO_ROOT,
     output: str = "",
+    image_repo: str = "radixark/miles",
 ) -> None:
     extra_build_args = extra_build_args or []
     config = VARIANTS[variant]
     # A variant may pin its own Dockerfile (e.g. ROCm); otherwise use the CLI default.
     dockerfile = config.get("dockerfile", dockerfile)
-    image = config["image"]
+    image = config.get("image", image_repo)
     postfix = config.get("tag_postfix", "")
     platforms = config.get("platforms")
 
@@ -178,7 +185,7 @@ def build_and_push(
         cmd += ["--build-arg", spec]
 
     # CI reads this back off the published tag to skip rebuilds whose inputs are unchanged.
-    cmd += ["--label", f"{image_inputs.LABEL_KEY}={image_inputs.compute(root=context)}"]
+    cmd += ["--label", f"{image_inputs.LABEL_KEY}={image_inputs.compute(root=context, variant=variant)}"]
 
     for tag in tags:
         cmd += ["-t", tag]
@@ -198,6 +205,7 @@ class Variant(str, Enum):
     tpu = "tpu"
     rocm724_mi35x = "rocm724-mi35x"
     rocm10_mi35x = "rocm10-mi35x"
+    rocm10_mi35x_pr = "rocm10-mi35x-pr"
     rocm10_mi30x = "rocm10-mi30x"
 
 
@@ -217,6 +225,7 @@ def main(
     build_arg: list[str] = typer.Option([], help="Extra KEY=VALUE build-arg (repeatable)."),  # noqa: B008
     context: Path = typer.Option(REPO_ROOT, help="Repository build context, separate from this driver."),  # noqa: B008
     output: str = typer.Option("", help="Buildx exporter, e.g. type=oci,dest=/tmp/image,tar=false."),  # noqa: B008
+    image_repo: str = typer.Option("radixark/miles", help="Repository of the Miles images (not ROCm)."),  # noqa: B008
 ) -> None:
     build_and_push(
         variant.value,
@@ -228,6 +237,7 @@ def main(
         extra_build_args=build_arg,
         context=context.resolve(),
         output=output,
+        image_repo=image_repo,
     )
 
 

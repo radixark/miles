@@ -330,10 +330,18 @@ def test_image_builds_and_resolvers_need_cuda():
     assert "needs.resolve-ci-policy.outputs.needs_cuda_image == 'true'" in resolver
 
     rocm = WORKFLOW.with_name("pr-test-rocm.yml").read_text()
-    resolver = rocm.split("\n  resolve-ci-image:\n", 1)[1].split("\n  stage-c-2-gpu-mi350:\n", 1)[0]
-    assert "needs: [resolve-ci-policy]" in resolver
+    policy = rocm.split("\n  resolve-ci-policy:\n", 1)[1].split("    steps:", 1)[0]
+    build = rocm.split("\n  docker-build-rocm10-mi35x:\n", 1)[1].split("\n  resolve-ci-image:\n", 1)[0]
+    resolver = rocm.split("\n  resolve-ci-image:\n", 1)[1].split("    runs-on:", 1)[0]
     for stage in ("stage-c-2-gpu-mi350", "stage-c-4-gpu-mi350", "stage-c-8-gpu-mi350"):
-        assert f"contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), '{stage}')" in resolver
+        assert f"contains(fromJSON(steps.resolve.outputs.skipped_stages || '[]'), '{stage}')" in policy
+    assert "needs: [resolve-ci-policy]" in build
+    assert "arch: rocm10-mi35x" in build
+    assert "(needs.resolve-ci-policy.outputs.needs_rocm_image == 'true' ||" in build
+    assert "contains(github.event.pull_request.labels.*.name, 'rebuild-ci-image'))" in build
+    assert "needs: [resolve-ci-policy, docker-build-rocm10-mi35x]" in resolver
+    assert "needs.docker-build-rocm10-mi35x.result == 'success'" in resolver
+    assert "needs.resolve-ci-policy.outputs.needs_rocm_image == 'true'" in resolver
 
 
 def test_each_cuda_stage_requires_the_image_of_its_declared_architecture():
