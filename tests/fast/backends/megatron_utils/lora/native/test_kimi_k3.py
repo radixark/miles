@@ -379,6 +379,16 @@ def test_expert_grad_flags():
     assert experts.lora_fc1_adapter.w1_B.allreduce is False
 
 
+def test_expert_params_skip_the_dense_all_reduce_without_ep(monkeypatch):
+    """At EP 1 the TP ranks' experts see different sequence-parallel tokens; only the expert DP group spans them."""
+    from megatron.core import parallel_state
+
+    monkeypatch.setattr(parallel_state, "get_expert_model_parallel_world_size", lambda: 1)
+    experts = _model(sequence_parallel=True).moe.experts
+    params = [*experts.lora_fc1_adapter.parameters(), *experts.lora_fc2_adapter.parameters()]
+    assert params and all(param.allreduce is False for param in params)
+
+
 def test_kda_o_proj_delta_stays_a_partial_sum(monkeypatch):
     """KDA's out_proj output is reduced by the layer after the adapter adds its delta: a reduce inside
     the adapter would apply it tp_size times. Summing the per-rank outputs must give W + s*B@A."""
