@@ -24,6 +24,10 @@ class TpuPlatform(Platform):
     # the tpu compile backend takes static shapes only
     dynamic_shapes = False
     nvml_numa_affinity = False
+    # torchtitan's default fused=True (_fused_adamw_) fails on XLA at step 2 with invalid buffer donation
+    fused_adamw = False
+    # one TPU v7x 2x2x1 host exposes 8 TensorCores
+    max_local_devices = 8
     # sglang-torchtpu turns "auto" into an fp8 KV cache without scales, which skews rollout logprobs against the
     # bf16 trainer; fp8 stays available through --sglang-kv-cache-dtype fp8_e4m3
     rollout_kv_cache_dtype = "bfloat16"

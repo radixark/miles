@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import socket
 from argparse import Namespace
 from typing import NamedTuple
@@ -64,8 +65,22 @@ class InfoActor:
         return ray.util.get_node_ip_address(), ray.get_gpu_ids()[0]
 
 
+MILES_TPU_TRAINER_NODE_IPS_ENV = "MILES_TPU_TRAINER_NODE_IPS"
+
+
 def sort_key(x):
     index, node_identifier, gpu_id = x
+    topo_ips = [host.strip() for host in os.environ.get(MILES_TPU_TRAINER_NODE_IPS_ENV, "").split(",") if host.strip()]
+    if topo_ips:
+        resolved = node_identifier
+        if resolved not in topo_ips:
+            try:
+                resolved = socket.gethostbyname(node_identifier)
+            except (OSError, TypeError):
+                resolved = node_identifier
+        if resolved in topo_ips:
+            return ([topo_ips.index(resolved)], gpu_id)
+
     # Sort by node IP number and then by GPU ID
     try:
         # try to parse it as an IP address.

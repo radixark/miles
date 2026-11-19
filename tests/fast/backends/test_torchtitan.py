@@ -118,6 +118,8 @@ _TPU_FACTS = (
     "rooted_reduce",
     "premul_sum_reduce",
     "weight_transfer_modes",
+    "fused_adamw",
+    "max_local_devices",
 )
 
 

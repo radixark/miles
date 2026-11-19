@@ -131,6 +131,8 @@ class TrainRayActor(NodeProbeMixin):
         # os.environ.pop("CUDA_VISIBLE_DEVICES", None)
         # os.environ["LOCAL_RANK"] = str(ray.get_gpu_ids()[0])
         os.environ["LOCAL_RANK"] = str(get_local_gpu_id())
+        if current_platform.max_local_devices is not None:
+            os.environ["LOCAL_WORLD_SIZE"] = str(min(self._world_size, current_platform.max_local_devices))
         if args.update_weight_transfer_mode == "ici":
             # at construction, not in init(): the engine sharing the slice cannot finish starting (and be
             # discovered) until the trainer joins it, and init() runs after discovery

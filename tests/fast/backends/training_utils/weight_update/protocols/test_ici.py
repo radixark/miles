@@ -183,9 +183,49 @@ def test_an_engine_that_does_not_fill_the_slice_is_rejected():
         patch.object(tpu_shared_slice, "spec", return_value=_SHARED),
         patch("torch.distributed.get_world_size", return_value=4),
         patch("torch.distributed.get_rank", return_value=0),
-        pytest.raises(ValueError, match="with TP rank i of one engine"),
     ):
-        protocol.connect([_Engine(), _Engine()], [2, 2], [4, 6], ["cell-0", "cell-1"], None, None, "all")
+        with pytest.raises(ValueError, match="uniform rollout engines summing to trainer_size"):
+            protocol.connect([_Engine()], [2], [4], ["cell-0"], None, None, "all")
+        with pytest.raises(ValueError, match="uniform rollout engines summing to trainer_size"):
+            protocol.connect([_Engine(), _Engine()], [1, 3], [4, 5], ["cell-0", "cell-1"], None, None, "all")
+
+
+def test_multi_engine_transposed_bijective_pairing():
+    """32-rank trainer paired with K=8 engines of TP=4 in a 64-device multi-host slice."""
+    shared_64 = tpu_shared_slice.SharedSlice(rank_offset=0, size=64, store_host="10.0.0.1", store_port=29600)
+    num_engines, tp_per_engine = 8, 4
+    trainer_size = num_engines * tp_per_engine
+    seen_targets: set[int] = set()
+    for rank in range(trainer_size):
+        engines = [_Engine() for _ in range(num_engines)]
+        protocol = UpdateWeightFromIci(Namespace(update_weight_engine_request_timeout=10, ft_components=()))
+        with (
+            patch.object(tpu_shared_slice, "spec", return_value=shared_64),
+            patch("torch.distributed.get_world_size", return_value=trainer_size),
+            patch("torch.distributed.get_rank", return_value=rank),
+            patch.object(tpu_shared_slice, "_membership", tpu_shared_slice._Membership(_Backend(), _Store(), rank)),
+        ):
+            protocol.connect(
+                engines,
+                [tp_per_engine] * num_engines,
+                [trainer_size + i * tp_per_engine for i in range(num_engines)],
+                [f"cell-{i}" for i in range(num_engines)],
+                None,
+                None,
+                "all",
+            )
+        dst = protocol._engine_slice_rank
+        seen_targets.add(dst)
+        engine_idx = (dst - trainer_size) // tp_per_engine
+        tp_rank = (dst - trainer_size) % tp_per_engine
+        # Inverse receiver mapping: src_slice_rank = num_engines * tp_rank + engine_idx
+        assert num_engines * tp_rank + engine_idx == rank
+        if rank == 0:
+            offsets = [e.calls[0][1]["rank_offset"] for e in engines]
+            assert offsets == [i * tp_per_engine for i in range(num_engines)]
+        else:
+            assert all(e.calls == [] for e in engines)
+    assert seen_targets == set(range(trainer_size, 2 * trainer_size))
 
 
 def test_a_trainer_not_at_slice_rank_0_is_rejected():

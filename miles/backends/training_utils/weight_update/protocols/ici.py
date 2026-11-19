@@ -17,11 +17,14 @@ from miles.utils.timer import timer
 
 
 class UpdateWeightFromIci(WeightTransferProtocol):
-    """Device-to-device weight sync over the ICI links of a TPU slice the trainer shares with one engine.
+    """Device-to-device weight sync over the ICI links of a TPU slice shared with K >= 1 uniform rollout engines.
 
-    Trainer rank i sends each bucket to engine TP rank i in one transfer, all ranks at once: the gathered dense
-    tensors and rank i's own experts (the engine's EP shard of rank i), with their names, since those differ per
-    rank. Each engine rank loads them through its own weight loader; no host copies.
+    For K uniform engines of ``tp_per_engine`` devices each (``trainer_size = K * tp_per_engine``,
+    ``slice_size = 2 * trainer_size``), trainer rank ``j`` pairs bijectively with ``(tp_rank, engine_idx) = divmod(j, K)``
+    at slice rank ``trainer_size + engine_idx * tp_per_engine + tp_rank``. When ``K == 1``, ``divmod(j, 1) == (j, 0)``,
+    reducing to 1:1 pairing between trainer rank ``j`` and engine TP rank ``j``. On multi-host slices where each
+    trainer host owns a contiguous span of ranks, pairing ``tp_rank = j // K`` keeps all trainer ranks serving the
+    same EP shard co-located within a contiguous rank subgroup.
     """
 
     # every trainer rank sends whole dense tensors, so it must hold every PP stage's
@@ -43,35 +46,43 @@ class UpdateWeightFromIci(WeightTransferProtocol):
     ) -> None:
         shared = tpu_shared_slice.spec()
         trainer_size = dist.get_world_size()
-        # the engine pairs its TP rank i with slice rank i and expects the store at slice rank 0
+        counts = list(engine_gpu_counts or ())
         if (
-            shared.rank_offset != 0
-            or list(engine_gpu_counts or ()) != [trainer_size]
+            shared is None
+            or shared.rank_offset != 0
+            or not counts
+            or len(set(counts)) != 1
+            or sum(counts) != trainer_size
             or shared.size != 2 * trainer_size
         ):
             raise ValueError(
-                "--update-weight-transfer-mode ici pairs trainer rank i (slice rank i) with TP rank i of one engine "
-                f"that fills the rest of the shared slice: slice rank offset {shared.rank_offset} (must be 0), "
-                f"trainer ranks {trainer_size}, engine devices {engine_gpu_counts}, slice size {shared.size}"
+                "--update-weight-transfer-mode ici requires uniform rollout engines summing to trainer_size in a "
+                f"shared slice of size 2 * trainer_size: slice rank offset "
+                f"{None if shared is None else shared.rank_offset} (must be 0), trainer ranks {trainer_size}, "
+                f"engine devices {engine_gpu_counts}, slice size {None if shared is None else shared.size}"
             )
+        tp_per_engine = int(counts[0])
+        num_engines = len(counts)
         self.rollout_engines = rollout_engines
         self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, rollout_engines, engine_cell_ids)
         self.is_sender = True
         self._selector = selector
-        self._engine_slice_rank = trainer_size + dist.get_rank()
+        rank = dist.get_rank()
+        tp_rank, engine_idx = divmod(rank, num_engines)
+        self._engine_slice_rank = trainer_size + engine_idx * tp_per_engine + tp_rank
         tpu_shared_slice.reset_tags()
-        if dist.get_rank() == 0:
+        if rank == 0:
             futures = [
                 updater.submit_client_call(
                     "init_weights_update_group",
                     master_address=shared.store_host,
                     master_port=shared.store_port,
-                    rank_offset=0,
+                    rank_offset=idx * tp_per_engine,
                     world_size=shared.size,
                     group_name=self.group_name,
                     backend=tpu_shared_slice.receiver_contract().BACKEND_NAME,
                 )
-                for updater in self.cell_updaters_of_cell_id.values()
+                for idx, updater in enumerate(self.cell_updaters_of_cell_id.values())
             ]
             async_utils.wait_futures(futures)
 
