@@ -22,7 +22,7 @@ _ARGS_TO_CONFIG_FIELD = {
     "use_rollout_indexer_replay": "use_rollout_indexer_replay",
     "rollout_indexer_topk_num_streams": "rollout_indexer_topk_num_streams",
     "replay_layer_splits": "replay_layer_splits",
-    "use_sampling_support_replay": "use_sampling_support_replay",
+    "use_rollout_sampling_support_replay": "use_rollout_sampling_support_replay",
     "sglang_speculative_algorithm": "sglang_speculative_algorithm",
     "num_layers": "num_layers",
     "moe_router_topk": "moe_router_topk",
@@ -38,6 +38,8 @@ _ARGS_TO_CONFIG_FIELD = {
     "rollout_top_logprobs_num": "rollout_top_logprobs_num",
     "rollout_sampling_logprobs_mode": "rollout_sampling_logprobs_mode",
     "rollout_temperature": "rollout_temperature",
+    "rollout_top_p": "rollout_top_p",
+    "rollout_top_k": "rollout_top_k",
 }
 
 _CALL_SITE_FIELDS = ("host", "port", "instance_id", "backend_url")
@@ -56,7 +58,7 @@ _DISTINCT_ARGS_VALUES = dict(
     use_rollout_indexer_replay=True,
     rollout_indexer_topk_num_streams=11,
     replay_layer_splits=[12, 24, 36],
-    use_sampling_support_replay=True,
+    use_rollout_sampling_support_replay=True,
     sglang_speculative_algorithm="EAGLE",
     num_layers=61,
     moe_router_topk=8,
@@ -72,6 +74,8 @@ _DISTINCT_ARGS_VALUES = dict(
     rollout_top_logprobs_num=32,
     rollout_sampling_logprobs_mode="support",
     rollout_temperature=0.7,
+    rollout_top_p=0.85,
+    rollout_top_k=17,
     use_output_store=False,
     **sglang_router_args("manual"),
 )
@@ -194,7 +198,7 @@ _COMPLETE_CONFIG_KWARGS = dict(
     use_rollout_routing_replay=False,
     use_rollout_indexer_replay=False,
     rollout_indexer_topk_num_streams=None,
-    use_sampling_support_replay=False,
+    use_rollout_sampling_support_replay=False,
     sglang_speculative_algorithm=None,
     num_layers=None,
     moe_router_topk=None,
@@ -210,6 +214,8 @@ _COMPLETE_CONFIG_KWARGS = dict(
     rollout_top_logprobs_num=0,
     rollout_sampling_logprobs_mode="selected",
     rollout_temperature=1.0,
+    rollout_top_p=1.0,
+    rollout_top_k=-1,
     output_store_backend_config=None,
     replay_layer_splits=[],
 )

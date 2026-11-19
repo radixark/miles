@@ -178,7 +178,7 @@ class TrainConfig(BaseConfig):
                 " as the rollout engine does, while 'torch' normalizes over Megatron's padded vocabulary "
                 "(except for --loss-type score_centering), so with vocab padding (TP > 1) the two give slightly"
                 " different log-probs, ratios and KL. 'fused' does not support --true-on-policy-mode or "
-                "sampling-support replay (--rollout-top-p below 1 or a positive --rollout-top-k). 'fused_lm_head' is"
+                "--use-rollout-sampling-support-replay. 'fused_lm_head' is"
                 " 'fused' without the logits buffer: the output layer runs --log-probs-chunk-size rows at a time"
                 " (default 4096). On TPU, losses on padded rows with --entropy-coef 0 and TP 1 score with a "
                 "compiled op that keeps no softmax for backward (loss/hub/row_log_prob.py) instead."

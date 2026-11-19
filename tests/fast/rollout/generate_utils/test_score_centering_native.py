@@ -48,7 +48,7 @@ def test_filtered_native_generation_records_post_filter_distribution(candidate_c
         rollout_top_p=0.6,
         rollout_top_k=3,
         rollout_sampling_logprobs_mode="support",
-        use_sampling_support_replay=True,
+        use_rollout_sampling_support_replay=True,
         rollout_max_response_len=20,
         max_seq_len=None,
         use_rollout_routing_replay=False,

@@ -129,7 +129,7 @@ class TestConfigToArgv:
             use_rollout_indexer_replay=False,
             rollout_indexer_topk_num_streams=None,
             replay_layer_splits=[],
-            use_sampling_support_replay=False,
+            use_rollout_sampling_support_replay=False,
             sglang_speculative_algorithm=None,
             num_layers=None,
             moe_router_topk=None,
@@ -145,6 +145,8 @@ class TestConfigToArgv:
             rollout_top_logprobs_num=128,
             rollout_sampling_logprobs_mode="selected",
             rollout_temperature=0.7,
+            rollout_top_p=0.95,
+            rollout_top_k=32,
             output_store_backend_config={"master_server_address": "10.0.0.1:50051", "local_hostname": None},
         )
         assert parse_config_argv(SessionServerConfig, config_to_argv(session_config)) == session_config

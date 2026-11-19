@@ -37,6 +37,11 @@ def requests_support_logprobs(args: Any) -> bool:
     return bool(args.rollout_top_logprobs_num) and args.rollout_sampling_logprobs_mode == "support"
 
 
+def candidates_reference_sampling_mask(args: Any) -> bool:
+    """Whether score centering stores its support-mode candidates as positions into the sampling mask."""
+    return requests_support_logprobs(args) and args.loss_type == "score_centering"
+
+
 def validate_rollout_topk_logprobs_sampling(
     sampling: Mapping[str, Any], *, temperature: float, candidate_count: int
 ) -> None:

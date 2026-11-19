@@ -13,7 +13,7 @@ from miles.utils.args.custom_function import CustomFunctionConfig
 def _make_args(*, use_rollout_logprobs: bool) -> Namespace:
     return ConfigNamespace(
         use_rollout_logprobs=use_rollout_logprobs,
-        use_sampling_support_replay=False,
+        use_rollout_sampling_support_replay=False,
         skip_actor_forward_only=False,
         use_opsm=False,
         advantage_estimator="ppo",

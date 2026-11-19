@@ -18,7 +18,7 @@ from miles.utils.media_refs import has_media
 from miles.utils.object_store import ValueSpec
 from miles.utils.output_store.dropped import has_inline_replay
 from miles.utils.output_store.plan import FIELDS, SamplingMaskSegments, StorePlanError
-from miles.utils.rollout_topk_logprobs import requests_support_logprobs
+from miles.utils.rollout_topk_logprobs import candidates_reference_sampling_mask, requests_support_logprobs
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.timer import Timer
 from miles.utils.types import Sample
@@ -270,7 +270,7 @@ def _check_store_plans(args, samples: list[Sample]) -> None:
 
 def compact_score_centering_candidates(args, data: dict) -> None:
     """Score centering trains on support-mode candidates compacted onto the sampling mask's ids."""
-    if requests_support_logprobs(args) and args.loss_type == "score_centering":
+    if candidates_reference_sampling_mask(args):
         _compact_candidate_ids(data)
 
 

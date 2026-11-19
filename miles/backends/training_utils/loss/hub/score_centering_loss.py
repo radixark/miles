@@ -26,7 +26,7 @@ def score_candidates(
     """
     parallel = get_parallel_state()
     with_entropy = args.entropy_coef != 0 or args.observe_training_entropy
-    replay = args.use_sampling_support_replay
+    replay = args.use_rollout_sampling_support_replay
     support_only = replay and not args.use_kl_loss
     selected, entropy = selected_log_probs_and_entropy(
         logits,

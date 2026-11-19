@@ -27,6 +27,7 @@ from miles.backends.training_utils.data.token_space_media_process import Rollout
 from miles.dashboard.args import validate_dashboard_args
 from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
+from miles.rollout.generate_utils.sampling_mask import filters_rollout_sampling
 from miles.rollout.reward_shaping import validate_length_penalty_args
 from miles.router.backend import RouterKind
 from miles.utils.args.configs.data import DataConfig
@@ -931,10 +932,9 @@ def validate_log_probs_backend_args(args) -> None:
             f"--log-probs-backend {backend} does not support --true-on-policy-mode, which needs bitwise "
             "parity with the rollout engine's own log-softmax; use --log-probs-backend torch."
         )
-    if args.use_sampling_support_replay:
+    if args.use_rollout_sampling_support_replay:
         raise ValueError(
-            f"--log-probs-backend {backend} does not support sampling-support replay "
-            f"(--rollout-top-p {args.rollout_top_p}, --rollout-top-k {args.rollout_top_k}); "
+            f"--log-probs-backend {backend} does not support --use-rollout-sampling-support-replay; "
             "use --log-probs-backend torch."
         )
     # unset, the actor falls back to the tokenizer's vocab_size, which can leave out added special tokens
@@ -1250,19 +1250,22 @@ def miles_validate_args(args):
         raise ValueError(f"--rollout-top-p must be in (0, 1], got {args.rollout_top_p}")
     if args.rollout_top_k != -1 and args.rollout_top_k < 1:
         raise ValueError(f"--rollout-top-k must be -1 or at least 1, got {args.rollout_top_k}")
-    args.use_sampling_support_replay = args.rollout_top_p < 1.0 or args.rollout_top_k > 0
-    args.rollout_sampling_logprobs_mode = "support" if args.use_sampling_support_replay else "selected"
-    if args.use_sampling_support_replay:
-        if args.rollout_top_k == -1:
-            raise ValueError(
-                "--rollout-top-p below 1 requires a positive --rollout-top-k; "
-                "top-p alone does not bound the returned support size"
-            )
-        if args.recompute_logprobs_via_prefill:
-            raise ValueError(
-                "sampling-support replay cannot be combined with --recompute-logprobs-via-prefill; "
-                "prefill scoring does not preserve the rollout sampling support"
-            )
+    filtered_sampling = filters_rollout_sampling(args)
+    returns_support = args.use_rollout_sampling_support_replay or (
+        filtered_sampling and args.rollout_top_logprobs_num > 0
+    )
+    args.rollout_sampling_logprobs_mode = "support" if returns_support else "selected"
+    if returns_support and args.rollout_top_k == -1:
+        raise ValueError(
+            "returning the sampling support (--use-rollout-sampling-support-replay, or --rollout-top-logprobs-num "
+            "with --rollout-top-p below 1) requires a positive --rollout-top-k to bound its size"
+        )
+    if filtered_sampling and args.recompute_logprobs_via_prefill:
+        raise ValueError(
+            "--rollout-top-p below 1 or a positive --rollout-top-k cannot be combined with "
+            "--recompute-logprobs-via-prefill; prefill scoring returns the unfiltered distribution, not the sampler's"
+        )
+    if args.use_rollout_sampling_support_replay:
         if args.kl_coef != 0 or args.use_kl_loss or args.use_opd:
             # The actor still produces full-vocabulary logits, but replay currently exposes only the
             # support-normalized actor score to the loss. These objectives can be enabled once the loss
@@ -1271,6 +1274,24 @@ def miles_validate_args(args):
                 "sampling-support replay cannot currently be combined with reference KL or teacher distillation; "
                 "those objectives require a separate full-policy actor score"
             )
+    elif filtered_sampling:
+        if args.true_on_policy_mode:
+            raise ValueError(
+                "--true-on-policy-mode with --rollout-top-p below 1 or a positive --rollout-top-k requires "
+                "--use-rollout-sampling-support-replay: without it the trainer scores the full vocabulary and the "
+                "rollout records the filtered sampler, so their log-probs never match"
+            )
+        if args.use_rollout_logprobs and (args.kl_coef != 0 or args.use_opd):
+            raise ValueError(
+                "--use-rollout-logprobs with --rollout-top-p below 1 or a positive --rollout-top-k cannot be "
+                "combined with --kl-coef or --use-opd: they would take the filtered sampler's log-probs as the "
+                "actor's full-vocabulary score"
+            )
+        logger.warning(
+            "--rollout-top-p below 1 or a positive --rollout-top-k without --use-rollout-sampling-support-replay "
+            "trains the full-vocabulary policy against the sampler's log-probs; pass the flag to renormalize the "
+            "actor over the sampling support."
+        )
     validate_rollout_topk_logprobs_args(args)
 
     validate_log_probs_backend_args(args)
@@ -2142,7 +2163,7 @@ def validate_compile_warmup(args) -> None:
             ("--enable-sample-ownership-checker", args.enable_sample_ownership_checker),
             ("--use-dynamic-global-batch-size", args.use_dynamic_global_batch_size),
             ("--rollout-top-logprobs-num", args.rollout_top_logprobs_num > 0),
-            ("--rollout-top-p below 1 or a positive --rollout-top-k", args.use_sampling_support_replay),
+            ("--use-rollout-sampling-support-replay", args.use_rollout_sampling_support_replay),
             (
                 "--custom-convert-samples-to-train-data-path",
                 args.custom_convert_samples_to_train_data_path is not None,

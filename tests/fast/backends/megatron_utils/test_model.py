@@ -108,7 +108,7 @@ def make_train_one_step_args(**overrides: Any) -> Namespace:
         ci_test=False,
         enable_mtp_training=False,
         rollout_max_response_len=512,
-        use_sampling_support_replay=False,
+        use_rollout_sampling_support_replay=False,
         enable_witness=False,
         save_local_weight_checksum=False,
     )
@@ -362,7 +362,7 @@ def test_sampling_support_replay_fetches_sampling_masks_for_losses_that_score_th
 
     args = make_trainer_args(
         loss_type=loss_type,
-        use_sampling_support_replay=True,
+        use_rollout_sampling_support_replay=True,
         data_pad_size_multiplier=1,
         qkv_format="thd",
         allgather_cp=False,

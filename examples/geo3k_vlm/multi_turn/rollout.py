@@ -19,6 +19,10 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
     token_space_request_fields,
     truncate_to_max_seq_len,
 )
+from miles.rollout.generate_utils.sampling_mask import (
+    configure_sampling_logprobs_request,
+    read_selected_sampling_logprobs,
+)
 from miles.utils.args.schema import A, Arg, BaseConfig
 from miles.utils.http_utils import post
 from miles.utils.media_refs import collect_media_refs
@@ -222,6 +226,7 @@ async def _run_inference_step(
         "sampling_params": sampling_params,
         "return_logprob": True,
     }
+    configure_sampling_logprobs_request(payload, sampling_params)
     if image_data:
         payload["image_data"] = image_data
     record_routed_experts = mm_token_expansion_start_len is not None and args.use_rollout_routing_replay
@@ -246,7 +251,11 @@ async def _run_inference_step(
     response_text = output["text"]
     if "output_token_logprobs" in output["meta_info"]:
         new_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
-        new_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
+        new_log_probs = (
+            read_selected_sampling_logprobs(output["meta_info"], new_tokens)
+            if payload.get("sampling_logprobs_mode") == "selected"
+            else [item[0] for item in output["meta_info"]["output_token_logprobs"]]
+        )
     else:
         new_tokens, new_log_probs = [], []
     finish_type = output["meta_info"]["finish_reason"]["type"]
