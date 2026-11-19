@@ -35,6 +35,17 @@ The script probes mounts with `df`, picks the biggest non-system mount, and
 ensures `/data/miles_ci` resolves there (real dir if `/data` is biggest;
 symlink otherwise). Idempotent.
 
+### Step 0.5: Install the job-container docker hook
+
+`docker-compose.yml` puts `job-container-docker/docker` first in the runner's
+`PATH`: it drops the host docker socket the runner would otherwise mount into
+every job container.
+
+```shell
+sudo install -D -m 755 tests/ci/github_runner/job-container-docker/docker \
+  /data/miles_ci/runner-hooks/job-container-docker/docker
+```
+
 ### Step 1: Env
 
 Write `.env` mimicking `.env.example`.
