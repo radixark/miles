@@ -21,6 +21,7 @@ from miles.rollout.base_types import (
 from miles.rollout.generate_hub.single_turn import generate
 from miles.rollout.generate_utils.generate_endpoint_utils import policy_uses_routing_key
 from miles.rollout.inference_rollout.compatibility import load_generate_function
+from miles.rollout.on_policy_distillation import chunk_continuations
 from miles.rollout.rm_hub import async_rm, batched_async_rm
 from miles.utils.async_utils import DynamicLimitSemaphore
 from miles.utils.lifecycle import TrajectoryLifecycle
@@ -256,7 +257,6 @@ class InferenceRolloutFn(BaseRolloutFn):
 
     async def _call_train(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
         from miles.rollout.inference_rollout.inference_rollout_train import generate_rollout_async
-        from miles.rollout.on_policy_distillation import chunk_continuations
 
         output, aborted_samples = await generate_rollout_async(
             self.state,

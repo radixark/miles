@@ -63,19 +63,28 @@ async def generate(input: GenerateFnInput, url: str | None = None) -> GenerateFn
 
 def chunk_continuations(groups: list[list[Sample]]) -> list[list[Sample]]:
     """Copies of the rollouts stopped at a chunk boundary, ready to resume generating from their prefix."""
+    if any(CHUNK_START_KEY not in sample.metadata for group in groups for sample in group):
+        raise ValueError(
+            "--opd-chunk-tokens needs miles.rollout.on_policy_distillation.generate (or a generate function that "
+            "calls it); this rollout's samples were not cut into chunks."
+        )
     return [
         [_chunk_continuation(sample) for sample in group] for group in groups if group[0].metadata.get(CHUNK_OPEN_KEY)
     ]
 
 
 def _chunk_continuation(sample: Sample) -> Sample:
-    # a copy: the original trains on this chunk in the current step
+    # a copy: the original trains on this chunk in the current step; the copy keeps only the generated prefix
     sample = copy.deepcopy(sample)
     sample.status = Sample.Status.PENDING
     sample.reward = None
     sample.teacher_log_probs = None
     sample.opd_reverse_kl = None
     sample.loss_mask = None
+    sample.remove_sample = False
+    sample.train_metadata = None
+    # the next rollout stamps its own namespace, so the prefix is not served from KV of older weights
+    sample.kv_cache_namespace = None
     del sample.metadata[CHUNK_OPEN_KEY]
     return sample
 

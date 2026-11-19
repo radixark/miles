@@ -89,8 +89,17 @@ class _ReadOnlyDataSource(DataSource):
         pass
 
 
-def test_legacy_source_rejects_checkpoint_loading(tmp_path: Path) -> None:
-    """Legacy buffered sources explicitly refuse checkpoint loading."""
-    source = LegacyRolloutDataSourceWithBuffer.__new__(LegacyRolloutDataSourceWithBuffer)
-    with pytest.raises(NotImplementedError, match="does not support checkpoint loading"):
-        source.load(tmp_path)
+def test_legacy_source_checkpoints_its_requeued_groups(tmp_path: Path) -> None:
+    """Re-queued groups (partial rollouts, open OPD chunks) survive a resume."""
+    saved = LegacyRolloutDataSourceWithBuffer.__new__(LegacyRolloutDataSourceWithBuffer)
+    saved.args = _make_args()
+    saved.buffer = [[Sample(index=7, tokens=[1, 2, 3], response_length=2)]]
+    saved.save(tmp_path)
+
+    restored = LegacyRolloutDataSourceWithBuffer.__new__(LegacyRolloutDataSourceWithBuffer)
+    restored.args = _make_args()
+    restored.buffer = []
+    restored.load(tmp_path)
+
+    [[sample]] = restored.buffer
+    assert (sample.index, sample.tokens, sample.response_length) == (7, [1, 2, 3], 2)

@@ -63,6 +63,9 @@ LINEAR_ATTENTION_BACKENDS = ("fla", "flashqla")
 LINEAR_ATTENTION_INPUT_NORMS = ("te", "hf")
 
 FULLY_ASYNC_ROLLOUT_PATH = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
+_INFERENCE_ROLLOUT_PATH = "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
+_DEFAULT_DATA_SOURCE_PATH = "miles.rollout.data_source.RolloutDataSource"
+_BUFFERED_DATA_SOURCE_PATH = "miles.rollout.data_source.LegacyRolloutDataSourceWithBuffer"
 
 
 def resolve_rollout_function_paths(args: argparse.Namespace) -> None:
@@ -70,7 +73,7 @@ def resolve_rollout_function_paths(args: argparse.Namespace) -> None:
     if use_legacy_rollout_v1():
         standard_path = "miles.rollout.sglang_rollout.generate_rollout"
     else:
-        standard_path = "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
+        standard_path = _INFERENCE_ROLLOUT_PATH
     rollout_path = args.rollout_function_path or standard_path
     if args.fully_async:
         rollout_path = FULLY_ASYNC_ROLLOUT_PATH
@@ -801,7 +804,8 @@ def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
     if args.sample_ownership_grace_steps is None:
         args.sample_ownership_grace_steps = 2 if args.ci_test else 10
     if args.enable_sample_ownership_checker is None:
-        args.enable_sample_ownership_checker = args.ci_test
+        # a chunked rollout trains one sample index once per chunk, which the checker counts as a replay
+        args.enable_sample_ownership_checker = args.ci_test and args.opd_chunk_tokens is None
     if not args.enable_sample_ownership_checker:
         return
 
@@ -823,6 +827,7 @@ def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
             (args.train_backend != "megatron", "the FSDP backend has no model companion info"),
             (is_lora_enabled(args), "LoRA training has no model companion info"),
             (args.multi_lora, "multi-LoRA training can replay samples"),
+            (args.opd_chunk_tokens is not None, "--opd-chunk-tokens trains each chunk of a rollout under one index"),
             (multi_policy, "multi-policy training has separate model companion lineages"),
             (args.debug_train_only, "train-only mode has no issuing data source"),
             (args.debug_rollout_only, "rollout-only mode has no trainer model companion"),
@@ -1045,6 +1050,7 @@ def miles_validate_args(args):
             )
 
     # Validate on-policy distillation (OPD) arguments
+    _validate_opd_chunk_tokens(args)
     if args.use_opd:
         if args.opd_type is None:
             raise ValueError("--opd-type must be specified when --use-opd is enabled. Choose 'sglang' or 'megatron'.")
@@ -1064,18 +1070,6 @@ def miles_validate_args(args):
             from miles.rollout.on_policy_distillation import parse_teacher_urls
 
             parse_teacher_urls(args.opd_teacher_urls)  # fail fast on malformed/duplicate entries
-
-        if args.opd_chunk_tokens is not None:
-            if args.opd_chunk_tokens < 1 or args.opd_type != "sglang" or args.opd_log_prob_top_k > 0:
-                raise ValueError(
-                    "--opd-chunk-tokens needs a positive value, --opd-type=sglang and sampled-token OPD "
-                    "(--opd-log-prob-top-k 0)."
-                )
-            if args.n_samples_per_prompt != 1 or args.fully_async or args.partial_rollout:
-                raise ValueError(
-                    "--opd-chunk-tokens re-queues single unfinished rollouts through the buffered data source: "
-                    "it needs --n-samples-per-prompt 1 and neither --fully-async nor --partial-rollout."
-                )
 
         if args.opd_type == "megatron":
             if args.opd_teacher_load is None:
@@ -1902,9 +1896,39 @@ def hf_validate_args(args, hf_config):
         raise AssertionError("hf_validate_args failed: " + "; ".join(errors))
 
 
+def _validate_opd_chunk_tokens(args: argparse.Namespace) -> None:
+    """Reject the setups where --opd-chunk-tokens would cut rollouts that are never resumed."""
+    if args.opd_chunk_tokens is None:
+        return
+    errors = [
+        reason
+        for condition, reason in (
+            (args.opd_chunk_tokens < 1, "it must be positive"),
+            (not args.use_opd or args.opd_type != "sglang", "it needs --use-opd --opd-type sglang"),
+            (args.opd_log_prob_top_k > 0, "top-k OPD reads full-response rows; use --opd-log-prob-top-k 0"),
+            (args.n_samples_per_prompt != 1, "a chunk resumes one rollout, not a group; use --n-samples-per-prompt 1"),
+            (
+                args.fully_async or args.partial_rollout,
+                "--fully-async and --partial-rollout resume rollouts their own way",
+            ),
+            (
+                use_legacy_rollout_v1() or args.rollout_function_path not in (None, _INFERENCE_ROLLOUT_PATH),
+                "only InferenceRolloutFn re-queues open chunks; unset MILES_USE_LEGACY_ROLLOUT_V1 and --rollout-function-path",
+            ),
+            (
+                args.data_source_path not in (_DEFAULT_DATA_SOURCE_PATH, _BUFFERED_DATA_SOURCE_PATH),
+                "open chunks re-queue through LegacyRolloutDataSourceWithBuffer; drop the custom --data-source-path",
+            ),
+        )
+        if condition
+    ]
+    if errors:
+        raise ValueError(f"--opd-chunk-tokens: {'; '.join(errors)}")
+
+
 def _resolve_data_source_path(args: argparse.Namespace) -> None:
     if (
         args.partial_rollout or args.opd_chunk_tokens is not None
-    ) and args.data_source_path == "miles.rollout.data_source.RolloutDataSource":
-        args.data_source_path = "miles.rollout.data_source.LegacyRolloutDataSourceWithBuffer"
+    ) and args.data_source_path == _DEFAULT_DATA_SOURCE_PATH:
+        args.data_source_path = _BUFFERED_DATA_SOURCE_PATH
         logger.info("Partial rollout uses the legacy buffered data source by default")

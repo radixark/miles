@@ -538,11 +538,14 @@ class TestChunkedGenerate:
 
         sample.teacher_log_probs = torch.zeros(12)
         sample.reward = 0.0
+        # per-step training state a filter or the rollout stamped on this chunk
+        sample.remove_sample, sample.train_metadata, sample.kv_cache_namespace = True, {"step": 0}, "rollout-0"
         [[resumed]] = on_policy_distillation.chunk_continuations([[sample]])
         # the trained original keeps its chunk; the copy is fresh for the next rollout
         assert sample.teacher_log_probs is not None and sample.loss_mask == [1] * 12
         assert resumed.status == Sample.Status.PENDING and resumed.index == 3
         assert resumed.reward is None and resumed.teacher_log_probs is None and resumed.loss_mask is None
+        assert not resumed.remove_sample and resumed.train_metadata is None and resumed.kv_cache_namespace is None
         assert on_policy_distillation.CHUNK_OPEN_KEY not in resumed.metadata
 
         resumed = self._run(monkeypatch, resumed)
@@ -593,3 +596,8 @@ class TestChunkedGenerate:
     def test_an_unchunked_sample_scores_its_whole_response(self):
         sample = Sample(tokens=[1, 2, 3, 4, 5], response_length=2)
         assert on_policy_distillation._response_logprob_start_len(sample) == 2
+
+    def test_samples_not_cut_by_the_chunked_generate_fail_loudly(self):
+        # e.g. a custom generate function that skips opd.generate: nothing would ever resume
+        with pytest.raises(ValueError, match="on_policy_distillation.generate"):
+            on_policy_distillation.chunk_continuations([[Sample(tokens=[1, 2], response_length=1)]])

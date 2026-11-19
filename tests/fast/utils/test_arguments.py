@@ -538,6 +538,7 @@ class TestSampleOwnershipCheckArguments:
             lora_rank=0,
             lora_adapter_path=None,
             multi_lora=False,
+            opd_chunk_tokens=None,
             megatron_config=None,
             debug_train_only=False,
             debug_rollout_only=False,
@@ -555,6 +556,7 @@ class TestSampleOwnershipCheckArguments:
             ({"train_backend": "fsdp"}, "the FSDP backend has no model companion info"),
             ({"lora_rank": 8}, "LoRA training has no model companion info"),
             ({"multi_lora": True}, "multi-LoRA training can replay samples"),
+            ({"opd_chunk_tokens": 4096}, "--opd-chunk-tokens trains each chunk of a rollout under one index"),
             ({"debug_train_only": True}, "train-only mode has no issuing data source"),
             ({"debug_rollout_only": True}, "rollout-only mode has no trainer model companion"),
             ({"debug_disable_optimizer": True}, "a disabled optimizer trains nothing"),
@@ -2718,6 +2720,35 @@ class TestDataSourceSelection:
             miles_validate_args(args)
 
         assert "legacy buffered data source" in caplog.text
+
+
+class TestOpdChunkTokensValidation:
+    CHUNK_ARGS = ["--use-opd", "--opd-type", "sglang", "--opd-chunk-tokens", "4096"]
+
+    def _validate(self, extra: list[str]) -> argparse.Namespace:
+        args = get_megatron_arg_parser().parse_args([*REQUIRED_ARGS, "--num-rollout", "1", *extra])
+        miles_validate_args(args)
+        return args
+
+    def test_chunking_selects_the_buffered_source_and_turns_off_the_ownership_checker(self) -> None:
+        args = self._validate([*self.CHUNK_ARGS, "--ci-test"])
+        assert args.data_source_path == "miles.rollout.data_source.LegacyRolloutDataSourceWithBuffer"
+        assert args.enable_sample_ownership_checker is False
+
+    @pytest.mark.parametrize(
+        ("extra", "reason"),
+        [
+            (["--opd-chunk-tokens", "4096"], "--use-opd --opd-type sglang"),
+            (["--n-samples-per-prompt", "4"], "--n-samples-per-prompt 1"),
+            (["--partial-rollout"], "resume rollouts their own way"),
+            (["--rollout-function-path", "custom.rollout"], "only InferenceRolloutFn"),
+            (["--data-source-path", "custom.Source"], "custom --data-source-path"),
+        ],
+    )
+    def test_setups_that_would_never_resume_a_chunk_are_rejected(self, extra: list[str], reason: str) -> None:
+        chunk_args = [] if extra[0] == "--opd-chunk-tokens" else self.CHUNK_ARGS
+        with pytest.raises(ValueError, match=re.escape(reason)):
+            self._validate([*chunk_args, *extra])
 
 
 class TestMultiLoRAValidation:

@@ -197,6 +197,8 @@ can be cut into chunks instead:
 
 Each token is still generated, scored and trained once. Evaluation is never chunked. It needs
 `--n-samples-per-prompt 1` and sampled-token OPD (`--opd-log-prob-top-k 0`).
+An open chunk ends with SGLang's length stop, so `rollout/truncated_ratio` and status-based filters
+such as `mask_truncated_zero_reward` count it as truncated; leave those filters off with chunking.
 
 ```bash
 # teachers: keep the radix cache so a chunk reuses the previous chunk's prefix
