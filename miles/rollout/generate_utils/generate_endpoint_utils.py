@@ -2,6 +2,7 @@
 Utils to integrate SGLang's `/generate` endpoint with RL things like Sample.
 """
 
+import asyncio
 from copy import deepcopy
 from typing import Any
 
@@ -261,8 +262,11 @@ async def update_sample_from_response(
     meta_info = output["meta_info"]
     sample.rollout_routed_experts = None
     if "routed_experts" in meta_info:
-        sample.rollout_routed_experts = get_routed_experts_from_response(
-            args, output, meta_info["prompt_tokens"] + meta_info["completion_tokens"] - 1
+        sample.rollout_routed_experts = await decode_routed_experts_from_response_async(
+            args,
+            output,
+            meta_info["prompt_tokens"] + meta_info["completion_tokens"] - 1,
+            preserve_wire_dtype=True,
         )
     sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample)
     if via_store:
@@ -298,6 +302,47 @@ def _append_store_response(
     return new if plan is None else plan.append_response(new)
 
 
+_ROUTED_EXPERTS_WIRE_DTYPES: dict[str, np.dtype] = {
+    "uint8": np.dtype(np.uint8),
+    "int16": np.dtype(np.int16),
+    "int32": np.dtype(np.int32),
+}
+_ASYNC_ROUTED_EXPERTS_DECODE_THRESHOLD_BYTES = 65536
+
+
+def _resolve_routed_experts_wire_dtype(wire_dtype: str | None) -> np.dtype:
+    name = "int32" if wire_dtype is None else wire_dtype
+    dtype = _ROUTED_EXPERTS_WIRE_DTYPES.get(name)
+    if dtype is None:
+        raise ValueError(
+            f"Unsupported routed_experts_dtype={wire_dtype!r}; expected one of {sorted(_ROUTED_EXPERTS_WIRE_DTYPES)}"
+        )
+    return dtype
+
+
+def compact_routed_experts_array(arr: np.ndarray) -> np.ndarray:
+    """Narrow an integer routed-experts array to ``uint8`` or ``int16`` when lossless.
+
+    ``uint8`` is selected when all entries lie in ``[0, 255]`` (models with <=256 experts and no
+    ``-1`` padding), cutting storage by 4x relative to ``int32``. ``int16`` is selected when all
+    entries lie in ``[-32768, 32767]`` (preserving ``-1`` padding and up to 32,767 experts),
+    cutting storage by 2x. Wider ranges remain ``int32``.
+    """
+    if not np.issubdtype(arr.dtype, np.integer):
+        raise TypeError(f"routed_experts array must have integer dtype, got {arr.dtype}")
+    if arr.dtype == np.uint8:
+        return arr
+    if arr.size == 0:
+        return arr if arr.dtype == np.int16 else arr.astype(np.uint8)
+    lo = int(arr.min())
+    hi = int(arr.max())
+    if 0 <= lo and hi <= 255:
+        return arr.astype(np.uint8, copy=False)
+    if -32768 <= lo and hi <= 32767:
+        return arr.astype(np.int16, copy=False)
+    return arr.astype(np.int32, copy=False)
+
+
 def _decode_topk_buffer(info: str, num_tokens: int, num_layers: int, topk: int) -> np.ndarray:
     # validate=True: SGLang sends plain base64; pybase64 skips its slow non-alphabet filtering pass.
     x = np.frombuffer(pybase64.b64decode(info, validate=True), dtype=np.int32)
@@ -308,16 +353,104 @@ def _decode_topk_buffer(info: str, num_tokens: int, num_layers: int, topk: int) 
     return x.reshape(num_tokens, num_layers, topk)
 
 
-def get_routed_experts_from_response(args, output, num_tokens: int):
-    info = output["meta_info"].get("routed_experts")
-    if info is None:
-        return None
-    routed_experts = _decode_topk_buffer(info, num_tokens, args.num_layers, -1)
-    assert routed_experts.size == 0 or routed_experts.any(), (
+def decode_routed_experts_buffer(
+    info: str,
+    num_tokens: int,
+    num_layers: int,
+    *,
+    wire_dtype: str | None = None,
+    compact: bool = False,
+    preserve_wire_dtype: bool = False,
+    allow_stop_edge_trim: bool = False,
+) -> np.ndarray:
+    dtype = _resolve_routed_experts_wire_dtype(wire_dtype)
+    raw = pybase64.b64decode(info, validate=True)
+    x = np.frombuffer(raw, dtype=dtype)
+    out_dtype = dtype if preserve_wire_dtype else np.dtype(np.int32)
+    if num_tokens <= 0:
+        empty = np.empty((0, num_layers, 0), dtype=out_dtype)
+        return compact_routed_experts_array(empty) if compact else empty
+
+    denom = num_tokens * num_layers
+    topk = len(x) // max(1, denom)
+    if allow_stop_edge_trim:
+        if len(x) == (num_tokens + 1) * num_layers * max(1, topk):
+            # stop-edge: sglang also forwarded the final token; its routing rows
+            # feed no training position - drop the tail position.
+            x = x[: denom * topk]
+        assert (
+            len(x) == denom * topk
+        ), f"routed_experts buffer {len(x)} != ntok({num_tokens}) x layers({num_layers}) x topk({topk})"
+    routed_experts = x.reshape(num_tokens, num_layers, topk)
+    assert routed_experts.size == 0 or x.view(np.uint8).any(), (
         "routed_experts payload is all zeros: the sglang engine did not capture routed experts "
         "(topk-bypassing --moe-runner-backend such as flashinfer_trtllm?)."
     )
-    return routed_experts
+    if compact:
+        return compact_routed_experts_array(routed_experts)
+    if preserve_wire_dtype:
+        return routed_experts
+    return routed_experts.astype(np.int32, copy=False)
+
+
+def get_routed_experts_from_response(
+    args,
+    output,
+    num_tokens: int,
+    *,
+    compact: bool = False,
+    preserve_wire_dtype: bool = False,
+    allow_stop_edge_trim: bool = False,
+):
+    meta_info = output["meta_info"]
+    info = meta_info.get("routed_experts")
+    if info is None:
+        return None
+    return decode_routed_experts_buffer(
+        info,
+        num_tokens,
+        args.num_layers,
+        wire_dtype=meta_info.get("routed_experts_dtype"),
+        compact=compact,
+        preserve_wire_dtype=preserve_wire_dtype,
+        allow_stop_edge_trim=allow_stop_edge_trim,
+    )
+
+
+async def decode_routed_experts_from_response_async(
+    args,
+    output,
+    num_tokens: int,
+    *,
+    compact: bool = False,
+    preserve_wire_dtype: bool = False,
+    allow_stop_edge_trim: bool = False,
+):
+    meta_info = output["meta_info"]
+    info = meta_info.get("routed_experts")
+    if info is None:
+        return None
+    wire_dtype = meta_info.get("routed_experts_dtype")
+    if len(info) >= _ASYNC_ROUTED_EXPERTS_DECODE_THRESHOLD_BYTES:
+        return await asyncio.to_thread(
+            decode_routed_experts_buffer,
+            info,
+            num_tokens,
+            args.num_layers,
+            wire_dtype=wire_dtype,
+            compact=compact,
+            preserve_wire_dtype=preserve_wire_dtype,
+            allow_stop_edge_trim=allow_stop_edge_trim,
+        )
+    return decode_routed_experts_buffer(
+        info,
+        num_tokens,
+        args.num_layers,
+        wire_dtype=wire_dtype,
+        compact=compact,
+        preserve_wire_dtype=preserve_wire_dtype,
+        allow_stop_edge_trim=allow_stop_edge_trim,
+    )
 
 
 def get_indexer_topk_from_response(args, output, sample):
