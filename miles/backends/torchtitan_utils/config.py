@@ -255,15 +255,26 @@ def _optim_config(args: TrainerConfig) -> Optim.Config:
             decay_type=args.backend.lr_decay_style,
             min_lr_factor=args.backend.min_lr / args.backend.lr,
         )
-    adamw = AdamW.Config(
+    adamw_kwargs = dict(
         pattern=r".*",
         lr=args.backend.lr,
         betas=(args.backend.adam_beta1, args.backend.adam_beta2),
         eps=args.backend.adam_eps,
         weight_decay=args.backend.weight_decay,
     )
+    container_kwargs = dict(optimizers=[])
+    if not platforms.current_platform.fused_adamw and not args.backend.optimizer_cpu_offload:
+        adamw_params = inspect.signature(AdamW.Config).parameters
+        if "foreach" in adamw_params and "fused" in adamw_params:
+            adamw_kwargs["foreach"] = True
+            adamw_kwargs["fused"] = False
+        elif "implementation" in adamw_params:
+            adamw_kwargs["implementation"] = "foreach"
+        if "implementation" in inspect.signature(OptimizersContainer.Config).parameters:
+            container_kwargs["implementation"] = "foreach"
+    container_kwargs["optimizers"] = [AdamW.Config(**adamw_kwargs)]
     return Optim.Config(
-        optimizer=OptimizersContainer.Config(optimizers=[adamw]),
+        optimizer=OptimizersContainer.Config(**container_kwargs),
         lr_scheduler=lr_scheduler,
         max_norm=args.backend.clip_grad,
     )

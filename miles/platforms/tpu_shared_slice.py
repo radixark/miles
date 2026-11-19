@@ -16,6 +16,8 @@ import torch.distributed as dist
 from torch._C._distributed_c10d import PrefixStore
 
 ENV_VAR = "MILES_TPU_SHARED_SLICE"
+# one TPU v7x 2x2x1 host holds at most 8 TensorCores; multi-host slices wrap LOCAL_RANK per host
+_MAX_DEVICES_PER_TPU_HOST = 8
 # joining waits for the other job to start
 _JOIN_TIMEOUT = timedelta(minutes=30)
 # a send waits until the engine posts its receive, which never comes once the engine has refused the bucket
@@ -68,8 +70,11 @@ def join(shared: SharedSlice, *, job_rank: int, job_size: int) -> None:
     from torch_tpu._internal.distributed import tpu_distributed
 
     slice_rank = shared.rank_offset + job_rank
-    os.environ["RANK"] = os.environ["LOCAL_RANK"] = str(slice_rank)
-    os.environ["WORLD_SIZE"] = os.environ["LOCAL_WORLD_SIZE"] = str(shared.size)
+    local_slice_size = min(shared.size, _MAX_DEVICES_PER_TPU_HOST)
+    os.environ["RANK"] = str(slice_rank)
+    os.environ["LOCAL_RANK"] = str(slice_rank % local_slice_size)
+    os.environ["WORLD_SIZE"] = str(shared.size)
+    os.environ["LOCAL_WORLD_SIZE"] = str(local_slice_size)
     # libtpu only checks these exist; the trainer sets its world's real ones before init_process_group
     os.environ.setdefault("MASTER_ADDR", shared.store_host)
     os.environ.setdefault("MASTER_PORT", str(shared.store_port))
@@ -84,8 +89,11 @@ def join(shared: SharedSlice, *, job_rank: int, job_size: int) -> None:
         PrefixStore(receiver_contract().BACKEND_NAME, store), slice_rank, shared.size, _SEND_TIMEOUT
     )
     _membership = _Membership(backend=backend, store=store, slice_rank=slice_rank)
-    os.environ["RANK"] = os.environ["LOCAL_RANK"] = str(job_rank)
-    os.environ["WORLD_SIZE"] = os.environ["LOCAL_WORLD_SIZE"] = str(job_size)
+    local_job_size = min(job_size, _MAX_DEVICES_PER_TPU_HOST)
+    os.environ["RANK"] = str(job_rank)
+    os.environ["LOCAL_RANK"] = str(job_rank % local_job_size)
+    os.environ["WORLD_SIZE"] = str(job_size)
+    os.environ["LOCAL_WORLD_SIZE"] = str(local_job_size)
 
 
 def reset_tags() -> None:

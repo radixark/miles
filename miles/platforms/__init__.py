@@ -31,6 +31,10 @@ class Platform:
     dynamic_shapes = True
     # NVML sees the devices, so each training rank is pinned to its GPU's NUMA node
     nvml_numa_affinity = True
+    # torch.optim.AdamW(fused=True) works here; platforms whose compiler rejects fused buffer donation use foreach
+    fused_adamw = True
+    # upper bound on devices per host when a multi-host slice reports slice-wide ranks; None leaves LOCAL_WORLD_SIZE untouched
+    max_local_devices: int | None = None
     # the rollout engines' KV cache dtype when --sglang-kv-cache-dtype is left at "auto"; None keeps the engine's choice
     rollout_kv_cache_dtype: str | None = None
 

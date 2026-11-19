@@ -53,9 +53,10 @@ One launcher per model, each with the same `prepare`, `sglang` and `train` comma
 
 | Launcher | Model | Trainer |
 |---|---|---|
-| `run_qwen3_4b_torchtitan.py` | Qwen3-4B | Adam on the device |
+| `run_qwen3_5_0_8b_torchtitan.py` | Qwen3.5-0.8B | Adam on the device (`foreach`) |
+| `run_qwen3_4b_torchtitan.py` | Qwen3-4B | Adam on the device (`foreach`) |
 | `run_qwen3_30b_a3b_torchtitan.py` | Qwen3-30B-A3B | params, grads and Adam on the host (`--optimizer-cpu-offload`), ~120 GB of host RAM per trainer process |
-| `run_glm4_7_flash_4layer_torchtitan.py` | GLM-4.7-Flash cut to its first 4 layers (`tools/prune_hf_layers.py`) | Adam on the device |
+| `run_glm4_7_flash_4layer_torchtitan.py` | GLM-4.7-Flash cut to its first 4 layers (`tools/prune_hf_layers.py`) | Adam on the device (`foreach`) |
 
 The MoE trainers keep every expert on each rank (EP 1); sglang serves them with EP 4. Both MoE launchers run the
 smoke recipe end to end on one v7x 2x2x1 host (cold compile caches; steps 1-2): Qwen3-30B-A3B at 266-313 s a step

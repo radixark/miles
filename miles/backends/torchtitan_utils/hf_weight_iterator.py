@@ -41,8 +41,9 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
     def _iter_hf_param_units(self, weights, *, materialize):
         # an engine sharing the slice over ICI takes each EP rank's experts from the paired trainer rank
         local_experts = self.args.update_weight_transfer_mode == "ici"
+        ep_size = _resolve_sglang_ep_size(self.args) if local_experts else None
         for name, tensor in hf_weights(
-            self.model, complete_across_pp=self.placement.gather_pp, local_experts=local_experts
+            self.model, complete_across_pp=self.placement.gather_pp, local_experts=local_experts, ep_size=ep_size
         ):
             if materialize:
                 yield [(name, self._to_engine_dtype(name, tensor))]
@@ -68,8 +69,22 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
                 yield [(name, tensor)]
 
 
+def _resolve_sglang_ep_size(args) -> int | None:
+    ep_size = getattr(
+        args, "sglang_ep_size", None
+    )  # config-access-exempt: Namespace callers expose sglang_ep_size directly while TrainerConfig nests it under args.sglang
+    if ep_size is not None:
+        return ep_size
+    sglang = getattr(
+        args, "sglang", None
+    )  # config-access-exempt: unit-test Namespace stubs may omit the resolved SglangConfig
+    if sglang is not None and "ep_size" in sglang.base_args:
+        return sglang.actor_value("ep_size")
+    return None
+
+
 def hf_weights(
-    trainer, *, complete_across_pp: bool = True, local_experts: bool = False
+    trainer, *, complete_across_pp: bool = True, local_experts: bool = False, ep_size: int | None = None
 ) -> Iterator[tuple[str, torch.Tensor]]:
     # FSDP2 CPU offload keeps the shards on the host; gather_full_param moves one tensor at a time
     offloaded = (
@@ -80,7 +95,9 @@ def hf_weights(
         for part in trainer.model_parts:
             part.to(current_platform.current_device())
     try:
-        yield from _hf_weights_on_device(trainer, complete_across_pp=complete_across_pp, local_experts=local_experts)
+        yield from _hf_weights_on_device(
+            trainer, complete_across_pp=complete_across_pp, local_experts=local_experts, ep_size=ep_size
+        )
     finally:
         if offloaded:
             for part in trainer.model_parts:
@@ -115,7 +132,7 @@ _GROUPED_EXPERTS = ".routed_experts."
 
 
 def _hf_weights_on_device(
-    trainer, *, complete_across_pp: bool, local_experts: bool
+    trainer, *, complete_across_pp: bool, local_experts: bool, ep_size: int | None = None
 ) -> Iterator[tuple[str, torch.Tensor]]:
     sd_adapter = _state_dict_adapter(trainer)
     state = {
@@ -128,7 +145,7 @@ def _hf_weights_on_device(
 
     mine = sorted(k for k in state if _GROUPED_EXPERTS in k)
     if local_experts:
-        yield from _local_experts(sd_adapter, state, mine)
+        yield from _local_experts(sd_adapter, state, mine, ep_size=ep_size)
         return
     everyone: list = [None] * layout.world
     dist.all_gather_object(everyone, mine)
@@ -136,7 +153,15 @@ def _hf_weights_on_device(
         yield from layout.stream(sd_adapter.to_hf({key: gather_full_param(state[key])}) if key in state else {})
 
 
-def _local_experts(sd_adapter, state, keys: list[str]) -> Iterator[tuple[str, torch.Tensor]]:
+@functools.cache
+def _expert_gather_groups(ep_size: int, world: int) -> tuple:
+    span = world // ep_size
+    return tuple(dist.new_group(list(range(g * span, (g + 1) * span))) for g in range(ep_size))
+
+
+def _local_experts(
+    sd_adapter, state, keys: list[str], *, ep_size: int | None = None
+) -> Iterator[tuple[str, torch.Tensor]]:
     """This rank's experts as whole HF tensors on its device, named by their global expert ids."""
     rank, world = dist.get_rank(), dist.get_world_size()
     device = current_platform.current_device()
@@ -144,7 +169,9 @@ def _local_experts(sd_adapter, state, keys: list[str]) -> Iterator[tuple[str, to
         # under FSDP CPU offload the shards live on the host; the bucket goes out from the device
         converted = sd_adapter.to_hf({key: _on_device(state[key], device)})
         if any(_GROUPED_EXPERT_NAME.search(name) for name in converted):
-            yield from _grouped_experts_by_id(converted, titan_shape=state[key].shape, rank=rank, world=world)
+            yield from _grouped_experts_by_id(
+                converted, titan_shape=state[key].shape, rank=rank, world=world, ep_size=ep_size
+            )
             continue
         assert not any(isinstance(v, DTensor) for v in converted.values()), f"{key} is sharded within an expert"
         num_experts = state[key].shape[0]
@@ -173,14 +200,15 @@ _PER_EXPERT_NAME = re.compile(rf"\.experts\.\d+\.({'|'.join(_GROUPED_LAYOUT)})\.
 
 
 def _grouped_experts_by_id(
-    converted: dict[str, DTensor], *, titan_shape: torch.Size, rank: int, world: int
+    converted: dict[str, DTensor], *, titan_shape: torch.Size, rank: int, world: int, ep_size: int | None = None
 ) -> Iterator[tuple[str, torch.Tensor]]:
     """An adapter that keeps HF's grouped expert layout (Qwen3.5-MoE: experts.gate_up_proj [E, 2F, D]) returns this
     rank's Shard(0) slice still as a DTensor. The engine's grouped loader indexes all E experts, so this rank's experts
     go out under the per-expert names the engine also loads (experts.{id}.gate_proj.weight).
 
-    Trainer EP = 1 only: FSDP alone shards the experts, so rank r holds the engine EP rank r's experts. Trainer EP > 1
-    is refused at startup on TPU, and its expert layout (EP and FSDP shards combined) is not handled here."""
+    Trainer EP = 1 only: FSDP alone shards the experts. When ``0 < ep_size < world`` (K > 1 rollout engines), each
+    contiguous subgroup of ``span = world // ep_size`` trainer ranks all-gathers its ``num_experts // ep_size``
+    experts so every rank in subgroup ``g`` sends EP shard ``g`` to its paired engine."""
     for name, grouped in converted.items():
         assert (
             isinstance(grouped, DTensor) and grouped.placements == (Shard(0),) and grouped.device_mesh.size() == world
@@ -194,7 +222,23 @@ def _grouped_experts_by_id(
         assert (
             tuple(grouped.shape[1:]) == rows_by_columns
         ), f"{name} {tuple(grouped.shape)} is not torchtitan's {tuple(titan_shape)} with its projections stacked as rows"
-        yield from _per_expert(name, grouped.to_local(), first_expert=rank * num_experts // world)
+        local_shard = grouped.to_local()
+        if ep_size is not None and 0 < ep_size < world:
+            assert world % ep_size == 0, f"trainer world {world} must be divisible by sglang_ep_size {ep_size}"
+            assert num_experts % ep_size == 0, f"{num_experts} experts not divisible by sglang_ep_size {ep_size}"
+            span = world // ep_size
+            ep_rank = rank // span
+            sub_pg = _expert_gather_groups(ep_size, world)[ep_rank]
+            local_contig = local_shard.contiguous()
+            gathered = torch.empty(
+                (local_contig.shape[0] * span, *local_contig.shape[1:]),
+                dtype=local_contig.dtype,
+                device=local_contig.device,
+            )
+            dist.all_gather_into_tensor(gathered, local_contig, group=sub_pg)
+            yield from _per_expert(name, gathered, first_expert=ep_rank * (num_experts // ep_size))
+        else:
+            yield from _per_expert(name, local_shard, first_expert=rank * num_experts // world)
 
 
 def _per_expert(name: str, local_experts: torch.Tensor, *, first_expert: int) -> Iterator[tuple[str, torch.Tensor]]:
