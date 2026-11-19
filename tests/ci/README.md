@@ -10,8 +10,10 @@ https://github.com/radixark/miles/settings/secrets/actions
 
 ### Step 0: Prepare `/data/miles_ci`
 
-The miles CI workflow bind-mounts `/data/miles_ci` (and its `models`,
-`datasets`, `hf_cache` subdirectories) from the host into every job container.
+The miles CI workflow bind-mounts the `jit`, `dumps`, `models`, `datasets` and
+`hf_cache` subdirectories of `/data/miles_ci` from the host into every job
+container, never `/data/miles_ci` itself: the runners of a host share it, and a
+job must not read another runner's work directory.
 `models` also holds the `<model>_torch_dist` checkpoints that
 `convert_checkpoint` writes by default, so a host converts each model once and
 every later job on it reuses the result.
@@ -184,8 +186,8 @@ Step 0's `setup-host.sh` guarantees `/data/miles_ci` exists on the host
 wherever the big disk is). Either way, the bind mount works uniformly across
 hosts.
 
-The workflow `.github/workflows/_run-ci.yml`'s four data mounts use the same
-literal path (no parameterization). Tests hardcode the container-side targets
+The workflow `.github/workflows/_run-ci.yml`'s data mounts use literal host
+paths (no parameterization). Tests hardcode the container-side targets
 (`/root/models`, `/root/datasets`, `/root/.cache/huggingface`); the host side
 is always `/data/miles_ci/...`.
 

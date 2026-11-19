@@ -91,6 +91,7 @@ def fake_components():
     executor_handle = MagicMock(name="rollout_executor")
     executor_handle.wait_ready = AsyncMock(return_value=None)
     executor_handle.get_init_state = AsyncMock(side_effect=fake_executor_get_init_state)
+    executor_handle.check_agent_setup = AsyncMock(side_effect=lambda: events.append("agent_setup_checked"))
     executor_handle.init = AsyncMock(side_effect=lambda: events.append("executor_init"))
     executor_handle.get_num_rollout_per_epoch = AsyncMock(return_value=5)
     executor_handle.set_eval_fleet_info = AsyncMock(return_value=None)
@@ -155,6 +156,7 @@ class TestCreateRolloutComponents:
         assert fake_components.events == [
             "session_servers_ready",
             "executor_init_state_checked",
+            "agent_setup_checked",
             "controller_init",
             "executor_init",
         ]
@@ -168,7 +170,24 @@ class TestCreateRolloutComponents:
             args, capability=fake_components.capability, trainer_handles=fake_components.trainer_handles
         )
 
-        assert fake_components.events == ["executor_init_state_checked", "controller_init", "executor_init"]
+        assert fake_components.events == [
+            "executor_init_state_checked",
+            "agent_setup_checked",
+            "controller_init",
+            "executor_init",
+        ]
+
+    async def test_a_broken_agent_setup_fails_before_the_engines_are_waited_for(self, fake_components):
+        """Waiting for the engines takes minutes, all of them wasted on a setup that no sample can run on."""
+        args = _make_args(num_rollout=1)
+        fake_components.executor_handle.check_agent_setup.side_effect = RuntimeError("the agent's tool is not on PATH")
+
+        with pytest.raises(RuntimeError, match="not on PATH"):
+            await create_rollout_components(
+                args, capability=fake_components.capability, trainer_handles=fake_components.trainer_handles
+            )
+
+        assert fake_components.events == ["executor_init_state_checked"]
 
     async def test_returns_two_worker_handles(self, fake_components):
         """Both halves of rollout are independent workers, so the driver only ever holds handles."""
