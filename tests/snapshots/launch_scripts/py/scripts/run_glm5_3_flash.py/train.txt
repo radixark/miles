@@ -44,10 +44,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --moe-grouped-gemm
   --moe-permute-fusion
   --vocab-size 154880
-  --rotary-base 10000
-  --rope-type rope
-  --no-rope-fusion
-  --position-embedding-type rope
+  --position-embedding-type none
   --normalization RMSNorm
   --norm-epsilon 1e-5
   --swiglu

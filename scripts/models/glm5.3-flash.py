@@ -30,10 +30,8 @@ def model_args(nlayers: int = 45, first_k_dense_replace: int = 3) -> str:
         "--moe-grouped-gemm "
         "--moe-permute-fusion "
         "--vocab-size 154880 "
-        "--rotary-base 10000 "
-        "--rope-type rope "
-        "--no-rope-fusion "
-        "--position-embedding-type rope "
+        # GLM-5.3's text tower is NoPE (qk_pos_emb_head_dim=0).
+        "--position-embedding-type none "
         "--normalization RMSNorm "
         "--norm-epsilon 1e-5 "
         "--swiglu "
