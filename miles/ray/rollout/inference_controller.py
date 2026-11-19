@@ -5,9 +5,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
-
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.sglang_utils.constants import (
+    GPU_MEMORY_TYPE_CUDA_GRAPH,
+    GPU_MEMORY_TYPE_KV_CACHE,
+    GPU_MEMORY_TYPE_WEIGHTS,
+)
+from miles.backends.sglang_utils.sglang_api_client import EngineApiClient
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin, InferenceControllerEvalFleet
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
@@ -468,7 +471,7 @@ class InferenceController:
 
 @dataclass(frozen=True)
 class UpdatableEngines:
-    rollout_engines: list[SGLangApiClient]
+    rollout_engines: list[EngineApiClient]
     engine_gpu_counts: list[int]
     engine_gpu_offsets: list[int]
     engine_cell_ids: list[str]
@@ -513,4 +516,5 @@ def _compute_server_cell_meta_from_info(info: CellInfo) -> ServerCellMetadata:
         needs_offload=info.meta["needs_offload"],
         update_weights=info.meta["update_weights"],
         workers_hash=info.workers_hash,
+        engine_type=info.meta.get("engine_type", "sglang"),
     )

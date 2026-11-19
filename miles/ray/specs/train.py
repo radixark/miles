@@ -4,8 +4,8 @@ from typing import Any, ClassVar
 
 from typing_extensions import Self
 
+from miles import platforms
 from miles.backends.megatron_utils.megatron_config import ACTOR_ROLE, CRITIC_ROLE, MegatronTrainerConfig
-from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils.args.configs.backend_fields import RawTrainerBackendConfig
 from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.args.runtime import TrainerConfig
@@ -191,6 +191,7 @@ class TrainerSpec(BaseServeSpec):
                 if (i := config.trainer_actor_index) is None
                 else i * scaling.actor_num_nodes * scaling.actor_num_gpus_per_node
             ),
+            claim_whole_device=True,
         )
 
     def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
@@ -210,7 +211,33 @@ def compute_trainer_pool_id(trainer_id: str) -> str:
     return f"trainer-engine-{trainer_id}"
 
 
+def _worker_local_topology(ctx: WorkerLaunchContext) -> tuple[int, int]:
+    """Compute `(local_rank, local_world_size)` for a worker within its cell."""
+    world_size = ctx.num_workers_per_cell
+    rank = ctx.worker_in_cell_index
+    if len(ctx.bundle_node_ips) == world_size and 0 <= rank < world_size:
+        my_ip = ctx.bundle_node_ips[rank]
+        return ctx.bundle_node_ips[:rank].count(my_ip), ctx.bundle_node_ips.count(my_ip)
+    per_node = ctx.devices_per_node if ctx.devices_per_node > 0 else world_size
+    local_world_size = max(1, min(world_size, per_node))
+    return rank % local_world_size, local_world_size
+
+
 def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, fp8_scales: str) -> dict[str, str]:
+    platform = platforms.current_platform
+    local_rank, local_world_size = _worker_local_topology(ctx)
+    dist_env_vars: dict[str, str] = {}
+    if "MILES_TPU_SHARED_SLICE" not in args.train_env_vars and args.update_weight_transfer_mode != "ici":
+        dist_env_vars = platform.worker_distributed_env_vars(
+            bundle_node_ips=ctx.bundle_node_ips,
+            rank=ctx.worker_in_cell_index,
+            local_rank=local_rank,
+            world_size=ctx.num_workers_per_cell,
+            local_world_size=local_world_size,
+            devices_per_node=ctx.devices_per_node,
+            subhost_offset=ctx.subhost_device_offset,
+        )
+
     env_vars = {
         # because sglang will always set NCCL_CUMEM_ENABLE to 0
         # we need also set it to 0 to prevent nccl error.
@@ -218,7 +245,8 @@ def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, fp8_scales: str)
         # DeepEP/NVSHMEM's internal NCCL conflicts with our NCCL and hangs under CUDA graphs.
         "NVSHMEM_DISABLE_NCCL": os.environ.get("NVSHMEM_DISABLE_NCCL", "1"),
         "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": fp8_scales,
-        **{name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST},
+        **platform.noset_visible_devices_env_vars,
+        **dist_env_vars,
         **args.train_env_vars,
     }
 

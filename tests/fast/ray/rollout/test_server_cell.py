@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args, track_server_cell
+from tests.fast.ray.rollout.conftest import _engine_client_factory, make_args, track_server_cell
 
 from miles.ray.rollout import server_cell as server_cell_module
 from miles.ray.rollout.cell_state import CellAddrInfo, StatePendingWeights
@@ -25,7 +25,7 @@ class TestServerCellAbortAll:
                 timeouts.append(timeout)
                 return result
 
-        monkeypatch.setattr(server_cell_module, "SGLangApiClient", _RecordingApiClient)
+        monkeypatch.setattr(server_cell_module, "make_engine_api_client", _engine_client_factory(_RecordingApiClient))
         cell = track_server_cell(
             ServerCell(
                 args=make_args(),

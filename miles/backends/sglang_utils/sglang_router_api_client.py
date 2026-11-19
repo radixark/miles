@@ -3,8 +3,12 @@ import logging
 from urllib.parse import quote
 
 import httpx
-import sglang_router
 from packaging.version import parse
+
+try:
+    import sglang_router
+except ImportError:
+    sglang_router = None  # type: ignore[assignment]
 
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.utils.http_utils import GeneralHttpClientProvider
@@ -34,7 +38,7 @@ class SGLangRouterApiClient:
 
     async def remove_worker(self, worker_url: str) -> None:
         response = None
-        if parse(sglang_router.__version__) < parse("0.3.0"):
+        if sglang_router is not None and parse(sglang_router.__version__) < parse("0.3.0"):
             quoted_worker_url = quote(worker_url, safe="")
             response = await GeneralHttpClientProvider.client().delete(
                 f"{self.router_url}/workers/{quoted_worker_url}",

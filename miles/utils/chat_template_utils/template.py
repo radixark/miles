@@ -22,10 +22,10 @@ from typing import Literal
 from huggingface_hub import hf_hub_download
 from jinja2 import TemplateError
 from pydantic import TypeAdapter
-from sglang.srt.entrypoints.openai.protocol import Tool
 from transformers.utils.chat_template_utils import render_jinja_template
 
 from miles.utils.chat_template_utils import deepseek, inkling
+from miles.utils.chat_template_utils.deepseek import Tool
 
 # Message matching moved to message_matcher_hub; direct aliases keep the
 # established import surface working without a second implementation.

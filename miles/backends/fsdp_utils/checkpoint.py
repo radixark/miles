@@ -197,7 +197,8 @@ def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None) -> None
         if actor.args.start_rollout_id is None:
             actor.args.start_rollout_id = iteration
 
-    torch.cuda.synchronize()
+    if torch.accelerator.is_available():
+        torch.accelerator.synchronize()
     dist.barrier()
 
 
@@ -207,7 +208,8 @@ def save(actor: Any, iteration: int) -> None:
     Saves model weights and optimizer state to separate directories.
     This allows loading weights without optimizer or deleting optimizer before loading.
     """
-    torch.cuda.synchronize()
+    if torch.accelerator.is_available():
+        torch.accelerator.synchronize()
 
     base_dir = Path(actor.args.backend.save).expanduser()
     step_id = iteration + 1
@@ -247,7 +249,8 @@ def save(actor: Any, iteration: int) -> None:
 
     if dist.get_rank() == 0:
         rng_state = {"torch": torch.get_rng_state()}
-        rng_state["cuda"] = torch.cuda.get_rng_state_all()
+        if torch.cuda.is_available():
+            rng_state["cuda"] = torch.cuda.get_rng_state_all()
         torch.save(rng_state, checkpoint_dir / "rng.pt")
 
         metadata = {

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 import torch
 
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.sglang_utils.sglang_api_client import EngineApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 
@@ -29,11 +29,13 @@ class WeightTransferProtocol(ABC):
     # Opt in only when separate instances own independent transfer state.
     supports_receiver_pools: ClassVar[bool] = False
     use_weight_update_session: ClassVar[bool] = True
+    # False: the protocol moves the whole model in ``transfer`` instead of receiving gathered buckets.
+    streams_buckets: ClassVar[bool] = True
     needs_base_resync_for_lora: bool = False
 
     def __init__(self, args: Namespace) -> None:
         self.args = args
-        self.rollout_engines: Sequence[SGLangApiClient] | None = None
+        self.rollout_engines: Sequence[EngineApiClient] | None = None
         self.is_sender: bool | None = None
         self.group_name = "miles"
         self.update_weight_metrics: dict[str, float] = {}
@@ -42,7 +44,7 @@ class WeightTransferProtocol(ABC):
     @abstractmethod
     def connect(
         self,
-        rollout_engines: Sequence[SGLangApiClient],
+        rollout_engines: Sequence[EngineApiClient],
         engine_gpu_counts: Sequence[int] | None,
         engine_gpu_offsets: Sequence[int] | None,
         engine_cell_ids: Sequence[str],
@@ -63,6 +65,10 @@ class WeightTransferProtocol(ABC):
     @abstractmethod
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None: ...
 
+    def transfer(self, hf_weight_iterator) -> None:
+        """Move the base weights on every rank, for protocols that set ``streams_buckets = False``."""
+        raise NotImplementedError
+
     def after_base_weights(self) -> None:  # noqa: B027 — optional hook
         """Hook after the base-weight stream completes (e.g. await in-flight writes)."""
 
@@ -79,7 +85,7 @@ class WeightTransferProtocol(ABC):
 
 def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
     mode = args.update_weight_transfer_mode
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "ici", "http-lora"):
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "ici", "http-lora", "tpu-sync"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
@@ -112,4 +118,8 @@ def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
         if args.http_lora_ship == "tensors":
             return UpdateWeightHttpLoraTensors(args)
         return UpdateWeightHttpLoraPath(args)
+    if mode == "tpu-sync":
+        from miles.backends.training_utils.weight_update.protocols.tpu_sync import UpdateWeightTpuSync
+
+        return UpdateWeightTpuSync(args)
     raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")

@@ -3,7 +3,7 @@ import dataclasses
 import logging
 from typing import Any
 
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.sglang_utils.sglang_api_client import EngineApiClient
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.ray.rollout.serving_registry import ServingRegistry
@@ -89,7 +89,7 @@ class RolloutServer:
 
     @property
     @requires_lock
-    def api_clients(self) -> list[SGLangApiClient]:
+    def api_clients(self) -> list[EngineApiClient]:
         """One client per cell, talking to its primary (node-0) engine."""
         return [cell.api_client for cell in self._cells_by_gpu_offset()]
 

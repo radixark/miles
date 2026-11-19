@@ -16,7 +16,10 @@ import argparse
 import json
 from typing import TYPE_CHECKING, Any
 
-from sglang.srt.server_args import ServerArgs
+try:
+    from sglang.srt.server_args import ServerArgs
+except ImportError:
+    ServerArgs = None  # type: ignore[assignment,misc]
 
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.object_store_config import _parse_size, compute_mooncake_store_config
@@ -246,6 +249,8 @@ def _run_key_prefix(args: argparse.Namespace) -> str:
 
 
 def _sglang_has_output_store() -> bool:
+    if ServerArgs is None:
+        return False
     return set(SGLANG_OUTPUT_STORE_FIELDS) <= set(_record_field_names(ServerArgs))
 
 

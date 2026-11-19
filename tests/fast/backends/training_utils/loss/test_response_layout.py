@@ -360,10 +360,12 @@ def static_shapes(monkeypatch):
     [
         (dict(), True),
         (dict(loss_type="score_centering"), True),
+        (dict(train_backend="fsdp"), True),
+        (dict(train_backend="fsdp", loss_type="score_centering"), True),
         (dict(loss_type="sft_loss"), False),
-        (dict(train_backend="fsdp"), False),
+        (dict(train_backend="megatron"), False),
     ],
-    ids=["policy-loss", "score-centering", "sft-loss", "fsdp"],
+    ids=["policy-loss", "score-centering", "fsdp-policy-loss", "fsdp-score-centering", "sft-loss", "megatron"],
 )
 def test_a_static_shape_platform_pads_the_losses_written_on_the_layout(static_shapes, overrides, enabled):
     assert padded_rows_enabled(_startup_args(**overrides)) is enabled

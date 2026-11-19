@@ -12,7 +12,13 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
-from sglang.srt.debug_utils.dumper import DumperConfig, _get_rank, dumper
+
+try:
+    from sglang.srt.debug_utils.dumper import DumperConfig, _get_rank, dumper
+except ImportError:
+    DumperConfig = None  # type: ignore[assignment,misc]
+    _get_rank = None  # type: ignore[assignment]
+    dumper = None  # type: ignore[assignment]
 
 from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -190,6 +196,8 @@ class DumperMegatronUtil:
             merged["enable_output_file"] = False
             merged["enable_output_console"] = False
 
+        if dumper is None or DumperConfig is None:
+            raise ImportError("sglang is required when dumper is enabled")
         full_config = DumperConfig(**merged)
         dumper.reset()
         # Wipe the whole phase dir only at run start (rollout 0). Gating on a
@@ -276,7 +284,11 @@ def _log_model_grad_coverage(model: torch.nn.Module) -> None:
         else:
             with_grad += 1
 
-    rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else _get_rank()
+    rank = (
+        dist.get_rank()
+        if dist.is_available() and dist.is_initialized()
+        else (_get_rank() if _get_rank is not None else 0)
+    )
     logger.info(
         "Dumper fwd_bwd model grad coverage rank=%s with_grad=%d total=%d missing=%d missing_names=%s",
         rank,
@@ -309,7 +321,12 @@ def _cleanup_dump_dir(dump_dir: Path, *, indep_dp_rank: int) -> None:
     # Best-effort: stale handles from a peer that crashed (NFS .nfsXXXX stubs)
     # can make rmtree fail with "Directory not empty"; we don't want that to
     # propagate up and mark the (healthy) cell as errored.
-    if (_get_rank() == 0) and (indep_dp_rank == 0) and dump_dir.is_dir():
+    rank = (
+        _get_rank()
+        if _get_rank is not None
+        else (dist.get_rank() if dist.is_available() and dist.is_initialized() else 0)
+    )
+    if (rank == 0) and (indep_dp_rank == 0) and dump_dir.is_dir():
         try:
             shutil.rmtree(dump_dir)
         except OSError:
@@ -368,6 +385,10 @@ def _get_phase_override_configs(args: Namespace, phase: DumperPhase) -> dict[str
     raw = getattr(
         args, f"dumper_{phase.value}"
     )  # config-access-exempt: attribute selected at runtime from f'dumper_{phase.value}'
+    if not raw:
+        return {"enable": args.dumper_enable}
+    if DumperConfig is None:
+        raise ImportError("sglang is required when --dumper-* phase overrides are set")
     return {"enable": args.dumper_enable, **DumperConfig._kv_pairs_to_dict(raw)}
 
 

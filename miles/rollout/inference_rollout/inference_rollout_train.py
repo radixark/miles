@@ -5,6 +5,7 @@ from collections.abc import Callable
 
 from tqdm import tqdm
 
+from miles.backends.sglang_utils.sglang_api_client import make_engine_api_client
 from miles.rollout.base_types import RolloutFnTrainOutput, stamp_kv_cache_namespace
 from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
@@ -32,9 +33,17 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
 
     urls = await get_worker_urls(args)
     logger.info(f"Abort request for {urls}")
-    results = await asyncio.gather(
-        *[post(f"{url}/abort_request", {"abort_all": True}) for url in urls], return_exceptions=True
-    )
+    if args.rollout_engine == "sglang":
+        # unchanged SGLang path: the rollout's retrying post()
+        abort_tasks = [post(f"{url}/abort_request", {"abort_all": True}) for url in urls]
+    else:
+        abort_tasks = [
+            make_engine_api_client(
+                args.rollout_engine, server_url=url, api_key=args.sglang.base_args["api_key"]
+            ).abort_all_requests()
+            for url in urls
+        ]
+    results = await asyncio.gather(*abort_tasks, return_exceptions=True)
     for url, result in zip(urls, results, strict=True):
         if isinstance(result, Exception):
             logger.warning(f"Failed to abort worker at {url}: {result}")

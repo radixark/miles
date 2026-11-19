@@ -11,6 +11,7 @@ import numpy as np
 import pybase64
 from tqdm import tqdm
 
+from miles.backends.sglang_utils.sglang_api_client import make_engine_api_client
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer
 from miles.rollout.filter_hub.common_filters import apply_preput_filters
@@ -461,7 +462,16 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     urls = router_worker_base_urls([worker["url"] for worker in response["workers"]])
 
     logger.info(f"Abort request for {urls}")
-    abort_tasks = [post(f"{url}/abort_request", {"abort_all": True}) for url in urls]
+    if args.rollout_engine == "sglang":
+        # unchanged SGLang path: the rollout's retrying post()
+        abort_tasks = [post(f"{url}/abort_request", {"abort_all": True}) for url in urls]
+    else:
+        abort_tasks = [
+            make_engine_api_client(
+                args.rollout_engine, server_url=url, api_key=args.sglang.base_args["api_key"]
+            ).abort_all_requests()
+            for url in urls
+        ]
     abort_results = await asyncio.gather(*abort_tasks, return_exceptions=True)
     for url, result in zip(urls, abort_results, strict=True):
         if isinstance(result, Exception):

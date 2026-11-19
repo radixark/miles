@@ -7,6 +7,8 @@ from dataclasses import dataclass
 
 import yaml
 
+from miles import platforms
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,7 +33,12 @@ class FSDPArgs:
     adam_eps: float = 1e-8
     warmup_ratio: float = 0.03
 
-    attn_implementation: str = "flash_attention_2"
+    attn_implementation: str = dataclasses.field(
+        default_factory=lambda: platforms.current_platform.default_attn_implementation
+    )
+    # Opt-in block-level torch.compile(backend=current_platform.compile_backend, fullgraph=True);
+    # eager by default so HF modeling runs without graph-break surprises unless explicitly enabled.
+    fsdp_compile: bool = False
 
     # Compute kernels. "hub" resolves the module-level kernels in plugins/hf_kernels/presets.py
     # from the Hugging Face Hub instead of the image's wheels; see plugins/hf_kernels/loader.py.
@@ -95,11 +102,11 @@ def build_dataclass_parser(
         if f.name == "config":
             continue
 
+        default = f.default_factory() if f.default_factory is not dataclasses.MISSING else f.default
+
         if typing.get_origin(f.type) is list:
             (item_type,) = typing.get_args(f.type)
-            parser.add_argument(
-                f"--{f.name.replace('_', '-')}", type=item_type, nargs="+", default=f.default_factory()
-            )
+            parser.add_argument(f"--{f.name.replace('_', '-')}", type=item_type, nargs="+", default=default)
             continue
 
         # Handle union types like int | None, str | None, etc.
@@ -114,10 +121,10 @@ def build_dataclass_parser(
 
         if arg_type is bool:
             parser.add_argument(
-                f"--{f.name.replace('_', '-')}", action=argparse.BooleanOptionalAction, default=f.default
+                f"--{f.name.replace('_', '-')}", action=argparse.BooleanOptionalAction, default=default
             )
         else:
-            parser.add_argument(f"--{f.name.replace('_', '-')}", type=arg_type, default=f.default)
+            parser.add_argument(f"--{f.name.replace('_', '-')}", type=arg_type, default=default)
 
     if extra_args_provider is not None:
         parser = extra_args_provider(parser)

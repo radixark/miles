@@ -2,12 +2,15 @@ import asyncio
 import dataclasses
 import logging
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import orjson
 
+from miles.backends.vllm_utils.vllm_api_client import VllmApiClient
 from miles.utils.http_utils import GeneralHttpClientProvider
+
+EngineType = Literal["sglang", "vllm"]
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +36,17 @@ def _compute_headers(api_key: str | None) -> dict[str, str]:
     }
 
 
-async def probe_server_healthy(server_url: str, api_key: str | None, timeout: float = 5.0) -> bool:
+async def probe_server_healthy(
+    server_url: str,
+    api_key: str | None,
+    timeout: float = 5.0,
+    *,
+    engine_type: EngineType = "sglang",
+) -> bool:
+    endpoint = "health" if engine_type == "vllm" else "health_generate"
     try:
         response = await GeneralHttpClientProvider.client().get(
-            f"{server_url}/health_generate",
+            f"{server_url}/{endpoint}",
             headers=_compute_headers(api_key),
             timeout=timeout,
         )
@@ -45,13 +55,13 @@ async def probe_server_healthy(server_url: str, api_key: str | None, timeout: fl
         return False
 
 
-async def wait_server_healthy(server_url, api_key):
+async def wait_server_healthy(server_url, api_key, *, engine_type: EngineType = "sglang"):
     headers = _compute_headers(api_key)
-
+    health_endpoint = "health" if engine_type == "vllm" else "health_generate"
     http_client = GeneralHttpClientProvider.client()
     while True:
         try:
-            response = await http_client.get(f"{server_url}/health_generate", headers=headers)
+            response = await http_client.get(f"{server_url}/{health_endpoint}", headers=headers)
             if response.status_code == 200:
                 break
         except httpx.HTTPError:
@@ -59,13 +69,15 @@ async def wait_server_healthy(server_url, api_key):
 
         await asyncio.sleep(2)
 
-    # use flush_cache to make sure the working queue is empty, so that we can do offload
+    # Flush cache to make sure the working queue is empty, so that we can do offload.
     while True:
         try:
-            response = await http_client.get(f"{server_url}/flush_cache", headers=headers)
+            if engine_type == "vllm":
+                response = await http_client.post(f"{server_url}/reset_prefix_cache", headers=headers)
+            else:
+                response = await http_client.get(f"{server_url}/flush_cache", headers=headers)
             if response.status_code == 200:
                 break
-
         except httpx.HTTPError:
             pass
 
@@ -492,6 +504,35 @@ class SGLangApiClient:
         sessions) and apply the streamed LoRA stash."""
         return await self._make_request("end_weight_update", {"expected_lora_checksums": expected_lora_checksums})
 
+    async def plugin_weight_update(self, handler: str, payload: dict, flush_cache: bool = False):
+        """Run a weight-update handler that the engine's platform registers (e.g. ``tpu_sync.install``)."""
+        return await self._make_request(
+            "plugin_weight_update", {"handler": handler, "payload": payload, "flush_cache": flush_cache}
+        )
+
+    async def init_tpu_sync_receiver(
+        self,
+        *,
+        controller_address: str,
+        job_name: str,
+        weight_shapes: dict[str, list[int]],
+        parallelism: int = 8,
+    ) -> Any:
+        """Initialize the tpu-sync receiver on an SGLang TPU engine."""
+        return await self.plugin_weight_update(
+            handler="tpu_sync.init_receiver",
+            payload={
+                "controller_address": controller_address,
+                "job_name": job_name,
+                "weight_shapes": weight_shapes,
+                "parallelism": parallelism,
+            },
+        )
+
+    async def install_tpu_sync_weights(self) -> Any:
+        """Install received tpu-sync weights on an SGLang TPU engine."""
+        return await self.plugin_weight_update(handler="tpu_sync.install", payload={})
+
     async def update_weight_version(self, weight_version: str, abort_all_requests: bool = False):
         return await self._make_request(
             "update_weight_version",
@@ -534,3 +575,19 @@ class SGLangApiClient:
         )
         response.raise_for_status()
         return response
+
+
+EngineApiClient = SGLangApiClient | VllmApiClient
+
+
+def make_engine_api_client(
+    engine_type: EngineType,
+    server_url: str,
+    api_key: str | None = None,
+) -> EngineApiClient:
+    """Create the HTTP API client for the configured rollout engine type."""
+    if engine_type == "sglang":
+        return SGLangApiClient(server_url=server_url, api_key=api_key)
+    if engine_type == "vllm":
+        return VllmApiClient(server_url=server_url, api_key=api_key)
+    raise ValueError(f"Unsupported rollout engine_type: {engine_type!r}")

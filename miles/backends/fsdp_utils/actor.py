@@ -1,11 +1,14 @@
 import logging
 import os
+from collections.abc import Sequence
 from contextlib import contextmanager, nullcontext
 from functools import partial
 
 import torch
 import torch.distributed as dist
+import torch.nn.functional as F
 
+from miles import platforms
 from miles.backends.fsdp_utils import checkpoint
 from miles.backends.fsdp_utils.adaptations import routing_replay
 from miles.backends.fsdp_utils.config import FsdpArgsNamespace
@@ -16,6 +19,7 @@ from miles.backends.training_utils.torch_native.step_runner import LinearStepRun
 from miles.utils.audit_utils.config_snapshot.dumper import ConfigSnapshotDumper
 from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 from miles.utils.context_utils import with_defer
+from miles.utils.data import padded_token_count
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.profile_utils import TrainProfiler
@@ -37,6 +41,9 @@ logger = logging.getLogger(__name__)
 
 class FSDPTrainRayActor(TorchNativeTrainRayActor):
     backend_name = "fsdp"
+    _uses_4d_packed_mask: bool = False
+    _static_seq_len: int | None = None
+    _packed_mask_dtype: torch.dtype = torch.bfloat16
 
     @with_defer(lambda: Timer().start("train_wait"))
     def init(
@@ -73,6 +80,10 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         if self.args.debug_rollout_only:
             return 0
 
+        if not platforms.current_platform.dynamic_shapes:
+            # A second length would otherwise make dynamo mark the dimension dynamic, which static-shape backends reject.
+            torch._dynamo.config.automatic_dynamic_shapes = False
+
         self.optimizer_cpu_offload = self.args.backend.optimizer_cpu_offload
         # argument parsing turns offload-train off: CPU offload already keeps the state on the host
         assert not (self.args.offload_train and self.optimizer_cpu_offload)
@@ -90,6 +101,12 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         self.arch_adapter = resolve_arch_adapter(self.hf_config)
         validate_hf_config(self.hf_config, verified=self.arch_adapter.verified, rank=dist.get_rank())
         self.precision_policy = self.arch_adapter.resolve_precision(default_precision_policy(args), args)
+        # sdpa/eager ignore FlashAttention's cu_seq_lens, so packed thd rows get an explicit block-causal mask on
+        # every platform (CUDA included). This departs from the old attention_mask=None, which leaked attention
+        # across documents. The mask is O(T^2) per microbatch, e.g. 512 MB for 16k tokens in bf16.
+        self._uses_4d_packed_mask = args.backend.attn_implementation in ("sdpa", "eager") and args.qkv_format == "thd"
+        self._static_seq_len = resolve_static_seq_len(args)
+        self._packed_mask_dtype = self.precision_policy.autocast_dtype or self.precision_policy.param_dtype
 
         routing_replay.enable(args)
 
@@ -127,7 +144,12 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         self.model = model
 
         if args.backend.gradient_checkpointing:
-            self.model.gradient_checkpointing_enable()
+            # Non-reentrant recompute on every platform (CUDA included). It is the variant FSDP2 and torch.compile
+            # support, and it replaces HF's default reentrant checkpointing.
+            self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+
+        if args.backend.fsdp_compile:
+            _compile_fsdp_blocks(self.model, backend=platforms.current_platform.compile_backend)
 
         if args.backend.optimizer == "adam":
             self.optimizer = torch.optim.AdamW(
@@ -280,12 +302,13 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         """
         from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
 
+        device = platforms.current_platform.current_device()
         # Rank 0: move with weights, others: allocate empty tensors on device
         if dist.get_rank() == 0:
-            model = model.to(device=torch.cuda.current_device(), non_blocking=True)
+            model = model.to(device=device, non_blocking=True)
         else:
             # to_empty creates tensors on device without initializing memory
-            model = model.to_empty(device=torch.cuda.current_device())
+            model = model.to_empty(device=device)
 
         is_cpu_offload = cpu_offload is not None
         options = StateDictOptions(full_state_dict=True, cpu_offload=is_cpu_offload, broadcast_from_rank0=True)
@@ -299,7 +322,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         if is_cpu_offload:
             model.to("cpu", non_blocking=True)
             for buf in model.buffers():
-                buf.data = buf.data.to(torch.cuda.current_device())
+                buf.data = buf.data.to(device)
 
         return model
 
@@ -314,16 +337,16 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
 
         if not self.optimizer_cpu_offload:
             self.model.cpu()
-            torch.cuda.empty_cache()
+            platforms.current_platform.empty_cache()
             dist.barrier(group=get_gloo_group())
         self.ref_model.eval()
         try:
             yield
         finally:
-            torch.cuda.empty_cache()
+            platforms.current_platform.empty_cache()
             dist.barrier(group=get_gloo_group())
             if not self.optimizer_cpu_offload:
-                self.model.cuda()
+                self.model.to(platforms.current_platform.current_device())
                 dist.barrier(group=get_gloo_group())
 
     def _logprob_forward(self, model: torch.nn.Module, batch: dict) -> torch.Tensor:
@@ -413,27 +436,164 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             raise NotImplementedError(f"Loading from checkpoint file {ref_load_path} not yet implemented")
 
     def _get_model_inputs_args(self, batch: dict) -> dict:
+        tokens = batch["tokens"]
+        position_ids = batch["position_ids"]
+
+        if self._static_seq_len is not None:
+            tokens, position_ids = pad_packed_inputs(tokens, position_ids, self._static_seq_len)
+
+        # PaddedRows keeps per-sample tensors on CPU so get_batch builds tokens/position_ids on CPU;
+        # move them to the accelerator once after any host-side static padding.
+        if self._static_seq_len is not None or self._uses_4d_packed_mask:
+            device = platforms.current_platform.current_device()
+            if tokens.device != device:
+                tokens = tokens.to(device)
+            if position_ids.device != device:
+                position_ids = position_ids.to(device)
+
+        attention_mask = None
+        if self._uses_4d_packed_mask:
+            attention_mask = build_packed_causal_mask(
+                batch["cu_seqlens_host"],
+                num_documents=len(batch["unconcat_tokens"]),
+                seq_len=tokens.shape[-1],
+                dtype=self._packed_mask_dtype,
+                device=tokens.device,
+            )
+
         model_args = {
-            "input_ids": batch["tokens"],
-            "position_ids": batch["position_ids"],
-            "attention_mask": None,
+            "input_ids": tokens,
+            "position_ids": position_ids,
+            "attention_mask": attention_mask,
             # the ref model would otherwise cache, and NemotronH's packed-document reset skips cached forwards
             "use_cache": False,
         }
 
-        model_args.update(
-            self.arch_adapter.packing_kwargs(
-                cu_seqlens=batch["cu_seqlens"],
-                cu_seqlens_host=batch["cu_seqlens_host"],
-                max_seqlen=batch["max_seqlen"],
-                num_documents=len(batch["unconcat_tokens"]),
+        if not self._uses_4d_packed_mask:
+            model_args.update(
+                self.arch_adapter.packing_kwargs(
+                    cu_seqlens=batch["cu_seqlens"],
+                    cu_seqlens_host=batch["cu_seqlens_host"],
+                    max_seqlen=batch["max_seqlen"],
+                    num_documents=len(batch["unconcat_tokens"]),
+                )
             )
-        )
 
         if batch.get("multimodal_train_inputs"):
             model_args.update(batch["multimodal_train_inputs"])
 
         return model_args
+
+
+def resolve_static_seq_len(args) -> int | None:
+    """Fixed padded sequence length on platforms without dynamic shapes; None on dynamic-shape platforms."""
+    if platforms.current_platform.dynamic_shapes:
+        return None
+    target = args.max_tokens_per_gpu
+    if target is None:
+        per_sample_max = args.max_seq_len
+        if (
+            per_sample_max is None
+            and args.rollout_max_prompt_len is not None
+            and args.rollout_max_response_len is not None
+        ):
+            per_sample_max = args.rollout_max_prompt_len + args.rollout_max_response_len
+        if per_sample_max is not None and args.micro_batch_size is not None:
+            target = args.micro_batch_size * per_sample_max
+    if target is None or target <= 0:
+        raise ValueError(
+            f"Static-shape platform ({platforms.current_platform.device_type}) requires --max-tokens-per-gpu "
+            "(or --max-seq-len / --rollout-max-prompt-len + --rollout-max-response-len with --micro-batch-size) "
+            "to determine the fixed microbatch length."
+        )
+    pad_mult = max(1, args.data_pad_size_multiplier or 1)
+    return padded_token_count(target, pad_mult)
+
+
+def pad_packed_inputs(
+    tokens: torch.Tensor,
+    position_ids: torch.Tensor,
+    target_len: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pad packed ``tokens`` and ``position_ids`` along their trailing sequence axis to ``target_len``."""
+    cur_len = tokens.shape[-1]
+    if cur_len > target_len:
+        raise ValueError(
+            f"packed microbatch of {cur_len} tokens exceeds static padded length {target_len} (--max-tokens-per-gpu)"
+        )
+    if cur_len == target_len:
+        return tokens, position_ids
+    extra_pad = target_len - cur_len
+    return F.pad(tokens, (0, extra_pad), value=0), F.pad(position_ids, (0, extra_pad), value=0)
+
+
+def build_packed_causal_mask(
+    cu_seqlens_host: Sequence[int],
+    *,
+    num_documents: int,
+    seq_len: int,
+    dtype: torch.dtype,
+    device: torch.device,
+) -> torch.Tensor:
+    """4D additive block-causal attention mask ``[1, 1, seq_len, seq_len]`` for packed ``thd`` sequences.
+
+    Each real document ``[cu_seqlens_host[i], cu_seqlens_host[i + 1])`` attends causally only within itself.
+    Trailing padding tokens each receive a unique document ID so they attend only to themselves (preventing
+    both cross-document leakage and all-masked softmax NaNs).
+    """
+    if num_documents < 0 or len(cu_seqlens_host) < num_documents + 1:
+        raise ValueError(
+            f"cu_seqlens_host of length {len(cu_seqlens_host)} does not cover num_documents={num_documents}"
+        )
+    real_end = cu_seqlens_host[num_documents] if num_documents > 0 else 0
+    if real_end > seq_len:
+        raise ValueError(f"packed document end {real_end} exceeds mask sequence length {seq_len}")
+
+    doc_ids = torch.empty(seq_len, dtype=torch.int32)
+    for doc_idx in range(num_documents):
+        doc_ids[cu_seqlens_host[doc_idx] : cu_seqlens_host[doc_idx + 1]] = doc_idx
+    if real_end < seq_len:
+        doc_ids[real_end:] = torch.arange(num_documents, num_documents + (seq_len - real_end), dtype=torch.int32)
+
+    doc_ids = doc_ids.to(device)
+    pos = torch.arange(seq_len, device=device, dtype=torch.int32)
+    allowed = (doc_ids[:, None] == doc_ids[None, :]) & (pos[:, None] >= pos[None, :])
+    zero = torch.zeros((), dtype=dtype, device=device)
+    masked = torch.full((), torch.finfo(dtype).min, dtype=dtype, device=device)
+    return torch.where(allowed, zero, masked).unsqueeze(0).unsqueeze(0)
+
+
+def _compile_fsdp_blocks(model: torch.nn.Module, *, backend: str) -> None:
+    """Compile each transformer block's forward while leaving FSDP hooks eager around each block."""
+    layer_cls_to_wrap = model._no_split_modules
+    for module in model.modules():
+        if module.__class__.__name__ in layer_cls_to_wrap:
+            module.forward = torch.compile(module.forward, backend=backend, fullgraph=True)
+
+
+def _premove_states_fully_shard_cannot_move(model: torch.nn.Module, device: torch.device) -> None:
+    """Move host-initialized states to ``device`` where ``fully_shard`` cannot move them itself.
+
+    ``fully_shard`` moves every non-meta param and buffer with ``tensor.data = tensor.to(device)``, whatever the
+    offload policy. That needs shallow-copy-compatible tensor types: CUDA has them, but torch_tpu does not and
+    fails with "incompatible tensor type". So host states are moved here into new Parameters instead, with one
+    replacement per original Parameter so tied weights (``lm_head.weight is embed_tokens.weight``) stay tied.
+    Meta tensors (deferred init on ranks other than 0) stay where they are, as ``fully_shard`` leaves them. Where
+    the types are compatible (CUDA, CPU) this is a no-op, so ``fully_shard`` moves the states exactly as before.
+    """
+    if torch._has_compatible_shallow_copy_type(torch.empty(0), torch.empty(0, device=device)):
+        return
+    moved: dict[int, torch.nn.Parameter] = {}
+    for module in model.modules():
+        for name, param in list(module._parameters.items()):
+            if param is None or param.is_meta or param.device == device:
+                continue
+            if id(param) not in moved:
+                moved[id(param)] = torch.nn.Parameter(param.detach().to(device), requires_grad=param.requires_grad)
+            module._parameters[name] = moved[id(param)]
+        for name, buf in list(module._buffers.items()):
+            if buf is not None and not buf.is_meta and buf.device != device:
+                module._buffers[name] = buf.to(device)
 
 
 @torch.no_grad()
@@ -446,9 +606,11 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, *, args, param_dtype=None, 
 
     Ref: https://github.com/volcengine/verl/blob/main/verl/utils/fsdp_utils.py
     """
-    from torch.distributed.fsdp import CPUOffloadPolicy, MixedPrecisionPolicy, fully_shard
+    from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, fully_shard
 
-    offload_policy = CPUOffloadPolicy() if cpu_offload else None
+    offload_policy = (
+        CPUOffloadPolicy(pin_memory=platforms.current_platform.supports_pin_memory) if cpu_offload else None
+    )
 
     layer_cls_to_wrap = model._no_split_modules
     assert len(layer_cls_to_wrap) > 0 and next(iter(layer_cls_to_wrap)) is not None
@@ -476,9 +638,17 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, *, args, param_dtype=None, 
         "mesh": mesh,
     }
 
+    if torch.accelerator.is_available():  # without one, fully_shard keeps the states on the host
+        _premove_states_fully_shard_cannot_move(model, platforms.current_platform.current_device())
+
     # fully_shard each layer first, then the root model
     for module in modules:
         fully_shard(module, **fsdp_kwargs)
     fully_shard(model, **fsdp_kwargs)
+
+    if not platforms.current_platform.premul_sum_reduce:
+        for module in model.modules():
+            if isinstance(module, FSDPModule):
+                module.set_force_sum_reduction_for_comms(True)
 
     return model

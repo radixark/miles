@@ -11,7 +11,7 @@ import torch
 import torch.distributed as dist
 from torch.distributed.tensor import DTensor, Shard
 
-from miles.backends.fsdp_utils.dtensor import gather_full_param
+from miles.backends.fsdp_utils.dtensor import fsdp_dim0_block, gather_full_param, own_contiguous_on_device
 from miles.backends.torchtitan_utils import lora_names
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
 from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
@@ -60,6 +60,32 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
         if self.placement.gather_pp:
             return groups
         return [replace(group, optional=True) for group in groups]
+
+    def iter_local_weights(self) -> Iterator[tuple[str, torch.Tensor, tuple[int, int] | None]]:
+        """Every HF weight as this rank holds it, for transfers that reshard themselves (tpu-sync).
+
+        Yields ``(hf_name, local_tensor, dim0_shard)``: an even dim-0 FSDP shard stays local with
+        ``dim0_shard = (count, index)``; 1D tensors and anything else are gathered whole with
+        ``dim0_shard = None`` so every rank holds the same tensor.
+        """
+        trainer = self.model
+        if trainer.parallelism.get_optional_mesh("pp") is not None:
+            raise NotImplementedError("local weight export does not support pipeline parallelism")
+        state = {
+            k: v
+            for part in trainer.model_parts
+            for k, v in part.state_dict().items()
+            if not lora_names.is_adapter_key(k)
+        }
+        if any(_GROUPED_EXPERTS in k for k in state):
+            raise NotImplementedError("local weight export does not support grouped MoE experts")
+        device = current_platform.current_device()
+        seen_data_ptrs: set[int] = set()
+        for name, tensor in sorted(_state_dict_adapter(trainer).to_hf(state).items()):
+            block = fsdp_dim0_block(tensor)
+            local = tensor.to_local() if block is not None else gather_full_param(tensor)
+            local = self._to_engine_dtype(name, local)
+            yield name, own_contiguous_on_device(local, device, seen_data_ptrs), block
 
     def _iter_hf_adapter_units(self, adapter, *, materialize):
         assert adapter is None, "the torchtitan backend trains a single LoRA adapter"

@@ -5,14 +5,14 @@ from collections.abc import Coroutine, Sequence
 from concurrent.futures import Future
 from typing import Any
 
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.sglang_utils.sglang_api_client import EngineApiClient
 from miles.utils import async_utils
 
 logger = logging.getLogger(__name__)
 
 
 class _RolloutCellUpdater:
-    def __init__(self, args: Namespace, cell_id: str, api_client: SGLangApiClient) -> None:
+    def __init__(self, args: Namespace, cell_id: str, api_client: EngineApiClient) -> None:
         self._args = args
         self.cell_id = cell_id
         self._api_client = api_client
@@ -50,7 +50,7 @@ class _RolloutCellUpdater:
 
 
 def create_rollout_cell_updaters(
-    args: Namespace, rollout_engines: Sequence[SGLangApiClient], engine_cell_ids: Sequence[str]
+    args: Namespace, rollout_engines: Sequence[EngineApiClient], engine_cell_ids: Sequence[str]
 ) -> dict[str, _RolloutCellUpdater]:
     return {
         cell_id: _RolloutCellUpdater(args=args, cell_id=cell_id, api_client=api_client)

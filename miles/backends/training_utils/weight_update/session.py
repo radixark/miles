@@ -7,7 +7,7 @@ resume. Callers gate driver-only calls (typically global rank 0) themselves.
 from argparse import Namespace
 from collections.abc import Mapping, Sequence
 
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.sglang_utils.sglang_api_client import EngineApiClient
 from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
 from miles.utils import async_utils
 from miles.utils.arguments import driver_owns_generation_pause
@@ -73,7 +73,7 @@ def end_weight_update(
 
 
 def register_lora_adapter(
-    rollout_engines: Sequence[SGLangApiClient], *, lora_name: str, lora_config: Mapping, pinned: bool = False
+    rollout_engines: Sequence[EngineApiClient], *, lora_name: str, lora_config: Mapping, pinned: bool = False
 ) -> None:
     """Create-or-refresh an adapter's identity and config on every engine
     (weights zeroed; the bytes follow in the update stream)."""

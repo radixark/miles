@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, WorkerType
+from miles.backends.sglang_utils.sglang_api_client import EngineType, WorkerType, make_engine_api_client
 from miles.utils.http_utils import wrap_ipv6
 from miles.utils.retry_utils import retry_until_deadline
 from miles.utils.workers.backend_capability.base import BackendCapability
@@ -47,7 +47,9 @@ class StaticInferenceEngineWorkerProvider(BaseWorkerProvider):
 
     async def init(self) -> None:
         urls = _compute_external_engine_urls(self._args)
-        engines = await _discover_external_engines(urls, api_key=self._args.sglang.base_args["api_key"])
+        engines = await _discover_external_engines(
+            urls, api_key=self._args.sglang.base_args["api_key"], engine_type=self._args.rollout_engine
+        )
         _assert_engines_match_args(self._args, engines=engines)
 
         self._cells = _compute_cells(args=self._args, engines=engines)
@@ -137,6 +139,7 @@ def _compute_cells(*, args: Any, engines: list[_ExternalEngineInfo]) -> dict[str
                     sglang_api_key=args.sglang.base_args["api_key"],
                     needs_offload=False,
                     update_weights=True,
+                    engine_type=args.rollout_engine,
                 ),
             ),
             addrs=_compute_engine_addrs(engine),
@@ -207,13 +210,21 @@ def _canonicalize_host(hostname: str) -> str:
 # ================================= discovery ==================================
 
 
-async def _discover_external_engines(urls: list[str], *, api_key: str | None) -> list[_ExternalEngineInfo]:
-    return list(await asyncio.gather(*[_discover_external_engine(url, api_key=api_key) for url in urls]))
+async def _discover_external_engines(
+    urls: list[str], *, api_key: str | None, engine_type: EngineType = "sglang"
+) -> list[_ExternalEngineInfo]:
+    return list(
+        await asyncio.gather(
+            *[_discover_external_engine(url, api_key=api_key, engine_type=engine_type) for url in urls]
+        )
+    )
 
 
-async def _discover_external_engine(url: str, *, api_key: str | None) -> _ExternalEngineInfo:
+async def _discover_external_engine(
+    url: str, *, api_key: str | None, engine_type: EngineType = "sglang"
+) -> _ExternalEngineInfo:
     addr = _parse_external_engine_url(url)
-    server_info = await _fetch_server_info_with_retry(url, api_key=api_key)
+    server_info = await _fetch_server_info_with_retry(url, api_key=api_key, engine_type=engine_type)
 
     return _ExternalEngineInfo(
         url=url,
@@ -228,10 +239,15 @@ async def _discover_external_engine(url: str, *, api_key: str | None) -> _Extern
 
 
 async def _fetch_server_info_with_retry(
-    url: str, *, api_key: str | None, timeout_seconds: float = DISCOVERY_TIMEOUT_SECONDS
+    url: str,
+    *,
+    api_key: str | None,
+    engine_type: EngineType = "sglang",
+    timeout_seconds: float = DISCOVERY_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     async def _attempt(_remaining_seconds: float) -> dict[str, Any]:
-        return await SGLangApiClient(server_url=url, api_key=api_key).get_server_info()
+        client = make_engine_api_client(engine_type, server_url=url, api_key=api_key)
+        return await client.get_server_info()
 
     try:
         return await retry_until_deadline(

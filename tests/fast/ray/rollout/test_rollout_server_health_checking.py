@@ -68,7 +68,7 @@ def _stub_network(monkeypatch, *, ready: bool = True) -> None:
     async def _activate(gate_url: str) -> None:
         pass
 
-    async def _probe(server_url: str, api_key, timeout: float = 5.0) -> bool:
+    async def _probe(server_url: str, api_key, timeout: float = 5.0, *, engine_type: str = "sglang") -> bool:
         return ready
 
     monkeypatch.setattr(server_cell_module, "activate_launch_gate", _activate)

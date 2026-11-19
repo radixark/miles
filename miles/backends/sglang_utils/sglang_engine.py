@@ -4,8 +4,12 @@ import logging
 import os
 import shlex
 
-from sglang.srt.server_args import ServerArgs
+try:
+    from sglang.srt.server_args import ServerArgs
+except ImportError:
+    ServerArgs = None  # type: ignore[assignment,misc]
 
+from miles import platforms
 from miles.backends.sglang_utils.arguments import sglang_attention_dp_enabled
 from miles.backends.sglang_utils.server_args_utils import server_args_to_argv
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
@@ -205,6 +209,8 @@ def _compute_server_args(
     if sglang_overrides:
         kwargs.update(sglang_overrides)
 
+    if ServerArgs is None:
+        raise ImportError("sglang is required to launch SGLang engines; install sglang or pass --rollout-engine vllm.")
     unused_keys = set(kwargs.keys())
     for name in _record_field_names(ServerArgs):
         if worker_type == WorkerType.DECODE and name == "enable_hierarchical_cache":
@@ -227,13 +233,15 @@ def _compute_server_args(
             kwargs["max_loaded_loras"] = 2 * kwargs["max_loras_per_batch"]
 
     if kwargs.get("device") is None:
-        kwargs["device"] = "cuda"
+        kwargs["device"] = platforms.current_platform.device_type
 
     return kwargs
 
 
 @functools.cache
 def _assert_launch_gate_served() -> None:
+    if ServerArgs is None:
+        raise ImportError("sglang is required to launch SGLang engines; install sglang or pass --rollout-engine vllm.")
     assert "gated_launch_port" in _record_field_names(ServerArgs), (
         "this sglang has no --gated-launch-port, and miles launches every inference engine through "
         "that gate; upgrade sglang to one that serves it"

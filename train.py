@@ -2,7 +2,11 @@ import asyncio
 import logging
 import os
 
-from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
+from miles.backends.sglang_utils.constants import (
+    GPU_MEMORY_TYPE_CUDA_GRAPH,
+    GPU_MEMORY_TYPE_KV_CACHE,
+    GPU_MEMORY_TYPE_WEIGHTS,
+)
 
 from miles.ray.placement_group import create_components, create_trainer_handles, maybe_start_api_server, update_weights
 from miles.ray.rollout.eval_dispatch import EvalDispatcher

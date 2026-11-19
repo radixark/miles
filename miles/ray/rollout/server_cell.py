@@ -5,9 +5,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
-
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, WorkerType, probe_server_healthy
+from miles.backends.sglang_utils.constants import GPU_MEMORY_TYPE_WEIGHTS
+from miles.backends.sglang_utils.sglang_api_client import (
+    EngineApiClient,
+    EngineType,
+    WorkerType,
+    make_engine_api_client,
+    probe_server_healthy,
+)
 from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.cell_state import (
@@ -54,6 +59,7 @@ class ServerCellMetadata(FrozenStrictBaseModel):
     needs_offload: bool
     update_weights: bool
     workers_hash: str
+    engine_type: EngineType = "sglang"
 
 
 @dataclass
@@ -168,8 +174,10 @@ class ServerCell:
         return self.addr_info.server_url
 
     @property
-    def api_client(self) -> SGLangApiClient:
-        return SGLangApiClient(server_url=self.server_url, api_key=self.meta.sglang_api_key)
+    def api_client(self) -> EngineApiClient:
+        return make_engine_api_client(
+            self.meta.engine_type, server_url=self.server_url, api_key=self.meta.sglang_api_key
+        )
 
     async def init(self) -> None:
         assert isinstance(self._state, StateUninitialized), f"{self._state=}"
@@ -197,7 +205,9 @@ class ServerCell:
 
     async def _tick_when_initializing(self) -> None:
         addr_info = self._state.addr_info
-        if not await probe_server_healthy(server_url=addr_info.server_url, api_key=self.meta.sglang_api_key):
+        if not await probe_server_healthy(
+            server_url=addr_info.server_url, api_key=self.meta.sglang_api_key, engine_type=self.meta.engine_type
+        ):
             return
 
         if self.args.check_weight_update_equal and self.meta.update_weights:
@@ -209,7 +219,8 @@ class ServerCell:
             )
 
         if self.meta.needs_offload:
-            api_client = SGLangApiClient(server_url=addr_info.server_url)
+            # the offload calls carry no key: the same unauthenticated client the SGLang path always used
+            api_client = make_engine_api_client(self.meta.engine_type, server_url=addr_info.server_url)
             await api_client.release_memory_occupation()
             await api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
@@ -341,7 +352,7 @@ def create_rollout_cell_health_checker(
     *,
     args: Any,
     name: str,
-    get_api_client: Callable[[], SGLangApiClient],
+    get_api_client: Callable[[], EngineApiClient],
     get_activeness: Callable[[], ActiveAndEpoch],
 ) -> BaseHealthChecker:
     if "rollout" not in args.ft_components:

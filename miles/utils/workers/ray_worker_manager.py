@@ -4,6 +4,7 @@ import asyncio
 import functools
 import inspect
 import logging
+import os
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from functools import partial
@@ -12,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from miles import platforms
 from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.function_registry import load_function
@@ -63,7 +65,10 @@ class RayWorkerManager:
 
     @staticmethod
     def launch(args, specs: list[BaseSpec], pgs: dict[str, PlacementGroupInfo], *, comm_backend: WorkerCommBackend):
-        obj = ray.remote(RayWorkerManager).options(name=_ACTOR_NAME).remote()
+        options: dict[str, Any] = {"name": _ACTOR_NAME}
+        if (accelerator := os.environ.get("MILES_ACCELERATOR")) is not None:
+            options["runtime_env"] = {"env_vars": {"MILES_ACCELERATOR": accelerator}}
+        obj = ray.remote(RayWorkerManager).options(**options).remote()
         ray.get(obj.init.remote(args, specs, pgs, comm_backend=comm_backend))
         return obj
 
@@ -377,12 +382,33 @@ class _BaseActorManager(Generic[SpecT]):
 
     @property
     def launch_context(self) -> WorkerLaunchContext:
+        scheduling = self.spec.scheduling(self.manager.scaling)
+        bundle_node_ips: list[str] = []
+        subhost_device_offset = 0
+        devices_per_node = 0
+        slice_label: str | None = None
+        if (pg_name := scheduling.pg_name) is not None:
+            pg = self.manager.pgs[pg_name]
+            gpus_per_cell = scheduling.gpus_per_cell()
+            cell_slot_start = scheduling.pg_slot_offset + self.parent.cell_index * gpus_per_cell
+            cell_slot_end = cell_slot_start + gpus_per_cell
+            if pg.pg_reordered_node_ips:
+                bundle_node_ips = list(pg.pg_reordered_node_ips[cell_slot_start:cell_slot_end])
+            devices_per_node = pg.devices_per_node
+            slice_label = pg.slice_label
+            # a cell smaller than its host starts at the local device its first bundle landed on
+            if 0 < gpus_per_cell < devices_per_node:
+                subhost_device_offset = pg.pg_reordered_gpu_ids[cell_slot_start]
         return WorkerLaunchContext(
             args=self.spec.args,
             cell_index=self.parent.cell_index,
             worker_in_cell_index=self.worker_in_cell_index,
-            num_workers_per_cell=self.spec.scheduling(self.manager.scaling).num_workers_per_cell,
+            num_workers_per_cell=scheduling.num_workers_per_cell,
             gpu_ids=self.gpu_ids,
+            bundle_node_ips=bundle_node_ips,
+            subhost_device_offset=subhost_device_offset,
+            devices_per_node=devices_per_node,
+            slice_label=slice_label,
         )
 
     def _compute_remote_options(self) -> dict:
@@ -402,11 +428,18 @@ class _BaseActorManager(Generic[SpecT]):
         remote_options = self._compute_remote_options()
         remote_class = ray.remote(**remote_options)(actor_class) if remote_options else ray.remote(actor_class)
 
+        env_vars = self.spec.env_var(self.launch_context)
+        if (accelerator := os.environ.get("MILES_ACCELERATOR")) is not None:
+            env_vars = {"MILES_ACCELERATOR": accelerator, **env_vars}
+
         return remote_class.options(
             num_cpus=scheduling.num_cpus_per_worker,
-            num_gpus=scheduling.num_gpus_per_worker,
+            **platforms.current_platform.ray_actor_accelerator_options(
+                scheduling.num_gpus_per_worker,
+                claim_whole_device=scheduling.claim_whole_device,
+            ),
             **(dict(scheduling_strategy=s) if (s := scheduling_strategy) is not None else {}),
-            runtime_env={"env_vars": self.spec.env_var(self.launch_context)},
+            runtime_env={"env_vars": env_vars},
             **(compute_ray_pin_head_options() if scheduling.pin_to_head else {}),
         ).remote(**ctor_kwargs)
 
@@ -582,11 +615,7 @@ def bootstrapped_worker_class(worker_class_path: str) -> type:
 
 def _ctor_context(launch_context: WorkerLaunchContext) -> WorkerCtorContext:
     return WorkerCtorContext(
-        args=launch_context.args,
-        cell_index=launch_context.cell_index,
-        worker_in_cell_index=launch_context.worker_in_cell_index,
-        num_workers_per_cell=launch_context.num_workers_per_cell,
-        gpu_ids=launch_context.gpu_ids,
+        **dict(launch_context),
         capability=DeferredBackendCapability(create=_create_ray_backend_capability),
     )
 

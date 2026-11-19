@@ -1,5 +1,8 @@
 import argparse
 
+from pydantic import Field
+
+from miles import platforms
 from miles.backends.fsdp_utils.config import FsdpArgsNamespace
 from miles.backends.megatron_utils.megatron_config import MegatronConfig
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
@@ -35,7 +38,9 @@ class TrainerBackendTraitConfig(BaseConfig):
     ] = False
 
     # from ClusterConfig
-    distributed_backend: A[str, Arg(reset=True)] = "nccl"
+    distributed_backend: A[str, Arg(reset=True)] = Field(
+        default_factory=lambda: platforms.current_platform.default_distributed_backend
+    )
     distributed_timeout_minutes: A[int, Arg(reset=True)] = 10
 
     # from EvalConfig

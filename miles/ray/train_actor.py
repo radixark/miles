@@ -78,14 +78,15 @@ class WeightUpdateOutput:
 
 
 def get_local_gpu_id():
-    if CELL_INDEX_ENV_VAR in os.environ:
-        return read_worker_in_pod_index(os.environ)
+    worker_in_pod_index = read_worker_in_pod_index(os.environ) if CELL_INDEX_ENV_VAR in os.environ else None
+    return current_platform.local_device_id(worker_in_pod_index=worker_in_pod_index, ray_device_ids=_ray_device_ids)
 
-    cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")
-    if not cvd:
-        return ray.get_gpu_ids()[0]
-    else:
-        return cvd.split(",").index(str(ray.get_gpu_ids()[0]))
+
+def _ray_device_ids() -> list[int | str]:
+    """The ids of the accelerator devices Ray assigned this actor."""
+    resource = current_platform.ray_accelerator_resource
+    # get_gpu_ids is ray's own accessor for its GPU resource; other accelerators go through the runtime context
+    return ray.get_gpu_ids() if resource == "GPU" else ray.get_runtime_context().get_accelerator_ids()[resource]
 
 
 def _get_nvml_pci_bus_id(device: int) -> str:
