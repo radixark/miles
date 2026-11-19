@@ -76,7 +76,7 @@ if [[ "${CI_SKIP_DEPENDENCY_INSTALL:-true}" != "true" ]]; then
   git log --oneline -1
   pip install -e . --no-deps --break-system-packages
 fi
-cd "$GITHUB_WORKSPACE" && pip install -e . --no-deps --break-system-packages
+cd "$GITHUB_WORKSPACE" && pip install -e . -e packages/miles-dashboard --no-deps --break-system-packages
 pip install polars zstandard xxhash blake3 "numba==0.65.1" --break-system-packages
 echo "Install dependencies elapsed=$((SECONDS - dependency_install_started))s"
 echo "::endgroup::"

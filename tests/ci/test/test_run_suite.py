@@ -661,7 +661,7 @@ class TestRocmWorkflowScopeSeam:
         )
         assert "cancel-in-progress: true" in workflow
         header = workflow.split("  resolve-ci-policy:\n", 1)[1].split("    runs-on:", 1)[0]
-        assert "if: github.event.action != 'closed'" in header
+        assert "if: github.repository == 'radixark/miles' && github.event.action != 'closed'" in header
         image = workflow.split("  resolve-ci-image:\n", 1)[1].split("    runs-on:", 1)[0]
         build = workflow.split("  docker-build-rocm10-mi35x:\n", 1)[1].split("  resolve-ci-image:\n", 1)[0]
         assert "github.event.action != 'closed'" in build
