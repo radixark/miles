@@ -615,7 +615,19 @@ def test_workflow_preserves_gate_and_build_publish_boundary():
         call = callers[f"docker-build-{arch}"]
         assert call["with"] == dict(arch=arch) and call["permissions"]["actions"] == "read"
     assert parent["jobs"]["resolve-ci-image-amd64"]["needs"] == ["resolve-ci-policy", "docker-build-amd64"]
-    request_steps = [step for step in image_job["steps"] if "REQUEST_BUILD == 'true' &&" in step.get("if", "")]
+    # Outside radixark/miles nothing publishes fork images, so a fork rebuild fails before it requests one.
+    refuse = next(
+        step for step in image_job["steps"] if step.get("name") == "Refuse a fork image build outside radixark/miles"
+    )
+    assert refuse["if"] == "env.REQUEST_BUILD == 'true' && github.repository != 'radixark/miles'"
+    assert image_job["steps"].index(refuse) < image_job["steps"].index(
+        next(step for step in image_job["steps"] if step.get("name") == "Request a trusted fork image build")
+    )
+    request_steps = [
+        step
+        for step in image_job["steps"]
+        if "REQUEST_BUILD == 'true' &&" in step.get("if", "") and step is not refuse
+    ]
     assert len(request_steps) == 2 and all("inputs.arch != 'arm64'" in step["if"] for step in request_steps)
     # Every architecture shares builders: same-repository PRs build in place, forks hand off.
     assert "arch" not in image_job["env"]["BUILD"] + image_job["env"]["REQUEST_BUILD"]
@@ -623,6 +635,7 @@ def test_workflow_preserves_gate_and_build_publish_boundary():
     assert 'wait-build --arch "$ARCH"' in wait["run"] and 'echo "built=true"' in wait["run"]
     workflow = yaml.safe_load((ROOT / ".github/workflows/build-fork-ci-image.yml").read_text())
     assert workflow[True]["workflow_run"]["types"] == ["in_progress"]
+    assert workflow["jobs"]["request"]["if"].startswith("github.repository == 'radixark/miles' &&")
     assert workflow["jobs"]["build"]["permissions"]["actions"] == "read"
     assert workflow["jobs"]["build"]["runs-on"] == ["docker-build"]
     assert workflow["jobs"]["build"]["concurrency"]["cancel-in-progress"] is True
