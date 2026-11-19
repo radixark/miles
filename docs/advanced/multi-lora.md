@@ -89,9 +89,12 @@ documents failure handling.
 Multi-LoRA runs on models with [Megatron-Bridge LoRA](/advanced/lora#lora-training-implementations)
 support that SGLang can serve LoRA for, within the constraints below. On
 [native LoRA](/advanced/lora#native-lora) (`--megatron-to-hf-mode raw`) the slots cover dense
-projections and lm_head: grouped expert adapters are refused at startup, and so are GDN `in_proj`
-and GLM-5.3 KDA slots under context parallelism. The gateway has not yet been run end to end on
-native.
+projections, grouped routed experts and lm_head, within the constraints below. Routed experts
+support independent factors per expert or shared hidden-side factors with
+`--experts-shared-outer-loras`. Inkling and Kimi K3 retain their shared-outer contract.
+A shared-expert list wrapper remains unsupported;
+ordinary shared-expert MLPs use the dense slots. The gateway has not yet been run end to end
+on native.
 
 | Model | Launcher / CI |
 |---|---|
@@ -109,8 +112,9 @@ native.
 
 The trainer rejects a multi-LoRA launch that breaks any of these constraints:
 
-- On native LoRA (`--megatron-to-hf-mode raw`): no expert adapters, and context parallel size 1 for GDN
-  `in_proj` / GLM-5.3 KDA slots.
+- On native LoRA (`--megatron-to-hf-mode raw`): grouped routed experts require
+  BF16, all-to-all dispatch, expert tensor parallel size 1,
+  `moe_permute_fusion=False`, and no capacity padding. GDN `in_proj` / GLM-5.3 KDA slots require context parallel size 1.
 - Separate training and sampling GPUs: no `--colocate` and no `--offload-train`,
   because each adapter's gradients stay in GPU buffers between calls.
 - `--pipeline-model-parallel-size 1` and `--qkv-format thd`.

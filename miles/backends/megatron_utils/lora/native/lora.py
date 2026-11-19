@@ -12,6 +12,7 @@ from miles.backends.megatron_utils.lora.native.modules.linear import assert_ever
 from miles.backends.megatron_utils.lora.native.naming import ConverterNaming
 from miles.backends.megatron_utils.lora.native.registry import resolve_checkpoint_spec
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, LoRAArchSpec
+from miles.backends.megatron_utils.lora.utils import freeze_router_bias
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.hf_utils.weight_mapping import build_hf_namespace_predicate
 
@@ -33,6 +34,7 @@ def apply_native_lora(model, args):
         wrapped += arch_spec.lm_head.attach(model, args, context)
     if context.lora.num_slots is not None:
         assert_every_adapter_slotted([model])
+        freeze_router_bias([model])
 
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
     total = sum(parameter.numel() for parameter in model.parameters())

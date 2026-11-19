@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 import torch.nn as nn
+from tests.fast.backends.megatron_utils.lora.native.expert_stub import GroupedLinear
 from transformers import AutoConfig
 
 from miles.backends.megatron_utils.lora.native.config import LoRAConfig
@@ -56,7 +57,11 @@ def _layer():
     attention.linear_proj = _Linear(HIDDEN, GROUPS * O_RANK, "row")
 
     moe = nn.Module()
+    moe.config = SimpleNamespace(moe_ffn_hidden_size=5)
     moe.experts = nn.Module()
+    moe.experts.num_local_experts = 2
+    moe.experts.linear_fc1 = GroupedLinear(2, 10, HIDDEN)
+    moe.experts.linear_fc2 = GroupedLinear(2, HIDDEN, 5, partition_dim=1)
     moe.shared_experts = nn.Module()
     moe.shared_experts.linear_fc1 = _Linear(2 * 5, HIDDEN, "column")
     moe.shared_experts.linear_fc2 = _Linear(HIDDEN, 5, "row")

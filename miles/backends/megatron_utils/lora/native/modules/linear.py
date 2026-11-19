@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import math
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -36,6 +37,11 @@ _LORA_A_INITS = {
 }
 
 
+def _initialize_lora_a(tensor: torch.Tensor, method: str) -> None:
+    for matrix in tensor.reshape(-1, *tensor.shape[-2:]):
+        _LORA_A_INITS[method](matrix)
+
+
 def new_lora_parameter(
     reference: torch.Tensor,
     shape,
@@ -49,7 +55,7 @@ def new_lora_parameter(
     if init == "zero":
         tensor.zero_()
     else:
-        _LORA_A_INITS[init](tensor)
+        _initialize_lora_a(tensor, init)
     parameter = nn.Parameter(tensor)
     parameter.tensor_model_parallel = partition_dim is not None
     parameter.partition_dim = partition_dim if partition_dim is not None else -1
@@ -538,7 +544,7 @@ def attach_delta_forward(
     module.forward = forward
 
 
-def attach_adapter_forward(module: nn.Module, adapter: NativeLoRAAdapter | NativeMultiLoRAAdapter) -> None:
+def attach_adapter_forward(module: nn.Module, adapter: NativeLoRAAdapter | NativeMultiLoRASlots) -> None:
     """Make a one-host adapter's forward the delta of ``module``."""
     attach_delta_forward(module, adapter, adapter.add_delta, host_returns_bias=adapter.host_returns_bias)
     adapter.bind_host(module)
@@ -553,18 +559,11 @@ def build_adapter(
     return NativeMultiLoRAAdapter([build() for _ in range(context.lora.num_slots)], context)
 
 
-class NativeMultiLoRAAdapter(nn.Module):
-    """The multi-LoRA slots of one host: one adapter per slot, each running on its slot's token range.
+class NativeMultiLoRASlots(nn.Module, ABC):
+    """Shared slot lifecycle and checkpoint members, independent of token layout."""
 
-    Tokens arrive sorted by slot, identical across the TP group. A slot claimed below the max rank keeps A's
-    rows and B's columns past its rank at zero, and with them their gradients.
-    """
-
-    def __init__(self, adapters: Sequence[PhasedLoRAAdapter], context: AttachContext):
+    def __init__(self, adapters: Sequence[NativeLoRAAdapter], context: AttachContext):
         super().__init__()
-        assert all(
-            isinstance(adapter, PhasedLoRAAdapter) for adapter in adapters
-        ), f"{type(adapters[0]).__name__} has no per-phase forward to route slots through"
         self.adapters = nn.ModuleList(adapters)
         self.context = context
         self.host_returns_bias = adapters[0].host_returns_bias
@@ -577,6 +576,60 @@ class NativeMultiLoRAAdapter(nn.Module):
     def bind_host(self, host: nn.Module) -> None:
         for adapter in self.adapters:
             adapter.bind_host(host)
+
+    @abstractmethod
+    def add_delta(self, out: torch.Tensor, delta: torch.Tensor) -> torch.Tensor:
+        """Combine the host output and the adapter delta according to the token layout."""
+        raise NotImplementedError
+
+    @torch.no_grad()
+    def init_slot(self, slot: int, lora_rank: int, lora_alpha: float) -> None:
+        """Bind ``lora_rank`` / ``lora_alpha`` and zero A's rows and B's columns past ``lora_rank``."""
+        self.assert_slot(slot)
+        assert 0 < lora_rank <= self.max_lora_rank, f"LoRA rank {lora_rank} is not in (0, {self.max_lora_rank}]"
+        # alpha 0 marks a free slot
+        assert lora_alpha > 0, f"LoRA alpha {lora_alpha} must be positive"
+        for name, param in self.adapters[slot].named_parameters():
+            if name.endswith("_A"):
+                param[..., lora_rank:, :].zero_()
+            else:
+                assert name.endswith("_B"), f"{name} is neither a LoRA A nor a LoRA B"
+                param[..., lora_rank:].zero_()
+        self.lora_ranks_by_slot[slot], self.lora_alphas_by_slot[slot] = lora_rank, float(lora_alpha)
+
+    @torch.no_grad()
+    def redraw_slot(self, slot: int) -> None:
+        """A drawn at the max rank like a newly built adapter, B zero; the caller holds the RNG stream."""
+        self.assert_slot(slot)
+        for name, param in self.adapters[slot].named_parameters():
+            if name.endswith("_A"):
+                _initialize_lora_a(param, self.context.lora.a_init_method)
+            else:
+                assert name.endswith("_B"), f"{name} is neither a LoRA A nor a LoRA B"
+                param.zero_()
+
+    def clear_slot(self, slot: int) -> None:
+        """Free ``slot``; the redraw makes it a newly built adapter for the next claim."""
+        self.redraw_slot(slot)
+        self.lora_ranks_by_slot[slot], self.lora_alphas_by_slot[slot] = self.max_lora_rank, 0.0
+
+    def assert_slot(self, slot: int) -> None:
+        assert 0 <= slot < len(self.adapters), f"slot {slot} is not in [0, {len(self.adapters)})"
+
+    def sharded_state_dict(self, prefix="", sharded_offsets=(), metadata=None):
+        """Invisible to Megatron dist-checkpointing, like each slot's adapter."""
+        del prefix, sharded_offsets, metadata
+        return {}
+
+
+class NativeMultiLoRAAdapter(NativeMultiLoRASlots):
+    """Dense slots over contiguous token ranges, with shared TP communication."""
+
+    def __init__(self, adapters: Sequence[PhasedLoRAAdapter], context: AttachContext):
+        assert all(
+            isinstance(adapter, PhasedLoRAAdapter) for adapter in adapters
+        ), f"{type(adapters[0]).__name__} has no per-phase forward to route slots through"
+        super().__init__(adapters, context)
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *_host_args) -> torch.Tensor:
         """The unscaled delta, one row per token; ``add_delta`` applies each slot's scale."""
@@ -632,45 +685,6 @@ class NativeMultiLoRAAdapter(nn.Module):
             offset += count
         return local_counts
 
-    @torch.no_grad()
-    def init_slot(self, slot: int, lora_rank: int, lora_alpha: float) -> None:
-        """Bind ``lora_rank`` / ``lora_alpha`` and zero A's rows and B's columns past ``lora_rank``."""
-        self.assert_slot(slot)
-        assert 0 < lora_rank <= self.max_lora_rank, f"LoRA rank {lora_rank} is not in (0, {self.max_lora_rank}]"
-        # alpha 0 marks a free slot
-        assert lora_alpha > 0, f"LoRA alpha {lora_alpha} must be positive"
-        for name, param in self.adapters[slot].named_parameters():
-            if name.endswith("_A"):
-                param[lora_rank:].zero_()
-            else:
-                assert name.endswith("_B"), f"{name} is neither a LoRA A nor a LoRA B"
-                param[:, lora_rank:].zero_()
-        self.lora_ranks_by_slot[slot], self.lora_alphas_by_slot[slot] = lora_rank, float(lora_alpha)
-
-    @torch.no_grad()
-    def redraw_slot(self, slot: int) -> None:
-        """A drawn at the max rank like a newly built adapter, B zero; the caller holds the RNG stream."""
-        self.assert_slot(slot)
-        for name, param in self.adapters[slot].named_parameters():
-            if name.endswith("_A"):
-                _LORA_A_INITS[self.context.lora.a_init_method](param)
-            else:
-                assert name.endswith("_B"), f"{name} is neither a LoRA A nor a LoRA B"
-                param.zero_()
-
-    def clear_slot(self, slot: int) -> None:
-        """Free ``slot``; the redraw makes it a newly built adapter for the next claim."""
-        self.redraw_slot(slot)
-        self.lora_ranks_by_slot[slot], self.lora_alphas_by_slot[slot] = self.max_lora_rank, 0.0
-
-    def assert_slot(self, slot: int) -> None:
-        assert 0 <= slot < len(self.adapters), f"slot {slot} is not in [0, {len(self.adapters)})"
-
-    def sharded_state_dict(self, prefix="", sharded_offsets=(), metadata=None):
-        """Invisible to Megatron dist-checkpointing, like each slot's adapter."""
-        del prefix, sharded_offsets, metadata
-        return {}
-
 
 def _as_token_rows(tensor: torch.Tensor) -> torch.Tensor:
     """A ``[s, 1, h]`` / ``[1, s, h]`` activation as ``[s, h]`` rows in token order."""
@@ -714,9 +728,7 @@ def _iter_modules(model_chunks: Sequence[nn.Module]) -> Iterator[nn.Module]:
 def iter_adapters(model_chunks: Sequence[nn.Module]) -> Iterator[NativeLoRAAdapter]:
     """Single LoRA's adapters."""
     for child in _iter_modules(model_chunks):
-        assert not isinstance(
-            child, NativeMultiLoRAAdapter
-        ), "a multi-LoRA model is read per slot (iter_slot_adapters)"
+        assert not isinstance(child, NativeMultiLoRASlots), "a multi-LoRA model is read per slot (iter_slot_adapters)"
         if isinstance(child, NativeLoRAAdapter):
             yield child
 
@@ -727,9 +739,9 @@ def iter_slot_adapters(model_chunks: Sequence[nn.Module], slot: int) -> Iterator
         yield multi_adapter.adapters[slot]
 
 
-def iter_multi_lora_adapters(model_chunks: Sequence[nn.Module]) -> Iterator[NativeMultiLoRAAdapter]:
+def iter_multi_lora_adapters(model_chunks: Sequence[nn.Module]) -> Iterator[NativeMultiLoRASlots]:
     for child in _iter_modules(model_chunks):
-        if isinstance(child, NativeMultiLoRAAdapter):
+        if isinstance(child, NativeMultiLoRASlots):
             yield child
 
 
@@ -748,7 +760,7 @@ def assert_every_adapter_slotted(model_chunks: Sequence[nn.Module]) -> None:
         if isinstance(child, NativeLoRAAdapter) and id(child) not in slotted
     ]
     assert not unslotted, (
-        f"multi-LoRA slots cover dense projections and lm_head; {len(unslotted)} adapters sit outside the slots, e.g. {unslotted[:4]}. "
+        f"multi-LoRA slots cover dense projections, grouped routed experts and lm_head; {len(unslotted)} adapters sit outside the slots, e.g. {unslotted[:4]}. "
         "Drop their targets, or use --megatron-to-hf-mode bridge"
     )
 
@@ -762,7 +774,7 @@ def adapters_hidden_context(model_chunks: Sequence[nn.Module]) -> Iterator[None]
         (parent, name, child)
         for parent in list(_iter_modules(model_chunks))
         for name, child in list(parent.named_children())
-        if isinstance(child, NativeMultiLoRAAdapter)
+        if isinstance(child, NativeMultiLoRASlots)
         or (isinstance(child, NativeLoRAAdapter) and id(child) not in slotted)
     ]
     for parent, name, _ in adapters:

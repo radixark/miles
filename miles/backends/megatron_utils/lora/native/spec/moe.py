@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import functools
+from contextvars import ContextVar
 
 import torch
 import torch.nn as nn
 
+from miles.backends.megatron_utils.lora.native.modules.expert_slots import (
+    NativeMultiLoRAExpertAdapter,
+    install_expert_slot_routing,
+)
 from miles.backends.megatron_utils.lora.native.modules.linear import attach_adapter_forward, attach_delta_forward
 from miles.backends.megatron_utils.lora.native.modules.moe import (
     LoRAGroupedFC1,
@@ -17,12 +22,24 @@ from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 
 
 class GroupedExpertsSpec:
-    """Shared-outer routed experts (shared A / per-expert B for gate/up, the reverse for down).
+    """Grouped routed experts with independent factors or shared hidden-side factors.
 
     The adapter widths come from the grouped host weights, so latent MoEs need no extra
     table entry. Shared experts stored as a list of sub-experts get one adapter over all of
     them here; a plain shared-expert MLP is adapted by the architecture's MLP spec instead.
     """
+
+    gate_up_hf_leaves = ("w1", "w3")
+    down_hf_leaf = "w2"
+    # targets name the HF model's packed experts.gate_up_proj and experts.down_proj, not one expert
+    packed_targets = False
+    hf_block_pattern: str | None = None
+
+    @property
+    def supported_targets(self) -> frozenset[str]:
+        if self.packed_targets:
+            return frozenset(("gate_up_proj", "down_proj"))
+        return frozenset((*self.gate_up_hf_leaves, self.down_hf_leaf))
 
     def attach(self, mlp: nn.Module, layer: nn.Module, context: AttachContext) -> int:
         from megatron.core import parallel_state
@@ -41,22 +58,47 @@ class GroupedExpertsSpec:
             is_ep=parallel_state.get_expert_model_parallel_world_size() > 1,
         )
         count = 0
-        fc1_prefix = context.naming.block_prefix(layer, fc1.weight0, ["w1", "w3"])
-        # selectors address one expert ("experts.*.w1"); shared-outer adapters cover them all
-        if context.lora.selects(f"{fc1_prefix}0.w1") or context.lora.selects(f"{fc1_prefix}0.w3"):
-            experts.lora_fc1_adapter = LoRAGroupedFC1(
-                hf_prefix=fc1_prefix, reference=fc1.weight0, width=fc1.weight0.shape[1], **common
+        slotted = []
+        routing_plan = ContextVar("expert_lora_routing", default=None)
+        # the adapters take the hosts' compute dtype and logical widths: an MXFP4 host's weight0 is its packed bytes
+        reference = torch.empty((), dtype=fc1.params_dtype, device=fc1.weight0.device)
+        fc1_prefix = context.naming.block_prefix(layer, fc1.weight0, list(self.gate_up_hf_leaves))
+        # a selector names one expert ("experts.*.w1") or the packed module; shared-outer adapters cover them all
+        if self.packed_targets:
+            fc1_selectors = ["gate_up_proj"]
+        else:
+            fc1_selectors = [f"0.{leaf}" for leaf in self.gate_up_hf_leaves]
+            selected = [context.lora.selects(f"{fc1_prefix}{selector}") for selector in fc1_selectors]
+            assert len(set(selected)) == 1, f"{fc1_prefix}: select the expert gate and up projections together"
+        if any(context.lora.selects(f"{fc1_prefix}{selector}") for selector in fc1_selectors):
+            build_fc1 = functools.partial(
+                LoRAGroupedFC1,
+                hf_prefix=fc1_prefix,
+                hf_leaves=self.gate_up_hf_leaves,
+                reference=reference,
+                width=fc1.in_features,
+                **common,
             )
+            experts.lora_fc1_adapter = _build_expert_adapter(build_fc1, context, slotted, routing_plan)
             attach_adapter_forward(fc1, experts.lora_fc1_adapter)
             count += 1
-        fc2_prefix = context.naming.block_prefix(layer, fc2.weight0, ["w2"])
-        if context.lora.selects(f"{fc2_prefix}0.w2"):
-            experts.lora_fc2_adapter = LoRAGroupedFC2(
-                hf_prefix=fc2_prefix, reference=fc2.weight0, width=fc2.weight0.shape[0], **common
+        fc2_prefix = context.naming.block_prefix(layer, fc2.weight0, [self.down_hf_leaf])
+        fc2_selector = "down_proj" if self.packed_targets else f"0.{self.down_hf_leaf}"
+        if context.lora.selects(f"{fc2_prefix}{fc2_selector}"):
+            build_fc2 = functools.partial(
+                LoRAGroupedFC2,
+                hf_prefix=fc2_prefix,
+                hf_leaf=self.down_hf_leaf,
+                reference=reference,
+                width=fc2.out_features,
+                **common,
             )
+            experts.lora_fc2_adapter = _build_expert_adapter(build_fc2, context, slotted, routing_plan)
             attach_adapter_forward(fc2, experts.lora_fc2_adapter)
             count += 1
 
+        if slotted:
+            install_expert_slot_routing(mlp, slotted[0])
         shared = getattr(
             mlp, "shared_experts", None
         )  # absent on MoEs without shared experts  # config-access-exempt: MoE implementations may omit shared experts
@@ -90,5 +132,33 @@ class GroupedExpertsSpec:
         return 1
 
 
+class PackedGroupedExpertsSpec(GroupedExpertsSpec):
+    """Routed experts an HF model packs in ``experts.gate_up_proj`` and ``experts.down_proj``, exported as
+    ``gate_proj``/``up_proj``/``down_proj``."""
+
+    gate_up_hf_leaves = ("gate_proj", "up_proj")
+    down_hf_leaf = "down_proj"
+    packed_targets = True
+    hf_block_pattern = r"mlp\.experts"
+
+
+class HFGroupedExpertsSpec(GroupedExpertsSpec):
+    gate_up_hf_leaves = ("gate_proj", "up_proj")
+    down_hf_leaf = "down_proj"
+    hf_block_pattern = r"mlp\.experts\.(?:\d+|\*)"
+
+
+class DeepSeekV4ExpertsSpec(GroupedExpertsSpec):
+    hf_block_pattern = r"ffn\.experts\.(?:\d+|\*)"
+
+
 def _sub_expert_delta(delta, index: int, x: torch.Tensor, host: nn.Module, *_host_args) -> torch.Tensor:
     return delta(x, host, index)
+
+
+def _build_expert_adapter(build, context, slotted, routing_plan):
+    if context.lora.num_slots is None:
+        return build()
+    adapter = NativeMultiLoRAExpertAdapter([build() for _ in range(context.lora.num_slots)], context, routing_plan)
+    slotted.append(adapter)
+    return adapter

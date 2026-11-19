@@ -29,6 +29,17 @@ OPTIMIZER_KEY = re.compile(r"(chained_\d+\.)?optimizer\.")
 _marked_lora_grad_params_cache: dict[int, list] = {}
 
 
+def freeze_router_bias(model: Sequence[torch.nn.Module]) -> None:
+    """Keep the shared base router immutable while independent adapter slots train."""
+    # Routers are only available in the Megatron runtime, not CPU-only adapter tooling.
+    from megatron.core.transformer.moe.router import TopKRouter
+
+    for chunk in model:
+        for module in chunk.modules():
+            if isinstance(module, TopKRouter):
+                module.frozen_expert_bias = True
+
+
 def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
     """Sum partial grads of replicated LoRA params over their tagged group ("tp"|"ep"), before the DP reduce-scatter."""
     from megatron.core import parallel_state as ps

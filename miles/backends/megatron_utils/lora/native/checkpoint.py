@@ -25,7 +25,7 @@ from miles.utils.lora.utils import AdapterSpec
 class NativeAdapterSlots(SlotComputeMembers, ProbedAdapterSlots):
     """Native exports grouped experts stacked under sglang's ``experts.w1/w3/w2`` (per-expert or ``[1, ...]``).
 
-    Multi-LoRA slots are ``NativeMultiLoRAAdapter``s; they cover dense projections and lm_head. Every slot has
+    Multi-LoRA slots are ``NativeMultiLoRASlots`` instances; they cover dense projections, grouped routed experts and lm_head. Every slot has
     slot 0's layout.
     """
 

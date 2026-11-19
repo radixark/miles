@@ -13,7 +13,7 @@ from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 
 def _grouped_linear(inputs: torch.Tensor, weights: torch.Tensor, tokens_per_expert) -> torch.Tensor:
     """Per-local-expert matmul over the permuted token buffer, one grouped GEMM."""
-    if inputs.is_cuda:
+    if inputs.is_cuda and inputs.shape[0] > 0:
         offsets = torch.as_tensor(list(tokens_per_expert), device=inputs.device, dtype=torch.int32).cumsum(
             0, dtype=torch.int32
         )
@@ -35,7 +35,7 @@ def _ep_rank() -> int:
 
 
 class LoRAGroupedFC1(NativeLoRAAdapter):
-    """Routed-expert fused gate/up adapter: shared A per branch, per-expert B.
+    """Routed-expert up or fused gate/up adapter, optionally sharing A across experts.
 
     ``width`` is the experts' input width: the hidden size, or a latent MoE's latent size.
     """
@@ -44,6 +44,7 @@ class LoRAGroupedFC1(NativeLoRAAdapter):
         self,
         *,
         hf_prefix: str,
+        hf_leaves: tuple[str, ...],
         reference: torch.Tensor,
         context: AttachContext,
         num_local_experts: int,
@@ -53,43 +54,50 @@ class LoRAGroupedFC1(NativeLoRAAdapter):
     ):
         super().__init__(hf_prefix, (), context.tp_rank)
         self.context = context
+        self.hf_leaves = hf_leaves
+        assert len(hf_leaves) in (1, 2), "expert FC1 is either up-only or fused gate/up"
+        self.branches = ("w1", "w3")[: len(hf_leaves)]
         rank = context.lora.rank
-        ep_group = "ep" if is_ep else None
-        self.register_parameter(
-            "w1_A",
-            _mark_expert_param(
-                new_lora_parameter(reference, (rank, width), init=context.lora.a_init_method, grad_sum_group=ep_group),
-                is_ep,
-            ),
-        )
-        self.register_parameter(
-            "w3_A",
-            _mark_expert_param(
-                new_lora_parameter(reference, (rank, width), init=context.lora.a_init_method, grad_sum_group=ep_group),
-                is_ep,
-            ),
-        )
-        self.register_parameter(
-            "w1_B",
-            _mark_expert_param(
-                new_lora_parameter(reference, (num_local_experts, moe_intermediate, rank), init="zero"), is_ep
-            ),
-        )
-        self.register_parameter(
-            "w3_B",
-            _mark_expert_param(
-                new_lora_parameter(reference, (num_local_experts, moe_intermediate, rank), init="zero"), is_ep
-            ),
-        )
+        self.shared_outer = context.lora.experts_shared_outer_loras
+        ep_group = "ep" if is_ep and self.shared_outer else None
+        for branch in self.branches:
+            self.register_parameter(
+                f"{branch}_A",
+                _mark_expert_param(
+                    new_lora_parameter(
+                        reference,
+                        (rank, width) if self.shared_outer else (num_local_experts, rank, width),
+                        init=context.lora.a_init_method,
+                        grad_sum_group=ep_group,
+                    ),
+                    is_ep,
+                ),
+            )
+            self.register_parameter(
+                f"{branch}_B",
+                _mark_expert_param(
+                    new_lora_parameter(reference, (num_local_experts, moe_intermediate, rank), init="zero"), is_ep
+                ),
+            )
+
+    def factors(self):
+        for branch, leaf in zip(self.branches, self.hf_leaves, strict=True):
+            yield leaf, self.get_parameter(f"{branch}_A"), self.get_parameter(f"{branch}_B")
 
     def forward(self, x: torch.Tensor, base_module: nn.Module, *host_args) -> torch.Tensor:
         tokens_per_expert = host_args[0]
-        rank = self.context.lora.rank
         dropped = apply_lora_dropout(x, self.context, base_module.training)
-        joint = F.linear(dropped, torch.cat([self.w1_A, self.w3_A], dim=0))
-        gate = _grouped_linear(joint[..., :rank].contiguous(), self.w1_B, tokens_per_expert)
-        up = _grouped_linear(joint[..., rank:].contiguous(), self.w3_B, tokens_per_expert)
-        return torch.cat([gate, up], dim=-1)
+        return torch.cat(
+            [
+                _grouped_linear(
+                    F.linear(dropped, a) if self.shared_outer else _grouped_linear(dropped, a, tokens_per_expert),
+                    b,
+                    tokens_per_expert,
+                )
+                for _, a, b in self.factors()
+            ],
+            dim=-1,
+        )
 
     def weight_deltas(self):
         (host,) = self._hosts
@@ -97,37 +105,53 @@ class LoRAGroupedFC1(NativeLoRAAdapter):
             yield getattr(
                 host, f"weight{index}"
             ), lambda index=index: self.context.lora.scale * torch.cat(  # config-access-exempt: grouped expert hosts register indexed weight parameters
-                [self.w1_B[index].float() @ self.w1_A.float(), self.w3_B[index].float() @ self.w3_A.float()]
+                [b[index].float() @ (a if self.shared_outer else a[index]).float() for _, a, b in self.factors()]
             )
 
     def export_plan(self, gather) -> list:
-        prefix = self.hf_prefix
-        return [
-            (f"{prefix}w1.lora_A.weight", self.w1_A.unsqueeze(0)),
-            (f"{prefix}w3.lora_A.weight", self.w3_A.unsqueeze(0)),
-            (f"{prefix}w1.lora_B.weight", gather.request(self.w1_B, 0, group="ep")),
-            (f"{prefix}w3.lora_B.weight", gather.request(self.w3_B, 0, group="ep")),
-        ]
+        plan = []
+        for leaf, a, b in self.factors():
+            plan.extend(
+                [
+                    (
+                        f"{self.hf_prefix}{leaf}.lora_A.weight",
+                        a.unsqueeze(0) if self.shared_outer else gather.request(a, 0, group="ep"),
+                    ),
+                    (f"{self.hf_prefix}{leaf}.lora_B.weight", gather.request(b, 0, group="ep")),
+                ]
+            )
+        return plan
 
     def load_plan(self, take) -> list:
         num_local = self.w1_B.shape[0]
         lo = _ep_rank() * num_local
         hi = lo + num_local
-        return [
-            (self.w1_A, take(f"{self.hf_prefix}w1.lora_A.weight").squeeze(0)),
-            (self.w3_A, take(f"{self.hf_prefix}w3.lora_A.weight").squeeze(0)),
-            (self.w1_B, take(f"{self.hf_prefix}w1.lora_B.weight")[lo:hi]),
-            (self.w3_B, take(f"{self.hf_prefix}w3.lora_B.weight")[lo:hi]),
-        ]
+        plan = []
+        for leaf, a, b in self.factors():
+            plan.extend(
+                [
+                    (
+                        a,
+                        (
+                            take(f"{self.hf_prefix}{leaf}.lora_A.weight").squeeze(0)
+                            if self.shared_outer
+                            else take(f"{self.hf_prefix}{leaf}.lora_A.weight")[lo:hi]
+                        ),
+                    ),
+                    (b, take(f"{self.hf_prefix}{leaf}.lora_B.weight")[lo:hi]),
+                ]
+            )
+        return plan
 
 
 class LoRAGroupedFC2(NativeLoRAAdapter):
-    """Routed-expert down adapter: per-expert A over the token buffer, shared B of the experts' output ``width``."""
+    """Routed-expert down adapter, optionally sharing B across experts."""
 
     def __init__(
         self,
         *,
         hf_prefix: str,
+        hf_leaf: str,
         reference: torch.Tensor,
         context: AttachContext,
         num_local_experts: int,
@@ -137,8 +161,10 @@ class LoRAGroupedFC2(NativeLoRAAdapter):
     ):
         super().__init__(hf_prefix, (), context.tp_rank)
         self.context = context
+        self.hf_leaf = hf_leaf
         rank = context.lora.rank
-        ep_group = "ep" if is_ep else None
+        self.shared_outer = context.lora.experts_shared_outer_loras
+        ep_group = "ep" if is_ep and self.shared_outer else None
         self.register_parameter(
             "w2_A",
             _mark_expert_param(
@@ -151,7 +177,13 @@ class LoRAGroupedFC2(NativeLoRAAdapter):
         self.register_parameter(
             "w2_B",
             _mark_expert_param(
-                new_lora_parameter(reference, (width, rank), init="zero", grad_sum_group=ep_group), is_ep
+                new_lora_parameter(
+                    reference,
+                    (width, rank) if self.shared_outer else (num_local_experts, width, rank),
+                    init="zero",
+                    grad_sum_group=ep_group,
+                ),
+                is_ep,
             ),
         )
 
@@ -160,7 +192,9 @@ class LoRAGroupedFC2(NativeLoRAAdapter):
         inner = _grouped_linear(
             apply_lora_dropout(x, self.context, base_module.training), self.w2_A, tokens_per_expert
         )
-        return F.linear(inner, self.w2_B)
+        return (
+            F.linear(inner, self.w2_B) if self.shared_outer else _grouped_linear(inner, self.w2_B, tokens_per_expert)
+        )
 
     def weight_deltas(self):
         (host,) = self._hosts
@@ -168,23 +202,34 @@ class LoRAGroupedFC2(NativeLoRAAdapter):
             yield getattr(
                 host, f"weight{index}"
             ), lambda index=index: self.context.lora.scale * (  # config-access-exempt: grouped expert hosts register indexed weight parameters
-                self.w2_B.float() @ self.w2_A[index].float()
+                (self.w2_B if self.shared_outer else self.w2_B[index]).float() @ self.w2_A[index].float()
             )
 
     def export_plan(self, gather) -> list:
-        prefix = self.hf_prefix
+        down = f"{self.hf_prefix}{self.hf_leaf}"
         return [
-            (f"{prefix}w2.lora_A.weight", gather.request(self.w2_A, 0, group="ep")),
-            (f"{prefix}w2.lora_B.weight", self.w2_B.unsqueeze(0)),
+            (f"{down}.lora_A.weight", gather.request(self.w2_A, 0, group="ep")),
+            (
+                f"{down}.lora_B.weight",
+                self.w2_B.unsqueeze(0) if self.shared_outer else gather.request(self.w2_B, 0, group="ep"),
+            ),
         ]
 
     def load_plan(self, take) -> list:
+        down = f"{self.hf_prefix}{self.hf_leaf}"
         num_local = self.w2_A.shape[0]
         lo = _ep_rank() * num_local
         hi = lo + num_local
         return [
-            (self.w2_A, take(f"{self.hf_prefix}w2.lora_A.weight")[lo:hi]),
-            (self.w2_B, take(f"{self.hf_prefix}w2.lora_B.weight").squeeze(0)),
+            (self.w2_A, take(f"{down}.lora_A.weight")[lo:hi]),
+            (
+                self.w2_B,
+                (
+                    take(f"{down}.lora_B.weight").squeeze(0)
+                    if self.shared_outer
+                    else take(f"{down}.lora_B.weight")[lo:hi]
+                ),
+            ),
         ]
 
 

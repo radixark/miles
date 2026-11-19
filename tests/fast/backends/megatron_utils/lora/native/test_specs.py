@@ -102,7 +102,7 @@ class TestResolveAdapterTargets:
         "model_type,target",
         [
             ("qwen3_moe", "model.layers.*.mlp.experts.gate_up_proj"),
-            ("kimi_k2", "model.layers.*.mlp.experts.*.gate_proj"),
+            ("kimi_k2", "model.layers.*.mlp.gate"),
             ("qwen3_next", "model.layers.*.linear_attn.in_proj_qkvz"),
         ],
     )
@@ -276,6 +276,20 @@ def test_native_run_contract_accepts_its_validated_configs(tmp_path):
     validate_native_lora_args(_native_run_args(tmp_path, "kimi_k3", colocate=False, lora_train_only=True), _HF_MODULES)
     # expert TP only matters for specs whose routed experts carry adapters
     validate_native_lora_args(_native_run_args(tmp_path, "qwen3_moe", expert_tensor_parallel_size=2), _HF_MODULES)
+
+
+def test_expert_tensor_parallelism_matters_only_once_the_targets_reach_the_routed_experts(tmp_path):
+    attention = ["model.language_model.layers.*.self_attn.q_proj"]
+    experts = [*attention, "model.language_model.layers.*.mlp.experts.gate_up_proj"]
+    validate_native_lora_args(
+        _native_run_args(tmp_path, "qwen3_6_moe", hf_lora_targets=attention, expert_tensor_parallel_size=2),
+        _HF_MODULES,
+    )
+    with pytest.raises(AssertionError, match="expert-tensor-parallel-size"):
+        validate_native_lora_args(
+            _native_run_args(tmp_path, "qwen3_6_moe", hf_lora_targets=experts, expert_tensor_parallel_size=2),
+            _HF_MODULES,
+        )
 
 
 @pytest.mark.parametrize(
