@@ -186,7 +186,12 @@ jobs:
           set -euo pipefail
           git fetch -q --depth=1 origin "$BEFORE"
           variants=()
-          for variant in cu13 tpu; do
+          candidates=(cu13)
+          # The TPU image (docker/build.py) and its CI (pr-test-tpu.yml) belong to radixark/miles.
+          if [ "$GITHUB_REPOSITORY" = radixark/miles ]; then
+            candidates+=(tpu)
+          fi
+          for variant in "${candidates[@]}"; do
             current=$(python3 docker/image_inputs.py --variant "$variant" --rev HEAD)
             base=$(python3 docker/image_inputs.py --variant "$variant" --rev "$BEFORE")
             if [ "$current" != "$base" ]; then
@@ -209,7 +214,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.variant) || github.event_name == 'push' && needs.push-variants.outputs.variants || '["cu13", "tpu"]') }}
+        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.variant) || github.event_name == 'push' && needs.push-variants.outputs.variants || github.repository == 'radixark/miles' && '["cu13", "tpu"]' || '["cu13"]') }}
     # Automatic builds of a variant run one at a time: a build outlasts the poll
     # interval, and overlapping ones race to push its dev / latest. A newer pending build
     # replaces an older one, which is safe because builds clone branch HEADs when they
