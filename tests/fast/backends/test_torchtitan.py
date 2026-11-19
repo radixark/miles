@@ -80,6 +80,7 @@ def _args(**overrides) -> Namespace:
         custom_pg_loss_reducer_function_path=None,
         dump_details=None,
         multi_lora=False,
+        multimodal_keys=None,
     )
     return Namespace(**{**base, **overrides})
 
@@ -115,6 +116,7 @@ _TPU_FACTS = (
     "compile_backend",
     "triton_kernels",
     "flex_attention",
+    "trains_multimodal_encoders",
     "rooted_reduce",
     "premul_sum_reduce",
     "weight_transfer_modes",
@@ -538,6 +540,88 @@ def test_mla_keeps_its_wrapper_and_runs_tpu_flash_attention_inside_it(on_tpu):
     mla = [layer.attention.inner_attention for layer in model.layers]
     assert {type(wrapper) for wrapper in mla} == {MLAAttention.Config}
     assert {type(wrapper.inner_attention) for wrapper in mla} == {TpuFlashInnerAttention.Config}
+
+
+def test_gated_delta_layers_get_the_tpu_gated_delta_and_attention_layers_tpu_flash(on_tpu):
+    pytest.importorskip("torchtitan")
+    from torchtitan.config.parallelism import ParallelismConfig
+
+    from miles.backends.torchtitan_utils.config import (
+        TpuFlashInnerAttention,
+        TpuGatedDeltaInnerAttention,
+        build_model_config,
+    )
+
+    model = build_model_config(
+        _config_args(titan_model_name="qwen3_5", titan_model_flavor="debugmodel"), parallelism=ParallelismConfig()
+    )
+    inner = [type(layer.attention.inner_attention) for layer in model.layers]
+    assert set(inner) == {TpuGatedDeltaInnerAttention.Config, TpuFlashInnerAttention.Config}
+
+
+@pytest.mark.parametrize("tpu", [True, False], ids=["tpu", "gpu"])
+def test_tpu_trains_the_language_model_alone_but_reads_the_multimodal_checkpoint(
+    request, tmp_path, single_gpu_dims, tpu
+):
+    """Built for the trained model alone, the adapter would read text-only HF names from the multimodal checkpoint,
+    find none, and leave the language model at its random init."""
+    from torchtitan.models.qwen3_5.state_dict_adapter import Qwen35StateDictAdapter
+
+    from miles.backends.torchtitan_utils.config import build_trainer_config
+
+    if tpu:
+        request.getfixturevalue("on_tpu")
+    config = build_trainer_config(
+        _config_args(titan_model_name="qwen3_5", titan_model_flavor="debugmodel"),
+        hf_assets_path=_checkpoint_dir(tmp_path, tie_word_embeddings=False),
+        lr_total_steps=1,
+        dump_subdir="x",
+    )
+    assert (config.model.vision_encoder is None) == tpu
+    assert Qwen35StateDictAdapter(config.checkpoint_model, None).hf_language_model_prefix == "model.language_model"
+
+
+def test_the_engine_reads_the_checkpoint_through_an_adapter_for_its_layout(monkeypatch):
+    """torchtitan builds the adapter from the trained model's config, which lacks the parts the trainer drops."""
+    pytest.importorskip("torchtitan")
+    from torchtitan.training_engine import TrainingEngine
+
+    from miles.backends.torchtitan_utils.trainer import _TrainingEngine
+
+    class _Adapter:
+        def __init__(self, model_config, hf_assets_path):
+            self.model = model_config
+
+    def build_adapter(self, *, hf_assets_path, create_seed_checkpoint=False):
+        self.state_dict_adapter = _Adapter(self.model_config, hf_assets_path)
+
+    monkeypatch.setattr(TrainingEngine, "_initialize_model", build_adapter)
+    engine = object.__new__(_TrainingEngine)
+    engine.model_config, engine._checkpoint_model = "language model", "language model and encoders"
+    engine._initialize_model(hf_assets_path="hf")
+    assert engine.state_dict_adapter.model == "language model and encoders"
+
+
+def test_tpu_gated_delta_layers_refuse_tensor_parallelism(on_tpu):
+    """The TPU gated delta-net replacement runs unsharded, so TP would compute each layer on a share of its heads."""
+    pytest.importorskip("torchtitan")
+    from torchtitan.config.parallelism import ParallelismConfig
+
+    from miles.backends.torchtitan_utils.config import build_model_config
+
+    args = _config_args(titan_model_name="qwen3_5", titan_model_flavor="debugmodel")
+    with pytest.raises(ValueError, match="tensor-model-parallel-size 2"):
+        build_model_config(args, parallelism=ParallelismConfig(tensor_parallel_degree=2))
+    build_model_config(args, parallelism=ParallelismConfig())
+    # a model with no gated delta-net layers keeps TP
+    build_model_config(_config_args(), parallelism=ParallelismConfig(tensor_parallel_degree=2))
+
+
+def test_tpu_refuses_multimodal_training(monkeypatch, on_tpu):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    with pytest.raises(ValueError, match="multimodal training is not supported"):
+        validate_torchtitan_args(_tpu_args(multimodal_keys={"image": "images"}))
+    validate_torchtitan_args(_tpu_args())
 
 
 def test_context_parallelism_swaps_in_the_all_gather_kv_attention(tmp_path, monkeypatch):

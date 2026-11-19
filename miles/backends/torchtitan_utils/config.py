@@ -1,3 +1,4 @@
+import copy
 import importlib
 import inspect
 import logging
@@ -10,6 +11,7 @@ from types import ModuleType
 import torch
 import torch.distributed as dist
 import torch.distributed._functional_collectives as funcol
+import torch.nn.functional as F
 from torchtitan.components.optim import AdamW, LRSchedulersContainer, Optim, OptimizersContainer
 from torchtitan.config import TrainingConfig
 from torchtitan.config.configs import DebugConfig
@@ -22,8 +24,10 @@ from torchtitan.distributed.spmd_types import spmd_mesh_group
 from torchtitan.models.base import BaseModel
 from torchtitan.models.common.attention import FlexInnerAttention, GQAttention, InnerAttention, MLAAttention
 from torchtitan.models.common.attention.cp_attention import AllGatherKVFlexInnerAttention, Ulysses
+from torchtitan.models.common.attention.gdn import InnerGDN
 from torchtitan.models.common.linear import Linear
 from torchtitan.models.common.moe import MoE
+from torchtitan.models.common.multimodal import MultimodalModel
 
 from miles import platforms
 from miles.backends.torchtitan_utils import lora
@@ -71,7 +75,8 @@ def build_model_config(
     model = builder(args.backend.titan_model_flavor, **kwargs)
     _disable_load_balancing(model)
     if not platforms.current_platform.flex_attention:
-        _use_tpu_flash_attention(model)
+        _replace_inner_attention(model)
+        _check_gated_delta_runs_without_tp(model, tp=parallelism.tensor_parallel_degree)
     if parallelism.context_parallel_degree > 1:
         if platforms.current_platform.flex_attention:
             cp_attention = {FlexInnerAttention: AllGatherKVFlexInnerAttention}
@@ -84,28 +89,33 @@ def build_model_config(
     return model
 
 
+@dataclass(kw_only=True, slots=True)
+class _SegmentIdsConfig(InnerAttention.Config):
+    """The metadata of the inner attentions on miles.kernels.tpu: each token's segment id."""
+
+    def build_attention_metadata(
+        self,
+        positions: torch.Tensor,
+        *,
+        padding_mask: torch.Tensor | None = None,
+        max_num_documents: int | None = None,
+        max_context_length: int | None = None,
+    ) -> torch.Tensor:
+        # positions restart at 0 in every sequence and the padding tail, so each token's segment is the index of
+        # its sequence's first token; no cumsum: with the scan emitter off, torch_tpu cannot lower an int64 cumsum
+        return torch.arange(positions.shape[-1], device=positions.device, dtype=torch.int32) - positions.to(
+            torch.int32
+        )
+
+
 class TpuFlashInnerAttention(InnerAttention):
     """torchtitan's inner attention on miles.kernels.tpu; its metadata is each token's segment id."""
 
     @dataclass(kw_only=True, slots=True)
-    class Config(InnerAttention.Config):
+    class Config(_SegmentIdsConfig):
         @property
         def is_full_attention(self) -> bool:
             return True
-
-        def build_attention_metadata(
-            self,
-            positions: torch.Tensor,
-            *,
-            padding_mask: torch.Tensor | None = None,
-            max_num_documents: int | None = None,
-            max_context_length: int | None = None,
-        ) -> torch.Tensor:
-            # positions restart at 0 in every sequence and the padding tail, so each token's segment is the index of
-            # its sequence's first token; no cumsum: with the scan emitter off, torch_tpu cannot lower an int64 cumsum
-            return torch.arange(positions.shape[-1], device=positions.device, dtype=torch.int32) - positions.to(
-                torch.int32
-            )
 
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -186,18 +196,100 @@ def _check_heads_divide_across_cp(model: BaseModel.Config, *, cp: int, tp: int) 
                 )
 
 
-def _use_tpu_flash_attention(model: BaseModel.Config) -> None:
+def _check_gated_delta_runs_without_tp(model: BaseModel.Config, *, tp: int) -> None:
+    """The TPU gated delta-net replaces `InnerGDN` without its head-parallel sharding, so each rank needs every head."""
+    # TODO: carry InnerGDN's sharding config over to the replacement and test it with TP > 1
+    gated_delta = TpuGatedDeltaInnerAttention.Config
+    if tp > 1 and any(True for layer in model.layers for _ in layer.traverse(gated_delta, recurse=True)):
+        raise ValueError(
+            f"--tensor-model-parallel-size {tp}: the TPU gated delta-net layers do not shard their heads across "
+            "tensor-parallel ranks yet; use --tensor-model-parallel-size 1"
+        )
+
+
+class TpuGatedDeltaInnerAttention(InnerAttention):
+    """torchtitan's `InnerGDN` (short convs, decay gate, delta rule) on miles.kernels.tpu, without attn_gym."""
+
+    @dataclass(kw_only=True, slots=True)
+    class Config(_SegmentIdsConfig):
+        pass
+
+    def __init__(self, config: Config) -> None:
+        super().__init__()
+        # patches torch's scan dispatch, so only for a model with these layers
+        from miles.kernels.tpu.gated_delta_rule import allow_scan_in_selective_checkpoint, gated_delta_rule, short_conv
+
+        allow_scan_in_selective_checkpoint()
+        self.gated_delta_rule = gated_delta_rule
+        self.short_conv = short_conv
+
+    def forward(
+        self,
+        query_TC: torch.Tensor,
+        key_TC: torch.Tensor,
+        value_TC: torch.Tensor,
+        a_TH: torch.Tensor,
+        b_TH: torch.Tensor,
+        conv_q_weight_C1W: torch.Tensor,
+        conv_k_weight_C1W: torch.Tensor,
+        conv_v_weight_C1W: torch.Tensor,
+        A_log_H: torch.Tensor,
+        dt_bias_H: torch.Tensor,
+        *,
+        key_head_dim: int,
+        value_head_dim: int,
+        attention_metadata: torch.Tensor,
+    ) -> torch.Tensor:
+        num_tokens = query_TC.shape[0]
+
+        def conv_heads(x_TC: torch.Tensor, weight_C1W: torch.Tensor, head_dim: int) -> torch.Tensor:
+            return self.short_conv(x_TC, weight_C1W, segment_ids=attention_metadata).reshape(num_tokens, -1, head_dim)
+
+        g_TH = -torch.exp(A_log_H.float()) * F.softplus(a_TH.float() + dt_bias_H)
+        return self.gated_delta_rule(
+            conv_heads(query_TC, conv_q_weight_C1W, key_head_dim),
+            conv_heads(key_TC, conv_k_weight_C1W, key_head_dim),
+            conv_heads(value_TC, conv_v_weight_C1W, value_head_dim),
+            g_TH,
+            torch.sigmoid(b_TH),
+            segment_ids=attention_metadata,
+        )
+
+
+def _replace_inner_attention(model: BaseModel.Config) -> None:
+    """Swap in inner attentions keyed on segment ids, for platforms without sparse FlexAttention or attn_gym."""
+    replacements: dict[type[InnerAttention.Config], type[InnerAttention.Config]] = {
+        FlexInnerAttention.Config: TpuFlashInnerAttention.Config,
+        InnerGDN.Config: TpuGatedDeltaInnerAttention.Config,
+    }
     for layer in model.layers:
         for _, inner, parent, field_name in layer.traverse(InnerAttention.Config, recurse=True):
             # MLA wraps the attention kernel it runs
             if isinstance(inner, MLAAttention.Config):
                 continue
-            if type(inner) is not FlexInnerAttention.Config:
+            replacement = replacements.get(type(inner))
+            if replacement is None:
                 raise ValueError(
-                    f"on {platforms.current_platform.device_type} only document-causal FlexAttention has a "
-                    f"replacement; {type(inner).__qualname__} has none"
+                    f"on {platforms.current_platform.device_type} {type(inner).__qualname__} has no replacement; "
+                    f"only {', '.join(c.__qualname__ for c in replacements)} do"
                 )
-            setattr(parent, field_name, TpuFlashInnerAttention.Config())
+            setattr(parent, field_name, replacement())
+
+
+def _without_multimodal_encoders(model: BaseModel.Config) -> BaseModel.Config:
+    """The language model alone, for where the encoders cannot train (`--multimodal-keys` is refused there).
+
+    torchtitan runs each encoder on dummy inputs every step even without images; on TPU the encoder's FlexAttention
+    recompiles every step and torch_remat's eager replay of its recompute aborts.
+    """
+    # TODO(multimodal on TPU): give the encoders' attention a TPU kernel and a replayable recompute, then keep them
+    model_cls = type(model)._owner
+    if not issubclass(model_cls, MultimodalModel):
+        return model
+    language_model = copy.copy(model)
+    for encoder_fqn in model_cls.multimodal_encoder_fqns:
+        setattr(language_model, encoder_fqn, None)
+    return language_model
 
 
 # not FreezeMoERoutingTransform: it also freezes the router gate, which RL trains
@@ -359,8 +451,13 @@ def build_trainer_config(
     if compile_backend is not None:
         _prepare_blocks_for_compile(model)
 
+    # the checkpoint keeps the encoders' layout, so its adapter is built from the full config
+    trained_model = (
+        model if platforms.current_platform.trains_multimodal_encoders else _without_multimodal_encoders(model)
+    )
     return TitanTrainer.Config(
-        model=model,
+        model=trained_model,
+        checkpoint_model=model,
         hf_assets_path=hf_assets_path,
         compile_backend=compile_backend,
         output_dir=os.path.join(

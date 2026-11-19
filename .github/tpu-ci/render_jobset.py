@@ -13,7 +13,9 @@ NAMESPACE = "tpu-ci"
 SMOKE_SCRIPT = Path(__file__).with_name("smoke.sh")
 
 
-def render(*, image: str, sha: str, launcher: str, recipe: str, queue: str, deadline_s: int, run_label: str) -> dict:
+def render(
+    *, image: str, sha: str, launcher: str, model_name: str, recipe: str, queue: str, deadline_s: int, run_label: str
+) -> dict:
     pod_spec = {
         "restartPolicy": "Never",
         "nodeSelector": {
@@ -46,6 +48,7 @@ def render(*, image: str, sha: str, launcher: str, recipe: str, queue: str, dead
                 "env": [
                     {"name": "MILES_SHA", "value": sha},
                     {"name": "LAUNCHER", "value": launcher},
+                    {"name": "MODEL_NAME", "value": model_name},
                     {"name": "RECIPE", "value": recipe},
                     # gated checkpoints; optional so the pod still starts without the secret
                     {
@@ -73,7 +76,7 @@ def render(*, image: str, sha: str, launcher: str, recipe: str, queue: str, dead
         "kind": "JobSet",
         "metadata": {
             # pod names add ~20 characters to this and must stay within 63
-            "generateName": f"miles-{re.sub('[^a-z0-9]+', '-', launcher.lower())[:24]}-",
+            "generateName": f"miles-{re.sub('[^a-z0-9]+', '-', (model_name or launcher).lower())[:24]}-",
             "namespace": NAMESPACE,
             "labels": {
                 "kueue.x-k8s.io/queue-name": queue,
@@ -108,6 +111,7 @@ def main() -> None:
     parser.add_argument("--image", required=True)
     parser.add_argument("--sha", required=True, help="miles commit the pod checks out")
     parser.add_argument("--launcher", required=True, help="scripts/tpu/run_<launcher>_torchtitan.py")
+    parser.add_argument("--model-name", default="", help="the launcher's --model-name, for a launcher with a table")
     parser.add_argument("--recipe", default="smoke")
     parser.add_argument("--queue", default="tpu-prgate-1h", help="Kueue LocalQueue in the tpu-ci namespace")
     parser.add_argument("--deadline-s", type=int, required=True, help="the JobSet's activeDeadlineSeconds")
@@ -119,6 +123,7 @@ def main() -> None:
         image=args.image,
         sha=args.sha,
         launcher=args.launcher,
+        model_name=args.model_name,
         recipe=args.recipe,
         queue=args.queue,
         deadline_s=args.deadline_s,

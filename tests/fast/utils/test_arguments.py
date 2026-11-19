@@ -4461,10 +4461,10 @@ class TestValidateCompileWarmup:
             ({"colocate": True}, "--colocate"),
             ({"pipeline_model_parallel_size": 2}, "--pipeline-model-parallel-size"),
             ({"multimodal_token_space_processing": True}, "--multimodal-token-space-processing"),
-            ({"use_rollout_routing_replay": True}, "--use-rollout-routing-replay"),
             ({"use_critic": True}, "--use-critic"),
             ({"custom_convert_samples_to_train_data_path": "x.py"}, "--custom-convert-samples-to-train-data-path"),
             ({"custom_reward_post_process_path": "x.py"}, "--custom-reward-post-process-path"),
+            ({"use_routing_replay": True}, "--use-routing-replay without --use-rollout-routing-replay"),
         ],
     )
     def test_a_run_the_synthetic_batch_cannot_mirror_is_refused(self, overrides: dict, flag: str) -> None:
@@ -4472,6 +4472,10 @@ class TestValidateCompileWarmup:
 
         with pytest.raises(ValueError, match=re.escape(flag)):
             validate_compile_warmup(_compile_warmup_args(**overrides))
+
+    def test_rollout_routing_replay_is_accepted(self) -> None:
+        """The warmup shard carries routing rows, so its steps compile the replay programs."""
+        validate_compile_warmup(_compile_warmup_args(use_rollout_routing_replay=True, use_routing_replay=True))
 
 
 class TestMultimodalTokenSpaceProcessingArgs:
