@@ -263,9 +263,10 @@ class RolloutRelatedConfig(BaseConfig):
         str,
         Arg(
             type_parser=None,
-            choices=["broadcast", "broadcast_packed", "p2p", "disk-delta", "ici", "http-lora"],
+            choices=["broadcast", "broadcast_packed", "p2p", "disk-delta", "ici", "http-lora", "modelexpress"],
             help=(
                 "The method to transfer weights to remote rollout engines during update weight. "
+                "'modelexpress' publishes S3 deltas and periodic full checkpoints to SGLang engines. "
                 "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
                 "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
                 "them into a host-local checkpoint that the engine reloads from. "
@@ -296,6 +297,13 @@ class RolloutRelatedConfig(BaseConfig):
             ),
         ),
     ] = "tensors"
+    modelexpress_config: A[
+        Any,
+        Arg(
+            type_parser=json.loads,
+            help="ModelExpress model, server, seed checkpoint, and S3 configuration as a JSON object.",
+        ),
+    ] = "{}"
     update_weight_disk_dir: A[
         str | None,
         Arg(
