@@ -73,10 +73,14 @@ def _data_pack(rollout_id: int) -> RolloutDataPack:
 
 class FakeRolloutExecutor:
     def __init__(self) -> None:
+        self.agent_setup_checked = False
         self.initialized = False
         self.loaded: list[int | None] = []
         self.train_parallel_config: TrainParallelConfig | None = None
         self.eval_fleet_info: EvalFleetInfo | None = None
+
+    async def check_agent_setup(self) -> None:
+        self.agent_setup_checked = True
 
     async def init(self) -> None:
         self.initialized = True
@@ -475,6 +479,7 @@ class TestKubernetesDriverAssembly:
         assert isinstance(result.inference_controller, RpcWorkerHandle)
         assert isinstance(result.rollout_executor, RpcWorkerHandle)
         assert controller.initialized
+        assert executor.agent_setup_checked
         assert executor.initialized
         assert result.num_rollout_per_epoch == 7
         assert args.num_rollout == 21

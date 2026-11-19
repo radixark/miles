@@ -42,6 +42,8 @@ command below uses E2B:
 mkdir -p ~/.config/e2b && echo e2b_... > ~/.config/e2b/api_key
 ```
 
+The run fails at startup when the E2B API refuses this key or cannot be reached.
+
 On an [AgentENV](https://github.com/kvcache-ai/AgentENV) deployment, launch
 with `HARBOR_ENV_TYPE=agentenv` instead of `e2b` when task Dockerfiles `COPY`
 or `ADD` files or have several `FROM`s: `e2b` cannot build those there, and
@@ -56,12 +58,14 @@ curl -fsSL https://github.com/kvcache-ai/AgentENV/releases/latest/download/insta
 The script installs into `/usr/local/bin` when it can write there and into
 `~/.local/bin` otherwise. When the workers' `PATH` has neither, give the script
 a directory it does have, as `| INSTALL_DIR=<dir> bash`. The launcher refuses
-to start without a new enough `aenv` on its own `PATH`, but it cannot check
-other nodes.
+to start without a new enough `aenv` on its own `PATH`, and the run fails at
+startup when the node running the rollout lacks one.
 
 Task directories: `HARBOR_TASKS_DIR` must contain one Harbor task dir per
 `metadata.instance_id` in the training data (same as the agent-server example);
-put it on a filesystem every worker can read.
+put it on a filesystem every worker can read. The launcher checks every row
+before it starts the run and lists those without one; during a run, such a row
+only drops its own samples.
 
 **Network.** In-sandbox agents (mini-swe-agent, claude-code) call the model
 from inside the sandbox, so the sandbox platform must reach the Miles session

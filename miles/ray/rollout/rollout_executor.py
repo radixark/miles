@@ -54,6 +54,7 @@ from miles.utils.http_utils import init_http_client
 from miles.utils.init_once import InitOnce, InitState, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
+from miles.utils.misc import call_agent_preflight_hook
 from miles.utils.output_store.config import connect_output_store, output_store_backend_config, sweep_output_store
 from miles.utils.output_store.dropped import store_refs_of, take_dropped_refs
 from miles.utils.output_store.plan import StorePlanError
@@ -110,6 +111,11 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         self.generate_rollout = None
         self.eval_generate_rollout = None
         self._metric_checker = None
+
+    async def check_agent_setup(self) -> None:
+        """Run the agent functions' ``preflight`` hooks. Needs nothing from ``init``, so it runs before the engine wait."""
+        if self.args.load_debug_rollout_data is None:  # replayed rollouts call no agent function
+            await call_agent_preflight_hook(self.args)
 
     @init_once
     async def init(self) -> None:

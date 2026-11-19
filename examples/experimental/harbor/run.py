@@ -16,7 +16,13 @@ from dataclasses import dataclass
 from typing import Literal
 
 import typer
-from launch_common import agentic_pythonpath_dirs, agentic_train_args, harbor_env_vars
+from launch_common import (
+    METADATA_KEY,
+    agentic_pythonpath_dirs,
+    agentic_train_args,
+    harbor_env_vars,
+    preflight_task_dirs,
+)
 
 from miles.utils.external_utils import command_utils
 
@@ -105,7 +111,7 @@ def execute(args: ScriptArgs):
     rollout_args = (
         f"--prompt-data {args.prompt_data} "
         "--input-key prompt "
-        "--metadata-key metadata "
+        f"--metadata-key {METADATA_KEY} "
         "--rollout-shuffle "
         f"--num-rollout {args.num_rollout} "
         f"--rollout-batch-size {args.rollout_batch_size} "
@@ -185,6 +191,7 @@ def execute(args: ScriptArgs):
         f"{perf_args}{sglang_args}{agent_args}{misc_args}{debug_args}"
     )
 
+    preflight_task_dirs(args.prompt_data, args.harbor_tasks_dir)
     extra_env_vars = {
         "PYTHONPATH": ":".join([args.megatron_path, *agentic_pythonpath_dirs(), str(command_utils.repo_base_dir)]),
         **harbor_env_vars(args),

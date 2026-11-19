@@ -1,5 +1,6 @@
 """Offline tests for the launcher's Harbor-side wiring (no harbor, no keys)."""
 
+import json
 import sys
 import types
 from pathlib import Path
@@ -114,3 +115,32 @@ def test_agentic_wiring_is_the_shipped_wiring():
 
     for d in launch_common.agentic_pythonpath_dirs():
         assert Path(d).is_dir(), d
+
+
+def _write_rows(path: Path, rows: list[dict]) -> str:
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    return str(path)
+
+
+def test_task_dir_preflight_lists_every_row_a_trial_could_not_run(tmp_path):
+    """During the run such a row only drops its own samples, so the launch is where all of them get named."""
+    (tmp_path / "tasks" / "task-1").mkdir(parents=True)
+    rows = [
+        {"prompt": "p", launch_common.METADATA_KEY: {"instance_id": "task-1"}},
+        {"prompt": "p", launch_common.METADATA_KEY: {"instance_id": "gone-a"}},
+        {"prompt": "p", launch_common.METADATA_KEY: {"instance_id": "gone-b"}},
+        {"prompt": "p"},
+    ]
+    data = _write_rows(tmp_path / "train.jsonl", rows)
+    with pytest.raises(ValueError, match=r"3 instance_id\(s\)") as raised:
+        launch_common.preflight_task_dirs(data, str(tmp_path / "tasks"))
+    assert "'gone-a'" in str(raised.value) and "'gone-b'" in str(raised.value)
+    assert "invalid instance_id ''" in str(raised.value)
+
+
+def test_task_dir_preflight_passes_when_every_row_has_its_task(tmp_path):
+    (tmp_path / "tasks" / "task-1").mkdir(parents=True)
+    data = _write_rows(
+        tmp_path / "train.jsonl", [{"prompt": "p", launch_common.METADATA_KEY: {"instance_id": "task-1"}}]
+    )
+    launch_common.preflight_task_dirs(data, str(tmp_path / "tasks"))
