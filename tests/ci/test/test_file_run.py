@@ -18,6 +18,11 @@ from tests.ci.run_suite import CI_SUITES
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
 
 
+@pytest.fixture(autouse=True)
+def _repository(monkeypatch):
+    monkeypatch.setenv("GITHUB_REPOSITORY", "radixark/miles")
+
+
 @pytest.mark.parametrize("hw", ["cuda", "rocm"])
 @pytest.mark.parametrize("published", [False, True])
 @pytest.mark.parametrize("pin", ["", "debug"])

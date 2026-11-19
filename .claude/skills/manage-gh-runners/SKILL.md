@@ -137,6 +137,10 @@ A few invariants the script encodes that are easy to get wrong by hand:
   and forwards its in-container `--work` path verbatim to the daemon; if
   host and container paths differ, the daemon resolves a directory the
   runner never wrote to.
+* **Job-start hook** `tests/ci/github_runner/remove-foreign-checkouts.sh`,
+  installed under `/data/runner-setup/hooks/job-start` on every `add`: a job
+  container mounts the runner's whole `_work`, so the checkouts other
+  repositories' jobs left there are deleted before each job.
 * **Job-container docker hook** on every runner:
   [`tests/ci/github_runner/job-container-docker/docker`](../../../tests/ci/github_runner/job-container-docker/docker),
   installed under `/data/runner-setup/hooks/job-container-docker` and first in
