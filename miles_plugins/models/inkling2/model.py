@@ -32,7 +32,7 @@ from miles_plugins.models.inkling2.layers import (
     Inkling2RowParallelGroupedLinear,
     Inkling2TransformerLayer,
 )
-from miles_plugins.models.inkling2.ops import softcap_logits
+from miles_plugins.models.inkling2.ops import softcap_masked_logits
 
 if TYPE_CHECKING:
     from miles.utils.args.runtime import TrainerConfig
@@ -230,12 +230,11 @@ class Inkling2GPTModel(GPTModel):
 
     def _scale_logits(self, logits):
         inkling2 = self.config.inkling2
-        logits = softcap_logits(logits, inkling2.final_logit_softcapping)
         vocab_start = self.output_layer.output_size_per_partition * self.pg_collection.tp.rank()
         padded = torch.arange(logits.shape[-1], device=logits.device) + vocab_start >= inkling2.unpadded_vocab_size
         # The engine masks with -inf; a finite minimum gives the same probabilities (exp
         # underflows to 0) and keeps p * log p finite in the entropy metric.
-        return logits.masked_fill(padded, torch.finfo(logits.dtype).min)
+        return softcap_masked_logits(logits, inkling2.final_logit_softcapping, padded)
 
 
 def _frozen_vision_tower(hf_checkpoint: str) -> torch.nn.Module:
