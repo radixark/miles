@@ -45,7 +45,10 @@ def test_matches_unfused_graph(shape: tuple[int, ...], dtype: torch.dtype) -> No
     ref.backward(grad)
     assert leaf.grad.dtype == dtype
     assert not leaf.grad[..., padded].any(), "padded columns must get no gradient"
-    torch.testing.assert_close(leaf.grad.float(), leaf_ref.grad.float(), rtol=1e-2, atol=1e-2)
+    # Backward reads tanh back as out / cap instead of the saved tanh: within one ulp in bf16, and
+    # within 1e-6 absolute in fp32 (measured worst over 600 seeds: 4.8e-7).
+    tol = dict(rtol=2**-7, atol=0) if dtype == torch.bfloat16 else dict(rtol=0, atol=1e-6)
+    torch.testing.assert_close(leaf.grad, leaf_ref.grad, **tol)
 
 
 def test_no_grad_forward_matches() -> None:
