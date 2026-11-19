@@ -44,6 +44,8 @@ VARIANTS = {
         "build_args": {},
     },
     "tpu": {
+        # TPU CI (pr-test-tpu.yml) and its images belong to radixark/miles.
+        "image": "radixark/miles",
         "platforms": ["linux/amd64"],
         "tag_postfix": "-tpu",
         "dockerfile": "docker/Dockerfile.tpu",
