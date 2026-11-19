@@ -1,3 +1,4 @@
+import asyncio
 import dataclasses
 import logging
 import time
@@ -40,6 +41,7 @@ logger = logging.getLogger(__name__)
 SHUTDOWN_TIMEOUT = 30
 UNREGISTER_FROM_ROUTER_TIMEOUT = 120
 INITIALIZING_TIMEOUT_SECONDS = 1800.0
+POST_LAUNCH_RELEASE_WARN_INTERVAL_SECONDS = 300.0
 ABORT_REQUEST_TIMEOUT_SECONDS = 30.0
 
 
@@ -67,6 +69,10 @@ class ServerCell:
     _health_checker: BaseHealthChecker = dataclasses.field(init=False)
     _env_reporter: EngineEnvReporter = dataclasses.field(init=False)
     _state: CellState = dataclasses.field(default_factory=StateUninitialized)
+    _post_launch_release: asyncio.Task | None = dataclasses.field(default=None, init=False)
+    _post_launch_memory_released: bool = dataclasses.field(default=False, init=False)
+    _post_launch_release_started_at: float = dataclasses.field(default=0.0, init=False)
+    _post_launch_release_warn_at: float = dataclasses.field(default=0.0, init=False)
 
     def __post_init__(self) -> None:
         self._env_reporter = EngineEnvReporter(interval_seconds=self.args.env_report_interval_seconds)
@@ -197,21 +203,41 @@ class ServerCell:
 
     async def _tick_when_initializing(self) -> None:
         addr_info = self._state.addr_info
-        if not await probe_server_healthy(server_url=addr_info.server_url, api_key=self.meta.sglang_api_key):
-            return
+        if self._post_launch_release is None:
+            # memory already released: a probe would kill the engine
+            if not self._post_launch_memory_released:
+                if not await probe_server_healthy(server_url=addr_info.server_url, api_key=self.meta.sglang_api_key):
+                    return
 
-        if self.args.check_weight_update_equal and self.meta.update_weights:
-            await self.check_weights(
-                action="snapshot",
-                allow_quant_error=False,
-                selector=self.args.check_weight_update_selector,
-                skip_list=None,
-            )
+                if self.args.check_weight_update_equal and self.meta.update_weights:
+                    await self.check_weights(
+                        action="snapshot",
+                        allow_quant_error=False,
+                        selector=self.args.check_weight_update_selector,
+                        skip_list=None,
+                    )
 
-        if self.meta.needs_offload:
-            api_client = SGLangApiClient(server_url=addr_info.server_url)
-            await api_client.release_memory_occupation()
-            await api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
+            if self.meta.needs_offload:
+                self._post_launch_release = asyncio.create_task(self._release_memory_after_launch(addr_info))
+                self._post_launch_release_started_at = time.monotonic()
+                self._post_launch_release_warn_at = (
+                    self._post_launch_release_started_at + POST_LAUNCH_RELEASE_WARN_INTERVAL_SECONDS
+                )
+
+        if (release := self._post_launch_release) is not None:
+            # may outlast the tick; probing a released engine kills it
+            if not release.done():
+                # no read timeout: a hung release is silent
+                if (now := time.monotonic()) >= self._post_launch_release_warn_at:
+                    logger.warning(
+                        f"post-launch release on {self.meta.cell_id} still running after "
+                        f"{now - self._post_launch_release_started_at:.0f} s"
+                    )
+                    self._post_launch_release_warn_at = now + POST_LAUNCH_RELEASE_WARN_INTERVAL_SECONDS
+                return
+            if release.cancelled() or release.exception() is not None:
+                self._post_launch_release = None
+            release.result()
 
         serve_without_weight_update: bool = not self.meta.update_weights or self.args.debug_rollout_only
         if not serve_without_weight_update and self.args.check_weight_update_equal:
@@ -229,6 +255,13 @@ class ServerCell:
 
         if serve_without_weight_update:
             self._mark_serving()
+
+    async def _release_memory_after_launch(self, addr_info: CellAddrInfo) -> None:
+        api_client = SGLangApiClient(server_url=addr_info.server_url)
+        if not self._post_launch_memory_released:
+            await api_client.release_memory_occupation()
+            self._post_launch_memory_released = True
+        await api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
     async def mark_weights_ready(self) -> None:
         assert isinstance(self._state, StatePendingWeights), f"{self._state=}"
@@ -257,6 +290,8 @@ class ServerCell:
         )
 
     async def dispose(self) -> None:
+        if self._post_launch_release is not None:
+            self._post_launch_release.cancel()
         try:
             await self._leave_service()
         except Exception:
