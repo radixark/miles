@@ -12,7 +12,9 @@ permissions:
 
 jobs:
   request:
+    # Publishes into radixark/miles: a fork or mirror must never run it.
     if: >-
+      github.repository == 'radixark/miles' &&
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.head_repository.id != github.event.repository.id
     runs-on: ubuntu-latest
