@@ -266,6 +266,7 @@ jobs:
             --image-tag ${{ inputs.image_tag || 'dev' }} \
             --dockerfile ${{ inputs.dockerfile || 'docker/Dockerfile' }} \
             ${{ inputs.custom_tag && format('--custom-tag {0}', inputs.custom_tag) || '' }} \
+            --image-repo "$GITHUB_REPOSITORY" \
             --push
 
       - name: Point latest to current dev
@@ -273,7 +274,7 @@ jobs:
         # simulate_schedule must not move it.
         if: github.event_name == 'schedule'
         run: |
-          docker buildx imagetools create -t "radixark/miles:latest${TAG_POSTFIX}" "radixark/miles:dev${TAG_POSTFIX}"
+          docker buildx imagetools create -t "${GITHUB_REPOSITORY}:latest${TAG_POSTFIX}" "${GITHUB_REPOSITORY}:dev${TAG_POSTFIX}"
 
       - name: Prune old dev tags
         if: github.event_name == 'schedule'
@@ -283,7 +284,7 @@ jobs:
           # days however often builds run, so the count limit alone never deletes it.
           MIN_AGE_DAYS=14
           CUTOFF=$(date -u -d "${MIN_AGE_DAYS} days ago" +%Y%m%d%H%M)
-          IMAGE=radixark/miles
+          IMAGE=${GITHUB_REPOSITORY}
 
           # Authenticate with Docker Hub API
           TOKEN=$(curl -s -X POST "https://hub.docker.com/v2/users/login/" \

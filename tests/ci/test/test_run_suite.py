@@ -466,7 +466,10 @@ class TestWorkflowScopeSeam:
         assert "github.event.pull_request.head.repo.full_name == github.repository" in reusable
         # The architecture picks the variant and tag from docker/image_inputs.py.
         assert 'python3 docker/image_inputs.py --pr "$PR_NUMBER" --arch "$ARCH"' in reusable
-        assert 'python3 docker/build.py --variant "$VARIANT" --image-tag custom --custom-tag "$TAG" --push' in reusable
+        assert (
+            'python3 docker/build.py --variant "$VARIANT" --image-tag custom --custom-tag "$TAG" --image-repo "$GITHUB_REPOSITORY" --push'
+            in reusable
+        )
 
     def test_docker_decision_logs_in_only_for_tag_inspection(self):
         reusable = self._reusable_workflow("_build-pr-ci-image.yml")
@@ -658,7 +661,7 @@ class TestRocmWorkflowScopeSeam:
         )
         assert "cancel-in-progress: true" in workflow
         header = workflow.split("  resolve-ci-policy:\n", 1)[1].split("    runs-on:", 1)[0]
-        assert "if: github.event.action != 'closed'" in header
+        assert "if: github.repository == 'radixark/miles' && github.event.action != 'closed'" in header
         image = workflow.split("  resolve-ci-image:\n", 1)[1].split("    runs-on:", 1)[0]
         build = workflow.split("  docker-build-rocm10-mi35x:\n", 1)[1].split("  resolve-ci-image:\n", 1)[0]
         assert "github.event.action != 'closed'" in build

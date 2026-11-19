@@ -126,7 +126,7 @@ jobs:
           fi
 
           read -r _ TAG < <(python3 docker/image_inputs.py --pr "$PR_NUMBER" --arch "$ARCH")
-          PUBLISHED=$(docker buildx imagetools inspect "radixark/miles:${TAG}" \
+          PUBLISHED=$(docker buildx imagetools inspect "${GITHUB_REPOSITORY}:${TAG}" \
             --format '{{ json .Image }}' 2>/dev/null \
             | python3 docker/image_inputs.py --read-label || true)
 
@@ -250,7 +250,7 @@ jobs:
           ARCH: ${{ inputs.arch }}
         run: |
           read -r VARIANT TAG < <(python3 docker/image_inputs.py --pr "$PR_NUMBER" --arch "$ARCH")
-          python3 docker/build.py --variant "$VARIANT" --image-tag custom --custom-tag "$TAG" --push
+          python3 docker/build.py --variant "$VARIANT" --image-tag custom --custom-tag "$TAG" --image-repo "$GITHUB_REPOSITORY" --push
           echo "built=true" >> "$GITHUB_OUTPUT"
       - name: Nothing to build
         if: env.BUILD != 'true' && env.REQUEST_BUILD != 'true'

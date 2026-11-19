@@ -40,6 +40,6 @@ jobs:
           for tag in "${tags[@]}"; do
             curl -s -X DELETE \
               -H "Authorization: JWT ${TOKEN}" \
-              "https://hub.docker.com/v2/repositories/radixark/miles/tags/${tag}/" \
+              "https://hub.docker.com/v2/repositories/${GITHUB_REPOSITORY}/tags/${tag}/" \
               || true
           done

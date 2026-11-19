@@ -191,9 +191,10 @@ Chart key: rectangle = a step or check; rounded box = a data artifact; diamond =
 
 **Tables & read path**:
 
-- `runs` — one row per CI run of one series: the identity above + provenance (`commit_sha`, `pr_number`, `github_run_id`, `github_run_attempt`, `event_name`, `ref`) + `created_at` + `trusted` (run-level).
+- `runs` — one row per CI run of one series: the `repository` the store is bound to (`GITHUB_REPOSITORY` in CI) + the identity above + provenance (`commit_sha`, `pr_number`, `github_run_id`, `github_run_attempt`, `event_name`, `ref`) + `created_at` + `trusted` (run-level).
 - `metric_values` — one row per value: `run_id` FK + `(metric_key, step)` + `value`, plus the judging declaration's `steps_key` / `constraint_key`.
-- The baseline read is served by the composite index `runs(test_path, backend, suite, trusted, created_at DESC)`.
+- Every read, write, and revocation is scoped to the store's `repository`, so repositories that share a database keep separate baselines.
+- The baseline read is served by the composite index `runs(repository, test_path, backend, suite, trusted, created_at DESC)`.
 
 **Operations** — hosted Postgres setup is out-of-band: the two tables and application role are provisioned outside this repo, and runtime gate code stays DML-only (`NeonMetricHistoryStore` never issues DDL). Old-row cleanup policy is a later operational concern, not part of the M0/M1 substrate.
 
