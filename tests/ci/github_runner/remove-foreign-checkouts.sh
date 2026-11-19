@@ -7,5 +7,6 @@ shopt -s nullglob
 work_dir=$(dirname "$RUNNER_WORKSPACE")
 for checkout in "$work_dir"/*/; do
   name=$(basename "$checkout")
-  [[ $name == _* || $name == "${GITHUB_REPOSITORY#*/}" ]] || rm -rf -- "$checkout"
+  # Without the trailing slash, rm removes a symlink itself rather than its target's contents.
+  [[ $name == _* || $name == "${GITHUB_REPOSITORY#*/}" ]] || rm -rf -- "${checkout%/}"
 done
