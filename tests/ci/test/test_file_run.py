@@ -18,10 +18,6 @@ from tests.ci.run_suite import CI_SUITES
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
 
 
-@pytest.fixture(autouse=True)
-def _repository(monkeypatch):
-    monkeypatch.setenv("GITHUB_REPOSITORY", "radixark/miles")
-
 
 @pytest.mark.parametrize("hw", ["cuda", "rocm"])
 @pytest.mark.parametrize("published", [False, True])
@@ -52,6 +48,7 @@ def test_comment_file_run_uses_a_pin_or_its_published_pr_image(tmp_path, hw, pub
             "CI_HW": hw,
             "CI_IMAGE_TAG": pin,
             "PULL_NUMBER": "42",
+            "GITHUB_REPOSITORY": "example/miles-copy",
             "CALLS": str(calls),
             "GITHUB_OUTPUT": str(output),
         },
@@ -65,7 +62,7 @@ def test_comment_file_run_uses_a_pin_or_its_published_pr_image(tmp_path, hw, pub
         if hw == "rocm":
             assert ".github/workflows/scripts/rocm_pr_image.py 42" in calls.read_text()
         else:
-            assert f"radixark/miles:{tag}" in calls.read_text()
+            assert f"example/miles-copy:{tag}" in calls.read_text()
     resolver = next(step for step in steps if step.get("id") == "resolve")
     assert resolver["env"]["CI_IMAGE_TAG"] == "${{ steps.image.outputs.tag }}"
 
@@ -97,6 +94,11 @@ def test_every_cuda_suite_has_a_runner_mapping():
 
 def test_every_cpu_suite_is_allowed():
     assert set(CPU_SUITES) == set(CI_SUITES[HWBackend.CPU])
+
+
+def test_cuda_file_image_comes_from_the_given_repository():
+    plan = plan_file_run([_make("tests/e2e/x/test_a.py")], "tests/e2e/x/test_a.py", "pr-7", image_repo="example/miles-copy")
+    assert plan["container_image"] == "example/miles-copy:pr-7"
 
 
 @pytest.mark.parametrize(
@@ -311,17 +313,19 @@ def test_main_writes_github_outputs(monkeypatch, tmp_path):
     monkeypatch.setenv("TEST_FILE", "tests/ci/test/test_file_run.py")
     monkeypatch.setenv("CI_IMAGE_TAG", "")
     monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    monkeypatch.setenv("GITHUB_REPOSITORY", "example/miles-copy")
 
     assert main() == 0
     lines = output_path.read_text().splitlines()
     assert "hw=cpu" in lines
     assert "suite=stage-a-cpu" in lines
     assert "runs_on=" in lines
-    assert "container_image=radixark/miles:dev" in lines
+    assert "container_image=example/miles-copy:dev" in lines
     assert "timeout_seconds=1800" in lines
 
 
 def test_main_rejects_rocm_file_over_spur_budget_and_reports_the_limit(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("GITHUB_REPOSITORY", "radixark/miles")
     output_path = tmp_path / "github-output"
     source = tmp_path / "source"
     test_file = source / "tests" / "e2e" / "long" / "test_over_budget.py"
@@ -363,6 +367,7 @@ def test_rocm_image_resolver_follows_the_cuda_order(monkeypatch, tmp_path, input
 
 
 def test_main_fails_closed_on_an_unregistered_file(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("GITHUB_REPOSITORY", "radixark/miles")
     output_path = tmp_path / "github-output"
     monkeypatch.setenv("TEST_FILE", "tests/e2e/test_does_not_exist.py")
     monkeypatch.setenv("CI_IMAGE_TAG", "")
