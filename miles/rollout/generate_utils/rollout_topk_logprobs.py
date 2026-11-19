@@ -1,7 +1,7 @@
 """Record the sampler's top-k candidate log-probs at generation time."""
 
 from argparse import Namespace
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -184,13 +184,17 @@ def validate_rollout_topk_logprobs_sample(sample: Sample, k: int) -> None:
         raise ValueError("Sampled and candidate probabilities must come from the same sampler distribution")
 
 
-def merge_rollout_topk_logprobs_field(first: Sample, second: Sample, field: str, gap: int) -> np.ndarray | None:
-    a, b = getattr(first, field), getattr(
-        second, field
-    )  # config-access-exempt: sample field name is selected from the explicit rollout probability fields
-    if a is None and b is None:
+def merge_rollout_topk_logprobs_field(turns: Sequence[Sample], field: str, gaps: Sequence[int]) -> np.ndarray | None:
+    """The turns' candidates with ``gaps`` padded rows between them."""
+    values = [
+        getattr(turn, field) for turn in turns
+    ]  # config-access-exempt: sample field name is selected from the explicit rollout probability fields
+    if all(value is None for value in values):
         return None
-    if a is None or b is None or a.shape[1] != b.shape[1]:
+    if any(value is None or value.shape[1] != values[0].shape[1] for value in values):
         raise ValueError(f"Both turns must carry matching {field} for rollout top-k logprobs collection")
     fill = -1 if field == "rollout_topk_token_ids" else -np.inf
-    return np.concatenate((a, np.full((gap, a.shape[1]), fill, dtype=a.dtype), b))
+    pieces = [values[0]]
+    for gap, value in zip(gaps, values[1:], strict=True):
+        pieces += [np.full((gap, value.shape[1]), fill, dtype=values[0].dtype), value]
+    return np.concatenate(pieces)

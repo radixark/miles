@@ -247,7 +247,7 @@ def test_merge_sampling_masks_inserts_singleton_observation_supports():
         rollout_sampling_mask=RolloutSamplingMask(ids=[30, 7, 8], offsets=[0, 3]),
     )
 
-    sampling_mask = merge_sampling_masks(first, [20, 21], second)
+    sampling_mask = merge_sampling_masks([first, second], [[20, 21]])
     ids, offsets = sampling_mask._as_tensors()
 
     assert ids.tolist() == [10, 4, 20, 21, 30, 7, 8]
