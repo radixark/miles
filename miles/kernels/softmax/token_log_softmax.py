@@ -1,10 +1,11 @@
-"""Log-softmax of one target token per selected row: per-row statistics and the logits gradient.
+"""Log-softmax of target tokens at selected rows: per-row statistics and the logits gradient.
 
-The kernels read one vocab shard of the selected rows in the logits' dtype and compute in fp32 on
-``d = (x - m) / T``, measured from the row max ``m``. Columns from ``VocabRange.n_unpadded`` on are vocab
-padding, with probability and gradient zero. A third, store-only kernel zeroes the rows the op did
-not score. All three are memory-bound streaming passes, so the launch shape is the only per-GPU
-setting; ``kernel_configs`` picks it by GPU family.
+The streaming kernels read one vocab shard of the selected rows in the logits' dtype and compute in
+fp32 on ``d = (x - m) / T``, measured from the row max ``m``. Columns from ``VocabRange.n_unpadded``
+on are vocab padding, with probability and gradient zero. The gradient is written in two passes: a
+dense one that needs no targets, then a per-row pass that writes the exact value at each target.
+A store-only kernel zeroes the rows the op did not score. The streaming passes are memory-bound,
+so the launch shape is the only per-GPU setting; ``kernel_configs`` picks it by GPU family.
 """
 
 import functools
@@ -60,6 +61,11 @@ class VocabRange:
 
     start: int
     n_unpadded: int
+    size: int  # the whole true vocabulary, over every shard
+
+    def holds(self, ids: torch.Tensor) -> torch.Tensor:
+        """Which token ids are real columns of this shard."""
+        return (ids >= self.start) & (ids < self.start + self.n_unpadded)
 
 
 class ShardStats(NamedTuple):
@@ -72,7 +78,7 @@ class ShardStats(NamedTuple):
     logit_max: torch.Tensor
     sum_exp: torch.Tensor  # sum_v exp(d_v)
     sum_exp_logit: torch.Tensor | None  # sum_v exp(d_v) d_v, only with entropy
-    target_logit: torch.Tensor  # d_y, 0 when the target is in another shard
+    target_logit: torch.Tensor  # [R, K] d_t per target, 0 when the target is padding or in another shard
 
     def as_softmax_stats(self) -> "SoftmaxStats":
         """The softmax statistics, for stats over the whole vocabulary."""
@@ -83,12 +89,12 @@ class ShardStats(NamedTuple):
 class SoftmaxStats(NamedTuple):
     """Per selected row, the softmax over the whole true vocabulary, in ``d = (x - logit_max) / T``.
 
-    ``log p_y = target_logit - log_sum_exp`` and ``H = log_sum_exp - expected_mean_logit``.
+    ``log p_t = target_logit - log_sum_exp`` and ``H = log_sum_exp - expected_mean_logit``.
     """
 
     logit_max: torch.Tensor
     log_sum_exp: torch.Tensor  # log sum_v exp(d_v)
-    target_logit: torch.Tensor  # d_y
+    target_logit: torch.Tensor  # [R, K] d_t per target
     expected_mean_logit: torch.Tensor | None  # sum_v p_v d_v, only with entropy
 
 
@@ -96,14 +102,11 @@ class SoftmaxStats(NamedTuple):
 def _row_stats_kernel(
     logits_ptr,
     rows_ptr,
-    targets_ptr,
     logit_max_ptr,
     sum_exp_ptr,
     sum_exp_logit_ptr,
-    target_logit_ptr,
     stride_row,
     n_unpadded_cols,
-    vocab_start,
     inv_temperature,
     WITH_ENTROPY: tl.constexpr,
     BLOCK_V: tl.constexpr,
@@ -146,29 +149,21 @@ def _row_stats_kernel(
     if WITH_ENTROPY:
         tl.store(sum_exp_logit_ptr + pid, run_sum_exp_logit)
 
-    target = tl.load(targets_ptr + pid) - vocab_start
-    in_shard = (target >= 0) & (target < n_unpadded_cols)
-    target_x = tl.load(row_ptr + target, mask=in_shard, other=0.0).to(tl.float32)
-    tl.store(target_logit_ptr + pid, tl.where(in_shard, (target_x - run_max) * inv_temperature, 0.0))
-
 
 @triton.jit
 def _logits_grad_kernel(
     logits_ptr,
     grad_ptr,
     rows_ptr,
-    targets_ptr,
     logit_max_ptr,
     log_sum_exp_ptr,
     expected_mean_logit_ptr,
-    one_minus_p_ptr,
-    grad_log_probs_ptr,
+    target_grad_sum_ptr,
     grad_entropy_ptr,
     stride_row,
     grad_stride_row,
     n_vocab,
     n_unpadded_cols,
-    vocab_start,
     inv_temperature,
     HAS_GRAD_LOG_PROBS: tl.constexpr,
     HAS_GRAD_ENTROPY: tl.constexpr,
@@ -186,10 +181,8 @@ def _logits_grad_kernel(
     p = tl.where(cols < n_unpadded_cols, p, 0.0)  # padding columns: zero probability, so a zero gradient
     dd = tl.zeros([BLOCK_V], tl.float32)
     if HAS_GRAD_LOG_PROBS:
-        g = tl.load(grad_log_probs_ptr + pid_row)
-        target = tl.load(targets_ptr + pid_row) - vocab_start
-        # 1 - p at the target comes precomputed with expm1: exp2 would round it away for a confident token
-        dd = tl.where(cols == target, g * tl.load(one_minus_p_ptr + pid_row), -g * p)
+        # every column's share of the target terms; the target columns are rewritten exactly later
+        dd = -tl.load(target_grad_sum_ptr + pid_row) * p
     if HAS_GRAD_ENTROPY:
         c = tl.load(grad_entropy_ptr + pid_row)
         dd = dd - c * p * (d - tl.load(expected_mean_logit_ptr + pid_row))
@@ -208,32 +201,79 @@ def _zero_unscored_rows_kernel(grad_ptr, scored_ptr, grad_stride_row, n_vocab, B
             tl.store(row_ptr + cols, zeros, mask=cols < n_vocab)
 
 
+@triton.jit
+def _target_grads_kernel(
+    grad_ptr,
+    rows_ptr,
+    targets_ptr,
+    log_probs_ptr,
+    one_minus_p_ptr,
+    grad_log_probs_ptr,
+    target_grad_sum_ptr,
+    log_sum_exp_ptr,
+    expected_mean_logit_ptr,
+    grad_entropy_ptr,
+    grad_stride_row,
+    n_targets,
+    n_unpadded_cols,
+    vocab_start,
+    inv_temperature,
+    HAS_GRAD_LOG_PROBS: tl.constexpr,
+    HAS_GRAD_ENTROPY: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    row = tl.load(rows_ptr + pid).to(tl.int64)
+    lanes = tl.arange(0, BLOCK_K)
+    in_row = lanes < n_targets
+    offs = pid * n_targets + lanes
+    target = tl.load(targets_ptr + offs, mask=in_row, other=-1)
+    col = target - vocab_start
+    owned = in_row & (target >= 0) & (col >= 0) & (col < n_unpadded_cols)
+
+    log_p = tl.load(log_probs_ptr + offs, mask=owned, other=0.0)
+    p = tl.exp(log_p)
+    dd = tl.zeros([BLOCK_K], tl.float32)
+    if HAS_GRAD_LOG_PROBS:
+        # a token listed twice in a row gets the sum of its gradients, so every copy writes the same value
+        g_token = tl.zeros([BLOCK_K], tl.float32)
+        for j in range(0, n_targets):
+            same = target == tl.load(targets_ptr + pid * n_targets + j)
+            g_token += tl.where(same, tl.load(grad_log_probs_ptr + pid * n_targets + j), 0.0)
+        g_row = tl.load(target_grad_sum_ptr + pid)
+        # 1 - p comes precomputed with expm1: 1 - exp(log p) would round it away for a confident token
+        dd = g_token * tl.load(one_minus_p_ptr + offs, mask=owned, other=0.0) - (g_row - g_token) * p
+    if HAS_GRAD_ENTROPY:
+        d = log_p + tl.load(log_sum_exp_ptr + pid)
+        dd = dd - tl.load(grad_entropy_ptr + pid) * p * (d - tl.load(expected_mean_logit_ptr + pid))
+    tl.store(grad_ptr + row * grad_stride_row + col, (dd * inv_temperature).to(grad_ptr.dtype.element_ty), mask=owned)
+
+
 def row_statistics(
     logits: torch.Tensor,
     rows: torch.Tensor,
-    targets: torch.Tensor,
     *,
     vocab: VocabRange,
     temperature: float,
     with_entropy: bool,
     launch: LaunchConfig | None = None,
-) -> ShardStats:
-    """This shard's stats of the selected rows; only its first ``vocab.n_unpadded`` columns count."""
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    """This shard's ``ShardStats`` sums of the selected rows, ``(logit_max, sum_exp, sum_exp_logit)``.
+
+    Only the first ``vocab.n_unpadded`` columns count; a shard with none reports ``(-inf, 0, 0)``.
+    """
     launch = launch or kernel_configs(logits.device).stats
     n_rows = rows.numel()
-    stats = torch.empty((4, n_rows), dtype=torch.float32, device=logits.device)
+    stats = torch.empty((3, n_rows), dtype=torch.float32, device=logits.device)
     if n_rows:
         _row_stats_kernel[(n_rows,)](
             logits,
             rows,
-            targets,
             stats[0],
             stats[1],
             stats[2],
-            stats[3],
             logits.stride(0),
             vocab.n_unpadded,
-            vocab.start,
             1.0 / temperature,
             WITH_ENTROPY=with_entropy,
             BLOCK_V=launch.block_v,
@@ -241,8 +281,8 @@ def row_statistics(
             # ROCm fuses a*b+c differently in the two entropy specializations; keep their sums identical.
             **({"enable_fp_fusion": False} if torch.version.hip else {}),
         )
-    logit_max, sum_exp, sum_exp_logit, target_logit = stats
-    return ShardStats(logit_max, sum_exp, sum_exp_logit if with_entropy else None, target_logit)
+    logit_max, sum_exp, sum_exp_logit = stats
+    return logit_max, sum_exp, (sum_exp_logit if with_entropy else None)
 
 
 def write_logits_grad(
@@ -260,38 +300,59 @@ def write_logits_grad(
 ) -> None:
     """Write the gradient of the selected rows into ``grad``; ``grad`` may be ``logits`` itself.
 
-    Every column of a selected row is written, the padding columns from ``vocab.n_unpadded`` on with zero.
+    ``targets`` and ``grad_log_probs`` are ``[R, K]``; a ``-1`` target is padding. Every column of a
+    selected row is written, the vocab padding from ``vocab.n_unpadded`` on with zero.
     """
     assert grad_entropy is None or stats.expected_mean_logit is not None, "the entropy gradient needs its mean"
     launch = launch or kernel_configs(logits.device).grad
-    n_rows = rows.numel()
+    n_rows, n_targets = targets.shape
     if not n_rows:
         return
-    # 1 - p at the target, exact even when p is close to 1
-    one_minus_p = -torch.expm1(stats.target_logit - stats.log_sum_exp)
-    placeholder = stats.log_sum_exp  # any fp32 [R] pointer for an input the kernel is compiled not to read
-    grid = (n_rows, triton.cdiv(logits.size(1), launch.block_v))
-    _logits_grad_kernel[grid](
+    log_probs = stats.target_logit - stats.log_sum_exp.unsqueeze(1)  # read only at real targets
+    one_minus_p = -torch.expm1(log_probs)  # 1 - p at each target, exact even when p is close to 1
+    target_grad_sum = grad_log_probs.sum(dim=1) if grad_log_probs is not None else None
+    placeholder = stats.log_sum_exp  # a pointer for a tensor the kernel's flags say it never reads
+    expected_mean_logit = stats.expected_mean_logit if stats.expected_mean_logit is not None else placeholder
+    _logits_grad_kernel[(n_rows, triton.cdiv(logits.size(1), launch.block_v))](
         logits,
         grad,
         rows,
-        targets,
         stats.logit_max,
         stats.log_sum_exp,
-        stats.expected_mean_logit if stats.expected_mean_logit is not None else placeholder,
-        one_minus_p,
-        grad_log_probs if grad_log_probs is not None else placeholder,
+        expected_mean_logit,
+        target_grad_sum if target_grad_sum is not None else placeholder,
         grad_entropy if grad_entropy is not None else placeholder,
         logits.stride(0),
         grad.stride(0),
         logits.size(1),
         vocab.n_unpadded,
-        vocab.start,
         1.0 / temperature,
         HAS_GRAD_LOG_PROBS=grad_log_probs is not None,
         HAS_GRAD_ENTROPY=grad_entropy is not None,
         BLOCK_V=launch.block_v,
         num_warps=launch.num_warps,
+    )
+    # stream order puts this after the dense pass, so these values replace its target columns
+    _target_grads_kernel[(n_rows,)](
+        grad,
+        rows,
+        targets,
+        log_probs,
+        one_minus_p,
+        grad_log_probs if grad_log_probs is not None else placeholder,
+        target_grad_sum if target_grad_sum is not None else placeholder,
+        stats.log_sum_exp,
+        expected_mean_logit,
+        grad_entropy if grad_entropy is not None else placeholder,
+        grad.stride(0),
+        n_targets,
+        vocab.n_unpadded,
+        vocab.start,
+        1.0 / temperature,
+        HAS_GRAD_LOG_PROBS=grad_log_probs is not None,
+        HAS_GRAD_ENTROPY=grad_entropy is not None,
+        BLOCK_K=max(triton.next_power_of_2(n_targets), 16),
+        num_warps=1,
     )
 
 
@@ -300,7 +361,7 @@ def zero_unscored_rows(grad: torch.Tensor, rows: torch.Tensor, *, launch: Launch
     launch = launch or kernel_configs(grad.device).zero
     n_rows = grad.size(0)
     scored = torch.zeros(n_rows, dtype=torch.uint8, device=grad.device)
-    scored[rows] = 1
+    scored.index_fill_(0, rows, 1)  # a scalar fill: indexed assignment would copy the 1 from the host
     _zero_unscored_rows_kernel[(n_rows,)](
         grad, scored, grad.stride(0), grad.size(1), BLOCK_V=launch.block_v, num_warps=launch.num_warps
     )
