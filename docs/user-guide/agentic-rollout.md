@@ -278,7 +278,7 @@ replaces the sampled `<|observation|>` stop token with `<|user|>`.
 ### Verify a new model TITO
 
 To add a named family, register its `TITOTokenizer` and `FIXED_TEMPLATE` in
-[`tito_tokenizer.py`](https://github.com/radixark/miles/blob/main/miles/utils/chat_template_utils/tito_tokenizer.py),
+[`tito_tokenizer/`](https://github.com/radixark/miles/tree/main/miles/utils/chat_template_utils/tito_tokenizer),
 add a checkpoint for it to
 `tests/fast/utils/chat_template_utils/test_continuation_roles.py`, which fails
 until the continuation roles match what the renderer accepts, then run both
