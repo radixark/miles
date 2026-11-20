@@ -8,10 +8,15 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
-from tests.fast.fixtures.args_fixtures import make_trainer_args
+from tests.fast.fixtures.args_fixtures import make_trainer_args, parser_defaults
+from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
 from miles.backends.megatron_utils.checkpoint_request import CHECKPOINT_LOAD_FIELDS, MegatronCkptLoadConfig
-from miles.backends.megatron_utils.megatron_config import has_megatron_checkpoint
+from miles.backends.megatron_utils.megatron_config import (
+    compute_trainer_args,
+    has_megatron_checkpoint,
+    resolve_megatron_config,
+)
 from miles.utils.init_once import InitOnce
 
 _ACTOR_MODULE_NAME = "miles.backends.megatron_utils.actor"
@@ -402,14 +407,47 @@ class TestTheCheckpointAReloadRollsBackTo:
 
         assert vars(args.backend) == original
 
-    def test_a_critic_reload_reads_the_critic_directory(self, actor_module, tmp_path, monkeypatch):
-        """A critic's own arguments carry its checkpoint dirs, so reading them reads the critic's."""
-        critic_load = _write_checkpoint(tmp_path / "pretrain_critic", iteration=60)
-        args = _args(tmp_path, requested_load=critic_load)
+    @pytest.mark.parametrize("model_id", [None, "alpha"])
+    def test_a_critic_reload_reads_the_critic_directory(self, actor_module, tmp_path, monkeypatch, model_id):
+        """A synthesized --use-critic critic derives requested_load from --critic-load rather than the actor's --load."""
+        actor_base = tmp_path / "pretrain_actor"
+        critic_base = tmp_path / "pretrain_critic"
+        actor_dir = actor_base if model_id is None else actor_base / "trainers" / f"{model_id}-actor"
+        critic_dir = critic_base if model_id is None else critic_base / "trainers" / f"{model_id}-critic"
+        _write_checkpoint(actor_dir, iteration=50)
+        expected_critic_load = _write_checkpoint(critic_dir, iteration=60)
+        run_args = Namespace(
+            **{
+                **parser_defaults(),
+                "megatron_config": None if model_id is None else encode_megatron_config(model_id),
+                "use_critic": True,
+                "load": str(tmp_path / "reference"),
+                "requested_load": str(actor_base),
+                "save": str(tmp_path / "run_actor"),
+                "critic_load": str(critic_base),
+                "critic_save": str(tmp_path / "run_critic"),
+                "critic_num_nodes": 1,
+                "critic_num_gpus_per_node": 1,
+                "tensor_model_parallel_size": 1,
+                "pipeline_model_parallel_size": 1,
+                "context_parallel_size": 1,
+            }
+        )
+        [_, critic_trainer] = resolve_megatron_config(run_args, base_args={}).trainers
+        resolved_critic = compute_trainer_args(run_args, critic_trainer)
+        args = _args(
+            tmp_path,
+            load=resolved_critic.load,
+            requested_load=resolved_critic.requested_load,
+            save=resolved_critic.save,
+            finetune=True,
+            no_load_optim=True,
+            no_load_rng=True,
+        )
         seen = _watch_load(actor_module, monkeypatch, args=args, iteration=60)
 
         assert _reload(_actor(actor_module, role="critic", args=args)) == 61
-        assert seen["args_during_load"]["load"] == critic_load
+        assert seen["args_during_load"]["load"] == expected_critic_load
 
     def test_a_reload_that_would_cold_start_is_refused(self, actor_module, tmp_path, monkeypatch):
         """The trainer is alive at the rollout the run reached, so a run that cold started is refused here."""

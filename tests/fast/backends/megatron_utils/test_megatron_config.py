@@ -94,6 +94,7 @@ def _make_args(megatron_config: str | None = None, **overrides) -> Namespace:
         multi_lora_n_adapters=0,
     )
     defaults.update(overrides)
+    defaults.setdefault("requested_load", defaults["load"])
     return Namespace(**{**parser_defaults(), **defaults})
 
 
@@ -628,8 +629,16 @@ class TestTrainerCheckpointDirs:
         model_a = _model_args(args, model_id="a")
         model_b = _model_args(args, model_id="b")
 
-        assert (model_a.save, model_a.load) == ("/ckpt/run/trainers/a-actor", str(old / "trainers" / "a-actor"))
-        assert (model_b.save, model_b.load) == ("/ckpt/run/trainers/b-actor", str(old / "trainers" / "b-actor"))
+        assert (model_a.save, model_a.load, model_a.requested_load) == (
+            "/ckpt/run/trainers/a-actor",
+            str(old / "trainers" / "a-actor"),
+            str(old / "trainers" / "a-actor"),
+        )
+        assert (model_b.save, model_b.load, model_b.requested_load) == (
+            "/ckpt/run/trainers/b-actor",
+            str(old / "trainers" / "b-actor"),
+            str(old / "trainers" / "b-actor"),
+        )
 
     def test_a_checkpoint_dir_is_keyed_by_the_trainer_id_and_not_by_the_model_id(self, tmp_path):
         """A trainer id is unique where a model id is not, so keying the directory by the model would collide."""
@@ -654,8 +663,9 @@ class TestTrainerCheckpointDirs:
 
         model = _model_args(args, model_id="a")
 
-        assert (model.save, model.load, model.save_hf) == (
+        assert (model.save, model.load, model.requested_load, model.save_hf) == (
             "/ckpt/run/trainers/a-actor",
+            str(trainer_dir),
             str(trainer_dir),
             "/ckpt/hf/trainers/a-actor",
         )
@@ -679,13 +689,18 @@ class TestTrainerCheckpointDirs:
 
         model = compute_trainer_args(args, critic)
 
-        assert (model.save, model.load) == ("/ckpt/critic/trainers/alpha-critic", str(trainer_dir))
+        assert (model.save, model.load, model.requested_load) == (
+            "/ckpt/critic/trainers/alpha-critic",
+            str(trainer_dir),
+            str(trainer_dir),
+        )
 
     def test_an_unset_checkpoint_dir_stays_unset(self, tmp_path):
         """A run without --save must not grow a derived path out of None."""
         path = _write_yaml({"trainers": [{"model_id": "a"}, {"model_id": "b"}]}, tmp_path)
 
-        assert _model_args(_make_args(path), model_id="a").save is None
+        model = _model_args(_make_args(path), model_id="a")
+        assert (model.save, model.load, model.requested_load) == (None, None, None)
 
     def test_the_derived_dir_is_the_trainer_id_under_a_trainers_directory(self):
         """The layout is a user visible contract: it is where a resume looks for a trainer's checkpoints."""
@@ -877,7 +892,14 @@ class TestSynthesizedCriticTrainer:
             False,
             False,
         )
-        assert (critic_args.load, critic_args.save, critic_args.lr, critic_args.lr_warmup_iters) == (
+        assert (
+            critic_args.load,
+            critic_args.requested_load,
+            critic_args.save,
+            critic_args.lr,
+            critic_args.lr_warmup_iters,
+        ) == (
+            "/ckpt/critic",
             "/ckpt/critic",
             "/ckpt/run_critic",
             2e-6,
@@ -887,19 +909,29 @@ class TestSynthesizedCriticTrainer:
     @pytest.mark.parametrize("critic_load", [None, "/ckpt/critic"])
     def test_critic_checkpoint_inputs_are_defined_when_building_the_trainer(self, critic_load: str | None) -> None:
         """Unspecified critic sources inherit defaults while explicit sources also define fresh initialization."""
-        args = _make_args(use_critic=True, load="/ckpt/actor", ref_load="/weights/actor", critic_load=critic_load)
+        args = _make_args(
+            use_critic=True,
+            load="/fallback/actor",
+            requested_load="/ckpt/actor",
+            ref_load="/weights/actor",
+            critic_load=critic_load,
+        )
         [actor, critic] = resolve_megatron_config(args, base_args={}).trainers
 
         assert "load" not in actor.overrides
+        assert "requested_load" not in actor.overrides
         assert "ref_load" not in actor.overrides
         if critic_load is None:
             assert "load" not in critic.overrides
+            assert "requested_load" not in critic.overrides
             assert "ref_load" not in critic.overrides
         else:
             assert critic.overrides["load"] == critic_load
+            assert critic.overrides["requested_load"] == critic_load
             assert critic.overrides["ref_load"] == critic_load
         critic_args = compute_trainer_args(args, critic)
-        assert critic_args.load == (critic_load if critic_load is not None else "/ckpt/actor")
+        assert critic_args.load == (critic_load if critic_load is not None else "/fallback/actor")
+        assert critic_args.requested_load == (critic_load if critic_load is not None else "/ckpt/actor")
         assert critic_args.ref_load == (critic_load if critic_load is not None else "/weights/actor")
 
     def test_the_actor_of_a_critic_run_keeps_its_own_checkpoint_and_schedule(self):
@@ -908,7 +940,8 @@ class TestSynthesizedCriticTrainer:
 
         actor_args = compute_trainer_args(args, resolve_megatron_config(args, base_args={}).trainers[0])
 
-        assert (actor_args.load, actor_args.save, actor_args.lr, actor_args.kl_coef) == (
+        assert (actor_args.load, actor_args.requested_load, actor_args.save, actor_args.lr, actor_args.kl_coef) == (
+            "/ckpt/run",
             "/ckpt/run",
             "/ckpt/run",
             1e-6,
@@ -947,8 +980,8 @@ class TestSynthesizedCriticTrainer:
 
         overrides = set(resolve_megatron_config(args, base_args={}).trainers[1].overrides)
 
-        assert {"kl_coef", "load"} <= overrides
-        assert not {"kl_coef", "load"} & set(PER_POLICY_ARGS)
+        assert {"kl_coef", "load", "requested_load"} <= overrides
+        assert not {"kl_coef", "load", "requested_load"} & set(PER_POLICY_ARGS)
 
     def test_a_critic_without_its_own_schedule_inherits_the_unset_values(self, tmp_path):
         """--critic-lr is unset by default, and the critic takes it as it is: the policy's own lr does not apply."""

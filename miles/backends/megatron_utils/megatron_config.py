@@ -321,6 +321,7 @@ def _compute_critic_overrides(args: Namespace) -> dict[str, Any]:
     }
     if (x := args.critic_load) is not None:
         overrides["load"] = x
+        overrides["requested_load"] = x
         # TODO: Separate fresh initialization weights from reference-model weights instead of overloading ref_load.
         overrides["ref_load"] = x
     return overrides
@@ -391,9 +392,8 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
     if trainer.model_id is not None:
         ans.save = compute_trainer_checkpoint_dir(base_dir=ans.save, trainer_id=trainer.trainer_id)
         ans.load = compute_trainer_checkpoint_dir(base_dir=ans.load, trainer_id=trainer.trainer_id)
+        ans.requested_load = compute_trainer_checkpoint_dir(base_dir=ans.requested_load, trainer_id=trainer.trainer_id)
         ans.save_hf = compute_trainer_checkpoint_dir(base_dir=ans.save_hf, trainer_id=trainer.trainer_id)
-
-    # TODO: a --use-critic critic keeps the actor's requested_load, so a hot restart reads the actor's checkpoint.
 
     ans.trainer_init_expected_num_cells = _resolve_trainer_init_expected_num_cells(ans, base=args, trainer=trainer)
 
