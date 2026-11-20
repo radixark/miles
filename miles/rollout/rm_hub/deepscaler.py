@@ -36,8 +36,8 @@ def _grade_boxed_solution(model_solution, label):
 
 
 def get_deepscaler_rule_based_reward(response, label):
-    # markers that end the reasoning segment; Kimi K-series uses the tagged <|open|>response<|sep|>
-    for closer in ("<|open|>response<|sep|>", "</think>", "###Response"):
+    # markers that end the reasoning segment: Kimi K-series <|open|>response<|sep|>, Inkling <|content_text|>
+    for closer in ("<|open|>response<|sep|>", "</think>", "###Response", "<|content_text|>"):
         if closer in response:
             return _grade_boxed_solution(response.split(closer)[-1], label)
     return 0

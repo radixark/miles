@@ -46,6 +46,11 @@ def _normalize_deepseek_v41_kwargs(kwargs: dict) -> dict:
     return kwargs
 
 
+def _normalize_inkling2_kwargs(kwargs: dict) -> dict:
+    """Inkling2's checkpoint keeps separate embed and unembed tensors and omits the flag."""
+    return {"tie_word_embeddings": False, **kwargs}
+
+
 _CONFIG_ALIASES: tuple[_HFConfigAlias, ...] = (
     _HFConfigAlias(
         model_type="deepseek_v32",
@@ -62,6 +67,22 @@ _CONFIG_ALIASES: tuple[_HFConfigAlias, ...] = (
         auto_model_classes=(),
         override_hf_native=True,
         normalize_kwargs="_normalize_deepseek_v41_kwargs",
+    ),
+    _HFConfigAlias(
+        model_type="inkling2",
+        base_module="transformers.configuration_utils",
+        base_class="PretrainedConfig",
+        compat_class_name="Inkling2Config",
+        auto_model_classes=(),
+        normalize_kwargs="_normalize_inkling2_kwargs",
+    ),
+    _HFConfigAlias(
+        model_type="inkling2_loop",
+        base_module="transformers.configuration_utils",
+        base_class="PretrainedConfig",
+        compat_class_name="Inkling2LoopConfig",
+        auto_model_classes=(),
+        normalize_kwargs="_normalize_inkling2_kwargs",
     ),
 )
 

@@ -64,6 +64,8 @@ class TitanTrainer(Configurable):
         output_dir: str
         # torch.compile backend for each transformer block; None runs them eager
         compile_backend: str | None = None
+        # rescale weight rows to their pretrained norms around every optimizer step (model.project_row_norms)
+        row_norm_projection: bool = False
 
         def __post_init__(self) -> None:
             TrainingEngine.Config.__post_init__(self)
@@ -248,7 +250,13 @@ class TitanTrainer(Configurable):
         self.engine.loss = torch.zeros((), device=self.device)
 
     def apply_optimizer_step(self) -> StepMetrics:
+        if self.config.row_norm_projection:
+            for part in self.model_parts:
+                part.project_row_norms()
         grad_norm = self.engine.optim_step()
+        if self.config.row_norm_projection:
+            for part in self.model_parts:
+                part.project_row_norms()
         return StepMetrics(
             grad_norm=float(grad_norm.item()), extra_metrics=self.engine.optim.lr_schedulers.get_metrics()
         )

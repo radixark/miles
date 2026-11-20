@@ -415,6 +415,7 @@ def _config_args(**overrides: object) -> Namespace:
         optimizer_cpu_offload=False,
         titan_fsdp_gather_once=False,
         titan_fsdp_reduce_dtype="float32",
+        titan_row_norm_projection=False,
         save=None,
         load=None,
     )
