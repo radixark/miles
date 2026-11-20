@@ -1,0 +1,7 @@
+huggingface-hub
+safetensors
+# Install alongside a CUDA build of PyTorch.
+torch>=2.6
+transformers>=5.12.1
+typed-argument-parser
+wandb
