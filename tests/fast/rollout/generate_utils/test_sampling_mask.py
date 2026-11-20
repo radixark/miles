@@ -46,6 +46,9 @@ def test_generate_payload_automatically_requests_sampling_mask(
         rollout_sampling_logprobs_mode="selected",
         lora_rank=0,
         lora_adapter_path=None,
+        use_opd=False,
+        opd_log_prob_top_k=0,
+        opd_top_k_strategy="only-student",
     )
 
     payload, halt_status = compute_request_payload(
@@ -117,6 +120,9 @@ def test_evaluation_does_not_request_or_validate_training_sampling_support():
         rollout_sampling_logprobs_mode="selected",
         lora_rank=0,
         lora_adapter_path=None,
+        use_opd=False,
+        opd_log_prob_top_k=0,
+        opd_top_k_strategy="only-student",
     )
 
     payload, halt_status = compute_request_payload(

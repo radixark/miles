@@ -53,6 +53,9 @@ def _make_args() -> SimpleNamespace:
         use_output_store=False,
         multimodal_token_space_processing=False,
         replay_layer_splits=[],
+        use_opd=False,
+        opd_log_prob_top_k=0,
+        opd_top_k_strategy="only-student",
     )
 
 
@@ -72,6 +75,120 @@ class TestComputeRequestPayloadExtraKey:
 
         assert halt_status is None
         assert payload["extra_key"] == "train:-:7"
+
+
+class TestOpdStudentTopLogprobs:
+    def _make_opd_args(self, *, enabled: bool = True, topk: int = 3, strategy: str = "only-student") -> SimpleNamespace:
+        return SimpleNamespace(
+            **{
+                **vars(_make_args()),
+                "use_opd": enabled,
+                "opd_log_prob_top_k": topk,
+                "opd_top_k_strategy": strategy,
+                "sglang": make_sglang_config(speculative_algorithm=None),
+            }
+        )
+
+    @pytest.mark.parametrize(
+        ("enabled", "topk", "strategy", "expected"),
+        [
+            (False, 3, "only-student", False),
+            (True, 0, "only-student", False),
+            (True, 3, "only-teacher", False),
+            (True, 3, "only-student", True),
+            (True, 3, "intersection", True),
+            (True, 3, "union", True),
+            (True, 3, "xor", True),
+        ],
+    )
+    def test_student_topk_request_and_capture_follow_opd_strategy(
+        self, enabled: bool, topk: int, strategy: str, expected: bool
+    ):
+        args = self._make_opd_args(enabled=enabled, topk=topk, strategy=strategy)
+        payload, halt_status = compute_request_payload(args, input_ids=[1, 2], sampling_params={})
+
+        assert halt_status is None
+        assert ("top_logprobs_num" in payload) is expected
+        if expected:
+            assert payload["top_logprobs_num"] == topk
+
+        candidate = [[-0.1, 3], [-1.2, 4], [-2.3, 5]]
+        output = {
+            "text": "3",
+            "meta_info": {
+                "output_token_logprobs": [(-0.1, 3)],
+                "output_top_logprobs": [candidate],
+                "finish_reason": {"type": "stop"},
+            },
+        }
+        sample = Sample(metadata={"preserved": True})
+        asyncio.run(update_sample_from_response(args, sample, payload, output))
+
+        assert sample.metadata["preserved"] is True
+        if expected:
+            assert sample.metadata["opd_student_top_logprobs"] == [candidate]
+        else:
+            assert "opd_student_top_logprobs" not in sample.metadata
+
+    def test_evaluation_does_not_request_or_capture_opd_student_topk(self):
+        args = self._make_opd_args(enabled=True, topk=3, strategy="only-student")
+        payload, halt_status = compute_request_payload(args, input_ids=[1, 2], sampling_params={}, evaluation=True)
+
+        assert halt_status is None
+        assert "top_logprobs_num" not in payload
+
+        output = {
+            "text": "3",
+            "meta_info": {
+                "output_token_logprobs": [(-0.1, 3)],
+                "output_top_logprobs": [[[-0.1, 3], [-1.2, 4], [-2.3, 5]]],
+                "finish_reason": {"type": "stop"},
+            },
+        }
+        sample = Sample()
+        asyncio.run(update_sample_from_response(args, sample, payload, output))
+
+        assert "opd_student_top_logprobs" not in sample.metadata
+
+    def test_multi_turn_or_resumed_calls_extend_opd_student_top_logprobs(self):
+        args = self._make_opd_args(enabled=True, topk=2, strategy="only-student")
+        payload, _ = compute_request_payload(args, input_ids=[1, 2], sampling_params={})
+        turn_1 = [[[-0.1, 3], [-1.2, 4]]]
+        turn_2 = [[[-0.2, 5], [-1.5, 6]]]
+        sample = Sample()
+
+        asyncio.run(
+            update_sample_from_response(
+                args,
+                sample,
+                payload,
+                {
+                    "text": "3",
+                    "meta_info": {
+                        "output_token_logprobs": [(-0.1, 3)],
+                        "output_top_logprobs": turn_1,
+                        "finish_reason": {"type": "abort"},
+                    },
+                },
+            )
+        )
+        asyncio.run(
+            update_sample_from_response(
+                args,
+                sample,
+                payload,
+                {
+                    "text": "5",
+                    "meta_info": {
+                        "output_token_logprobs": [(-0.2, 5)],
+                        "output_top_logprobs": turn_2,
+                        "finish_reason": {"type": "stop"},
+                    },
+                },
+            )
+        )
+
+        assert sample.metadata["opd_student_top_logprobs"] == turn_1 + turn_2
 
 
 class TestComputeRequestPayloadOutputStore:

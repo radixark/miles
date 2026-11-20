@@ -42,9 +42,11 @@ from miles.utils.types import Sample
 
 from .generate_utils.generate_endpoint_utils import (
     adopt_expanded_prompt_ids,
+    append_opd_student_top_logprobs,
     apply_sample_max_response_len,
     compute_routing_headers,
     get_indexer_topk_from_response,
+    opd_student_top_k,
     router_routes_by_key,
     token_space_request_fields,
     truncate_to_max_seq_len,
@@ -218,11 +220,9 @@ async def generate(
     if return_sampling_mask:
         payload["return_sampling_mask"] = True
         configure_sampling_mask_request(payload)
-    opd_top_k = args.opd_log_prob_top_k or 0
-    opd_top_k_strategy = args.opd_top_k_strategy
-    if args.use_opd and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
-        payload["top_logprobs_num"] = opd_top_k
     if not evaluation:
+        if opd_top_k := opd_student_top_k(args):
+            payload["top_logprobs_num"] = opd_top_k
         configure_rollout_topk_logprobs_request(args, payload)
 
     if (extra_key := sample.kv_cache_namespace) is not None:
@@ -265,11 +265,8 @@ async def generate(
 
     output = await post(url, payload, headers=headers)
     adopt_expanded_prompt_ids(sample, payload, output)
-    if args.use_opd and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
-        output_top_logprobs = output.get("meta_info", {}).get("output_top_logprobs")
-        if output_top_logprobs is not None:
-            sample.metadata.setdefault("opd_student_top_logprobs", [])
-            sample.metadata["opd_student_top_logprobs"].extend(output_top_logprobs)
+    if payload.get("top_logprobs_num"):
+        append_opd_student_top_logprobs(args, sample, output)
 
     if "output_token_logprobs" in output["meta_info"]:
         new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]

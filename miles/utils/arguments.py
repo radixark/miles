@@ -1394,11 +1394,6 @@ def miles_validate_args(args):
             raise ValueError("--opd-log-prob-top-k must be non-negative.")
         if args.opd_log_prob_top_k > 0 and args.opd_type != "sglang":
             raise ValueError("--opd-log-prob-top-k is currently supported only with --opd-type=sglang.")
-        if args.opd_log_prob_top_k > 0 and args.opd_top_k_strategy != "only-teacher" and not use_legacy_rollout_v1():
-            raise ValueError(
-                "--opd-log-prob-top-k with a student-side strategy needs opd_student_top_logprobs, "
-                "which only the v1 rollout produces; set MILES_USE_LEGACY_ROLLOUT_V1=1"
-            )
         if args.opd_teacher_urls:
             if args.opd_type != "sglang":
                 raise ValueError("--opd-teacher-urls is only supported with --opd-type=sglang.")

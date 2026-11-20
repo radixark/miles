@@ -3014,6 +3014,33 @@ class TestDataSourceSelection:
 
         assert "legacy buffered data source" in caplog.text
 
+    @pytest.mark.parametrize("strategy", ["only-student", "intersection", "union", "xor"])
+    def test_opd_student_topk_is_accepted_on_class_based_rollout(self, strategy: str) -> None:
+        """The default class-based rollout path accepts --opd-log-prob-top-k with student-side strategies."""
+        parser = get_megatron_arg_parser()
+        args = parser.parse_args(
+            [
+                *REQUIRED_ARGS,
+                "--num-rollout",
+                "1",
+                "--use-opd",
+                "--opd-type",
+                "sglang",
+                "--opd-log-prob-top-k",
+                "4",
+                "--opd-top-k-strategy",
+                strategy,
+            ]
+        )
+
+        miles_validate_args(args)
+
+        assert args.opd_log_prob_top_k == 4
+        assert args.opd_top_k_strategy == strategy
+        assert (
+            args.rollout_function_path == "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
+        )
+
 
 class TestMultiLoRAValidation:
     @pytest.fixture(autouse=True)
