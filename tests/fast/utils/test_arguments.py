@@ -2614,7 +2614,7 @@ class TestAllowTruncatedContinuationResolution:
 
     @pytest.mark.parametrize(
         ("tito_model", "expected"),
-        [("qwen3", True), ("deepseekv4", True), ("default", False), ("inkling", False), ("muse_spark", False)],
+        [("qwen3", True), ("deepseekv4", True), ("default", False), ("inkling", True), ("muse_spark", False)],
     )
     def test_an_omitted_flag_takes_the_family_default(self, caplog, tito_model, expected):
         """A family continues truncated turns by default exactly when it declares a closer."""

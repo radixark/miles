@@ -425,12 +425,18 @@ def test_markers_in_turn_are_declared(family_tito, fixture):
 
 
 def test_registered_families_declare_a_closer():
-    without_closer = {TITOTokenizerType.DEFAULT, TITOTokenizerType.INKLING, TITOTokenizerType.MUSE_SPARK}
+    without_closer = {TITOTokenizerType.DEFAULT, TITOTokenizerType.MUSE_SPARK}
+    # Families whose turn is a run of messages have a closer and a test file of their own.
+    own_closer = {TITOTokenizerType.INKLING: "test_inkling_truncation.py"}
     for tito_type in TITOTokenizerType:
         cls = TITOTokenizerType.get_tokenizer_class(tito_type)
-        assert (cls.FIXED_TEMPLATE.truncation_closer is None) == (tito_type in without_closer), tito_type
+        closer = cls.FIXED_TEMPLATE.truncation_closer
+        assert (closer is None) == (tito_type in without_closer), tito_type
+        assert isinstance(closer, TruncationGrammar) == (tito_type not in {*without_closer, *own_closer}), tito_type
     covered = {TITOTokenizerType.get_tokenizer_class(tito_type) for tito_type in _FAMILIES}
-    declared = {TITOTokenizerType.get_tokenizer_class(t) for t in TITOTokenizerType if t not in without_closer}
+    declared = {
+        TITOTokenizerType.get_tokenizer_class(t) for t in TITOTokenizerType if t not in {*without_closer, *own_closer}
+    }
     assert covered == declared
     with pytest.raises(ValueError, match="cannot close a truncated turn"):
         TITOTokenizer(MagicMock()).close_truncated_turn([1, 2], 1)
