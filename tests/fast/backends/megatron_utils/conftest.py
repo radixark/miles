@@ -7,8 +7,8 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from tests.fast.fixtures.bridge_precision_fixtures import BRIDGE_PRECISION_ARG_DEFAULTS
 import torch
+from tests.fast.fixtures.bridge_precision_fixtures import BRIDGE_PRECISION_ARG_DEFAULTS
 
 from miles.utils.args.runtime import TrainerConfig
 
