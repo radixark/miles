@@ -105,6 +105,8 @@ def _server_args(
         engine_info_bootstrap_port=20033,
         sglang_overrides=overrides,
         num_gpus_per_engine=num_gpus_per_engine,
+        tp_size=num_gpus_per_engine,
+        pp_size=1,
         random_seed=random_seed,
     )
     return server_args_dict

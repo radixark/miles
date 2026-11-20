@@ -46,6 +46,11 @@ NVFP4_ENV = {
     "NVTE_NVFP4_4OVER6_ERR_USE_FAST_MATH": "1",
 }
 
+# Stochastically round the host FP32 masters into the BF16 weights after each optimizer step.
+BF16_SR_ENV = {
+    "OPEN_TRAINING_BF16_STOCHASTIC_ROUNDING_FLAG": "1",
+}
+
 GLM5_ENV = {
     "SGLANG_DSA_FUSE_TOPK": "1",
     "SGLANG_DSA_PREFILL_DENSE_ATTN_KV_LEN_THRESHOLD": "0",
@@ -135,6 +140,7 @@ def prepare():
 def execute():
     U = command_utils.default_config().create_backend()
     os.environ.update(NVFP4_ENV)
+    os.environ.update(BF16_SR_ENV)
     os.environ.update(GLM5_ENV)
     os.environ.setdefault("RAY_TMPDIR", "/tmp/ray")
     te_precision_config_path = command_utils.encode_pseudo_file(TE_PRECISION_CONFIG)
@@ -280,7 +286,7 @@ def execute():
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
         megatron_path=MEGATRON_PATH,
-        extra_env_vars={**NVFP4_ENV, **GLM5_ENV},
+        extra_env_vars={**NVFP4_ENV, **BF16_SR_ENV, **GLM5_ENV},
     )
 
 

@@ -22,7 +22,7 @@ from miles.utils.types import Sample
 register_cuda_ci(
     est_time=1100, suite="stage-c-4-gpu-h200", labels=["precision", "long"], hardware=["hopper"], num_gpus=4
 )
-register_rocm_ci(est_time=800, suite="nightly-stage-c-4-gpu-mi350", labels=["precision", "long"])
+register_rocm_ci(est_time=800, suite="stage-c-4-gpu-mi350", labels=["precision", "long"], nightly=True)
 
 _MODEL_NAME = "DeepSeek-V4-Flash-FP8-4layer"
 _NUM_GPUS = 4

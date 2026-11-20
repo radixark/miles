@@ -42,6 +42,17 @@ VALID_APPEND_ROLES: tuple[str, ...] = ("tool", "user", "system", "assistant")
 ALL_APPEND_ROLES: frozenset[str] = frozenset(VALID_APPEND_ROLES)
 
 _DUMMY_SYSTEM: dict[str, Any] = {"role": "system", "content": "dummy system"}
+_DUMMY_USER: dict[str, Any] = {"role": "user", "content": "dummy user"}
+
+
+def _continuation_roles(name: str, value: frozenset[str] | None, allowed: frozenset[str]) -> frozenset[str]:
+    """A continuation-role field, defaulting to *allowed* and bounded by it."""
+    roles = allowed if value is None else frozenset(value)
+    if not roles <= allowed:
+        raise ValueError(
+            f"FixedTemplate {name} {sorted(roles - allowed)} are outside allowed_append_roles {sorted(allowed)}"
+        )
+    return roles
 
 
 @dataclass(frozen=True)
@@ -55,12 +66,22 @@ class FixedTemplate:
     four-role surface; a known restricted template must narrow it explicitly.
     ``consistant_kwargs`` lists fields that must retain their recorded value
     or absence when continuing a turn.
+
+    ``roles_after_tool_call`` and ``roles_after_no_tool_call`` are the roles
+    the runtime accepts directly after an assistant message with and without
+    ``tool_calls``.  Both default to ``allowed_append_roles``; a family whose
+    renderer refuses a continuation narrows them.  They state what the session
+    server accepts when a request appends to a stored history, which can be
+    wider than what the model was trained on; a from-scratch render is left to
+    the renderer.
     """
 
     template: str | None = None
     extra_kwargs: dict[str, Any] = field(default_factory=dict)
     allowed_append_roles: frozenset[str] = ALL_APPEND_ROLES
     consistant_kwargs: list[str] = field(default_factory=list)
+    roles_after_tool_call: frozenset[str] | None = None
+    roles_after_no_tool_call: frozenset[str] | None = None
 
     def __post_init__(self) -> None:
         roles = frozenset(self.allowed_append_roles)
@@ -71,6 +92,26 @@ class FixedTemplate:
                 f"supported roles are {sorted(ALL_APPEND_ROLES)}"
             )
         object.__setattr__(self, "allowed_append_roles", roles)
+        object.__setattr__(
+            self,
+            "roles_after_tool_call",
+            _continuation_roles("roles_after_tool_call", self.roles_after_tool_call, roles),
+        )
+        object.__setattr__(
+            self,
+            "roles_after_no_tool_call",
+            _continuation_roles("roles_after_no_tool_call", self.roles_after_no_tool_call, roles),
+        )
+        if "tool" not in self.roles_after_tool_call:
+            raise ValueError(
+                "FixedTemplate roles_after_tool_call must allow the 'tool' messages that answer the calls"
+            )
+
+    def roles_after(self, assistant_message: dict[str, Any]) -> frozenset[str]:
+        """The roles that may directly follow *assistant_message*."""
+        if assistant_message.get("tool_calls"):
+            return self.roles_after_tool_call
+        return self.roles_after_no_tool_call
 
 
 def extract_template_args(request_args: dict[str, Any]) -> dict[str, Any]:
@@ -89,6 +130,13 @@ def _build_dummy_assistant(stored_assistant: dict[str, Any]) -> dict[str, Any]:
         "reasoning_content": " ",
         "tool_calls": stored_assistant.get("tool_calls") or [],
     }
+
+
+def _from_last_assistant(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*messages* from the last assistant turn on, behind a dummy user turn; all of
+    them when there is no assistant turn."""
+    last = max((i for i, message in enumerate(messages) if message.get("role") == "assistant"), default=None)
+    return messages if last is None else [_DUMMY_USER, *messages[last:]]
 
 
 # ---------------------------------------------------------------------------
@@ -511,6 +559,10 @@ class GLM47TITOTokenizer(TITOTokenizer):
     strip replaces the sampled stop token: allowed by default for this family
     with one warning per replacement, rejected under
     ``--no-allow-stop-token-replace``.
+
+    Because of that replacement the runtime accepts every role after an
+    assistant with or without ``tool_calls``, so the continuation roles keep
+    their maximal default even though the model expects ``tool`` after a call.
     """
 
     reasoning_parser = "glm45"
@@ -733,7 +785,8 @@ class MinimaxM25TITOTokenizer(TITOTokenizer):
     requires the fixed jinja with ``clear_thinking=False`` to always
     preserve history reasoning.  The fixed Jinja renders tool, user, and
     assistant appends, but ignores mid-session system messages, so that role
-    is excluded from its capability.
+    is excluded from its capability.  It raises on a ``tool`` message that
+    follows an assistant without ``tool_calls``.
     """
 
     reasoning_parser = "minimax-append-think"
@@ -743,6 +796,7 @@ class MinimaxM25TITOTokenizer(TITOTokenizer):
         template="minimax_m25_fixed.jinja",
         extra_kwargs={"clear_thinking": False},
         allowed_append_roles=frozenset({"tool", "user", "assistant"}),
+        roles_after_no_tool_call=frozenset({"user", "assistant"}),
     )
 
     _default_assistant_start_str: str = "]~b]ai"
@@ -793,6 +847,7 @@ class MinimaxM27TITOTokenizer(MinimaxM25TITOTokenizer):
         template="minimax_m27_fixed.jinja",
         extra_kwargs={"clear_thinking": False},
         allowed_append_roles=frozenset({"tool", "user", "assistant"}),
+        roles_after_no_tool_call=frozenset({"user", "assistant"}),
     )
 
 
@@ -817,7 +872,8 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
     assistant as "before last user" and strips its thinking block, which is
     not append-only.  The vendored copy honors ``drop_thinking=False`` at the
     render level, so every surface pins it and the
-    ``{tool, user}`` surface becomes legal.
+    ``{tool, user}`` surface becomes legal.  The encoder refuses a ``tool``
+    message after an assistant without ``tool_calls``.
     """
 
     reasoning_parser = "deepseek-v3"
@@ -827,6 +883,7 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
         template=None,
         extra_kwargs={"drop_thinking": False},
         consistant_kwargs=["add_default_bos_token", "context"],
+        roles_after_no_tool_call=frozenset({"user", "system", "assistant"}),
     )
 
     _DEFAULT_ASSISTANT_START = "<｜Assistant｜>"
@@ -904,6 +961,10 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
     routes any V4 tokenizer to the ``chat_template_utils.deepseek`` bridge, and
     TITO incremental tokenization rides that same bridge to stay byte-aligned
     with what the session server sends as TITO input ids.
+
+    deepseek-recipe converts only a history whose tool calls are all answered,
+    so ``tool`` messages are the only continuation of an assistant with
+    ``tool_calls``, and a ``tool`` message needs a preceding call.
     """
 
     reasoning_parser = "deepseek-v4"
@@ -913,6 +974,8 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
         template=None,
         allowed_append_roles=frozenset({"tool", "user", "assistant"}),
         consistant_kwargs=["reasoning_effort"],
+        roles_after_tool_call=frozenset({"tool"}),
+        roles_after_no_tool_call=frozenset({"user", "assistant"}),
     )
     SERVER_MESSAGE_KEYS = (deepseek.CONTENT_LEADING_WHITESPACE_KEY,)
 
@@ -990,16 +1053,24 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
     ) -> list[int]:
         """Diff real-history renders because V4 folds adjacent ``tool``/``user`` turns.
 
+        Both renders start at the history's last assistant turn.  recipe folds, sorts
+        and encodes nothing across an assistant turn, so they end as renders of the
+        whole history do, at a cost that follows the appended messages.
+
         The diff is over recipe's ids where it can be: recipe encodes message text
         without the added vocabulary, so re-encoding text could turn content into
         special tokens.
         """
         assert_messages_append_only_with_allowed_role(old_messages, new_messages, self.allowed_append_roles)
+        context = _from_last_assistant(old_messages)
         ids_old = self.apply_chat_template(
-            old_messages, add_generation_prompt=False, tokenize=True, template_args=template_args
+            context, add_generation_prompt=False, tokenize=True, template_args=template_args
         )
         ids_new = self.apply_chat_template(
-            new_messages, add_generation_prompt=True, tokenize=True, template_args=template_args
+            context + new_messages[len(old_messages) :],
+            add_generation_prompt=True,
+            tokenize=True,
+            template_args=template_args,
         )
         if ids_new[: len(ids_old)] == ids_old:
             return ids_new[len(ids_old) :]
@@ -1038,10 +1109,22 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
 
 class DeepSeekV41TITOTokenizer(DeepSeekV4TITOTokenizer):
     """DeepSeek V4.1 — deepseek-recipe's V4.1 encoding; the V4 incremental-render
-    machinery applies unchanged."""
+    machinery applies unchanged.
+
+    V4.1 renders a ``system`` message where it stands, behind ``<｜System｜>``, so
+    one appended after an answer or a tool result keeps the prefix.  V4 hoists
+    every system message into the preamble.
+    """
 
     reasoning_parser = "deepseek-v41"
     tool_call_parser = "deepseekv41"
+
+    FIXED_TEMPLATE = FixedTemplate(
+        template=None,
+        consistant_kwargs=["reasoning_effort"],
+        roles_after_tool_call=frozenset({"tool"}),
+        roles_after_no_tool_call=frozenset({"user", "system", "assistant"}),
+    )
 
     def __init__(
         self,

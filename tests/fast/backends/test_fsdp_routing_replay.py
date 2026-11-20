@@ -169,7 +169,7 @@ def test_log_prob_stage_records_for_the_non_rollout_variant():
 
 def test_attach_is_skipped_for_the_non_rollout_variant():
     # Passing None for every downstream argument: reaching attach_replay_data would raise.
-    routing_replay.attach(Namespace(use_rollout_routing_replay=False), None, None, None, None)
+    routing_replay.attach(Namespace(use_rollout_routing_replay=False), None, None, None)
 
 
 def test_stage_sets_and_restores():

@@ -81,10 +81,13 @@ def runtime_args() -> argparse.Namespace:
         moe_token_dispatcher_type="alltoall",
         decoder_first_pipeline_num_layers=None,
         decoder_last_pipeline_num_layers=None,
+        pipeline_model_parallel_layout=None,
         moe_router_bias_update_rate=None,
         moe_aux_loss_coeff=None,
     )
-    return argparse.Namespace(backend=backend, dsa_attention_backend=None, enable_mtp_training=False)
+    return argparse.Namespace(
+        backend=backend, dsa_attention_backend=None, routed_expert_qat=None, enable_mtp_training=False
+    )
 
 
 @pytest.fixture

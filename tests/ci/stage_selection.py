@@ -10,8 +10,7 @@ from tests.ci.ci_register import CIRegistry
 from tests.ci.labels import KNOWN_LABELS
 from tests.ci.run_suite import runs_in_stage
 
-# Only stages with jobs in the Miles PR workflows belong here; the external
-# MI350 nightly suites are not local runner-allocation targets.
+# Only stages with jobs in the Miles PR workflows belong here.
 PR_GPU_STAGES = frozenset(
     {
         "stage-b-2-gpu-h200",
@@ -21,7 +20,9 @@ PR_GPU_STAGES = frozenset(
         "stage-c-8-gpu-h200",
         "stage-c-4-gpu-b200",
         "stage-c-8-gpu-b200",
+        "stage-c-2-gpu-mi350",
         "stage-c-4-gpu-mi350",
+        "stage-c-8-gpu-mi350",
     }
 )
 

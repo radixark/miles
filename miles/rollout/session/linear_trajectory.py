@@ -14,7 +14,7 @@ from miles.utils.chat_template_utils.message_matcher_hub import (
     assert_messages_append_only_with_allowed_role,
     strict_message_matches,
 )
-from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
+from miles.utils.chat_template_utils.tito_tokenizer import FixedTemplate, TITOTokenizer, extract_template_args
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,31 @@ def assert_pretokenized_prefix(
             f"request_messages={request_messages}\n"
             f"assistant_message={assistant_message}"
         )
+
+
+def assert_continuation_roles(
+    messages: list[dict[str, Any]], *, appended_from: int, fixed_template: FixedTemplate
+) -> None:
+    """Refuse an appended message that may not directly follow its assistant.
+
+    Each message in ``messages[appended_from:]`` that directly follows an
+    assistant must take a role in ``fixed_template.roles_after`` that assistant,
+    decided by whether it carries ``tool_calls``. Checked before rendering, so
+    a refusal is a 400 and leaves session state unchanged. Shared verbatim by
+    the v1 render and the v2 render.
+    """
+    for index in range(max(appended_from, 1), len(messages)):
+        previous = messages[index - 1]
+        if previous.get("role") != "assistant":
+            continue
+        role = messages[index].get("role")
+        allowed = fixed_template.roles_after(previous)
+        if role not in allowed:
+            calls = "with" if previous.get("tool_calls") else "without"
+            raise MessageValidationError(
+                f"appended message at index {index} has role={role!r} after an assistant {calls} tool_calls; "
+                f"the selected TITO family accepts only {sorted(allowed)} there"
+            )
 
 
 @dataclass
@@ -209,6 +234,9 @@ class LinearTrajectory:
             ) from e
 
         effective_messages = stored_messages + request_messages[len(stored_messages) :]
+        assert_continuation_roles(
+            effective_messages, appended_from=len(stored_messages), fixed_template=tito_tokenizer.FIXED_TEMPLATE
+        )
         return tito_tokenizer.merge_tokens(
             old_messages=stored_messages,
             new_messages=effective_messages,

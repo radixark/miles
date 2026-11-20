@@ -35,6 +35,22 @@ def _compile_blocks(model_parts: list[torch.nn.Module], *, backend: str) -> None
             block.forward = torch.compile(block.forward, backend=backend, fullgraph=True)
 
 
+class _TrainingEngine(TrainingEngine):
+    """Reads the checkpoint through an adapter for the checkpoint's layout, which keeps parts the trained model drops
+    (multimodal encoders on TPU); torchtitan builds the adapter from the trained model's config."""
+
+    # TODO: drop once torchtitan's adapters take the HF layout from the checkpoint instead of the model config
+
+    def __init__(self, *args, checkpoint_model: BaseModel.Config, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._checkpoint_model = checkpoint_model
+
+    def _initialize_model(self, *, hf_assets_path: str, **kwargs) -> None:
+        super()._initialize_model(hf_assets_path=hf_assets_path, **kwargs)
+        if self.state_dict_adapter is not None and self._checkpoint_model is not self.model_config:
+            self.state_dict_adapter = type(self.state_dict_adapter)(self._checkpoint_model, hf_assets_path)
+
+
 class TitanTrainer(Configurable):
     """torchtitan's TrainingEngine builds, parallelizes, checkpoints and steps the model; miles feeds it
     variable-length packed microbatches through its own forward/backward loop."""
@@ -42,6 +58,8 @@ class TitanTrainer(Configurable):
     @dataclass(kw_only=True, slots=True)
     class Config(TrainingEngine.Config):
         model: BaseModel.Config
+        # the model the checkpoint is laid out for: `model` plus any parts the trained model drops
+        checkpoint_model: BaseModel.Config
         hf_assets_path: str
         output_dir: str
         # torch.compile backend for each transformer block; None runs them eager
@@ -63,8 +81,12 @@ class TitanTrainer(Configurable):
     def __init__(self, config: Config, *, parallelism: ParallelismContext | None = None):
         self.config = config
         torch.autograd.set_multithreading_enabled(False)
-        self.engine = TrainingEngine(
-            config, model_config=config.model, max_num_documents=None, output_dir=config.output_dir
+        self.engine = _TrainingEngine(
+            config,
+            model_config=config.model,
+            checkpoint_model=config.checkpoint_model,
+            max_num_documents=None,
+            output_dir=config.output_dir,
         )
         if parallelism is not None:
             self.engine.parallelism_context = parallelism

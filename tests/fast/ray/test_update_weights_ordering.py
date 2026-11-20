@@ -229,6 +229,7 @@ def _checksum_response(engine_checksums: list[dict[str, str]]) -> list[tuple[Ser
                 worker_name=f"engine-{index}",
                 needs_offload=False,
                 update_weights=True,
+                health_check_timeout_seconds=20,
                 workers_hash=f"incarnation-{index}",
             ),
             {

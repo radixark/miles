@@ -78,7 +78,8 @@ pip install "miles[torchtitan] @ https://github.com/radixark/miles/releases/down
   FlashAttention-3 and the Miles router build).
 
 Training still launches from a checkout's `train.py` ([Quick Start](/getting-started/quick-start));
-the wheel supplies the `miles` package it imports.
+the wheel supplies the `miles` package it imports. The Miles dashboard is not in the wheel: install it
+from the same checkout with `pip install -e packages/miles-dashboard`.
 
 ## Method 3: From source
 
@@ -89,6 +90,7 @@ git clone https://github.com/radixark/miles.git
 cd miles
 pip install -r requirements.txt
 pip install -e . --no-deps
+pip install -e packages/miles-dashboard
 ```
 
 <Warning>
@@ -106,6 +108,7 @@ If you already run a Miles image and want the latest code:
 cd /root/miles
 git pull --rebase
 pip install -e . --no-deps
+pip install -e packages/miles-dashboard --no-deps
 ray stop && ray start --head --port=6379
 ```
 

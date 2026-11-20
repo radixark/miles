@@ -5,7 +5,7 @@ import math
 
 import numpy as np
 import pytest
-from tests.fast.fixtures.score_centering_fixtures import _args, _meta, _Tokenizer
+from tests.fast.fixtures.score_centering_fixtures import _args, _flat_sampling_mask, _meta, _Tokenizer
 
 from miles.rollout.generate_utils.generate_endpoint_utils import compute_request_payload, update_sample_from_response
 from miles.rollout.generate_utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sample
@@ -23,6 +23,7 @@ def test_native_generate_producer_appends_each_call() -> None:
     )
     payload, status = compute_request_payload(args, [0, 1], {})
     assert status is None and payload["top_logprobs_num"] == 3 and payload["return_logprob"]
+    assert payload["return_flat_raw_output_top_logprobs"] and payload["return_flat_raw_top_logprobs_b64"]
     sample = Sample()
     for output, probabilities in (([2, 3], [0.5, 0.25]), ([4, 5], [0.55, 0.2])):
         asyncio.run(
@@ -58,13 +59,13 @@ def test_filtered_native_generation_records_post_filter_distribution(candidate_c
     payload, status = compute_request_payload(args, [0, 1], {"temperature": 0.7, "top_p": 0.6, "top_k": 3})
     assert status is None
     assert payload["return_sampling_mask"]
+    assert payload["return_flat_raw_sampling_mask"] and payload["return_flat_raw_sampling_mask_b64"]
     assert payload.get("sampling_logprobs_mode") == ("support" if candidate_count else None)
     assert "top_logprobs_num" not in payload
     meta = {
         "output_token_logprobs": [(math.log(0.4), 2, None)],
-        "output_token_sampling_mask": [[3, 2]],
-        "output_token_sampling_logprobs": (
-            [[math.log(3 / 7), math.log(4 / 7)]] if candidate_count else [math.log(4 / 7)]
+        **_flat_sampling_mask(
+            [[3, 2]], [[math.log(3 / 7), math.log(4 / 7)]] if candidate_count else [math.log(4 / 7)]
         ),
         "finish_reason": {"type": "stop"},
     }
@@ -94,8 +95,7 @@ def test_greedy_evaluation_does_not_collect_training_candidates() -> None:
     )
     payload, _ = compute_request_payload(args, [0, 1], {"temperature": 0.0}, evaluation=True)
     assert payload["sampling_params"]["temperature"] == 0.0 and "top_logprobs_num" not in payload
-    meta = _meta([2, 3], [0.5, 0.25])
-    del meta["output_top_logprobs"]
+    meta = {key: value for key, value in _meta([2, 3], [0.5, 0.25]).items() if not key.startswith("output_top_")}
     sample = Sample()
     asyncio.run(
         update_sample_from_response(args, sample, payload, {"text": "eval", "meta_info": meta}, tokenizer=_Tokenizer())
