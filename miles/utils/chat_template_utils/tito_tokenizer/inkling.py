@@ -9,7 +9,7 @@ from miles.utils.chat_template_utils.tito_tokenizer.base import FixedTemplate, T
 
 
 class InklingTITOTokenizer(TITOTokenizer):
-    """Inkling family (Inkling / Inkling-Small).
+    """Inkling family (Inkling / Inkling-Small / Inkling2).
 
     The runtime serves Inkling through sglang's token-level renderer
     (``chat_encoding_spec == "inkling"``).  The fixed template matches its

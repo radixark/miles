@@ -155,6 +155,42 @@ class TestInklingSpec:
         assert spec.experts is not None and spec.lm_head is not None
 
 
+# Newer checkpoints declare model_type inkling2; older ones inkling2_mm_model.
+@pytest.mark.parametrize("model_type", ["inkling2", "inkling2_mm_model"])
+class TestInkling2Spec:
+    @staticmethod
+    def _config(model_type):
+        return dict(model_type=model_type, text_config=dict(model_type="inkling2_text", n_shared_experts=0))
+
+    def test_serves_tmls_inkling_schema(self, model_type):
+        """TML's schema: attention without the sink, shared-outer routed experts, the unembed.
+        SGLang resolves "all-linear" to embed too, so the targets are explicit."""
+        config = self._config(model_type)
+        served = resolve_adapter_targets(config, resolve_hf_lora_targets(config), hf_modules=[])
+        assert sorted(served) == sorted(
+            [
+                *(
+                    f"model.llm.layers.*.attn.{leaf}"
+                    for leaf in ("wq_du", "wk_dv", "wv_dv", "wr_du", "gate_attn", "wo_ud")
+                ),
+                "model.llm.layers.*.mlp.experts.gate_up_proj",
+                "model.llm.layers.*.mlp.experts.down_proj",
+                "lm_head",
+            ]
+        )
+        with pytest.raises(AssertionError, match="verified adapter layout"):
+            resolve_adapter_targets(
+                config, resolve_hf_lora_targets(config, target_modules=["attn", "mlp"]), hf_modules=[]
+            )
+
+    def test_spec_attaches_the_schema(self, model_type):
+        spec = MODEL_SPECS[model_type]
+        assert spec.fixed_targets.select_all
+        assert spec.attention.supported_targets == {"wq_du", "wk_dv", "wv_dv", "wr_du", "gate_attn", "wo_ud"}
+        assert spec.experts is not None
+        assert spec.adapts_head("model.llm.unembed")
+
+
 class TestLoRAConfigSelection:
     def test_scoped_and_leaf_selectors(self):
         config = LoRAConfig(rank=2, alpha=4, dropout=0.0, target_modules=("model.layers.0.self_attn.o_proj", "q_proj"))

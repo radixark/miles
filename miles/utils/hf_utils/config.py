@@ -112,6 +112,10 @@ def register_hf_config_aliases() -> None:
         import sglang.srt.configs.inkling  # noqa: F401
     except ImportError:
         pass
+    try:
+        import sglang.srt.configs.inkling2  # noqa: F401
+    except ImportError:
+        pass
 
     try:
         import sglang.srt.configs.muse_spark  # noqa: F401

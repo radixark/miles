@@ -72,6 +72,28 @@ class InklingLMHeadSpec:
         return 1
 
 
+class Inkling2LMHeadSpec:
+    """Inkling2's unembed: fp32 logits, soft-capped and pad-masked after the head, so the delta
+    lands on the pre-softcap logits. Exported under the checkpoint's ``model.llm.unembed`` with
+    every padded-vocab row, the rows of the checkpoint tensor and of SGLang's head."""
+
+    hf_leaf = "unembed"
+
+    def attach(self, model: nn.Module, args, context: AttachContext) -> int:
+        if not model.post_process:
+            return 0
+        output_layer = model.output_layer
+        adapter = LoRAOutputHead(
+            hf_prefix="model.llm.unembed.",
+            reference=output_layer.weight,
+            context=context,
+            vocab_local=output_layer.weight.shape[0],
+        )
+        model.lora_lm_head_adapter = adapter
+        attach_adapter_forward(output_layer, adapter)
+        return 1
+
+
 def _read_unpadded_vocab_size(hf_checkpoint: str) -> int | None:
     """SGLang serves Inkling's lm_head over ``unpadded_vocab_size`` when the config declares one
     (sglang configs/inkling.py); None keeps every row."""

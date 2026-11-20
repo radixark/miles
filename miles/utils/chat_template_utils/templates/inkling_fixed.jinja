@@ -53,7 +53,7 @@
         {%- set tool_name_state = namespace(name="") -%}
         {%- if message.name is defined and message.name -%}
             {%- set tool_name_state.name = message.name -%}
-        {%- elif message.tool_call_id is defined and message.tool_call_id -%}
+        {%- elif message.tool_call_id is defined and message.tool_call_id and (tool_name_headers is not defined or tool_name_headers) -%}
             {%- for prev in messages -%}
                 {%- if prev.role == "assistant" and prev.tool_calls -%}
                     {%- for tc in prev.tool_calls -%}
@@ -136,7 +136,8 @@
                 {%- if args is not mapping -%}
                     {{- raise_exception("tool call arguments must be an object") -}}
                 {%- endif -%}
-                {{- "<|message_model|>" ~ fn.name ~ "<|content_invoke_tool_json|>" -}}
+                {%- set recipient = fn.name if tool_name_headers is not defined or tool_name_headers else "" -%}
+                {{- "<|message_model|>" ~ recipient ~ "<|content_invoke_tool_json|>" -}}
                 {{- '{"name":' ~ (fn.name | tojson(sort_keys=true, separators=(",", ":"))) ~ ',"args":' -}}
                 {{- (args | tojson(sort_keys=true, separators=(",", ":"))) -}}
                 {{- "}<|end_message|>" -}}

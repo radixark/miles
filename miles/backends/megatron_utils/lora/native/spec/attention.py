@@ -1,4 +1,4 @@
-"""Native-LoRA attention specs for fused GQA, gated GQA, MLA, GLM-5.3-Flash, and Inkling."""
+"""Native-LoRA attention specs for fused GQA, gated GQA, MLA, GLM-5.3-Flash, Inkling, and Inkling2."""
 
 from __future__ import annotations
 
@@ -434,3 +434,77 @@ def _is_replicated_linear(module: nn.Module, full_out: int) -> bool:
     ):  # config-access-exempt: third-party projection modules may omit parallel_mode
         return True
     return module.weight.shape[0] == full_out
+
+
+class _Inkling2SplitQ(LoRASplitAdapter):
+    """Independent adapters over Inkling2's plain-concat Q-side [q;r;gate;sink]; the sink rows get none."""
+
+
+def _build_split_q(
+    attention: nn.Module,
+    hf_prefix: str,
+    context: AttachContext,
+    active: tuple[ProjectionSpec, ...],
+) -> _Inkling2SplitQ:
+    heads, head_dim = attention.num_heads, attention.head_dim
+    return _Inkling2SplitQ(
+        hf_prefix=hf_prefix,
+        reference=attention.linear_q.weight,
+        context=context,
+        projections=active,
+        rows_by_param_prefix={
+            "q": heads * head_dim,
+            "r": heads * attention.d_rel,
+            "gate": heads * head_dim,
+            "sink": heads,
+        },
+    )
+
+
+class Inkling2AttentionSpec(AttentionSpecBase):
+    """Q-side [q;r;gate;sink] fused, K and V separate (in full-attention layers they read
+    their own attention-residual mixtures). Exports carry the engine's module names
+    (``attn.wq_du/wr_du/gate_attn/wk_dv/wv_dv/wo_ud``); TML's Inkling schema adapts no sink."""
+
+    name = "inkling2"
+    family = AttentionFamily.GQA
+    layout = ModuleLayout(
+        name="inkling2_attention",
+        present_when_attr="linear_q",
+        hf_block_prefix="attn.",
+        fused=(
+            FusedAttach(
+                module_attr="linear_q",
+                projections=(
+                    ProjectionSpec("wq_du", "q", ShardLayout.COLUMN),
+                    ProjectionSpec("wr_du", "r", ShardLayout.COLUMN),
+                    ProjectionSpec("gate_attn", "gate", ShardLayout.COLUMN),
+                ),
+                adapter_attr="lora_q_adapter",
+                build=_build_split_q,
+            ),
+        ),
+        singles=(
+            ProjectionBinding(
+                projection=ProjectionSpec("wk_dv", "k", ShardLayout.COLUMN),
+                module_attr="linear_k",
+                in_dim=L.hidden_size,
+                out_dim=L.host_out_local("linear_k"),
+                adapter_attr="lora_k_adapter",
+            ),
+            ProjectionBinding(
+                projection=ProjectionSpec("wv_dv", "v", ShardLayout.COLUMN),
+                module_attr="linear_v",
+                in_dim=L.hidden_size,
+                out_dim=L.host_out_local("linear_v"),
+                adapter_attr="lora_v_adapter",
+            ),
+            ProjectionBinding(
+                projection=ProjectionSpec("wo_ud", "o", ShardLayout.ROW),
+                module_attr="linear_proj",
+                in_dim=L.host_in_local("linear_proj"),
+                out_dim=L.hidden_size,
+                adapter_attr="lora_o_adapter",
+            ),
+        ),
+    )
