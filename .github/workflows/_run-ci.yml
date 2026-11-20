@@ -83,20 +83,25 @@ jobs:
     timeout-minutes: ${{ inputs.timeout_minutes }}
     container:
       image: ${{ inputs.container_image }}
+      # A job sees only the shared caches below and its own runner's work directory: the runners of a
+      # host share /data/miles_ci, and an unprivileged container cannot reach the host's devices.
+      # SYS_PTRACE: torch CUDA IPC opens peer fds with pidfd_getfd. SYS_NICE: sglang binds memory to NUMA nodes.
       options: >
         --gpus all
         --env CUDA_VISIBLE_DEVICES
-        --ipc=host
+        --device /dev/infiniband
+        --cap-add SYS_PTRACE
+        --cap-add SYS_NICE
         --shm-size=32g
         --ulimit memlock=-1
         --ulimit stack=67108864
         --memory=0
         --memory-swap=0
-        -v /data/miles_ci:/data/miles_ci
+        -v /data/miles_ci/jit:/data/miles_ci/jit
+        -v /data/miles_ci/dumps:/data/miles_ci/dumps
         -v /data/miles_ci/models:/root/models
         -v /data/miles_ci/datasets:/root/datasets
         -v /data/miles_ci/hf_cache:/root/.cache/huggingface
-        --privileged
         --ulimit nofile=65535:65535
     defaults:
       run:
