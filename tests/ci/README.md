@@ -48,6 +48,17 @@ sudo install -d /data/miles_ci/runner-hooks
 sudo install -m 755 tests/ci/github_runner/remove-foreign-checkouts.sh /data/miles_ci/runner-hooks/
 ```
 
+### Step 0.6: Install the job-container docker hook
+
+`docker-compose.yml` puts `job-container-docker/docker` first in the runner's
+`PATH`: it drops the host docker socket the runner would otherwise mount into
+every job container.
+
+```shell
+sudo install -D -m 755 tests/ci/github_runner/job-container-docker/docker \
+  /data/miles_ci/runner-hooks/job-container-docker/docker
+```
+
 ### Step 1: Env
 
 Write `.env` mimicking `.env.example`.
