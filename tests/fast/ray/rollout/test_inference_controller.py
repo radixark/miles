@@ -19,6 +19,7 @@ from miles.ray.rollout.inference_controller import (
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.ray.specs.inference import InferenceEngineSpec, compute_router_pool_id
+from miles.utils import async_utils
 from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.audit_utils.checksum_utils import ChecksumCollectionFailure
 from miles.utils.context_lock import ContextLock
@@ -129,6 +130,11 @@ class _RecordingServer:
     def engine_cell_ids(self) -> list[str]:
         return [cell.meta.cell_id for cell in self.engine_cells]
 
+    async def drain_serving(self) -> None:
+        self.calls.append(("drain_serving",))
+        cells = [cell for cell in self.all_server_cells.values() if cell.is_serving]
+        await async_utils.gather_and_raise_first([cell.mark_updating() for cell in cells])
+
     async def offload(self, tags=None):
         self.calls.append(("offload",))
         self.offload_tags.append(tags)
@@ -221,13 +227,28 @@ class _FakeUpdatableCell:
         self.api_client = api_client
         self.marked_ready = 0
         self.marked_errored = 0
+        self.marked_updating = 0
         self.mark_errored_error: Exception | None = None
+        self.mark_updating_error: Exception | None = None
         self.is_errored = False
+        self.is_serving = False
         self.is_pending_weights = True
         self.is_pending_weights_or_serving = True
+        self.is_drained = False
 
     async def mark_weights_ready(self) -> None:
         self.marked_ready += 1
+        self.is_serving = True
+        self.is_pending_weights = False
+        self.is_drained = False
+
+    async def mark_updating(self) -> None:
+        self.marked_updating += 1
+        if self.mark_updating_error is not None:
+            raise self.mark_updating_error
+        self.is_serving = False
+        self.is_pending_weights = True
+        self.is_drained = True
 
     async def mark_errored(self) -> None:
         self.marked_errored += 1
@@ -1857,6 +1878,83 @@ class TestEndUpdateWeightsTakesFailedCellsOutOfService:
         )
 
         assert (cells["engine-1"].marked_errored, cells["engine-1"].marked_ready) == (0, 0)
+
+
+class TestDispatchGateForWeightUpdate:
+    @staticmethod
+    def _controller(
+        *, serving: tuple[str, ...] = (), pending: tuple[str, ...] = ()
+    ) -> tuple[InferenceController, dict[str, _FakeUpdatableCell]]:
+        cells = {}
+        for index, cell_id in enumerate(serving + pending):
+            cell = _FakeUpdatableCell(f"hash-{index}", cell_id=cell_id, api_client=f"client-{index}", gpu_offset=index)
+            if cell_id in serving:
+                cell.is_serving = True
+                cell.is_pending_weights = False
+            cells[cell_id] = cell
+        srv = _RecordingServer(dict(cells), model_name="actor", update_weights=True)
+        return _make_controller({"actor": srv}), cells
+
+    @pytest.mark.asyncio
+    async def test_start_update_weights_pulls_serving_cells_out_of_the_router(self):
+        """A frozen engine cannot serve; the router must stop dispatching to it before the swap starts."""
+        controller, cells = self._controller(serving=("engine-0", "engine-1"), pending=("engine-2",))
+
+        updatable = await controller.start_update_weights()
+
+        assert [cells[cell_id].marked_updating for cell_id in ("engine-0", "engine-1")] == [1, 1]
+        assert cells["engine-2"].marked_updating == 0
+        assert updatable.snapshot_cell_id_to_hashes == {cell_id: f"hash-{i}" for i, cell_id in enumerate(cells)}
+        await controller.abort_update_weights()
+
+    @pytest.mark.asyncio
+    async def test_end_update_weights_publishes_the_drained_cells_again(self):
+        """A drained cell rejoins the router through the same pending-weights path as a fresh engine."""
+        controller, cells = self._controller(serving=("engine-0",))
+
+        updatable = await controller.start_update_weights()
+        await controller.end_update_weights(
+            snapshot_cell_id_to_hashes=updatable.snapshot_cell_id_to_hashes, failed_cell_ids=[]
+        )
+
+        assert cells["engine-0"].marked_ready == 1
+        assert cells["engine-0"].is_serving
+
+    @pytest.mark.asyncio
+    async def test_abort_update_weights_returns_drained_cells_to_service(self):
+        """The aborted update never replaced the weights, so the old ones are still correct to serve."""
+        controller, cells = self._controller(serving=("engine-0",))
+
+        await controller.start_update_weights()
+        assert cells["engine-0"].is_drained
+
+        await controller.abort_update_weights()
+
+        assert cells["engine-0"].marked_ready == 1
+        assert cells["engine-0"].is_serving
+
+    @pytest.mark.asyncio
+    async def test_abort_leaves_a_cell_that_was_never_serving_pending(self):
+        """A startup-pending cell never received weights at all, so no abort may publish it."""
+        controller, cells = self._controller(pending=("engine-0",))
+
+        await controller.start_update_weights()
+        await controller.abort_update_weights()
+
+        assert cells["engine-0"].marked_ready == 0
+        assert cells["engine-0"].is_pending_weights
+
+    @pytest.mark.asyncio
+    async def test_a_failed_drain_restores_the_cells_it_already_removed(self):
+        """A drain that dies half way must not leak the capacity it already took out of the router."""
+        controller, cells = self._controller(serving=("engine-0", "engine-1"))
+        cells["engine-1"].mark_updating_error = RuntimeError("router never accepted the removal")
+
+        with pytest.raises(RuntimeError, match="router never accepted the removal"):
+            await controller.start_update_weights()
+
+        assert cells["engine-0"].marked_ready == 1
+        assert cells["engine-0"].is_serving
 
 
 class TestRemovedWeightUpdateInterruptionGuards:

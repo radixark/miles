@@ -835,6 +835,60 @@ class TestMarkWeightsReady:
         assert router.calls[0][1]["bootstrap_port"] == 8998
 
 
+class TestMarkUpdating:
+    async def test_a_serving_cell_leaves_the_router_for_the_update_window(self, cell_env):
+        """Requests must stop reaching the engine before its weights are swapped."""
+        router = _RecordingRouterApiClient()
+        cell = _make_cell(router=router)
+        await cell.init()
+        await cell.tick()
+        await cell.mark_weights_ready()
+
+        await cell.mark_updating()
+
+        assert [name for name, _kwargs in router.calls] == ["add_worker", "remove_worker"]
+        assert isinstance(cell._state, StatePendingWeights)
+        assert cell.is_drained
+
+    async def test_the_drained_cell_rejoins_the_router_when_its_weights_are_ready(self, cell_env):
+        """The same mark_weights_ready path that publishes a fresh engine republishes a drained one."""
+        router = _RecordingRouterApiClient()
+        cell = _make_cell(router=router)
+        await cell.init()
+        await cell.tick()
+        await cell.mark_weights_ready()
+        await cell.mark_updating()
+
+        await cell.mark_weights_ready()
+
+        assert [name for name, _kwargs in router.calls] == ["add_worker", "remove_worker", "add_worker"]
+        assert isinstance(cell._state, StateServing)
+        assert not cell.is_drained
+
+    async def test_a_cell_that_was_never_serving_cannot_be_drained(self, cell_env):
+        """A startup-pending cell never entered the router, so there is nothing to withdraw."""
+        cell = _make_cell()
+        await cell.init()
+        await cell.tick()
+
+        with pytest.raises(AssertionError):
+            await cell.mark_updating()
+
+    async def test_a_router_that_rejects_the_removal_leaves_the_cell_serving(self, cell_env, instant_retry_sleeps):
+        """Flipping state before the removal lands would phantom the engine: still routed, never restored."""
+        router = _FailingRouterApiClient(failures=999)
+        cell = _make_cell(router=router)
+        await cell.init()
+        await cell.tick()
+        await cell.mark_weights_ready()
+
+        with pytest.raises(RuntimeError):
+            await cell.mark_updating()
+
+        assert isinstance(cell._state, StateServing)
+        assert not cell.is_drained
+
+
 class TestDispose:
     async def test_a_serving_cell_is_withdrawn_from_the_router(self, cell_env):
         """Leaving it registered would route requests at an engine that is going away."""

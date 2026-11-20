@@ -154,6 +154,11 @@ class ServerCell:
         return isinstance(self._state, StatePendingWeights)
 
     @property
+    def is_drained(self) -> bool:
+        """A serving cell pulled out of the router for a weight update; it returns to service after it."""
+        return isinstance(self._state, StatePendingWeights) and self._state.resume_serving
+
+    @property
     def is_serving(self) -> bool:
         return isinstance(self._state, StateServing)
 
@@ -260,6 +265,16 @@ class ServerCell:
         assert isinstance(self._state, StatePendingWeights), f"{self._state=}"
         await self._register_with_router(addr_info=self._state.addr_info)
         self._mark_serving()
+
+    async def mark_updating(self) -> None:
+        """Pull a serving cell out of the router while its weights are replaced."""
+        assert isinstance(self._state, StateServing), f"{self._state=}"
+        await self._unregister_from_router()
+        self._change_state(
+            "mark_updating",
+            StateServing,
+            StatePendingWeights(addr_info=self._state.addr_info, resume_serving=True),
+        )
 
     async def _register_with_router(self, addr_info: CellAddrInfo) -> None:
         await self._registry.register(
