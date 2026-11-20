@@ -1,0 +1,45 @@
+work_group: miles
+user_name: miles
+exp_name: qwen3_30B_A3B_bf16_rl
+workspace: ${PRIMUS_WORKSPACE:/tmp/primus}
+
+modules:
+  pre_trainer:
+    framework: megatron
+    config: pre_trainer.yaml
+    model: qwen3_30B_A3B.yaml
+    overrides:
+      bf16: true
+      fp16: false
+      # Qwen3-30B-A3B unties embeddings (HF tie_word_embeddings=false).
+      untie_embeddings_and_output_weights: true
+
+      # Turbo: RMSNorm + expert grouped GEMM. Fused softmax routing is off:
+      # that kernel does not renormalize top-k mass (gates sum to ~0.29 vs 1.0)
+      # and blew trainer–rollout KL to ~0.41. Attention grads still wrong.
+      # TP=1 so Miles will not refuse Turbo grouped GEMM.
+      enable_primus_turbo: true
+      use_turbo_rms_norm: true
+      use_turbo_attention: false
+      use_turbo_gemm: false
+      use_turbo_parallel_linear: false
+      use_turbo_grouped_gemm: true
+      use_turbo_grouped_mlp: false
+      moe_use_fused_router_with_aux_score: false
+      moe_use_legacy_grouped_gemm: false
+
+      exit_on_missing_checkpoint: false
+      enable_one_logger: false
+      eval_interval: null
+      eval_iters: 0
+      save_interval: null
+
+      # Prompt + 8k response; Miles CLI still owns the actual packed/padded length.
+      seq_length: 16384
+      max_position_embeddings: 16384
+      rotary_scaling_factor: 1.0
+      micro_batch_size: 1
+      use_flash_attn: false
+      train_iters: null
+      lr_warmup_iters: 0
+      override_opt_param_scheduler: false
