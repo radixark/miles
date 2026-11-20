@@ -17,6 +17,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+# Where a turn can stop, as ``TruncationCloser.cut_kind`` names it.
+CUT_KINDS = ("reasoning", "tool_call", "answer")
+
 
 class TruncationCloser(Protocol):
     """How one family closes, and checks, an assistant turn.
@@ -35,6 +38,11 @@ class TruncationCloser(Protocol):
         self, token_ids: list[int], span: tuple[int, int], *, tokenizer: Any, message_boundary_ids: set[int]
     ) -> list[str]:
         """Structure problems of the turn at *span*, ``(completion_start, turn_end)``; empty when well formed."""
+
+    def cut_kind(
+        self, token_ids: list[int], completion_start: int, *, tokenizer: Any, message_boundary_ids: set[int]
+    ) -> str:
+        """Which of ``CUT_KINDS`` the turn stops in: an open tool call, open reasoning, or neither."""
 
 
 @dataclass(frozen=True)
@@ -95,6 +103,15 @@ class TruncationGrammar:
         marker_is_text = bool(stack) and len(tokenizer.encode(stack[-1].close_marker, add_special_tokens=False)) > 1
         closer_text = self.closing_text(prompt_text + completion_text, stack, complete_innermost=marker_is_text)
         return tokenizer.encode(closer_text, add_special_tokens=False)
+
+    def cut_kind(
+        self, token_ids: list[int], completion_start: int, *, tokenizer: Any, message_boundary_ids: set[int]
+    ) -> str:
+        prompt_text, completion_text = _decode_turn(tokenizer, token_ids, completion_start, message_boundary_ids)
+        stack, _ = self.scan(completion_text, self.opened_by(prompt_text))
+        if any(pair in self.tool_blocks for pair in stack):
+            return "tool_call"
+        return "reasoning" if stack else "answer"
 
     def check_turn_structure(
         self, token_ids: list[int], span: tuple[int, int], *, tokenizer: Any, message_boundary_ids: set[int]
