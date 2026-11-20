@@ -65,9 +65,9 @@ class SessionServer:
         except LookupError:
             self.proxy, self.proxy_auth = None, None
 
-        # `retract` may recompute earlier rows and must return full R3; all other
-        # pause modes preserve prior rows and can request only the appended R3.
-        self.use_addition_r3 = config.pause_generation_mode != "retract"
+        # Preserve decode-time routing from earlier turns, even when retract
+        # recomputes their prefix with updated weights.
+        self.use_addition_r3 = True
         self._core = setup_session_routes(self.app, self, config, use_addition_r3=self.use_addition_r3)
 
     @asynccontextmanager
