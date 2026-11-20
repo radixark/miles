@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from miles.backends.megatron_utils.lora.native.distributed import apply_lora_dropout, branch_input, reduce_row_parallel
-from miles.backends.megatron_utils.lora.native.modules.linear import NativeLoRAAdapter, new_lora_parameter
+from miles.backends.megatron_utils.lora.native.modules.linear import LoRADraw, NativeLoRAAdapter, new_lora_parameter
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
 
 
@@ -60,14 +60,28 @@ class LoRAGroupedFC1(NativeLoRAAdapter):
         self.register_parameter(
             "w1_A",
             _mark_expert_param(
-                new_lora_parameter(reference, (rank, width), init=context.lora.a_init_method, grad_sum_group=ep_group),
+                new_lora_parameter(
+                    reference,
+                    (rank, width),
+                    init=context.lora.a_init_method,
+                    grad_sum_group=ep_group,
+                    draw=LoRADraw(f"{hf_prefix}w1_A"),
+                    seed=context.lora.seed,
+                ),
                 is_ep,
             ),
         )
         self.register_parameter(
             "w3_A",
             _mark_expert_param(
-                new_lora_parameter(reference, (rank, width), init=context.lora.a_init_method, grad_sum_group=ep_group),
+                new_lora_parameter(
+                    reference,
+                    (rank, width),
+                    init=context.lora.a_init_method,
+                    grad_sum_group=ep_group,
+                    draw=LoRADraw(f"{hf_prefix}w3_A"),
+                    seed=context.lora.seed,
+                ),
                 is_ep,
             ),
         )
@@ -148,7 +162,12 @@ class LoRAGroupedFC2(NativeLoRAAdapter):
             "w2_A",
             _mark_expert_param(
                 new_lora_parameter(
-                    reference, (num_local_experts, rank, moe_intermediate), init=context.lora.a_init_method
+                    reference,
+                    (num_local_experts, rank, moe_intermediate),
+                    init=context.lora.a_init_method,
+                    # each EP rank holds the experts from its first global index on
+                    draw=LoRADraw(f"{hf_prefix}w2_A", first_index=_ep_rank() * num_local_experts),
+                    seed=context.lora.seed,
                 ),
                 is_ep,
             ),
@@ -222,6 +241,8 @@ class LoRASharedExpertsAdapter(NativeLoRAAdapter):
                 (rank, context.transformer_config.hidden_size),
                 init=context.lora.a_init_method,
                 grad_sum_group="tp",
+                draw=LoRADraw(f"{hf_prefix}w1_A"),
+                seed=context.lora.seed,
             ),
         )
         self.register_parameter(
@@ -231,6 +252,8 @@ class LoRASharedExpertsAdapter(NativeLoRAAdapter):
                 (rank, context.transformer_config.hidden_size),
                 init=context.lora.a_init_method,
                 grad_sum_group="tp",
+                draw=LoRADraw(f"{hf_prefix}w3_A"),
+                seed=context.lora.seed,
             ),
         )
         self.register_parameter(
@@ -241,7 +264,14 @@ class LoRASharedExpertsAdapter(NativeLoRAAdapter):
         )
         self.register_parameter(
             "w2_A",
-            new_lora_parameter(fc2_reference, (num_shared, rank, local_intermediate), init=context.lora.a_init_method),
+            new_lora_parameter(
+                fc2_reference,
+                (num_shared, rank, local_intermediate),
+                init=context.lora.a_init_method,
+                # each sub-expert's intermediate is TP-sharded
+                draw=LoRADraw(f"{hf_prefix}w2_A", shard=context.tp_rank, shards=context.tp_size),
+                seed=context.lora.seed,
+            ),
         )
         self.register_parameter(
             "w2_B",
