@@ -49,21 +49,24 @@ instead of 31 min; that warmup compiled four power-of-two lengths (1024 to 8192)
 
 ## Run
 
-One launcher per model, each with the same `prepare`, `sglang` and `train` commands:
+One launcher per model family, each with the same `prepare`, `sglang` and `train` commands:
 
 | Launcher | Model | Trainer |
 |---|---|---|
 | `run_qwen3_4b_torchtitan.py` | Qwen3-4B | Adam on the device |
 | `run_qwen3_30b_a3b_torchtitan.py` | Qwen3-30B-A3B | params, grads and Adam on the host (`--optimizer-cpu-offload`), ~120 GB of host RAM per trainer process |
 | `run_glm4_7_flash_4layer_torchtitan.py` | GLM-4.7-Flash cut to its first 4 layers (`tools/prune_hf_layers.py`) | Adam on the device |
+| `run_qwen3_5_torchtitan.py --model-name Qwen3.5-4B` | Qwen3.5-4B | Adam on the device |
+| `run_qwen3_5_torchtitan.py --model-name Qwen3.5-27B` or `Qwen3.8-27B` | Qwen3.5-27B / Qwen3.8-27B | params, grads and Adam on the host (`--optimizer-cpu-offload`), ~110 GB of host RAM per trainer process |
+| `run_qwen3_5_torchtitan.py --model-name Qwen3.6-35B-A3B` | Qwen3.6-35B-A3B | params, grads and Adam on the host (`--optimizer-cpu-offload`); sglang serves EP 4; the trainer replays the engine's expert routing (`--use-rollout-routing-replay`) |
 
-The MoE trainers keep every expert on each rank (EP 1); sglang serves them with EP 4. Both MoE launchers run the
+The MoE trainers keep every expert on each rank (EP 1); sglang serves them with EP 4. The Qwen3-30B-A3B and GLM-4.7-Flash launchers run the
 smoke recipe end to end on one v7x 2x2x1 host (cold compile caches; steps 1-2): Qwen3-30B-A3B at 266-313 s a step
 with 14 s weight syncs, GLM-4.7-Flash 4-layer at 80-82 s with 0.6-0.9 s syncs. The GLM engine traces with dynamo:
 the direct tracer aborts the MLA backend at startup. Model and data
 default to `/root/models` and `/root/datasets` (`--model-dir`, `--data-dir`); `prepare` (and `train`, which runs
-it first) downloads the model, dapo-math-17k and aime-2024 there if missing, and the GLM launcher's cuts the
-checkpoint it serves. The steps below use Qwen3-4B.
+it first) downloads the model, dapo-math-17k and aime-2024 there if missing, the GLM launcher's cuts the
+checkpoint it serves, and the Qwen3.5 launcher's adds dapo-math's "Answer:" instruction to AIME for its eval. The steps below use Qwen3-4B.
 
 1. Fetch the model and datasets:
 

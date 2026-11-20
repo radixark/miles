@@ -1390,7 +1390,7 @@ def test_sglang_parallel_sizes_keep_server_args_destinations():
             "5",
         ]
     )
-    args.rollout_num_gpus_per_engine = 8
+    args.rollout_num_gpus_per_engine = 8 * args.sglang_pp_size
     args.true_on_policy_mode = False
     args.sglang_enable_dp_attention = True
     args.loss_type = "policy_loss"
@@ -2677,6 +2677,7 @@ class TestAllowStopTokenReplaceResolution:
         group = ServerGroupConfig(
             worker_type=WorkerType.REGULAR,
             num_gpus_per_engine=1,
+            pp_size=1,
             overrides={"enable_streaming_session": True},
             needs_offload=False,
         )
@@ -3323,7 +3324,7 @@ def test_sglang_parallel_sizes_use_short_namespace_fields(parallel_args, expecte
     assert not hasattr(args, "sglang_pipeline_parallel_size")
     assert not hasattr(args, "sglang_expert_parallel_size")
 
-    args.rollout_num_gpus_per_engine = 8
+    args.rollout_num_gpus_per_engine = 8 * args.sglang_pp_size
     args.true_on_policy_mode = False
     args.recompute_logprobs_via_prefill = False
     args.sglang_router_policy = None
@@ -4461,10 +4462,10 @@ class TestValidateCompileWarmup:
             ({"colocate": True}, "--colocate"),
             ({"pipeline_model_parallel_size": 2}, "--pipeline-model-parallel-size"),
             ({"multimodal_token_space_processing": True}, "--multimodal-token-space-processing"),
-            ({"use_rollout_routing_replay": True}, "--use-rollout-routing-replay"),
             ({"use_critic": True}, "--use-critic"),
             ({"custom_convert_samples_to_train_data_path": "x.py"}, "--custom-convert-samples-to-train-data-path"),
             ({"custom_reward_post_process_path": "x.py"}, "--custom-reward-post-process-path"),
+            ({"use_routing_replay": True}, "--use-routing-replay without --use-rollout-routing-replay"),
         ],
     )
     def test_a_run_the_synthetic_batch_cannot_mirror_is_refused(self, overrides: dict, flag: str) -> None:
@@ -4472,6 +4473,10 @@ class TestValidateCompileWarmup:
 
         with pytest.raises(ValueError, match=re.escape(flag)):
             validate_compile_warmup(_compile_warmup_args(**overrides))
+
+    def test_rollout_routing_replay_is_accepted(self) -> None:
+        """The warmup shard carries routing rows, so its steps compile the replay programs."""
+        validate_compile_warmup(_compile_warmup_args(use_rollout_routing_replay=True, use_routing_replay=True))
 
 
 class TestMultimodalTokenSpaceProcessingArgs:
@@ -4559,12 +4564,14 @@ class TestMultimodalTokenSpaceProcessingArgs:
         actor_group = ServerGroupConfig(
             worker_type=WorkerType.REGULAR,
             num_gpus_per_engine=1,
+            pp_size=1,
             needs_offload=False,
             overrides={"model_path": "/ckpt"},
         )
         reward_group = ServerGroupConfig(
             worker_type=WorkerType.REGULAR,
             num_gpus_per_engine=1,
+            pp_size=1,
             needs_offload=False,
             overrides={
                 "model_path": "/reward",
@@ -4601,6 +4608,7 @@ class TestMultimodalTokenSpaceProcessingArgs:
             ServerGroupConfig(
                 worker_type=WorkerType.REGULAR,
                 num_gpus_per_engine=1,
+                pp_size=1,
                 needs_offload=False,
                 overrides={"model_path": "/ckpt", "image_processor_backend": backend},
             )

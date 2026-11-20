@@ -12,9 +12,10 @@ FROM lmsysorg/sglang:${SGLANG_TPU_IMAGE_TAG}
 # ======================================== Arguments =============================================
 
 ARG SGLANG_TPU_REPO=sgl-project/sglang-torchtpu
-# sglang-torchtpu main (2026-11-06); swap the commit for a release image tag once one ships.
+# sglang-torchtpu main (2026-11-18, with sgl-project/sglang-torchtpu#2270); swap the commit for a release image tag
+# once one ships.
 # .github/workflows/tpu-contract.yml tests this commit.
-ARG SGLANG_TPU_COMMIT=108d775ea43d29f713fb486a496a46fe4e1682e6
+ARG SGLANG_TPU_COMMIT=9836f74c7ae127d763d8766e655086d084ea0b99
 ARG TORCH_VERSION=2.14.1
 ARG TORCHVISION_VERSION=0.29.1
 # the triton torch 2.14 pairs with; torchtitan imports triton unconditionally
@@ -35,13 +36,14 @@ ARG TARGETARCH
 # ====================================== Install sglang-torchtpu ============================================
 
 # The base image's /sgl-workspace/sglang is a source tree without git history, installed editable. The commit
-# pins the same python/pyproject_tpu.toml stack as the release (torch_tpu, libtpu, jax), so only the source
-# changes and the reinstall needs no dependencies.
+# pins the release's torch_tpu and libtpu but a newer jax, so the reinstall takes no dependencies except the
+# python/pyproject_tpu.toml jax and jaxlib pins, installed with their own dependencies.
 RUN SGLANG_VERSION=$(python3 -c 'import importlib.metadata as m; print(m.version("sglang"))') && \
     SGLANG_TPU_VERSION=$(python3 -c 'import importlib.metadata as m; print(m.version("sglang-tpu"))') && \
     rm -rf /sgl-workspace/sglang && git init -q /sgl-workspace/sglang && cd /sgl-workspace/sglang && \
     git fetch -q --depth 1 https://github.com/${SGLANG_TPU_REPO}.git ${SGLANG_TPU_COMMIT} && git checkout -q FETCH_HEAD && \
     cp python/pyproject_tpu.toml python/pyproject.toml && \
+    grep -oE '"jax(lib)?==[^"]+"' python/pyproject.toml | tr -d '"' | xargs pip install && \
     SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SGLANG=${SGLANG_VERSION} pip install --no-deps -e python && \
     SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SGLANG_TPU=${SGLANG_TPU_VERSION} pip install --no-deps -e .
 
