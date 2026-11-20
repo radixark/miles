@@ -290,7 +290,7 @@ def build_store_from_env(*, backend: HWBackend = HWBackend.CUDA):
     database_url_env = AMD_NEON_DATABASE_URL_ENV if backend == HWBackend.ROCM else NEON_DATABASE_URL_ENV
     dsn = os.environ.get(database_url_env)
     if dsn:
-        return NeonMetricHistoryStore(dsn=dsn)
+        return NeonMetricHistoryStore(dsn=dsn, repository=os.environ["GITHUB_REPOSITORY"])
     message = f"[CI Gate] skipped: {database_url_env} is not set; no history enforcement."
     logger.info(message)
     write_github_step_summary(message + "\n")
