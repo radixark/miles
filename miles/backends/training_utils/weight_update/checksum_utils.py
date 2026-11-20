@@ -4,6 +4,8 @@ from typing import Any
 
 import torch
 
+from miles.platforms import current_platform
+
 
 def hash_tensor_sha256(tensor: torch.Tensor) -> str:
     """Real (cryptographic) hash: a mismatch here has to mean a bug."""
@@ -15,7 +17,10 @@ def compute_send_checksums(parameters: Mapping[str, torch.Tensor], names: Sequen
     checksums = {}
     for name in names:
         tensor = parameters[name]
-        assert tensor.device.type == "cpu", "Expected registered CPU send buffers"
+        assert tensor.device.type in (
+            "cpu",
+            current_platform.device_type,
+        ), f"Expected registered host or GPU send buffers, got {tensor.device}"
         checksums[name] = hash_tensor_sha256(tensor)
     return checksums
 

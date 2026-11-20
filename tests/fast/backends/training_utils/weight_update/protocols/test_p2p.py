@@ -1,3 +1,4 @@
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -666,3 +667,61 @@ class TestWriteOrdering:
             (api.session_id(0), {api.target_address(0, "w"): [1.0, 2.0, 3.0, 4.0]}),
             (api.session_id(0), {api.target_address(0, "qk"): [5.0, 6.0, 7.0, 8.0]}),
         ]
+
+
+class TestGpuTransferBuffers:
+    def test_a_gpu_transfer_buffer_synchronizes_its_stream_before_the_native_write_reads_it(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The loads into a GPU buffer are queued kernels; the NIC would otherwise read bytes they have yet to write."""
+        real_current_stream = torch.accelerator.current_stream
+        monkeypatch.setattr(
+            torch.accelerator,
+            "current_stream",
+            lambda device=None: SimpleNamespace(
+                synchronize=lambda: (
+                    real_current_stream(device).synchronize(),
+                    p2p_sender.log.append(("synchronize", device.type)),
+                )[0]
+            ),
+        )
+        protocol = p2p_sender.make_protocol(p2p_transfer_buffer_device="gpu", check_weight_transfer_checksum=True)
+        api = make_rollout_api("cell-a", gpu_count=1)
+        p2p_sender.connect(protocol, [api])
+
+        p2p_sender.begin_sync(protocol, weight_version=1)
+        protocol.send_bucket(make_bucket("hf.w"))
+        protocol.after_base_weights()
+
+        assert protocol._transport.transfer_buffer_device.type == "cuda"
+        assert p2p_sender.log == [("load", 0, ("hf.w",)), ("synchronize", "cuda"), ("write", api.session_id(0))]
+        assert p2p_sender.transfer_engine.payload_of(api.session_id(0)) == {
+            api.target_address(0, "w"): [1.0, 2.0, 3.0, 4.0]
+        }
+        assert not protocol.cell_updaters_of_cell_id["cell-a"].is_errored
+
+    def test_gpu_transfer_buffers_reject_expandable_segments(
+        self, p2p_sender: Any, make_rollout_api: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CUDA VMM expandable-segment memory fails RDMA registration; fail fast at connect with a clear fix."""
+        monkeypatch.setenv("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:128,expandable_segments:True")
+        protocol = p2p_sender.make_protocol(p2p_transfer_buffer_device="gpu")
+
+        with pytest.raises(ValueError, match="--p2p-transfer-buffer-device cpu"):
+            p2p_sender.connect(protocol, [make_rollout_api("cell-a", gpu_count=1)])
+        assert p2p_sender.transfer_engines_created == 0
+
+    def test_explicit_cpu_overrides_a_gpu_native_transport_default(
+        self, p2p_sender: Any, p2p_protocol: ModuleType, make_rollout_api: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit --p2p-transfer-buffer-device cpu keeps buffers in host memory even if a transport defaults to GPU."""
+        native_cls = (
+            p2p_protocol.NixlTransport if p2p_sender.p2p_transport == "nixl" else p2p_protocol.MooncakeTransport
+        )
+        monkeypatch.setattr(native_cls, "transfer_buffer_device", torch.device("cuda", 0))
+        monkeypatch.setenv("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+        protocol = p2p_sender.make_protocol(p2p_transfer_buffer_device="cpu")
+
+        p2p_sender.connect(protocol, [make_rollout_api("cell-a", gpu_count=1)])
+
+        assert protocol._transport.transfer_buffer_device == torch.device("cpu")
