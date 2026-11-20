@@ -206,7 +206,7 @@ def convert_samples_to_train_data(
             "rollout_indexer_topk: the engine response meta_info lacked 'indexer_topk'."
         )
 
-    if samples[0].train_metadata is not None:
+    if any(sample.train_metadata is not None for sample in samples):
         train_data["metadata"] = [sample.train_metadata for sample in samples]
 
     if any(sample.multimodal_train_inputs is not None for sample in samples):
@@ -516,6 +516,7 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "loss_masks",
             "round_number",
             "sample_indices",
+            "metadata",
             "lineage_source_sample_indices",
             "lineage_output_indices",
             "lineage_output_counts",
