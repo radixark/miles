@@ -38,6 +38,7 @@ class LaunchArgs(Protocol):
     e2b_api_key_file: str
     modal_config_file: str
     novita_api_key_file: str
+    runta_token_file: str
     session_server_external_host: str
     miles_host_ip: str
 
@@ -203,6 +204,8 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
         provision_provider(
             env, spec, arg_path=getattr(args, spec["arg_attr"], "") or ""
         )  # config-access-exempt: provider registry selects credential fields; launchers may instead use environment credentials
+        # The backend's own check, after its SDK is known to import.
+        sandbox_common.preflight_backend(backend)
         # Preflight the env package the recipe bakes into each task image —
         # shared by every sandbox backend. The import check catches a missing
         # install; the source probe catches an install that imports fine but
