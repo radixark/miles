@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from miles.router.dynamo.api_client import GenerateProtocolError, decode_response, post_generate
+from miles.router.dynamo.config import DynamoConfig
 from miles.utils.http_utils import _post
 
 
@@ -158,19 +159,98 @@ async def test_generation_wrapper_preserves_caller_inputs(monkeypatch, frontend_
     send = AsyncMock(return_value={"text": "complete"})
     monkeypatch.setattr("miles.router.dynamo.api_client.post", send)
     args = SimpleNamespace(dynamo_config=SimpleNamespace(request_timeout_seconds=7), sglang_api_key="engine-key")
-    payload = {"input_ids": [1], "stream": False}
+    payload = {"input_ids": [1], "stream": False, "return_logprob": True}
     headers = {"X-Request-ID": "request"}
     if frontend_key:
         headers["Authorization"] = f"Bearer {frontend_key}"
     original_headers = dict(headers)
 
     assert await post_generate(args, "http://frontend/generate", payload, headers=headers) == {"text": "complete"}
-    assert send.call_args.args == ("http://frontend/generate", {"input_ids": [1], "stream": True})
+    assert send.call_args.args == (
+        "http://frontend/generate",
+        {"input_ids": [1], "stream": True, "return_logprob": True},
+    )
     assert send.call_args.kwargs["headers"] == original_headers
     assert "engine-key" not in str(send.call_args.kwargs["headers"])
     assert send.call_args.kwargs["response_timeout"] == 7
-    assert payload == {"input_ids": [1], "stream": False}
+    assert payload == {"input_ids": [1], "stream": False, "return_logprob": True}
     assert headers == original_headers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("setting", ["missing", None, False])
+async def test_generation_requires_logprobs_before_dispatch(monkeypatch, setting):
+    send = AsyncMock()
+    monkeypatch.setattr("miles.router.dynamo.api_client.post", send)
+    payload = {"input_ids": [1]}
+    if setting != "missing":
+        payload["return_logprob"] = setting
+    args = SimpleNamespace(dynamo_config=SimpleNamespace(request_timeout_seconds=None))
+    with pytest.raises(GenerateProtocolError, match="requires return_logprob=True"):
+        await post_generate(args, "http://frontend/generate", payload)
+    send.assert_not_awaited()
+
+
+@pytest.fixture
+def dynamo_config():
+    return DynamoConfig(
+        namespace="test-run",
+        discovery={"backend": "etcd", "endpoints": [{"host": "localhost", "port": 2379}]},
+        pins={"dynamo": "a" * 40, "sglang": "b" * 40},
+    )
+
+
+@pytest.mark.asyncio
+async def test_default_deadline_allows_long_generation_and_pause(monkeypatch, dynamo_config):
+    loop = asyncio.get_running_loop()
+    clock = [loop.time()]
+    calls = []
+
+    class PausedStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield chunk(10, 1, text="a").encode()
+            clock[0] += 601
+            # Let an old 600-second total deadline fire if it is still scheduled.
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            yield (chunk(11, 2, text="b", terminal=True) + "data: [DONE]\n\n").encode()
+
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=PausedStream())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+
+        async def send(url, payload, **kwargs):
+            return await _post(client, url, payload, max_retries=1, **kwargs)
+
+        monkeypatch.setattr("miles.router.dynamo.api_client.post", send)
+        with monkeypatch.context() as timing:
+            timing.setattr(loop, "time", lambda: clock[0])
+            output = await post_generate(
+                SimpleNamespace(dynamo_config=dynamo_config), "http://frontend/generate", {"return_logprob": True}
+            )
+    assert output["text"] == "ab"
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_explicit_deadline_still_bounds_generation(monkeypatch, dynamo_config):
+    async def handle(request):
+        await asyncio.Event().wait()
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+
+        async def send(url, payload, **kwargs):
+            return await _post(client, url, payload, max_retries=1, **kwargs)
+
+        monkeypatch.setattr("miles.router.dynamo.api_client.post", send)
+        with pytest.raises(TimeoutError):
+            await post_generate(
+                SimpleNamespace(dynamo_config=dynamo_config.model_copy(update={"request_timeout_seconds": 0.01})),
+                "http://frontend/generate",
+                {"return_logprob": True},
+            )
 
 
 @pytest.mark.asyncio

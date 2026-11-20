@@ -123,6 +123,8 @@ def test_native_sidecar_arguments_preserve_api_key(config, api_key, sidecar_ctx,
         base_gpu_id=0,
         sglang_overrides=overrides,
         num_gpus_per_engine=2,
+        tp_size=2,
+        pp_size=1,
         dist_init_addr="127.0.0.1:18003",
         nccl_port=18004,
         host="127.0.0.1",
@@ -191,7 +193,7 @@ def test_sidecar_rejects_group_streaming_opt_out(config, sidecar_ctx, group):
 
 @pytest.fixture
 def group():
-    return ServerGroupConfig(worker_type=WorkerType.REGULAR, num_gpus_per_engine=2, needs_offload=False)
+    return ServerGroupConfig(worker_type=WorkerType.REGULAR, num_gpus_per_engine=2, pp_size=1, needs_offload=False)
 
 
 @pytest.mark.parametrize("dp_size", [1, 2, 4])

@@ -23,6 +23,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /data/miles_ci:/data/miles_ci
+      - /data/miles_ci/runner-hooks/job-container-docker:/opt/runner-hooks/job-container-docker:ro
       # it requires this folder
       - /home/runner/externals:/home/runner/externals
     deploy:
@@ -30,6 +31,9 @@ services:
     restart: always
     environment:
       RUNNER_ALLOW_RUNASROOT: "1"
+      ACTIONS_RUNNER_HOOK_JOB_STARTED: /data/miles_ci/runner-hooks/remove-foreign-checkouts.sh
+      # The runner resolves `docker` on PATH: the hook strips the host docker socket from job containers.
+      PATH: /opt/runner-hooks/job-container-docker:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     privileged: true
     user: root
     # ref: https://github.com/actions/runner/issues/367#issuecomment-2007558723

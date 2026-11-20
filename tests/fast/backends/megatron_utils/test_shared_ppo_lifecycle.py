@@ -600,7 +600,7 @@ def test_skip_actor_forward_only_consumes_preloaded_rollout_replay_during_traini
     manager.enabled = True
     manager.enable_check_replay_result = False
     queued_top_indices = []
-    replay = Mock()
+    replay = Mock(stream_idx=0)
     replay.record.side_effect = queued_top_indices.append
     replay.pop_backward.side_effect = lambda: queued_top_indices.pop(0)
     manager.replays = [replay]
@@ -623,8 +623,6 @@ def test_skip_actor_forward_only_consumes_preloaded_rollout_replay_during_traini
 
     attach_replay_data = Mock(side_effect=preload_replay_data)
     monkeypatch.setattr(actor_module, "attach_replay_data", attach_replay_data)
-    # The stage's replay blocks come from its Megatron layout, which this worker does not build.
-    monkeypatch.setattr(actor_module, "replay_blocks", lambda manager, models: [(0, 1)])
 
     def train_with_replay(*_args, **_kwargs):
         topk_fn = manager.get_topk_fn(

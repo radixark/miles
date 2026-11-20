@@ -46,6 +46,10 @@ from miles.backends.training_utils.types import TrainStepOutcome
 from miles.utils.args.runtime import TrainerConfig
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
+from miles.utils.bf16_stochastic_rounding import (
+    is_bf16_stochastic_rounding_enabled,
+    validate_bf16_stochastic_rounding_optimizer,
+)
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory
@@ -237,6 +241,10 @@ def setup_model_and_optimizer(
             model_chunks=model,
             use_gloo_process_groups=args.backend.use_gloo_process_groups,
         )
+
+    if is_bf16_stochastic_rounding_enabled():
+        # The flag acts at Megatron's master-to-BF16 cast sites; refuse an optimizer that casts elsewhere.
+        validate_bf16_stochastic_rounding_optimizer(optimizer)
 
     if args.stream_optimizer_state_to_disk and not _is_muon_optimizer(config.optimizer):
         # Muon took the chunked-offloader route above; this store is DistOpt-only.

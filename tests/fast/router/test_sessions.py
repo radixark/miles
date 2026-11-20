@@ -648,6 +648,7 @@ def _serve_router(extra_args: dict | None = None):
             "apply_chat_template_kwargs": {"enable_thinking": False},
             "tito_model": "default",
             "allow_stop_token_replace": False,
+            "allow_truncated_continuation": False,
             "pause_generation_mode": "retract",
         }
         config = make_session_server_config(

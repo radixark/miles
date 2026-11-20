@@ -1,4 +1,5 @@
 import importlib.util
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -34,6 +35,9 @@ def raw_converter():
 @pytest.fixture(scope="module")
 def bridge_module():
     pytest.importorskip("mbridge")
+    # the bridge imports its mixin by package path; loading the mixin's file keeps the package's other bridges out
+    mixin = "miles_plugins.mbridge.deepseek_mtp"
+    sys.modules.setdefault(mixin, _load_module("miles_plugins/mbridge/deepseek_mtp.py", mixin))
     return _load_module("miles_plugins/mbridge/deepseek_v32.py", "dsa_mbridge_under_test")
 
 

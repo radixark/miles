@@ -31,18 +31,21 @@ from miles.backends.training_utils.loss.objective import (
     get_values,
     log_train_advantage_computation_event,
 )
-from miles.backends.training_utils.metrics import train_dump
+from miles.backends.training_utils.metrics import train_dump, train_token_reporter
 from miles.backends.training_utils.metrics.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
 from miles.backends.training_utils.model_companion import (
     ModelCompanionInstallationUtils,
     ModelCompanionWeightVersionUtils,
 )
-from miles.backends.training_utils.replay.data import attach_replay_data, register_replay_list_sequential
+from miles.backends.training_utils.replay.data import (
+    attach_replay_data,
+    register_replay_list_sequential,
+    stream_blocks,
+)
 from miles.backends.training_utils.types import TrainStepOutput
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
-from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor, WeightUpdateOutput
@@ -96,7 +99,7 @@ from .model import (
 from .named_weights import named_params_and_buffers
 from .optimizer_utils import reset_optimizer_state
 from .parallel import verify_megatron_parallel_state
-from .replay_utils import register_replay_list_moe, replay_blocks
+from .replay_utils import assign_routed_experts_streams
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
@@ -155,7 +158,6 @@ class MegatronTrainRayActor(TrainRayActor):
 
         for m in all_replay_managers:
             m.register_replay_list_func = register_replay_list_sequential
-        routing_replay_manager.register_replay_list_func = register_replay_list_moe
 
         init(
             args,
@@ -181,8 +183,6 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if self._is_first_replica_megatron_main_rank:
             init_tracking(args, primary=False)
-
-        dashboard_hooks.register_train_actor(args)
 
         unsupported = {"train_actor", "train_log_probs"} & set(args.profile_target)
         if unsupported and args.backend.use_pytorch_profiler:
@@ -232,6 +232,8 @@ class MegatronTrainRayActor(TrainRayActor):
         )
         with ckpt_load_config.apply(args.backend):
             self.model, self.optimizer, self.opt_param_scheduler = build_model_and_optimizer(args, role=role)
+        if routing_replay_manager.enabled and args.use_rollout_routing_replay:
+            assign_routed_experts_streams(routing_replay_manager.replays, self.model)
         self._post_init_random_state = RandomState.capture()
 
         parallel_state = get_parallel_state()
@@ -783,13 +785,12 @@ class MegatronTrainRayActor(TrainRayActor):
                 attach_replay_data(
                     m,
                     args=self.args,
-                    models=self.model,
                     data_iterator=data_iterator,
                     num_microbatches=num_microbatches,
                     rollout_data=rollout_data,
                     output_store=self.output_store,
                     sequence_first=m is routing_replay_manager,
-                    blocks=replay_blocks(m, self.model),
+                    blocks=stream_blocks(m.replays),
                 )
 
         with inverse_timer("train_wait"), timer("train"):
@@ -887,6 +888,8 @@ class MegatronTrainRayActor(TrainRayActor):
         train_dump.save_debug_train_data(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
 
         if train_step_outcome == TrainStepOutcome.NORMAL:
+            # a discarded attempt is retried under the same rollout_id; only the applied one is reported
+            train_token_reporter.report_train_tokens(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
             # update the cpu actor weight to the latest model
             if self._enable_weight_backup:
                 self.weights_backuper.backup("actor")

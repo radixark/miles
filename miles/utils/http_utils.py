@@ -496,6 +496,9 @@ async def post(
             # A completed decoder failure is not an actor outage; do not replay it locally.
             raise
         except Exception as e:
+            if response_decoder is not None and isinstance(e, (TimeoutError, httpx.HTTPError)):
+                # The actor already exhausted this streamed HTTP attempt budget.
+                raise
             logger.info(f"[http_utils] Distributed POST failed, falling back to local: {e} (url={url})")
             # fall through to local
 

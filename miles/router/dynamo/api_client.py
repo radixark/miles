@@ -111,6 +111,9 @@ async def post_generate(args, url: str, payload: dict, *, headers=None) -> dict:
     config = args.dynamo_config
     if config is None:
         return await post(url, payload, headers=headers)
+    # Native incremental aborts echo only the last output ID; cumulative logprobs restore the full result.
+    if payload.get("return_logprob") is not True:
+        raise GenerateProtocolError("Dynamo native generation requires return_logprob=True for cumulative aborts")
     # Caller headers authenticate the frontend hop; each sidecar owns its engine credentials.
     # Native response assembly requires streaming even when the rollout caller requests a complete result.
     return await post(
