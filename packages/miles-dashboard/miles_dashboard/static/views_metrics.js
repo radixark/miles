@@ -1,5 +1,5 @@
 import { api } from "./api.js";
-import { el, setViewCleanup } from "./app.js";
+import { el, poll } from "./app.js";
 import { drawChart, drawMultiLine, SERIES_COLORS } from "./charts.js";
 
 // wandb-shaped L0: metric names come verbatim from the tracking fan-out, so
@@ -80,7 +80,7 @@ function orderedCategories(meta) {
   return cats;
 }
 
-export async function renderMetrics(view, meta) {
+export async function renderMetrics(view, meta, signal) {
   const cats = orderedCategories(meta);
   let active = sessionStorage.getItem("metricsCategory");
   if (!cats.includes(active)) active = cats[0] ?? null;
@@ -128,8 +128,9 @@ export async function renderMetrics(view, meta) {
   // slots persist across refreshes; a chart repaints ONLY when its data
   // changed (signature check), so a live page sits visually still between
   // real updates instead of flickering on every poll
-  const slots = new Map(); // key -> {canvas, status, signature, lastSeries?}
+  const slots = new Map(); // key -> {canvas, status, signature, round, lastSeries?}
   let epoch = 0;
+  let round = 0;
 
   // sglang legend: one checkbox per engine, all on by default; unchecking
   // hides that engine's line in every chart (and drops it from the y-scale)
@@ -191,6 +192,7 @@ export async function renderMetrics(view, meta) {
   };
 
   function buildPanels() {
+    epoch++;
     slots.clear();
     legendPanel.style.display = active === "sglang" ? "" : "none";
     if (active === "sglang") renderLegend(); // toggle must exist before data arrives
@@ -203,21 +205,25 @@ export async function renderMetrics(view, meta) {
       ...keys.map((key) => {
         const canvas = el("canvas", { class: "chart" });
         const status = el("p", { class: "muted" }, ["loading…"]);
-        slots.set(key, { canvas, status, signature: null });
+        slots.set(key, { canvas, status, signature: null, round: 0 });
         const title = el("p", { class: "chart-title", title: describeMetric(key) }, [key]);
         return el("div", { class: "panel" }, [title, status, canvas]);
       }),
     );
-    refresh();
+    return refresh();
   }
 
   function refresh() {
-    const current = ++epoch;
+    const current = epoch;
+    const started = ++round;
+    const requests = [];
     if (active === "sglang") {
       for (const [key, slot] of slots.entries()) {
-        api("/api/timeline/engine_series", { metric: key, max_points: 1000, per_dp_rank: perDpRank })
+        const request = api("/api/timeline/engine_series", { metric: key, max_points: 1000, per_dp_rank: perDpRank })
           .then(({ series }) => {
-            if (current !== epoch) return;
+            // a rebuild's refresh can overlap a poll round; a chart keeps the newer round's data
+            if (current !== epoch || started < slot.round) return;
+            slot.round = started;
             const signature = series.map((s) => `${seriesLabel(s)}:${s.ts.length}:${s.ts.at(-1)}`).join("|");
             if (signature === slot.signature) return;
             slot.signature = signature;
@@ -241,8 +247,9 @@ export async function renderMetrics(view, meta) {
           .catch((err) => {
             if (current === epoch && slot.signature === null) slot.status.textContent = String(err);
           });
+        requests.push(request);
       }
-      return;
+      return Promise.all(requests);
     }
     const byAxis = new Map();
     for (const key of slots.keys()) {
@@ -251,12 +258,13 @@ export async function renderMetrics(view, meta) {
       byAxis.get(axis).push(key);
     }
     for (const [axis, keys] of byAxis.entries()) {
-      api("/api/metrics", { keys: keys.join(","), x: axis === "dump" ? "rollout/step" : axis })
+      const request = api("/api/metrics", { keys: keys.join(","), x: axis === "dump" ? "rollout/step" : axis })
         .then((series) => {
           if (current !== epoch) return; // category/filter changed meanwhile
           for (const key of keys) {
             const slot = slots.get(key);
-            if (!slot) continue;
+            if (!slot || started < slot.round) continue;
+            slot.round = started;
             const s = series[key] ?? { x: [], y: [] };
             const signature = `${s.x.length}:${s.x.at(-1)}:${s.y.at(-1)}`;
             if (signature === slot.signature) continue; // unchanged: no repaint
@@ -275,7 +283,9 @@ export async function renderMetrics(view, meta) {
             if (slot && slot.signature === null) slot.status.textContent = String(err);
           }
         });
+      requests.push(request);
     }
+    return Promise.all(requests);
   }
 
   filterInput.oninput = () => {
@@ -295,12 +305,7 @@ export async function renderMetrics(view, meta) {
     ]),
   );
   renderCategories();
-  buildPanels();
+  await buildPanels();
 
-  if (meta.mode === "follow") {
-    // refresh is fire-and-forget and idempotent: unchanged charts skip the
-    // repaint entirely, so the live page sits still between real updates
-    const intervalId = setInterval(refresh, 5000);
-    setViewCleanup(() => clearInterval(intervalId));
-  }
+  if (meta.mode === "follow") poll(refresh, 5000, signal);
 }

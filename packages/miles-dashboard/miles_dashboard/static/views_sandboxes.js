@@ -1,11 +1,11 @@
 import { api } from "./api.js";
-import { el, setViewCleanup, statBox } from "./app.js";
+import { el, poll, statBox } from "./app.js";
 
 const REFRESH_MS = 5000;
 
 const fmtAgo = (seconds) => (seconds < 60 ? `${Math.round(seconds)} s ago` : `${Math.round(seconds / 60)} min ago`);
 
-export async function renderSandboxes(view, meta, route) {
+export async function renderSandboxes(view, meta, route, signal) {
   const staleMinutes = route.staleMinutes ?? sessionStorage.getItem("sandboxStaleMin") ?? "5";
   const staleInput = el("input", { type: "number", min: "1", value: staleMinutes });
   const counts = el("div", { class: "statgrid" });
@@ -53,8 +53,5 @@ export async function renderSandboxes(view, meta, route) {
 
   staleInput.onchange = refresh;
   await refresh();
-  if (meta.mode === "follow") {
-    const timer = setInterval(() => refresh().catch(() => {}), REFRESH_MS);
-    setViewCleanup(() => clearInterval(timer));
-  }
+  if (meta.mode === "follow") poll(refresh, REFRESH_MS, signal);
 }
