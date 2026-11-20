@@ -300,6 +300,7 @@ def _close_every_cut(tito: TITOTokenizer, case: _Case, sampled: list[int]) -> li
     """Close the turn at every cut and check each closer; return the closed sequences."""
     grammar = _grammar(tito)
     spans = _marker_spans(grammar, case.generation_prompt, case.completion)
+    openers = [pair.open for pair in (grammar.think, *grammar.tool_blocks)]
     start = len(case.prompt_ids)
     # A complete turn ends with its end-of-turn token, which a truncated turn never samples.
     last_cut = len(sampled) if grammar.end_of_turn is None else len(sampled) - 1
@@ -310,8 +311,16 @@ def _close_every_cut(tito: TITOTokenizer, case: _Case, sampled: list[int]) -> li
         token_ids = case.prompt_ids + sampled[:cut]
         closer = tito.close_truncated_turn(token_ids, start)
 
-        expected = _expected_closing_markers(grammar, spans, len(case.generation_prompt) + len(sampled_text))
-        assert _closing_markers(grammar, tito.tokenizer.decode(closer)) == expected, f"cut after {sampled_text!r}"
+        cut_offset = len(case.generation_prompt) + len(sampled_text)
+        expected = _expected_closing_markers(grammar, spans, cut_offset)
+        # A cut inside a closing marker leaves its start sampled, and the closer adds only the rest;
+        # a start that may as well begin an opening marker, such as a lone "<", stays sampled text.
+        text = case.generation_prompt + sampled_text
+        tail_start = min([cut_offset, *(s.close_start for s in spans if s.open_end <= cut_offset < s.close_end)])
+        if any(opener.startswith(text[tail_start:]) for opener in openers):
+            tail_start = cut_offset
+        tail = text[tail_start:] + tito.tokenizer.decode(closer)
+        assert _closing_markers(grammar, tail) == expected, f"cut after {sampled_text!r}"
         closed = token_ids + closer
         assert tito.check_turn_structure(closed, (start, len(closed))) == [], f"cut after {sampled_text!r}"
         closed_turns.append(closed)
@@ -472,6 +481,17 @@ def test_inner_tool_marker_counts_only_inside_the_outer_block():
 def test_closing_marker_without_open_structure_is_ignored():
     stack, problems = _GRAMMAR.scan("a </tool_call> b", ())
     assert stack == [] and len(problems) == 1
+
+
+def test_closing_text_completes_a_marker_already_started():
+    assert _GRAMMAR.closing_text("<tool_call>\nA\n</tool_", [_TOOL_CALL], complete_innermost=True) == "call><e>"
+    assert _GRAMMAR.closing_text("<tool_call>\nA</to", [_TOOL_CALL], complete_innermost=True) == "ol_call><e>"
+    # Only the innermost structure can be cut inside its marker.
+    stack = [_GRAMMAR.think, _TOOL_CALL]
+    assert _GRAMMAR.closing_text("<think>\nR</", stack, complete_innermost=True) == "tool_call>\n</think>\n\n<e>"
+    assert _GRAMMAR.closing_text("<tool_call>\nA\n</tool_", [_TOOL_CALL]) == "\n</tool_call><e>"
+    # A lone "<" may as well start an opening marker, so it stays sampled text.
+    assert _GRAMMAR.closing_text("<tool_call>\nA\n<", [_TOOL_CALL], complete_innermost=True) == "\n</tool_call><e>"
 
 
 def test_closing_text_skips_whitespace_already_sampled():
