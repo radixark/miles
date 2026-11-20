@@ -1,11 +1,11 @@
 """Through the session server, the R3 the trainer consumes is the same through the output store as inline.
 
 Two two-rollout runs differ only in --use-output-store: Qwen3-30B-A3B on four colocated GPUs (TP 2 x CP 2, EP 4)
-with session_verify_agent driving each multi-turn session, whose schedule appends user, system, tool and assistant
-turns and rolls back. Deterministic inference with fixed per-sample seeds and one running request at a time makes
-both runs hold the same sessions, and --lr 0 keeps the weights, so every rollout does. The rolled-back picker
-leaves one sample per session. --save-debug-train-data keeps rollout_routed_experts as routing replay consumed it on
-each rank; every sample must come back with the same tokens and a byte-identical R3 on each CP rank.
+with session_verify_agent driving each multi-turn session through its spec rollout, which appends user, system, tool
+and assistant turns and rolls back. Deterministic inference with fixed per-sample seeds and one running request at a
+time makes both runs hold the same sessions, and --lr 0 keeps the weights, so every rollout does. The rolled-back
+picker leaves one sample per session. --save-debug-train-data keeps rollout_routed_experts as routing replay
+consumed it on each rank; every sample must come back with the same tokens and a byte-identical R3 on each CP rank.
 """
 
 import os
@@ -16,10 +16,11 @@ from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.megatron.output_store_r3 import assert_same_trainer_r3, save_debug_train_data_arg
 
 from miles.utils.external_utils import command_utils
-from miles.utils.test_utils.session_verify_runner import PROMPT_DATA_PATH, _ensure_prompt_data
+from miles.utils.test_utils.session_verify_agent import SessionVerifyKind
+from miles.utils.test_utils.session_verify_runner import _ensure_prompt_data
 
 register_cuda_ci(
-    est_time=1200, suite="stage-c-4-gpu-h200", labels=["mooncake", "replay"], hardware=["hopper"], num_gpus=4
+    est_time=1100, suite="stage-c-4-gpu-h200", labels=["mooncake", "replay"], hardware=["hopper"], num_gpus=4
 )
 
 MODEL_NAME = "Qwen3-30B-A3B"
@@ -35,16 +36,16 @@ def prepare() -> None:
     U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
-    # The agent synthesizes its own conversation; the rollout still needs a prompt file.
-    _ensure_prompt_data()
 
 
 def execute(mode: str) -> None:
     U = command_utils.default_config().create_backend()
+    # The agent synthesizes its own conversation; the rollout still needs a prompt file.
+    prompt_data = _ensure_prompt_data((SessionVerifyKind.SPEC,), rollout_batch_size=1)
     train_args = (
         f"--hf-checkpoint /root/models/{MODEL_NAME}/ --ref-load /root/models/{MODEL_NAME}/ "
         "--megatron-to-hf-mode bridge "
-        f"--prompt-data {PROMPT_DATA_PATH} --input-key messages --rm-type random "
+        f"--prompt-data {prompt_data} --input-key messages --rm-type random "
         f"--num-rollout {NUM_ROLLOUT} --rollout-batch-size 1 --n-samples-per-prompt {SESSIONS_PER_ROLLOUT} "
         f"--global-batch-size {SESSIONS_PER_ROLLOUT} "
         "--rollout-max-response-len 1024 --rollout-temperature 0.7 "
@@ -57,7 +58,6 @@ def execute(mode: str) -> None:
         "--custom-generate-function-path miles.utils.test_utils.session_verify_agent.generate "
         "--custom-agent-function-path miles.utils.test_utils.session_verify_agent.run_agent "
         "--tito-model qwen3 --sglang-reasoning-parser qwen3 --sglang-tool-call-parser qwen25 "
-        "--session-verify-cycles 2 --tool-call-failure-mode append_tool "
         "--use-rollout-routing-replay "
         f"{save_debug_train_data_arg(DUMP_DIR, mode)}"
         f"{command_utils.get_mooncake_object_store_args()} "

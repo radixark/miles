@@ -7,7 +7,7 @@ import torch
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 register_cuda_ci(est_time=100, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"])
-register_rocm_ci(est_time=30, suite="nightly-stage-c-2-gpu-mi350", labels=["precision"])
+register_rocm_ci(est_time=30, suite="stage-c-2-gpu-mi350", labels=["precision"], nightly=True)
 
 pytest.importorskip("tilelang")
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")

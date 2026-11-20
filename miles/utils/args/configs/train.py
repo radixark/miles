@@ -94,6 +94,19 @@ class TrainConfig(BaseConfig):
             help="The method to convert megatron weights to hugging face weights for SGLang.",
         ),
     ] = "raw"
+    routed_expert_qat: A[
+        str | None,
+        Arg(
+            choices=["mxfp4"],
+            help=(
+                "Round the routed-expert weights onto this format's grid at the start of every Megatron "
+                "forward-backward pass, so that each forward computes with them (quantization-aware "
+                "training), to match a rollout that serves them in that format (see "
+                "--rollout-routed-expert-format). The BF16 parameters are rounded in place; the fp32 master "
+                "weights and optimizer states keep their precision."
+            ),
+        ),
+    ] = None
     dsa_attention_backend: A[
         str,
         Arg(
@@ -167,7 +180,8 @@ class TrainConfig(BaseConfig):
                 " different log-probs, ratios and KL. 'fused' does not support --true-on-policy-mode or "
                 "sampling-support replay (--rollout-top-p below 1 or a positive --rollout-top-k). 'fused_lm_head' is"
                 " 'fused' without the logits buffer: the output layer runs --log-probs-chunk-size rows at a time"
-                " (default 4096)."
+                " (default 4096). On TPU, losses on padded rows with --entropy-coef 0 and TP 1 score with a "
+                "compiled op that keeps no softmax for backward (loss/hub/row_log_prob.py) instead."
             ),
         ),
     ] = "torch"

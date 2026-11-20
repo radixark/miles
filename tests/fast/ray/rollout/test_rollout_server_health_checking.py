@@ -36,6 +36,7 @@ def _make_meta(cell_id: str = "cell-0", **overrides) -> ServerCellMetadata:
             "worker_name": f"{cell_id}-0",
             "needs_offload": False,
             "update_weights": True,
+            "health_check_timeout_seconds": 20,
             "workers_hash": "pseudo-hash-0",
             **overrides,
         }

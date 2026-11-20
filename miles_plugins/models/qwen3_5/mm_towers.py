@@ -43,10 +43,10 @@ def check_multimodal_setup(config, sglang) -> None:
     ):
         raise ValueError("mRoPE with --apply-rope-fusion needs Megatron's fused mRoPE kernel; pass --no-rope-fusion")
     # The engine shards the vision tower across its tensor-parallel ranks unless the DP encoder is on; the trainer
-    # runs it whole. The launcher sizes TP from the group's GPUs unless the group overrides tp_size.
+    # runs it whole. The launcher sizes TP from the group's GPUs per pipeline stage unless the group overrides tp_size.
     for model in sglang.models:
         for group in model.server_groups if model.update_weights else ():
-            tp_size = group.overrides.get("tp_size", group.num_gpus_per_engine)
+            tp_size = group.overrides.get("tp_size", group.tp_size)
             if tp_size > 1 and not (sglang.base_args | group.overrides).get("mm_enable_dp_encoder"):
                 logger.warning(
                     "tensor-parallel rollout engines shard the vision tower while the trainer runs it whole, so its "

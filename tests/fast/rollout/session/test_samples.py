@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pybase64
 import pytest
+from tests.fast.fixtures.score_centering_fixtures import _flat_sampling_mask
 from tests.fast.utils.output_store.test_plan import Ref, Spec, fake_store_refs, read_rows, stored_parts
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
@@ -93,9 +94,10 @@ def _make_record(
     if weight_versions is not None:
         meta_info["weight_versions"] = weight_versions
     if sampling_masks is not None:
-        request["return_sampling_mask"] = True
-        meta_info["output_token_sampling_mask"] = sampling_masks
-        meta_info["output_token_sampling_logprobs"] = sampling_log_probs
+        request.update(
+            return_sampling_mask=True, return_flat_raw_sampling_mask=True, return_flat_raw_sampling_mask_b64=True
+        )
+        meta_info |= _flat_sampling_mask(sampling_masks, sampling_log_probs)
     if prefill_weight_versions is not None:
         meta_info["prefill_weight_versions"] = prefill_weight_versions
     return SessionRecord(
@@ -251,12 +253,12 @@ class TestComputeSamplesFromRecords:
             output_token_ids=[10, 11],
             output_log_probs=[-2.5, -2.6],
             sampling_masks=[[10, 4, 7], [11, 3]],
-            sampling_log_probs=[-0.5, -0.6],
+            sampling_log_probs=[-0.5, -0.625],
         )
 
         (sample,) = compute_samples_from_openai_records(_ARGS, [record], tok)
 
-        assert sample.rollout_log_probs == [-0.5, -0.6]
+        assert sample.rollout_log_probs == [-0.5, -0.625]
         ids, offsets = sample.rollout_sampling_mask._as_tensors()
         assert ids.tolist() == [10, 4, 7, 11, 3]
         assert offsets.tolist() == [0, 3, 5]
@@ -278,7 +280,7 @@ class TestComputeSamplesFromRecords:
         record = _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10])
         record.request["return_sampling_mask"] = True
 
-        with pytest.raises(ValueError, match="missing output_token_sampling_mask"):
+        with pytest.raises(ValueError, match="missing output_token_sampling_mask_flat_b64"):
             compute_samples_from_openai_records(_ARGS, [record], tok)
 
     def test_later_abort_preserves_terminal_status(self):
@@ -891,8 +893,9 @@ class TestAdditionR3Assembly:
         with pytest.raises(ValueError, match="record 1 starts at row 4; expected 5"):
             _merge_addition(records, accumulated, max_trim_tokens=2)
 
-    def test_intermediate_truncated_turn_bounds_materialization(self):
-        """A non-COMPLETED turn bounds required rows before later patches."""
+    def test_intermediate_truncated_turn_merges_through(self):
+        """A length turn continued by a later turn merges like a completed one,
+        so the later turn's patch is required too."""
         records = [
             _make_record([1, 2, 3], [10, 11], routed_experts=_r3_patch(_r3_rows(4, 0)), routed_experts_start_len=0),
             _make_record(
@@ -902,15 +905,20 @@ class TestAdditionR3Assembly:
                 routed_experts=_r3_patch(_r3_rows(3, 16)),
                 routed_experts_start_len=4,
             ),
-            _make_record([1, 2, 3, 10, 11, 4, 20, 21, 5], [30, 31]),
+            _make_record(
+                [1, 2, 3, 10, 11, 4, 20, 21, 5],
+                [30, 31],
+                routed_experts=_r3_patch(_r3_rows(3, 28)),
+                routed_experts_start_len=7,
+            ),
         ]
         accumulated = [1, 2, 3, 10, 11, 4, 20, 21, 5, 30, 31]
 
         merged = _merge_addition(records, accumulated)
 
-        assert merged.status == Sample.Status.TRUNCATED
-        assert merged.tokens == accumulated[:8]
-        expected = np.concatenate([_r3_rows(4, 0), _r3_rows(3, 16)])
+        assert merged.status == Sample.Status.COMPLETED
+        assert merged.tokens == accumulated
+        expected = np.concatenate([_r3_rows(4, 0), _r3_rows(3, 16), _r3_rows(3, 28)])
         assert np.array_equal(merged.rollout_routed_experts, expected)
 
     def test_missing_required_patch_raises(self):
