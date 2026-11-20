@@ -10,7 +10,7 @@ from tests.fast.utils.chat_template_utils.tito_families import load_family_tito
 from miles.rollout.base_types import GenerateFnOutput
 from miles.utils.chat_template_utils.tito_tokenizer import VALID_APPEND_ROLES, TITOTokenizerType
 from miles.utils.chat_template_utils.truncation import CUT_KINDS
-from miles.utils.test_utils import session_verify_agent
+from miles.utils.test_utils import session_truncation, session_verify_agent
 from miles.utils.test_utils.session_verify_agent import (
     ASSISTANT_INPUT_FOLLOWUP_TEXT,
     ASSISTANT_INPUT_TEXTS,
@@ -767,6 +767,25 @@ def _run_truncate(monkeypatch, session, cut_kind, *, tito_model="qwen3", allowed
             },
         )
     )
+
+
+def test_cut_length_finds_a_stretch_between_two_grid_points(qwen3_tito):
+    """A tool call much shorter than the reasoning before it lies between two of the sampled prefix lengths."""
+
+    def encode(text):
+        return qwen3_tito.tokenizer.encode(text, add_special_tokens=False)
+
+    prompt = encode("<|im_start|>assistant\n")
+    reply = encode("<think>\n" + "step " * 600 + "\n</think>\n\n<tool_call>\n{}\n</tool_call><|im_end|>")
+    record = {
+        "request": {"input_ids": prompt},
+        "response": {"choices": [{"meta_info": {"output_token_logprobs": [[0.0, token] for token in reply]}}]},
+    }
+
+    length = session_truncation.cut_length(qwen3_tito, record, "tool_call")
+
+    assert length is not None
+    assert qwen3_tito.cut_kind(prompt + reply[:length], len(prompt)) == "tool_call"
 
 
 @pytest.mark.parametrize("cut_kind", CUT_KINDS)

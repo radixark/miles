@@ -8,7 +8,6 @@ of a cut is read from the cut turn's tokens, not from the plan.
 
 from __future__ import annotations
 
-import functools
 from itertools import pairwise
 
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, get_tito_tokenizer
@@ -18,7 +17,6 @@ from miles.utils.processing_utils import load_tokenizer
 _CUT_CANDIDATES = 64
 
 
-@functools.cache
 def load_tito_tokenizer(hf_checkpoint: str, tito_model: str) -> TITOTokenizer:
     """The family's TITO tokenizer; closing a turn does not depend on template kwargs."""
     return get_tito_tokenizer(load_tokenizer(hf_checkpoint, trust_remote_code=True), tokenizer_type=tito_model)
@@ -48,18 +46,23 @@ def cut_length(tito: TITOTokenizer, record: dict, kind: str) -> int | None:
     """
     prompt, reply = prompt_ids(record), sampled_ids(record)
     # The last token is the stop token; a cut turn never ends with it.
-    lengths = sorted({1 + i * (len(reply) - 2) // _CUT_CANDIDATES for i in range(_CUT_CANDIDATES + 1)})
-    lengths = [length for length in lengths if 1 <= length < len(reply)]
-    best: list[int] = []
-    stretch: list[int] = []
-    for length in lengths:
-        if tito.cut_kind(prompt + reply[:length], len(prompt)) == kind:
-            stretch.append(length)
-            if len(stretch) > len(best):
-                best = list(stretch)
-        else:
-            stretch = []
-    return best[len(best) // 2] if best else None
+    grid = sorted({1 + i * (len(reply) - 2) // _CUT_CANDIDATES for i in range(_CUT_CANDIDATES + 1)})
+    # A stretch shorter than the grid's spacing can lie between two of its lengths; then look at every length.
+    for lengths in (grid, range(1, len(reply))):
+        best: list[int] = []
+        stretch: list[int] = []
+        for length in lengths:
+            if not 1 <= length < len(reply):
+                continue
+            if tito.cut_kind(prompt + reply[:length], len(prompt)) == kind:
+                stretch.append(length)
+                if len(stretch) > len(best):
+                    best = list(stretch)
+            else:
+                stretch = []
+        if best:
+            return best[len(best) // 2]
+    return None
 
 
 def check_continued_cuts(tito: TITOTokenizer, records: list[dict]) -> list[dict]:
