@@ -88,9 +88,30 @@ def _apply_bridge_runtime_config(provider, args: TrainerConfig) -> None:
     # communication overlap
     provider.tp_comm_overlap = args.backend.tp_comm_overlap
 
-    # fp8
+    # precision fields as core_transformer_config_from_args sets them; a missed one silently trains in BF16
     provider.fp8 = args.backend.fp8
     provider.fp8_recipe = args.backend.fp8_recipe
+    provider.fp8_param = args.backend.fp8_param_gather
+    provider.fp8_quantizer_factory = args.backend.fp8_quantizer_factory
+    provider.fp8_margin = args.backend.fp8_margin
+    provider.fp8_interval = args.backend.fp8_interval
+    provider.fp8_amax_history_len = args.backend.fp8_amax_history_len
+    provider.fp8_amax_compute_algo = args.backend.fp8_amax_compute_algo
+    provider.fp8_wgrad = args.backend.fp8_wgrad
+    provider.fp8_output_proj = args.backend.fp8_output_proj
+    provider.fp4 = args.backend.fp4
+    provider.fp4_recipe = args.backend.fp4_recipe
+    provider.fp4_param = args.backend.fp4_param_gather
+    provider.fp4_quantizer_factory = args.backend.fp4_quantizer_factory
+    provider.first_last_layers_bf16 = args.backend.first_last_layers_bf16
+    provider.num_layers_at_start_in_bf16 = args.backend.num_layers_at_start_in_bf16
+    provider.num_layers_at_end_in_bf16 = args.backend.num_layers_at_end_in_bf16
+    provider.quant_recipe = None
+    if args.backend.te_precision_config_file:
+        # imported here: tests exec this function body in a bare namespace
+        from megatron.core.quantization.utils import load_quantization_recipe
+
+        provider.quant_recipe = load_quantization_recipe(args.backend.te_precision_config_file)
 
     # attention kernel selection
     provider.attention_backend = args.backend.attention_backend
