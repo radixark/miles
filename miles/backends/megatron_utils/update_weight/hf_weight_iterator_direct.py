@@ -444,9 +444,11 @@ def all_gather_params_async(
     param_infos_and_params: list[tuple[ParamInfo, torch.Tensor]],
 ) -> list[torch.Tensor]:
     """
-    Parallel TP all-gather for multiple params. Loop 1: for each TP param, allocate buffers +
-    dist.all_gather(async_op=True) on expert-TP/regular-TP group (skip expert_bias/non-TP/duplicated).
-    Loop 2: wait all NCCL handles (enables overlap). Loop 3: concat partitions + apply GLU rechunk/MoE dim fix.
+    Parallel TP all-gather for multiple params. Loop 1: for each TP param, apply the GLU stride/MoE dim fix
+    (`_check_and_fix_partition`), then start an async gather on the expert-TP/regular-TP group: dim-0, stride-1
+    params gather in place into their final layout, others into per-rank buffers (skip
+    expert_bias/non-TP/duplicated). Loop 2: wait all NCCL handles (enables overlap).
+    Loop 3: concat per-rank buffers (with the GLU rechunk).
     """
     # Phase 1: Start all async all_gather operations
     gather_tasks = []
@@ -455,14 +457,14 @@ def all_gather_params_async(
     for info, param in param_infos_and_params:
         # Prepare async all_gather
         if "expert_bias" in info.name:
-            gather_tasks.append((info, param, None, None, None, None))
+            gather_tasks.append((param, None, None, None))
             handles.append(None)
         elif getattr(
             param, "parallel_mode", None
         ) == "duplicated" or (  # config-access-exempt: parallel_mode is optional backend-attached tensor metadata
             not param.tensor_model_parallel and not _is_unmarked_grouped_expert_weight(info.name, param)
         ):
-            gather_tasks.append((info, param.data, None, None, None, None))
+            gather_tasks.append((param.data, None, None, None))
             handles.append(None)
         else:
             # Start async all_gather
@@ -474,14 +476,27 @@ def all_gather_params_async(
                 tp_group = get_parallel_state().tp.group
 
             if tp_size <= 1:
-                gather_tasks.append((info, param.data, None, None, None, None))
+                gather_tasks.append((param.data, None, None, None))
                 handles.append(None)
                 continue
 
-            param_partitions = [torch.empty_like(param.data) for _ in range(tp_size)]
+            partition_stride, partition_dim = _check_and_fix_partition(
+                args, info.name, partition_stride=param.partition_stride, partition_dim=param.partition_dim
+            )
             reach_fault_hook(FaultHookName.TRAINER_WEIGHT_UPDATE_BEFORE_ALL_GATHER)
-            handle = dist.all_gather(param_partitions, param.data, group=tp_group, async_op=True)
-            gather_tasks.append((info, None, handle, param_partitions, param.partition_dim, param.partition_stride))
+            if partition_dim == 0 and partition_stride == 1:
+                # Gather in place into the final layout; the list form would stage through a flat NCCL buffer
+                # and then copy out of it.
+                direct_param = torch.empty(
+                    (tp_size * param.shape[0], *param.shape[1:]), dtype=param.dtype, device=param.device
+                )
+                param_partitions = None
+                handle = dist.all_gather_into_tensor(direct_param, param.data, group=tp_group, async_op=True)
+            else:
+                direct_param = None
+                param_partitions = [torch.empty_like(param.data) for _ in range(tp_size)]
+                handle = dist.all_gather(param_partitions, param.data, group=tp_group, async_op=True)
+            gather_tasks.append((direct_param, param_partitions, partition_dim, partition_stride))
             handles.append(handle)
 
     # Phase 2: Wait for ALL async operations to complete at once
@@ -492,14 +507,11 @@ def all_gather_params_async(
 
     # Phase 3: Process all results after all communications are done
     gathered_params = []
-    for info, direct_param, handle, param_partitions, partition_dim, partition_stride in gather_tasks:
-        if handle is None:
-            # No all_gather needed
+    for direct_param, param_partitions, partition_dim, partition_stride in gather_tasks:
+        if direct_param is not None:
+            # Unsharded, or gathered in place into the final dim-0 layout, so no cat is needed.
             param = direct_param
         else:
-            partition_stride, partition_dim = _check_and_fix_partition(
-                args, info.name, partition_stride, partition_dim
-            )
             param = _gather_with_stride(param_partitions, partition_dim, partition_stride)
 
         gathered_params.append(param)
