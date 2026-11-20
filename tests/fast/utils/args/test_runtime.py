@@ -61,6 +61,7 @@ class TestTrainerOwnership:
             global_batch_size=16,
             micro_batch_size=3,
             wandb_project="project",
+            wandb_exp_name="run-a",
             tensor_model_parallel_size=2,
             pipeline_model_parallel_size=4,
             context_parallel_size=8,
@@ -70,6 +71,7 @@ class TestTrainerOwnership:
         assert trainer.global_batch_size == 16
         assert trainer.micro_batch_size == 3
         assert trainer.wandb_project == "project"
+        assert trainer.wandb_exp_name == "run-a"
         assert trainer.tensor_model_parallel_size == 2
         assert trainer.pipeline_model_parallel_size == 4
         assert trainer.context_parallel_size == 8

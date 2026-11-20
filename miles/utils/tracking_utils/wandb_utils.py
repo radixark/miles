@@ -54,10 +54,10 @@ def init_wandb_primary(args):
     # add random 6 length string with characters
     if args.wandb_random_suffix:
         group = args.wandb_group + "_" + generate_id()
-        run_name = f"{group}-RANK_0"
+        run_name = args.wandb_exp_name or f"{group}-RANK_0"
     else:
         group = args.wandb_group
-        run_name = args.wandb_group
+        run_name = args.wandb_exp_name or args.wandb_group
 
     # Prepare wandb init parameters
     init_kwargs = {
