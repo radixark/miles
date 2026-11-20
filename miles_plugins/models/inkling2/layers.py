@@ -371,14 +371,17 @@ class Inkling2TransformerLayer(TransformerLayer):
             partial = attention + mlp_output
         else:
             partial = (partial.float() + attention.float() + mlp_output.float()).to(partial.dtype)
+        # Only a boundary adds a block; elsewhere pass the input context through, so the
+        # checkpointed inputs of a block's layers share one tensor instead of a copy per layer.
+        if is_boundary or context is None:
+            context = torch.stack(blocks, dim=-2)
         if self.layer_number == self.config.num_layers:
             (output,) = attn_res_mix(
                 [*blocks, partial],
                 self.output_query.view(1, -1),
                 normalize_values=self.inkling2.attn_res_normalize_values,
             )
-            return output, torch.stack(blocks, dim=-2)
-        context = torch.stack(blocks, dim=-2)
+            return output, context
         if self.is_stage_exit:
             return pack_stage_boundary(partial.to(context.dtype), context), context
         return partial, context
