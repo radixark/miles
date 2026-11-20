@@ -356,7 +356,10 @@ def validate_multi_lora_args(args: Any) -> None:
     assert (
         args.lora_adapter_path is None
     ), "Multi-LoRA loads adapters into its slots through the Tinker gateway; --lora-adapter-path is single LoRA only"
-    assert args.train_backend == "megatron", "Multi-LoRA currently requires --train-backend megatron"
+    assert args.train_backend in (
+        "megatron",
+        "torchtitan",
+    ), f"Multi-LoRA requires --train-backend megatron or torchtitan, got {args.train_backend}"
     assert (
         not args.allgather_cp
     ), "Multi-LoRA does not support --allgather-cp: per-adapter token spans assume the zigzag CP layout."
