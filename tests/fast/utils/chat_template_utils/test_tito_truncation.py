@@ -426,8 +426,9 @@ def test_markers_in_turn_are_declared(family_tito, fixture):
 
 def test_registered_families_declare_a_closer():
     without_closer = {TITOTokenizerType.DEFAULT, TITOTokenizerType.MUSE_SPARK}
-    # Families whose turn is a run of messages have a closer and a test file of their own.
-    own_closer = {TITOTokenizerType.INKLING: "test_inkling_truncation.py"}
+    # Families whose turn is a run of messages have a closer and a test file of their own
+    # (test_inkling_truncation.py).
+    own_closer = {TITOTokenizerType.INKLING}
     for tito_type in TITOTokenizerType:
         cls = TITOTokenizerType.get_tokenizer_class(tito_type)
         closer = cls.FIXED_TEMPLATE.truncation_closer

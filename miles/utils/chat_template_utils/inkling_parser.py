@@ -234,7 +234,8 @@ class InklingResponseParser:
         elif not ended:
             open_part = "between"
 
-        if open_part is not None and error is None and finish_reason == "length":
+        # An earlier message's content error does not stop the scan, so the cut message is still kept.
+        if open_part is not None and frame_error is None and finish_reason == "length":
             # The closer ends a bare header as an empty text message and a recipient as an empty tool call.
             if state == "header":
                 block_kind = "tool_json" if header_ids else "text"

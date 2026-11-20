@@ -210,6 +210,30 @@ def test_length_cut_completion_keeps_its_unfinished_message_and_complete_calls()
         assert parsed.client_message["content"] == ("so" if open_part == "text" else "")
 
 
+def test_length_cut_completion_keeps_its_unfinished_message_after_a_content_error():
+    tokenizer = FakeInklingTokenizer()
+    ids = tokenizer.SPECIAL
+    # A text message with a recipient is a content error; the scan goes on to the cut message.
+    completion = [
+        *_text(tokenizer, "bash"),
+        ids["<|content_text|>"],
+        *_text(tokenizer, "hi"),
+        ids["<|end_message|>"],
+        ids["<|message_model|>"],
+        ids["<|content_thinking|>"],
+        *_text(tokenizer, "so"),
+    ]
+
+    parsed = InklingResponseParser(tokenizer).parse(completion, finish_reason="length")
+
+    assert parsed.parse_error == "unexpected_text_recipient"
+    assert parsed.frame_error is None
+    assert parsed.stored_message["content_blocks"] == [
+        {"type": "text", "text": "hi"},
+        {"type": "thinking", "text": "so"},
+    ]
+
+
 def test_closer_finishes_the_open_message_and_ends_the_turn():
     tokenizer = FakeInklingTokenizer()
     tito = InklingTITOTokenizer(tokenizer)
