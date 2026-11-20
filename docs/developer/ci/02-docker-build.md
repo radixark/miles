@@ -46,7 +46,7 @@ The CUDA 13 defaults use `lmsysorg/sglang:v0.5.22` and the stable branch `sglang
 
 ## Build script
 
-`docker/build.py` builds and pushes the images. Select a build with `--variant` and a tag mode with `--image-tag {dev,latest,custom}`. The `VARIANTS` table is the source of truth for each variant's image, target platforms, Dockerfile, and default build-args. Repeatable `--build-arg KEY=VALUE` options are appended after those defaults, so an explicit caller override wins.
+`docker/build.py` builds and pushes the images. Select a build with `--variant` and a tag mode with `--image-tag {dev,latest,custom}`. The `VARIANTS` table is the source of truth for each variant's target platforms, Dockerfile, and default build-args, and for the image of the variants that pin one: `tpu` and `rocm10-mi35x-pr` pin `radixark/miles` and the rolling ROCm variants `rocm/sgl-dev`. Every other variant (`cu13*`, `rubin`) pushes to `--image-repo` (default `radixark/miles`); CI passes `--image-repo "$GITHUB_REPOSITORY"`, so a copy of this repository builds, promotes, prunes and cleans up its own `<owner>/<repo>` images and never touches `radixark/miles`. Repeatable `--build-arg KEY=VALUE` options are appended after those defaults, so an explicit caller override wins.
 
 
 | `--variant`    | Tag (`--image-tag dev`)            | Platforms                     | Notes                                          |
@@ -145,7 +145,7 @@ This workflow owns the rolling `dev` / `latest` (CUDA) and `dev-tpu` / `latest-t
 
 ### Triggers: automatic vs manual
 
-- **Automatic** (no human) — the **schedule** (10-minute poll, gated by `check-upstream`) and every **push to `main`**. A push starts hosted planning; only changed hashes from the shared input mapping launch builds. There is no separate workflow path filter to maintain when adding an input. The schedule builds `cu13` → `radixark/miles:dev` (multi-arch) and `tpu` → `radixark/miles:dev-tpu` (amd64); a push builds only the variants whose inputs it touched (see `push-variants` above).
+- **Automatic** (no human) — the **schedule** (10-minute poll, gated by `check-upstream`) and every **push to `main`**. A push starts hosted planning; only changed hashes from the shared input mapping launch builds. There is no separate workflow path filter to maintain when adding an input. The schedule builds `cu13` → `<repository>:dev` (multi-arch) and, in `radixark/miles` only, `tpu` → `radixark/miles:dev-tpu` (amd64); a push builds only the variants whose inputs it touched (see `push-variants` above), again with `tpu` only in `radixark/miles`.
 - **Manual** — `workflow_dispatch` (pick one variant — see Trigger a build yourself below) or running `docker/build.py` locally. The rolling `rubin` and ROCm images (`rocm*-mi35x`, `rocm10-mi30x`) have **no automatic rolling build in this repo** (ROCm nightlies live in sgl-project/sglang); ROCm PR builds are described above (`cu13-x86` / `cu13-aarch64` just rebuild the same `dev` image single-arch).
 
 For release-image preflight, see [Release a Version](/developer/ci/04-release).
@@ -161,7 +161,7 @@ For release-image preflight, see [Release a Version](/developer/ci/04-release).
 
 ### Tags & where it pushes
 
-All images push to **Docker Hub**. CUDA, TPU and the ROCm PR variant use `radixark/miles`; rolling ROCm variants use `rocm/sgl-dev`. The tag a build writes depends only on `--image-tag` and the variant's postfix:
+All images push to **Docker Hub**. CUDA and Rubin use `--image-repo` (`$GITHUB_REPOSITORY` in CI, `radixark/miles` here); TPU and the ROCm PR variant pin `radixark/miles` and are built only there; rolling ROCm variants use `rocm/sgl-dev`. The tag a build writes depends only on `--image-tag` and the variant's postfix:
 
 | variant(s) | `--image-tag dev` writes | `latest` mode writes |
 | --- | --- | --- |
