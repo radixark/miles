@@ -1100,11 +1100,23 @@ class TestCanPrecomputeDpSchedule:
         )
         assert not can_precompute_dp_schedule(args=args, data=_make_split_data(8), train_parallel_config=None)
 
-    def test_rejects_multi_lora(self):
+    def test_accepts_multi_lora(self):
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=True)
-        assert not can_precompute_dp_schedule(
+        assert can_precompute_dp_schedule(
             args=args, data=_make_split_data(8), train_parallel_config=FULL_SCHEDULE_CONFIG
         )
+
+    def test_accepts_tinker_work_unit_without_rollout_ids(self):
+        args = make_args(balance_data=False, micro_batch_size=1, multi_lora=True)
+        data = _make_split_data(7)
+        del data["rollout_ids"]
+        data.update(loss_fn="cross_entropy", dynamic_global_batch_size=7)
+        assert can_precompute_dp_schedule(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
+
+    def test_requires_rollout_ids_or_explicit_work_unit(self):
+        data = _make_split_data(8)
+        del data["rollout_ids"]
+        assert not can_precompute_dp_schedule(args=make_args(), data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
 
     def test_rejects_multimodal(self):
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)
