@@ -93,8 +93,6 @@ def validate_torchtitan_args(args) -> None:
         raise ValueError(
             "torchtitan's LR schedule takes --lr-warmup-iters only; fraction, WSD and decay-iters are unsupported"
         )
-    if args.save_debug_train_data is not None:
-        raise ValueError("--save-debug-train-data is not wired up for the torchtitan backend")
     if args.use_routing_replay and not args.use_rollout_routing_replay and not current_platform.dynamic_shapes:
         raise ValueError(
             "--use-routing-replay without --use-rollout-routing-replay records the ids inside a compiled block, which "
@@ -148,6 +146,11 @@ def _validate_lora_args(args) -> None:
 
 def _validate_platform_args(args) -> None:
     platform = current_platform
+    if args.multimodal_keys is not None and not platform.trains_multimodal_encoders:
+        raise ValueError(
+            f"--multimodal-keys: multimodal training is not supported on {platform.device_type} yet; the trainer "
+            "builds the language model alone there"
+        )
     if args.log_probs_backend == "fused" and not platform.triton_kernels:
         raise ValueError(
             f"--log-probs-backend fused is a Triton kernel; on {platform.device_type} use --log-probs-backend torch"
@@ -162,17 +165,17 @@ def _validate_platform_args(args) -> None:
         )
     if platform.dynamic_shapes:
         return
-    # without dynamic shapes, packed microbatches are padded to a power-of-two bucket capped at --seq-length
+    # without dynamic shapes, every packed microbatch is padded to --seq-length, the one compiled shape
     if args.seq_length % FLASH_ATTENTION_BLOCK != 0:
         raise ValueError(
             f"--seq-length {args.seq_length} must be a multiple of {FLASH_ATTENTION_BLOCK} on {platform.device_type}: "
-            f"the splash attention kernel works in {FLASH_ATTENTION_BLOCK}-token blocks and the largest length bucket "
-            "is --seq-length"
+            f"the splash attention kernel works in {FLASH_ATTENTION_BLOCK}-token blocks and every microbatch pads to "
+            "--seq-length"
         )
-    if args.context_parallel_size != 1:
+    if args.seq_length % args.context_parallel_size:
         raise ValueError(
-            f"--context-parallel-size {args.context_parallel_size} is not supported on {platform.device_type}: "
-            "its length buckets do not align microbatches to the CP shards"
+            f"--context-parallel-size {args.context_parallel_size} does not divide --seq-length {args.seq_length}: "
+            "every microbatch pads to --seq-length and shards evenly across the CP ranks"
         )
     if args.expert_model_parallel_size != 1:
         raise ValueError(
@@ -183,10 +186,10 @@ def _validate_platform_args(args) -> None:
     if args.use_dynamic_batch_size and args.max_tokens_per_gpu > args.seq_length:
         raise ValueError(
             f"--max-tokens-per-gpu {args.max_tokens_per_gpu} exceeds --seq-length {args.seq_length}, "
-            "the largest length bucket"
+            "the shape every microbatch pads to"
         )
     if not args.use_dynamic_batch_size and args.micro_batch_size > 1:
         raise ValueError(
             f"--micro-batch-size {args.micro_batch_size} can pack more than --seq-length {args.seq_length} "
-            "tokens, the largest length bucket; use --use-dynamic-batch-size with --max-tokens-per-gpu"
+            "tokens, the shape every microbatch pads to; use --use-dynamic-batch-size with --max-tokens-per-gpu"
         )

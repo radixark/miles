@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       launchers:
-        description: 'Comma-separated launchers (qwen3_4b, qwen3_30b_a3b, glm4_7_flash_4layer); empty runs all'
+        description: 'Comma-separated launchers (qwen3_4b, qwen3_30b_a3b, glm4_7_flash_4layer, qwen3_5:Qwen3.8-27B, qwen3_5:Qwen3.6-35B-A3B); empty runs all'
         required: false
         type: string
         default: ''
@@ -30,11 +30,12 @@ concurrency:
 jobs:
   plan:
     # a close only cancels the running TPU run; another label's event does nothing
+    # the TPU cluster and the dev-tpu / pr-<number>-tpu images belong to radixark/miles
     if: >-
       github.event.action != 'closed' &&
       ((github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
         github.event.label.name == 'run-ci-tpu') &&
-      (github.event_name != 'schedule' || github.repository == 'radixark/miles')
+      github.repository == 'radixark/miles'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
@@ -47,8 +48,8 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
-      # As pr-test.yml does for the CUDA image: the released dev-tpu, unless the PR changes the files docker-build.yml
-      # rebuilds dev-tpu for. The merge commit is compared with its base (HEAD^1), which base.sha can lag.
+      # Compare the merge with its actual base (HEAD^1), which base.sha can lag.
+      # The shared hash reader owns the TPU inputs, as for CUDA and ROCm.
       - id: image
         env:
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
@@ -56,10 +57,13 @@ jobs:
           set -euo pipefail
           image=radixark/miles:dev-tpu
           build=false
-          if [ -n "$PR_NUMBER" ] && ! git diff --quiet HEAD^1 HEAD -- \
-              docker/Dockerfile.tpu docker/tpu_patch docker/install-kube-tools.sh requirements.txt; then
-            image="radixark/miles:pr-${PR_NUMBER}-tpu"
-            build=true
+          if [ -n "$PR_NUMBER" ]; then
+            current=$(python3 docker/image_inputs.py --variant tpu --rev HEAD)
+            base=$(python3 docker/image_inputs.py --variant tpu --rev HEAD^1)
+            if [ "$current" != "$base" ]; then
+              image="radixark/miles:pr-${PR_NUMBER}-tpu"
+              build=true
+            fi
           fi
           echo "TPU image: ${image}"
           echo "image=${image}" >> "$GITHUB_OUTPUT"
@@ -75,9 +79,10 @@ jobs:
           REF: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          # launcher -> JobSet deadline in minutes: download, both cold compiles and three steps
-          declare -A timeout=([qwen3_4b]=90 [qwen3_30b_a3b]=180 [glm4_7_flash_4layer]=150)
-          all="qwen3_4b qwen3_30b_a3b glm4_7_flash_4layer"
+          # launcher -> JobSet deadline in minutes: download, both cold compiles and three steps;
+          # <launcher>:<model-name> runs one row of a launcher's model table
+          declare -A timeout=([qwen3_4b]=90 [qwen3_30b_a3b]=180 [glm4_7_flash_4layer]=150 [qwen3_5:Qwen3.8-27B]=150 [qwen3_5:Qwen3.6-35B-A3B]=180)
+          all="qwen3_4b qwen3_30b_a3b glm4_7_flash_4layer qwen3_5:Qwen3.8-27B qwen3_5:Qwen3.6-35B-A3B"
           case "$EVENT_NAME" in
             pull_request)
               selected=""
@@ -93,9 +98,12 @@ jobs:
             *) selected="${INPUT_LAUNCHERS//,/ }"; selected="${selected:-$all}" ;;
           esac
           entries=()
-          for launcher in $selected; do
-            [ -n "${timeout[$launcher]:-}" ] || { echo "::error::unknown launcher '$launcher' (known: $all)"; exit 1; }
-            entries+=("{\"launcher\":\"${launcher}\",\"timeout_minutes\":${timeout[$launcher]}}")
+          for entry in $selected; do
+            [ -n "${timeout[$entry]:-}" ] || { echo "::error::unknown launcher '$entry' (known: $all)"; exit 1; }
+            launcher="${entry%%:*}"
+            model_name=""
+            [[ "$entry" == *:* ]] && model_name="${entry#*:}"
+            entries+=("{\"launcher\":\"${launcher}\",\"model_name\":\"${model_name}\",\"timeout_minutes\":${timeout[$entry]}}")
           done
           matrix="[$(IFS=,; echo "${entries[*]}")]"
           echo "TPU launchers: ${matrix}"
@@ -135,6 +143,7 @@ jobs:
       - name: Build and push pr-<number>-tpu
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          BUILD_GITHUB_TOKEN: ${{ github.token }}
         run: python3 docker/build.py --variant tpu --image-tag custom --custom-tag "pr-${PR_NUMBER}" --push
 
   # one launcher's smoke recipe on a v7x 2x2x1 host of sglang-torchtpu's CI cluster, gated on the pod's exit code
@@ -144,7 +153,7 @@ jobs:
     if: >-
       always() && !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' &&
       needs.image-build.result != 'failure'
-    name: smoke (${{ matrix.launcher }})
+    name: smoke (${{ matrix.launcher }}${{ matrix.model_name && format(' {0}', matrix.model_name) || '' }})
     strategy:
       fail-fast: false
       matrix:
@@ -194,6 +203,7 @@ jobs:
           # values reach the scripts through the environment, never by template substitution into the shell
           IMAGE: ${{ steps.digest.outputs.image }}
           LAUNCHER: ${{ matrix.launcher }}
+          MODEL_NAME: ${{ matrix.model_name }}
           TIMEOUT_MINUTES: ${{ matrix.timeout_minutes }}
         run: |
           set -euo pipefail
@@ -202,11 +212,13 @@ jobs:
             --image "$IMAGE" \
             --sha "$(git rev-parse HEAD)" \
             --launcher "$LAUNCHER" \
+            --model-name "$MODEL_NAME" \
             --recipe smoke \
             --deadline-s "$deadline_s" \
             --run-label "$RUN_LABEL" > "$RUNNER_TEMP/jobset.json"
           # outlast the JobSet's deadline, which restarts when a scale-up outlasts Kueue's 5-minute PodsReady wait
-          bash .github/tpu-ci/run_jobset.sh "$RUNNER_TEMP/jobset.json" "${LAUNCHER} (smoke)" $((deadline_s + 1800))
+          bash .github/tpu-ci/run_jobset.sh "$RUNNER_TEMP/jobset.json" "${LAUNCHER} ${MODEL_NAME} (smoke)" \
+            $((deadline_s + 1800))
 
       # a cancelled step may die before its trap deletes the JobSet, and the kubeconfig token may be past its hour
       - name: Refresh cluster credentials

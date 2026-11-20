@@ -38,6 +38,26 @@ class TestTheDumpsRootOfTheCiWorkflow:
             assert get_dumps_root() == Path(job["env"][DUMPS_ROOT_ENV])
 
 
+class TestTheIsolationOfTheJobContainer:
+    """The runners of a host share it: a job container must not reach the host or the other runners' state."""
+
+    def test_the_container_gets_no_host_privileges(self) -> None:
+        for name, job in _jobs().items():
+            tokens = shlex.split(job["container"]["options"])
+            for forbidden in ("--privileged", "--ipc=host", "--pid=host", "--network=host"):
+                assert forbidden not in tokens, f"job {name} runs with {forbidden}"
+            caps = [tokens[index + 1] for index, token in enumerate(tokens) if token == "--cap-add"]
+            assert sorted(caps) == ["SYS_NICE", "SYS_PTRACE"], f"job {name} adds capabilities {caps}"
+
+    def test_only_the_shared_caches_are_mounted_from_the_host(self) -> None:
+        for name, job in _jobs().items():
+            tokens = shlex.split(job["container"]["options"])
+            hosts = [tokens[index + 1].split(":")[0] for index, token in enumerate(tokens) if token == "-v"]
+            assert sorted(hosts) == [
+                f"/data/miles_ci/{d}" for d in ("datasets", "dumps", "hf_cache", "jit", "models")
+            ], f"job {name} mounts {hosts}"
+
+
 def _jobs() -> dict[str, dict]:
     jobs = yaml.safe_load(WORKFLOW_PATH.read_text())["jobs"]
     container_jobs = {name: job for name, job in jobs.items() if "container" in job}

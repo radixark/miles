@@ -58,6 +58,7 @@ LANGUAGE_MODEL_LAYER_PREFIXES = (
     "language_model.model.layers",
     "model.language_model.layers",
     "language_model.layers",
+    "layers",
 )
 LANGUAGE_MODEL_LAYER_PATTERN = re.compile(
     r"^(?:" + "|".join(re.escape(prefix) for prefix in LANGUAGE_MODEL_LAYER_PREFIXES) + r")\.(\d+)\."

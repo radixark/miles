@@ -14,7 +14,7 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     num_gpus=2,
 )
-register_rocm_ci(est_time=300, suite="nightly-stage-c-2-gpu-mi350", labels=["short", "mooncake"])
+register_rocm_ci(est_time=300, suite="stage-c-2-gpu-mi350", labels=["short", "mooncake"])
 
 MODEL_DIR = get_test_model_dir()
 DATA_DIR = get_test_data_dir()

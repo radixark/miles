@@ -34,7 +34,7 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     num_gpus=4,
 )
-register_rocm_ci(est_time=60, suite="nightly-stage-c-4-gpu-mi350", labels=["precision", "megatron"])
+register_rocm_ci(est_time=60, suite="stage-c-4-gpu-mi350", labels=["precision", "megatron"])
 
 SEQLEN_GLOBAL = 16384
 RATIO = 4

@@ -21,6 +21,7 @@ def _make_meta(**overrides) -> ServerCellMetadata:
             "worker_name": "inference-engine-0-0-0-0",
             "needs_offload": False,
             "update_weights": True,
+            "health_check_timeout_seconds": 20,
             "workers_hash": "pseudo-hash-0",
             **overrides,
         }

@@ -15,14 +15,14 @@ pr-test-tpu.yml: plan ─▶ image-build (PRs that change the TPU image) ─▶ 
 | When | Runs |
 |---|---|
 | PR labelled `run-ci-tpu` (each push while labelled) | `qwen3_4b` |
-| Nightly, 12:00 UTC, `main` | `qwen3_4b`, `qwen3_30b_a3b`, `glm4_7_flash_4layer` |
+| Nightly, 12:00 UTC, `main` | `qwen3_4b`, `qwen3_30b_a3b`, `glm4_7_flash_4layer`, `qwen3_5:Qwen3.8-27B`, `qwen3_5:Qwen3.6-35B-A3B` |
 | `gh workflow run pr-test-tpu.yml --ref <branch> -f launchers=qwen3_30b_a3b` | the listed launchers |
 
 ## One run
 
 1. **Image.** As for the CUDA suites (`pr-test.yml`), runs use the rolling `radixark/miles:dev-tpu` that
-   `docker-build.yml` publishes, unless the PR changes the files it rebuilds `dev-tpu` for (`docker/Dockerfile.tpu`,
-   `docker/tpu_patch/`, `docker/install-kube-tools.sh`, `requirements.txt`). Such a PR builds its own
+   `docker-build.yml` publishes, unless the PR changes the common or TPU inputs owned by `docker/image_inputs.py`
+   ([input mapping](../../docs/developer/ci/02-docker-build.md#repository-input-mapping)). Such a PR builds its own
    `radixark/miles:pr-<number>-tpu` with `docker/build.py --variant tpu` on the `docker-build` runners, and
    `docker-pr-tag-cleanup.yml` deletes it when the PR closes. A change to miles' code alone never needs a new image.
 2. **JobSet.** `render_jobset.py` prints one single-host JobSet labelled with the queue `tpu-prgate-1h`, the queue
@@ -57,5 +57,6 @@ Deadlines per launcher are in `pr-test-tpu.yml`'s `plan` step (download, both co
 | To | Do |
 |---|---|
 | Run another launcher | Add `scripts/tpu/run_<name>_torchtitan.py` with `prepare` / `sglang` / `train` commands, and its deadline to `plan` in `pr-test-tpu.yml`. |
+| Run one model of a launcher with a model table | Add `<name>:<model-name>` (its `--model-name`) with its deadline to `plan`, e.g. `qwen3_5:Qwen3.8-27B`. |
 | Run it on PRs by default | Add it to the `pull_request` case of `plan`. |
 | Test a TPU image change | Change `docker/Dockerfile.tpu` or `docker/tpu_patch/` in the PR; its runs build `pr-<number>-tpu`. |
