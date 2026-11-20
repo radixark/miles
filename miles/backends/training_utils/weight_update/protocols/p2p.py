@@ -15,7 +15,10 @@ from miles.backends.training_utils.weight_update.protocol import WeightTransferP
 from miles.backends.training_utils.weight_update.protocols.p2p_rollout_cell_updater import _P2PRolloutCellUpdater
 from miles.backends.training_utils.weight_update.protocols.transports.mooncake import MooncakeTransport
 from miles.backends.training_utils.weight_update.protocols.transports.nixl import NixlTransport
-from miles.backends.training_utils.weight_update.protocols.transports.p2p_transport import P2PTransport
+from miles.backends.training_utils.weight_update.protocols.transports.p2p_transport import (
+    NativeTransport,
+    P2PTransport,
+)
 from miles.backends.training_utils.weight_update.protocols.transports.remote_shard import RemoteShard
 from miles.backends.training_utils.weight_update.protocols.utils.loader_probe import HfTensorSpec
 from miles.backends.training_utils.weight_update.protocols.utils.model_param_stager import ModelParamStager
@@ -30,6 +33,7 @@ from miles.backends.training_utils.weight_update.protocols.utils.model_replica i
     query_runner_roles,
 )
 from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
+    RolloutEngineRankAssignment,
     assign_rollout_engine_ranks,
 )
 from miles.backends.training_utils.weight_update.protocols.utils.transfer_buffers import PendingWrite, TransferBuffers
@@ -197,7 +201,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
             for api_client, cell_id in zip(rollout_engines, engine_cell_ids, strict=True)
         }
         self._runner_senders = []
-        assignments = assign_rollout_engine_ranks(parallel_state, placement, engine_gpu_counts)
+        assignments = self._assign(parallel_state, placement, engine_gpu_counts, engine_gpu_offsets)
         self.is_sender = bool(assignments)
 
         if self.is_sender:
@@ -212,11 +216,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 self.is_sender = False
                 return
             if self._transport is None:
-                self._transport = P2PTransport(
-                    NixlTransport(write_timeout=self.args.p2p_transfer_timeout)
-                    if self.args.p2p_transport == NixlTransport.name
-                    else MooncakeTransport()
-                )
+                self._transport = P2PTransport(self._create_native_transport())
             remote_shards_by_runner_role = self._transport.connect(
                 self.cell_updaters_of_cell_id, engine_cell_ids, assignments, runner_roles
             )
@@ -231,6 +231,20 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 ) is not None:
                     self._runner_senders.append(runner_sender)
             self.is_sender = bool(self._runner_senders)
+
+    def _assign(
+        self,
+        parallel_state: ParallelState,
+        placement: WeightUpdatePlacement,
+        engine_gpu_counts: Sequence[int],
+        engine_gpu_offsets: Sequence[int],
+    ) -> list[RolloutEngineRankAssignment]:
+        return assign_rollout_engine_ranks(parallel_state, placement, engine_gpu_counts)
+
+    def _create_native_transport(self) -> NativeTransport:
+        if self.args.p2p_transport == NixlTransport.name:
+            return NixlTransport(write_timeout=self.args.p2p_transfer_timeout)
+        return MooncakeTransport()
 
     def _connect_runner(
         self,
