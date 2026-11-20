@@ -48,6 +48,7 @@ Not fully verified — for experimental and development use.
 - **[agentenv](https://github.com/radixark/miles/tree/main/examples/experimental/agentenv)**: Rollouts against AgentENV, a self-hosted platform running agent sandboxes on Firecracker microVMs.
 - **[DrGRPO](https://github.com/radixark/miles/tree/main/examples/experimental/DrGRPO)**: Custom reducer for Dr.GRPO algorithm.
 - **[eval](https://github.com/radixark/miles/tree/main/examples/experimental/eval)**: Documentation and setup for evaluation environments using NeMo-Skills.
+  - **[agenticrl_bench_via_api](https://github.com/radixark/miles/tree/main/examples/experimental/eval/agenticrl_bench_via_api)**: Evaluate Kimi Code on AgenticRL-Bench tasks through an API and Harbor-managed sandboxes.
 - **[eval_multi_task](https://github.com/radixark/miles/tree/main/examples/experimental/eval_multi_task)**: Example for supporting OOD evaluation tasks, e.g., GPQA, IFBench.
 - **[formal_math](https://github.com/radixark/miles/tree/main/examples/experimental/formal_math)**: Examples related to formal math reasoning tasks, including a single round demo.
 - **[multi_agent](https://github.com/radixark/miles/tree/main/examples/experimental/multi_agent)**: Example of running multi-agent RL with `miles`.

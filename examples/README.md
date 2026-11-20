@@ -44,6 +44,7 @@ Not fully verified — for experimental and development use.
 - **[agentenv](./experimental/agentenv)**: Rollouts against AgentENV, a self-hosted platform running agent sandboxes on Firecracker microVMs.
 - **[DrGRPO](./experimental/DrGRPO)**: Custom reducer for Dr.GRPO algorithm.
 - **[eval](./experimental/eval)**: Documentation and setup for evaluation environments using NeMo-Skills.
+  - **[agenticrl_bench_via_api](./experimental/eval/agenticrl_bench_via_api)**: Evaluate Kimi Code on AgenticRL-Bench tasks through an API and Harbor-managed sandboxes.
 - **[eval_multi_task](./experimental/eval_multi_task)**: Example for supporting OOD evaluation tasks, e.g., GPQA, IFBench.
 - **[formal_math](./experimental/formal_math)**: Examples related to formal math reasoning tasks, including a single round demo.
 - **[multi_agent](./experimental/multi_agent)**: Example of running multi-agent RL with `miles`.
