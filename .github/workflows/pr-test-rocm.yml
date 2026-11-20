@@ -81,7 +81,8 @@ concurrency:
 
 jobs:
   resolve-ci-policy:
-    if: github.event.action != 'closed'
+    # The MI350 runners serve radixark/miles only.
+    if: github.repository == 'radixark/miles' && github.event.action != 'closed'
     runs-on: ubuntu-latest
     outputs:
       cadence: ${{ steps.resolve.outputs.cadence }}

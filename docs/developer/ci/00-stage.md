@@ -125,6 +125,7 @@ Without a dispatch label nothing leaves its home stage, so scheduled and called 
 
 The [shared CUDA/ROCm rules](#shared-by-cuda-and-rocm) apply. This section contains only ROCm-specific behavior:
 
+- **Repository.** `pr-test-rocm.yml` runs only in `radixark/miles`, whose MI350 runners it uses: `resolve-ci-policy`, which every other job needs, requires that repository.
 - **Spur execution.** `pr-test-rocm.yml` runs GPU suites through `_run-ci-rocm.yml`; see the [stage roster](#stage-roster) for suites and shard counts. `num_gpus` sets each Spur job's allocation on Miles' two 8-GPU MI355X nodes. A 1-, 2-, or 4-GPU job sees only its allocated GPUs and can share a node; an 8-GPU job reserves the whole node. Login-node runner processes limit concurrency. There are no CPU jobs, and ROCm is outside the `release-ci` gate.
 - **Dependencies.** ROCm installs the selected SGLang and Megatron-LM checkouts editable with `--no-deps` and prepares SGLang's pinned Rust toolchain.
 - **Secrets.** ROCm explicitly passes `AMD_WANDB_API_KEY` and `AMD_NEON_DATABASE_URL`. The workflow maps the former to `WANDB_API_KEY` for W&B, and Spur forwards both into the container.
@@ -146,7 +147,9 @@ trainer share one TPU v7x 2x2x1 host and sync weights over ICI) in a JobSet on s
 queued through its Kueue PR-gate queue alongside sglang-torchtpu's PR jobs. A PR runs the Qwen3-4B smoke only while
 it carries `run-ci-tpu`, again on every push; the nightly runs every launcher on `main`, and `workflow_dispatch` takes
 a launcher list and any branch.
-Fork PRs cannot run it: the cluster's credentials come from GitHub's OIDC token through Workload Identity Federation.
+It runs only in `radixark/miles`, on every trigger: the cluster and the `dev-tpu` / `pr-<number>-tpu` images belong to that
+repository. Fork PRs cannot run it either: the cluster's credentials come from GitHub's OIDC token through Workload
+Identity Federation.
 
 The image is the rolling `radixark/miles:dev-tpu`, or `radixark/miles:pr-<number>-tpu` for a PR that changes the TPU
 image's inputs, chosen the way the CUDA suites choose theirs; the pod checks out the commit under test over the
