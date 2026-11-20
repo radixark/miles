@@ -203,9 +203,10 @@ History handling depends on the selected server version:
 
 Both versions can extend a turn that ended with `finish_reason=length`. The
 server first appends tokens that close what the turn left open (reasoning, a
-tool-call block, or for Inkling an unfinished message) and end the turn; they
-train with loss mask 0, and partial tool-call arguments stay as sampled. A family that declares no closer (`default`,
-`muse_spark`) returns HTTP 409 instead, as does any run started with
+tool-call block, or for Inkling and Muse Spark an unfinished message) and end
+the turn; they train with loss mask 0, and partial tool-call arguments stay as
+sampled. A family that declares no closer (`default`) returns HTTP 409 instead,
+as does any run started with
 `--no-allow-truncated-continuation`.
 
 Whether a replayed message counts as "the same" as the stored one is decided by

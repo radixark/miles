@@ -87,8 +87,8 @@ class SessionConfig(BaseConfig):
                 "When allowed, the next request's prompt first closes that turn's open reasoning and "
                 "tool-call blocks and ends the turn; with --no-allow-truncated-continuation such a "
                 "request is rejected with HTTP 409. Defaults to the --tito-model family's setting "
-                "(allowed for every family that declares a closer; default and muse_spark declare "
-                "none and cannot allow it)."
+                "(allowed for every family that declares a closer; default declares none and cannot "
+                "allow it)."
             ),
         ),
     ] = None
