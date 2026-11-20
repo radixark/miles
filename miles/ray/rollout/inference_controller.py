@@ -382,6 +382,7 @@ class InferenceController:
             engine_count=len(engine_gpu_counts),
             gpu_count=sum(engine_gpu_counts),
             eval_engine_count=len(eval_srv.engine_gpu_counts) if eval_srv is not None else 0,
+            engine_urls=[url for name, srv in self.servers.items() if name != "eval" for url in srv.engine_urls],
         )
 
     @lock_exempt

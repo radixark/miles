@@ -113,17 +113,13 @@ class TestAbort:
         """One failed worker abort still runs the agent hook and drains partial samples."""
         args = Namespace(
             partial_rollout=True,
-            sglang_router_ip="router",
-            sglang_router_port=30000,
+            inference_runtime_mut_state=SimpleNamespace(engine_urls=["http://healthy", "http://unresponsive"]),
         )
         sample = SimpleNamespace(response="partial", metadata={})
         state = SimpleNamespace(args=args, aborted=False)
         hook_calls: list[Namespace] = []
         posted_urls: list[str] = []
         hook_finished = asyncio.Event()
-
-        async def fake_get(url: str) -> dict[str, list[dict[str, str]]]:
-            return {"workers": [{"url": "http://healthy"}, {"url": "http://unresponsive"}]}
 
         async def fake_post(url: str, payload: dict[str, bool]) -> None:
             posted_urls.append(url)
@@ -141,7 +137,6 @@ class TestAbort:
         state.pendings = {asyncio.create_task(finish_group())}
         await asyncio.sleep(0)
         monkeypatch.setattr(sglang_rollout, "GenerateState", lambda state_args: state)
-        monkeypatch.setattr(sglang_rollout, "get", fake_get)
         monkeypatch.setattr(sglang_rollout, "post", fake_post)
         monkeypatch.setattr(sglang_rollout, "call_agent_abort_hook", fake_agent_abort_hook)
 

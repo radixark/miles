@@ -438,12 +438,13 @@ class TestCleanupDumpDir:
 
 class TestConfigureSglang:
     @staticmethod
-    def _make_args(tmp_path: Path) -> SimpleNamespace:
+    def _make_args(tmp_path: Path, urls: tuple[str, ...] = ("http://a:1", "http://b:2")) -> SimpleNamespace:
         return SimpleNamespace(
             dumper_enable=True,
             dumper_inference=[],
             dumper_dir=str(tmp_path),
             init_expected_num_cells=2,
+            inference_runtime_mut_state=SimpleNamespace(engine_urls=list(urls)),
         )
 
     @pytest.mark.asyncio
@@ -455,10 +456,6 @@ class TestConfigureSglang:
             posted.append(url)
 
         with (
-            patch(
-                "miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls",
-                new=AsyncMock(return_value=["http://a:1", "http://b:2"]),
-            ),
             patch("miles.utils.http_utils.post", new=_post),
             patch("miles.utils.dumper_utils._cleanup_dump_dir"),
         ):
@@ -474,19 +471,14 @@ class TestConfigureSglang:
         async def _post(url, body):
             posted.append(url)
 
-        get_worker_urls = AsyncMock(return_value=["http://a:1", "http://b:2", "http://c:3"])
-
         with (
-            patch(
-                "miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls",
-                new=get_worker_urls,
-            ),
             patch("miles.utils.http_utils.post", new=_post),
             patch("miles.utils.dumper_utils._cleanup_dump_dir"),
         ):
-            await dumper_utils.configure_sglang(self._make_args(tmp_path))
+            await dumper_utils.configure_sglang(
+                self._make_args(tmp_path, urls=("http://a:1", "http://b:2", "http://c:3"))
+            )
 
-        assert get_worker_urls.await_count == 1
         assert posted == [
             "http://a:1/dumper/configure",
             "http://b:2/dumper/configure",
@@ -502,10 +494,6 @@ class TestConfigureSglang:
             posted.append(url)
 
         with (
-            patch(
-                "miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls",
-                new=AsyncMock(return_value=["http://a:1", "http://b:2"]),
-            ),
             patch("miles.utils.http_utils.post", new=_post),
             patch("miles.utils.dumper_utils._cleanup_dump_dir"),
             patch("miles.utils.dumper_utils.dist") as mock_dist,
@@ -517,41 +505,13 @@ class TestConfigureSglang:
         mock_dist.barrier.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_an_incomplete_router_roster_is_waited_out(self, tmp_path: Path) -> None:
-        """Configuration waits until every expected engine has registered."""
-        posted: list[str] = []
-
-        async def _post(url, body):
-            posted.append(url)
-
-        get_worker_urls = AsyncMock(side_effect=[[], ["http://a:1"], ["http://a:1", "http://b:2"]])
-
+    async def test_a_short_engine_roster_fails_loudly(self, tmp_path: Path) -> None:
+        """Fewer addressable engines than expected names the missing one instead of configuring a subset."""
         with (
-            patch(
-                "miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls",
-                new=get_worker_urls,
-            ),
-            patch("miles.utils.http_utils.post", new=_post),
             patch("miles.utils.dumper_utils._cleanup_dump_dir"),
-        ):
-            await dumper_utils.configure_sglang(self._make_args(tmp_path))
-
-        assert get_worker_urls.await_count == 3
-        assert posted == ["http://a:1/dumper/configure", "http://b:2/dumper/configure"]
-
-    @pytest.mark.asyncio
-    async def test_a_roster_that_never_fills_fails_loudly(self, tmp_path: Path) -> None:
-        """A partial router roster eventually reports the missing inference engine."""
-        with (
-            patch(
-                "miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls",
-                new=AsyncMock(return_value=["http://a:1"]),
-            ),
-            patch("miles.utils.dumper_utils._cleanup_dump_dir"),
-            patch("miles.utils.dumper_utils._WORKER_REGISTRATION_TIMEOUT_SECONDS", 0.05),
             pytest.raises(AssertionError, match="1/2 inference engines"),
         ):
-            await dumper_utils.configure_sglang(self._make_args(tmp_path))
+            await dumper_utils.configure_sglang(self._make_args(tmp_path, urls=("http://a:1",)))
 
 
 class TestDeclaredEngineCount:
@@ -563,17 +523,15 @@ class TestDeclaredEngineCount:
             dumper_dir=str(tmp_path),
             init_expected_num_cells={"other": 5, "primary": 2},
             sglang=SimpleNamespace(models=[SimpleNamespace(name="primary"), SimpleNamespace(name="other")]),
+            inference_runtime_mut_state=SimpleNamespace(engine_urls=["http://a:1", "http://b:2"]),
         )
         urls = ["http://a:1", "http://b:2"]
-        get_worker_urls = AsyncMock(side_effect=[[urls[0]], urls])
         post = AsyncMock()
 
         with (
-            patch("miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls", new=get_worker_urls),
             patch("miles.utils.http_utils.post", new=post),
             patch("miles.utils.dumper_utils._cleanup_dump_dir"),
         ):
             await dumper_utils.configure_sglang(args)
 
-        assert get_worker_urls.await_count == 2
         assert [call.args[0] for call in post.await_args_list] == [f"{url}/dumper/configure" for url in urls]
