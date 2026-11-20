@@ -11,6 +11,11 @@ folded in (FlashMLA's is converted); the TileLang backward takes it as is, cuDNN
 without the sink, with the indices compacted valid-first. Which kernels run and how the TileLang ones are tiled
 is a SparseAttentionConfig: measured rows live in _TUNED, keyed by (CUDA major or ROCm gfx name, RoPE tail, TP-local heads);
 callers may pass their own.
+
+Both backwards gather and reduce KV once per (query, key) pair, which is what bounds them at few TP-local heads
+(cuDNN tiles 64 query heads per CTA, so 8 heads cost as much as 64). With backward_query_block the TileLang
+backward holds that many consecutive queries per CTA over the union of their keys: an indexer picks ~90% of the
+same keys for neighbouring queries, so 8 queries share a key list of ~16% the pair count.
 """
 
 from dataclasses import dataclass, replace
@@ -50,9 +55,14 @@ class SparseAttentionConfig:
     backward_backend: Literal["tilelang", "cudnn"] = "tilelang"
     backward_stages: int = 0
     backward_split_store: int = 2
+    # consecutive queries per TileLang backward CTA, sharing one key union (1 = one query per CTA)
+    backward_query_block: int = 1
 
 
 _TILELANG_SMALL_HEADS = SparseAttentionConfig(forward_backend="tilelang", forward_threads=128)
+# At 8 / 16 TP-local heads the union of 8 / 4 queries fills the 64-row tile; measured on GLM-5 indexer top-k
+_QUERY_BLOCK_8_HEADS = SparseAttentionConfig(backward_stages=1, backward_query_block=8)
+_QUERY_BLOCK_16_HEADS = SparseAttentionConfig(backward_stages=1, backward_query_block=4)
 
 # Measured per layer at 16k / 64k tokens on H200 (9) and B300 / GB300 (10, identical winners) for GLM-5
 # (RoPE tail 64, topk 2048) and DeepSeek-V4.1 (no tail, topk 640). FlashMLA pads heads to 64. The TileLang backward
@@ -66,8 +76,8 @@ _TUNED = {
     (10, False, 16): SparseAttentionConfig(backward_backend="cudnn", backward_stages=1),
     (10, False, 32): SparseAttentionConfig(backward_backend="cudnn", backward_stages=2, backward_split_store=4),
     (10, False, 64): SparseAttentionConfig(backward_backend="cudnn", backward_stages=1, backward_split_store=4),
-    (9, True, 8): SparseAttentionConfig(backward_backend="cudnn", backward_stages=1),
-    (9, True, 16): SparseAttentionConfig(backward_backend="cudnn", backward_stages=1),
+    (9, True, 8): _QUERY_BLOCK_8_HEADS,
+    (9, True, 16): _QUERY_BLOCK_16_HEADS,
     (9, True, 32): SparseAttentionConfig(backward_backend="cudnn", backward_stages=1),
     (9, True, 64): SparseAttentionConfig(backward_backend="cudnn", backward_split_store=4),
     (9, False, 8): replace(_TILELANG_SMALL_HEADS, backward_backend="cudnn", backward_stages=1, backward_split_store=4),
@@ -126,6 +136,8 @@ def _default_config(q, kv, topk: int, d_v: int) -> SparseAttentionConfig:
         and kv.shape[2] == 1
         and q.shape[2] > 1
     )
+    if config.backward_query_block > 1 and kv.shape[2] != 1:  # a block shares one key union, so one KV group
+        config = replace(config, backward_backend="cudnn", backward_query_block=1)
     is_short_topk = topk <= _SHORT_TOPK and (arch_key, heads_bucket) in _TILELANG_BACKWARD_SHORT_TOPK
     if config.backward_backend == "cudnn" and (is_short_topk or not cudnn_supported):
         config = replace(config, backward_backend="tilelang")
@@ -244,6 +256,7 @@ class _SparseAttention(torch.autograd.Function):
             sm_scale=ctx.sm_scale,
             num_stages=ctx.config.backward_stages,
             split_store=ctx.config.backward_split_store,
+            query_block=ctx.config.backward_query_block,
         )
         d_sink = None
         if attn_sink is not None:
