@@ -101,6 +101,19 @@ class TestLoadHfConfig:
         assert kwargs["exist_ok"] is True
 
 
+class TestInkling2Alias:
+    """Inkling2 checkpoints keep separate embed and unembed tensors but omit tie_word_embeddings."""
+
+    @pytest.mark.parametrize("model_type", ["inkling2", "inkling2_loop"])
+    def test_inkling2_loads_with_untied_embeddings(self, tmp_path, model_type):
+        from miles.utils.hf_utils.config import load_hf_config
+
+        _write_config_json(str(tmp_path), {"model_type": model_type, "text_config": {"hidden_size": 8}})
+
+        cfg = load_hf_config(str(tmp_path))
+        assert (cfg.model_type, cfg.tie_word_embeddings) == (model_type, False)
+
+
 class TestDeepseekV32Alias:
     """Integration: alias registration makes AutoConfig recognize deepseek_v32."""
 
