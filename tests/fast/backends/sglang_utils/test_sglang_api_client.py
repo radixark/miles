@@ -844,6 +844,10 @@ class TestWeightControlPayloads:
 
 
 class TestStartProfile:
+    async def test_cuda_capture_requests_enable_sglangs_gpu_profiler(self, client, recorder):
+        await client.start_profile(activities=["CPU", "CUDA", "MEM"])
+        assert recorder.calls[0][2]["json"]["activities"] == ["CPU", "GPU", "MEM"]
+
     async def test_start_profile_forwards_every_non_default_profile_option(self, client, recorder):
         """Every profiling knob is optional, so each one must survive the trip to the wire."""
         await client.start_profile(
@@ -927,3 +931,17 @@ class TestWorkerTypeInfer:
         """A mode miles does not know must fail closed instead of being served as regular."""
         with pytest.raises(ValueError):
             WorkerType.from_server_info({"disaggregation_mode": "something_new"})
+
+
+@pytest.mark.parametrize("status", [400, 500])
+async def test_bounded_capture_can_finalize_after_native_auto_stop(client, recorder, status):
+    recorder.responses.append(
+        _FakeResponse(status_code=status, text="Profiling is not in progress. Call /start_profile first.")
+    )
+    await client.stop_profile(allow_completed=True)
+
+
+async def test_native_export_failures_are_not_treated_as_completed_profiles(client, recorder):
+    recorder.responses.append(_FakeResponse(status_code=500, text="RuntimeError: stoi"))
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.stop_profile(allow_completed=True)

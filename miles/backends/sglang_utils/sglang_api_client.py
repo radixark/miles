@@ -518,7 +518,11 @@ class SGLangApiClient:
                 "output_dir": output_dir,
                 "start_step": start_step,
                 "num_steps": num_steps,
-                "activities": activities,
+                "activities": (
+                    ["GPU" if activity == "CUDA" else activity for activity in activities]
+                    if activities is not None
+                    else None
+                ),
                 "profile_by_stage": profile_by_stage,
                 "with_stack": with_stack,
                 "record_shapes": record_shapes,
@@ -528,9 +532,15 @@ class SGLangApiClient:
         response.raise_for_status()
         return response
 
-    async def stop_profile(self):
+    async def stop_profile(self, allow_completed=False):
         response = await GeneralHttpClientProvider.client().post(
             f"{self.server_url}/stop_profile", json={}, headers=self._headers
         )
+        if (
+            allow_completed
+            and response.status_code >= 400
+            and "Profiling is not in progress. Call /start_profile first." in response.text
+        ):
+            return response
         response.raise_for_status()
         return response

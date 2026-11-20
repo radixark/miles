@@ -47,7 +47,7 @@ from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.lora.utils import build_lora_config, lora_rollout_enabled
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.object_store import StoreObjectRef
-from miles.utils.profile_utils import TrainProfiler
+from miles.utils.profile_utils import TrainProfiler, profile_training_operation
 from miles.utils.timer import Timer, inverse_timer, timer
 
 logger = logging.getLogger(__name__)
@@ -150,6 +150,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
         dist.barrier(group=get_gloo_group())
         print_memory(f"after moving the model to {where}")
 
+    @profile_training_operation
     def train(
         self,
         rollout_id: int,
