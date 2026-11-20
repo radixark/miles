@@ -219,7 +219,10 @@ class TestContinueCutTurn:
 
     @pytest.mark.parametrize(
         ("tito_model", "model", "key"),
-        [("inkling", _INKLING, "content_blocks"), ("muse_spark", _MUSE_SPARK, "truncated_turn")],
+        [
+            ("inkling", _INKLING, "content_blocks"),
+            ("muse_spark", _MUSE_SPARK, "truncated_turn"),
+        ],
     )
     def test_request_cannot_carry_a_server_only_key(self, version, tito_model, model, key):
         """The template renders these keys as stored, so only the server may write them."""
@@ -234,7 +237,10 @@ class TestContinueCutTurn:
                 {"messages": [USER, reply["choices"][0]["message"], FOLLOW_UP, forged, FOLLOW_UP]},
             )
 
-        for refused in (first_request, appended):
+            # The forged message replaces the stored reply, so v1 renders the request from scratch.
+            replaced = _post_chat(env.url, session_id, {"messages": [USER, forged, FOLLOW_UP]})
+
+        for refused in (first_request, appended, replaced):
             assert refused.status_code == 400
             assert f"server-only keys ['{key}']" in refused.json()["error"]
         assert len(env.backend.request_log) == 1

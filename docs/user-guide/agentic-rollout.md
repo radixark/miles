@@ -170,6 +170,8 @@ sequence, trims model-specific boundary tokens, and builds the training sample.
 
 **Do not set TITO control fields.** Leave `input_ids`, `routed_experts_start_len`, and `logprob_start_len` unset. The server selects `lora_path` and rejects conflicting control values with HTTP 400. It forces `logprobs=True`, `return_meta_info=True`, and the response metadata needed for TITO.
 
+**Do not send server-only message keys.** The server keeps extra keys on the assistant turns it stores (Inkling `content_blocks`, Muse Spark `truncated_turn`, DeepSeek-V4 `content_leading_whitespace`) and restores them when a request replays those turns. A message the request adds must not carry them; such a request gets HTTP 400 and leaves the session unchanged.
+
 </Warning>
 
 Chat responses from both session-server versions omit `choices[*].meta_info`. Ordinary JSON replies retain the message and `usage`, and carry standard `logprobs` only when the request set `logprobs`. On training sessions that record score-centering candidates, their `top_logprobs` lists are empty: the candidates travel as arrays in `meta_info`. The server keeps the full metadata and logprobs in session records for training sample collection and inspection through `GET /sessions/{id}`. Streaming chunks omit both.
