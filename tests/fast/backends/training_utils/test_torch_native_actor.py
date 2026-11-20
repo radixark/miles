@@ -141,17 +141,19 @@ def test_the_rollout_step_runs_ref_then_actor_then_optimizer_under_the_right_sta
     assert step["replay"].attach.call_args.kwargs["align"] is actor.align_token_side_channel
 
 
-@pytest.mark.parametrize("dumps_train_data", [True, False])
-def test_only_a_rank_that_owns_its_rollout_slice_dumps_train_data(step, monkeypatch, dumps_train_data):
-    """torchtitan's CP peers share one rollout, so only one of them writes the dump."""
-    dump = MagicMock()
+@pytest.mark.parametrize("owns_rollout_slice", [True, False])
+def test_only_a_rank_that_owns_its_rollout_slice_dumps_and_reports_it(step, monkeypatch, owns_rollout_slice):
+    """torchtitan's CP peers share one rollout, so only one of them dumps it or reports it to observers."""
+    dump, report = MagicMock(), MagicMock()
     monkeypatch.setattr(base_module.train_dump, "save_debug_train_data", dump)
+    monkeypatch.setattr(base_module.train_token_reporter, "report_train_tokens", report)
     actor = _Provider()
-    actor.dumps_train_data = dumps_train_data
+    actor.owns_rollout_slice = owns_rollout_slice
 
     actor._train_core(rollout_id=3, rollout_data={})
 
-    assert dump.called == dumps_train_data
+    assert dump.called == owns_rollout_slice
+    assert report.called == owns_rollout_slice
 
 
 def test_the_step_resets_the_replay_queues_even_when_training_fails(step, monkeypatch):
