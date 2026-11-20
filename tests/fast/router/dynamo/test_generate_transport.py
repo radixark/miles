@@ -188,6 +188,24 @@ async def test_exhausted_decoder_retries_do_not_restart_locally(monkeypatch):
     assert len(requests) == 3
 
 
+@pytest.mark.parametrize("failure", [TimeoutError, httpx.ReadTimeout, httpx.ReadError])
+async def test_exhausted_stream_transport_retries_do_not_restart_locally(monkeypatch, failure):
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        raise failure("stream transport stalled")
+
+    async def no_wait(_):
+        pass
+
+    monkeypatch.setattr(http_utils.asyncio, "sleep", no_wait)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(failure, match="stream transport stalled"):
+            await _request_events(client, monkeypatch, distributed=True)
+    assert len(requests) == 3
+
+
 async def test_actor_outage_still_falls_back_to_local_transport(monkeypatch):
     async def unavailable(*args, **kwargs):
         raise RuntimeError("poster actor unavailable")
