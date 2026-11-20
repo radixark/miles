@@ -144,3 +144,21 @@ def test_entry_layer_rejects_a_payload_with_the_wrong_block_count() -> None:
     # Layer 4 with blocks every 3 layers expects the embedding and block 3 (2 rows), not 1.
     with pytest.raises(AssertionError, match="stage-boundary payload width"):
         layer.forward(torch.randn(TOKENS, 1, 2 * HIDDEN), packed_seq_params=packed)
+
+
+def test_only_block_boundaries_build_a_new_context() -> None:
+    """Full recompute keeps every layer's input context until backward, so a layer that adds no
+    block must pass its input context through instead of stacking a copy of the blocks."""
+    num_layers = 8
+    layers = [_layer(idx, num_layers, (False, False)) for idx in range(num_layers)]
+    packed = SimpleNamespace(cu_seqlens_q=torch.tensor([0, 3, TOKENS]))
+    x, context, blocks = torch.randn(TOKENS, 1, HIDDEN), None, []
+    for layer in layers:
+        out, new_context = layer.forward(x, context=context, packed_seq_params=packed)
+        if layer.layer_idx % EVERY == 0:
+            blocks.append(x)
+            torch.testing.assert_close(new_context, torch.stack(blocks, dim=-2), rtol=0, atol=0)
+            assert new_context is not context, f"layer {layer.layer_idx}: a boundary must add its block"
+        else:
+            assert new_context is context, f"layer {layer.layer_idx}: a non-boundary layer copied the context"
+        x, context = out, new_context
