@@ -11,6 +11,7 @@ from miles.utils.external_utils.model_args_utils import (
     load_model_args,
     load_sibling_model_args,
     moe_layer_freq,
+    moe_permute_fusion,
     shell_safe_model_args,
 )
 
@@ -87,6 +88,26 @@ class TestMoeLayerFreq:
     def test_renders_an_all_moe_mask_when_no_dense_layers(self):
         """DeepSeek V4 has no dense prefix, so every entry is a MoE layer."""
         assert moe_layer_freq(nlayers=3, first_k_dense_replace=0) == "[1,1,1]"
+
+
+class TestMoePermuteFusion:
+    def test_is_on_unless_the_environment_turns_it_off(self, monkeypatch):
+        """Model scripts keep fusing by default; megatron has no --no- flag to turn it off later."""
+        monkeypatch.delenv("MODEL_ARGS_MOE_PERMUTE_FUSION", raising=False)
+        assert moe_permute_fusion() == "--moe-permute-fusion "
+        monkeypatch.setenv("MODEL_ARGS_MOE_PERMUTE_FUSION", "1")
+        assert moe_permute_fusion() == "--moe-permute-fusion "
+        monkeypatch.setenv("MODEL_ARGS_MOE_PERMUTE_FUSION", "0")
+        assert moe_permute_fusion() == ""
+
+    def test_a_model_script_drops_only_that_flag_when_turned_off(self, monkeypatch):
+        monkeypatch.delenv("MODEL_ARGS_MOE_PERMUTE_FUSION", raising=False)
+        fused = load_model_args("qwen3-30B-A3B").split()
+        monkeypatch.setenv("MODEL_ARGS_MOE_PERMUTE_FUSION", "0")
+        unfused = load_model_args("qwen3-30B-A3B").split()
+
+        assert "--moe-permute-fusion" in fused
+        assert [arg for arg in fused if arg != "--moe-permute-fusion"] == unfused
 
 
 class TestLoadModelArgs:

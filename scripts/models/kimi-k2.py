@@ -1,4 +1,4 @@
-from model_args_utils import moe_layer_freq
+from model_args_utils import moe_layer_freq, moe_permute_fusion
 
 
 NLAYERS = 61
@@ -54,5 +54,5 @@ def model_args() -> str:
         "--moe-grouped-gemm "
         "--moe-router-topk-scaling-factor 2.827 "
         "--moe-router-dtype fp32 "
-        "--moe-permute-fusion "
+        f"{moe_permute_fusion()}"
     )
