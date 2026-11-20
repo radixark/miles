@@ -99,7 +99,9 @@ class TruncationGrammar:
         """
         prompt_text, completion_text = _decode_turn(tokenizer, token_ids, completion_start, message_boundary_ids)
         stack, _ = self.scan(completion_text, self.opened_by(prompt_text))
-        closer_text = self.closing_text(prompt_text + completion_text, stack)
+        # A closing marker written as several tokens can be cut partway; a single-token one cannot.
+        marker_is_text = bool(stack) and len(tokenizer.encode(stack[-1].close_marker, add_special_tokens=False)) > 1
+        closer_text = self.closing_text(prompt_text + completion_text, stack, complete_innermost=marker_is_text)
         return tokenizer.encode(closer_text, add_special_tokens=False)
 
     def cut_kind(
@@ -160,11 +162,22 @@ class TruncationGrammar:
                     del stack[len(stack) - 1 - stack[::-1].index(pair) :]
         return stack, problems
 
-    def closing_text(self, text: str, stack: list[MarkerPair]) -> str:
-        """Text that closes every structure in *stack*, innermost first, then ends the turn after *text*."""
+    def closing_text(self, text: str, stack: list[MarkerPair], *, complete_innermost: bool = False) -> str:
+        """Text that closes every structure in *stack*, innermost first, then ends the turn after *text*.
+
+        With *complete_innermost*, a closing marker of the innermost structure
+        that *text* already starts is completed instead of written again.  A
+        start that could as well begin an opening marker, such as a lone ``<``,
+        is left as sampled text.
+        """
+        openers = [pair.open for pair in (self.think, *self.tool_blocks)]
         closer = ""
-        for pair in reversed(stack):
-            closer += _skip_whitespace_overlap(text + closer, pair.close)
+        for depth, pair in enumerate(reversed(stack)):
+            started = _started_marker(text, pair.close_marker, openers) if complete_innermost and depth == 0 else 0
+            if started:
+                closer += pair.close[pair.close.index(pair.close_marker) + started :]
+            else:
+                closer += _skip_whitespace_overlap(text + closer, pair.close)
         return closer + (self.end_of_turn or "")
 
 
@@ -183,6 +196,12 @@ def _decode_turn(
         tokenizer.decode(token_ids[boundary:completion_start]),
         tokenizer.decode(token_ids[completion_start:]),
     )
+
+
+def _started_marker(text: str, marker: str, openers: list[str]) -> int:
+    """Length of the longest proper prefix of *marker* that *text* ends with and that starts no opener."""
+    size = next((size for size in range(len(marker) - 1, 0, -1) if text.endswith(marker[:size])), 0)
+    return 0 if any(opener.startswith(marker[:size]) for opener in openers) else size
 
 
 def _skip_whitespace_overlap(text: str, fragment: str) -> str:
