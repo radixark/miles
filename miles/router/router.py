@@ -149,7 +149,12 @@ class MilesRouter:
         if headers is None:
             headers = dict(request.headers)
         if body is not None:
-            headers = {k: v for k, v in headers.items() if k.lower() not in ("content-length", "transfer-encoding")}
+            # The body is read back decoded, so httpx negotiates Accept-Encoding with the worker, not the client.
+            headers = {
+                k: v
+                for k, v in headers.items()
+                if k.lower() not in ("content-length", "transfer-encoding", "accept-encoding")
+            }
 
         try:
             response = await self.client.request(request.method, url, content=body, headers=headers)
@@ -171,7 +176,7 @@ class MilesRouter:
         headers = {
             k: v
             for k, v in headers.items()
-            if k.lower() not in ("content-length", "transfer-encoding", "server", "date")
+            if k.lower() not in ("content-length", "transfer-encoding", "content-encoding", "server", "date")
         }
         content_type = headers.get("content-type", "")
         try:
