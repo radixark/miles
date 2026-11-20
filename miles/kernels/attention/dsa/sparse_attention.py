@@ -9,7 +9,7 @@ zero-padded up to 64 or 128) or the TileLang kernel. The backward runs cuDNN's D
 group, d_v = 512) or the TileLang kernel. Both forwards emit the log-sum-exp in log2 space with the sink
 folded in (FlashMLA's is converted); the TileLang backward takes it as is, cuDNN takes it back in natural log
 without the sink, with the indices compacted valid-first. Which kernels run and how the TileLang ones are tiled
-is a SparseAttentionConfig: measured rows live in _TUNED, keyed by (CUDA major or ROCm gfx name, RoPE tail, TP-local heads);
+is a SparseAttentionConfig: architecture-specific rows live in _TUNED, keyed by (CUDA major or ROCm gfx name, RoPE tail, TP-local heads);
 callers may pass their own.
 """
 
@@ -50,11 +50,26 @@ class SparseAttentionConfig:
     backward_backend: Literal["tilelang", "cudnn"] = "tilelang"
     backward_stages: int = 0
     backward_split_store: int = 2
+    forward_block_size: int = 64
+    forward_max_heads: int = 64
+    backward_block_size: int = 32
+    backward_max_heads: int | None = None
+    backward_threads: int | None = None
 
 
 _TILELANG_SMALL_HEADS = SparseAttentionConfig(forward_backend="tilelang", forward_threads=128)
+_TILELANG_64K = SparseAttentionConfig(
+    forward_backend="tilelang",
+    forward_threads=128,
+    forward_block_size=32,
+    forward_max_heads=16,
+    backward_block_size=16,
+    backward_max_heads=16,
+    backward_threads=64,
+    backward_split_store=16,
+)
 
-# Measured per layer at 16k / 64k tokens on H200 (9) and B300 / GB300 (10, identical winners) for GLM-5
+# CUDA rows measured per layer at 16k / 64k tokens on H200 (9) and B300 / GB300 (10, identical winners) for GLM-5
 # (RoPE tail 64, topk 2048) and DeepSeek-V4.1 (no tail, topk 640). FlashMLA pads heads to 64. The TileLang backward
 # tunables apply where _default_config falls back from cuDNN.
 _TUNED = {
@@ -76,6 +91,15 @@ _TUNED = {
     ),
     (9, False, 32): SparseAttentionConfig(backward_backend="cudnn", backward_stages=1, backward_split_store=4),
     (9, False, 64): SparseAttentionConfig(backward_backend="cudnn", backward_split_store=4),
+    # gfx942 has 64 KiB LDS: bound both the head and KV tiles, including the backward atomic store.
+    ("gfx942", True, 8): _TILELANG_64K,
+    ("gfx942", True, 16): _TILELANG_64K,
+    ("gfx942", True, 32): _TILELANG_64K,
+    ("gfx942", True, 64): _TILELANG_64K,
+    ("gfx942", False, 8): _TILELANG_64K,
+    ("gfx942", False, 16): _TILELANG_64K,
+    ("gfx942", False, 32): _TILELANG_64K,
+    ("gfx942", False, 64): _TILELANG_64K,
     # gfx950: carry the measured 256-thread forward and safe 2-way backward store.
     ("gfx950", True, 8): SparseAttentionConfig(forward_backend="tilelang", backward_stages=1),
     ("gfx950", True, 16): SparseAttentionConfig(forward_backend="tilelang", backward_stages=1),
@@ -218,6 +242,8 @@ class _SparseAttention(torch.autograd.Function):
                 d_v,
                 sm_scale=sm_scale,
                 threads=config.forward_threads,
+                block_I=config.forward_block_size,
+                max_block_H=config.forward_max_heads,
             )
         ctx.save_for_backward(q, kv, indices, attn_sink, out, lse)
         ctx.sm_scale = sm_scale
@@ -244,6 +270,9 @@ class _SparseAttention(torch.autograd.Function):
             sm_scale=ctx.sm_scale,
             num_stages=ctx.config.backward_stages,
             split_store=ctx.config.backward_split_store,
+            block_size=ctx.config.backward_block_size,
+            max_block_H=ctx.config.backward_max_heads,
+            threads=ctx.config.backward_threads,
         )
         d_sink = None
         if attn_sink is not None:
