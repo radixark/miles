@@ -91,6 +91,77 @@ def short_conv(
     return (out * scale).to(x.dtype)
 
 
+class _CPAllGather(torch.autograd.Function):
+    """Rows of every CP rank in rank order. Backward sums each rank's gradient into the owner's
+    rows in fp32, so a row's gradient is rounded once, as without CP."""
+
+    @staticmethod
+    def forward(ctx, x, group):
+        ctx.group = group
+        out = x.new_empty((x.shape[0] * group.size(), *x.shape[1:]))
+        torch.distributed.all_gather_into_tensor(out, x.contiguous(), group=group)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad):
+        out = grad.new_empty((grad.shape[0] // ctx.group.size(), *grad.shape[1:]), dtype=torch.float32)
+        torch.distributed.reduce_scatter_tensor(out, grad.float().contiguous(), group=ctx.group)
+        return out.to(grad.dtype), None
+
+
+def cp_all_gather(x: torch.Tensor, group) -> torch.Tensor:
+    return _CPAllGather.apply(x, group)
+
+
+class _CPLeftHalo(torch.autograd.Function):
+    """The previous CP rank's last rows (zeros on rank 0). Forward and backward each run one
+    collective on every rank, so rank 0, whose halo feeds nothing, still joins the backward."""
+
+    @staticmethod
+    def forward(ctx, tail, group):
+        ctx.group = group
+        tails = tail.new_empty((tail.shape[0] * group.size(), *tail.shape[1:]))
+        torch.distributed.all_gather_into_tensor(tails, tail.contiguous(), group=group)
+        rank, rows = group.rank(), tail.shape[0]
+        return tails[(rank - 1) * rows : rank * rows].clone() if rank > 0 else torch.zeros_like(tail)
+
+    @staticmethod
+    def backward(ctx, grad):
+        group, rows = ctx.group, grad.shape[0]
+        rank = group.rank()
+        # Each rank's halo gradient belongs to the previous rank's tail; scatter it there.
+        grads = grad.new_zeros((rows * group.size(), *grad.shape[1:]), dtype=torch.float32)
+        if rank > 0:
+            grads[(rank - 1) * rows : rank * rows] = grad.float()
+        out = grad.new_empty(grad.shape, dtype=torch.float32)
+        torch.distributed.reduce_scatter_tensor(out, grads, group=group)
+        return out.to(grad.dtype), None
+
+
+def cp_short_conv(
+    x: torch.Tensor,
+    positions: torch.Tensor,
+    static_weight: torch.Tensor,
+    *,
+    dynamic_weight: torch.Tensor | None = None,
+    group=None,
+) -> torch.Tensor:
+    """``short_conv`` on a CP rank's contiguous slice of the sequence (``group`` None: no CP).
+
+    The previous rank's last W - 1 rows are this slice's causal left context; rank 0's halo is
+    zeros, which ``positions`` masks out. Each output row is computed as without CP.
+    """
+    if group is None:
+        return short_conv(x, positions, static_weight, dynamic_weight=dynamic_weight)
+    halo = static_weight.shape[0] - 1
+    assert x.shape[0] >= halo, f"a CP slice of {x.shape[0]} rows is shorter than the conv's {halo}-row context"
+    left = _CPLeftHalo.apply(x[-halo:], group)
+    positions = torch.cat([positions.new_zeros(halo), positions])
+    if dynamic_weight is not None:
+        dynamic_weight = torch.cat([dynamic_weight.new_zeros(halo, *dynamic_weight.shape[1:]), dynamic_weight])
+    return short_conv(torch.cat([left, x]), positions, static_weight, dynamic_weight=dynamic_weight)[halo:]
+
+
 def l2_clip(
     x: torch.Tensor,
     threshold: float,
@@ -244,37 +315,43 @@ def relative_attention(
     *,
     window: int | None,
     block_mask_cache: dict,
+    q_offset: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Causal GQA attention with a learned relative bias, returning (out, lse).
 
-    q: [T, heads, dim]; k, v: [T, kv_heads, dim]; rel_logits: [T, heads, extent] where
+    q: [Tq, heads, dim]; k, v: [T, kv_heads, dim]; rel_logits: [Tq, heads, extent] where
     ``rel_logits[i, h, d]`` is added for key distance ``d = i - j < extent``. ``window``
     keeps keys with ``i - j <= window`` (local layers); None is full causal attention.
-    Packed sequences never attend across boundaries. lse is the natural-log normalizer.
+    The queries are keys ``q_offset .. q_offset + Tq`` (a CP rank's slice); ``seqlens``
+    covers all T keys. Packed sequences never attend across boundaries. lse is the
+    natural-log normalizer.
     """
-    total = q.shape[0]
+    total_q, total = q.shape[0], k.shape[0]
     extent = rel_logits.shape[-1]
     segment = torch.repeat_interleave(
         torch.arange(len(seqlens), device=q.device), torch.tensor(seqlens, device=q.device)
     )
     bias = rel_logits.permute(1, 0, 2).float().contiguous()
+    # A captured tensor, not an int: the offset changes with every micro-batch's length.
+    offset = torch.tensor(q_offset, device=q.device)
 
     def score_mod(score, b, h, q_idx, kv_idx):
-        distance = q_idx - kv_idx
+        distance = q_idx + offset - kv_idx
         rel = bias[h, q_idx, torch.clamp(distance, 0, extent - 1)]
         return torch.where(distance < extent, score + rel, score)
 
     def mask_mod(b, h, q_idx, kv_idx):
-        keep = (q_idx >= kv_idx) & (segment[q_idx] == segment[kv_idx])
+        position = q_idx + offset
+        keep = (position >= kv_idx) & (segment[position] == segment[kv_idx])
         if window is not None:
-            keep = keep & (q_idx - kv_idx <= window)
+            keep = keep & (position - kv_idx <= window)
         return keep
 
-    key = (tuple(seqlens), window)
+    key = (tuple(seqlens), window, q_offset, total_q)
     block_mask = block_mask_cache.get(key)
     if block_mask is None:
         block_mask_cache.clear()
-        block_mask = create_block_mask(mask_mod, B=None, H=None, Q_LEN=total, KV_LEN=total, device=q.device)
+        block_mask = create_block_mask(mask_mod, B=None, H=None, Q_LEN=total_q, KV_LEN=total, device=q.device)
         block_mask_cache[key] = block_mask
     out, aux = flex_compiled()(
         q.permute(1, 0, 2).unsqueeze(0),

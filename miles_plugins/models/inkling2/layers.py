@@ -5,6 +5,8 @@ a sigmoid-routed MoE with soft-capped SwiGLU experts.
 Parameters keep the HF checkpoint layouts so weight conversion is a rename.
 """
 
+from typing import NamedTuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -25,16 +27,34 @@ from miles_plugins.models.inkling2.ops import (
     attn_res_mix,
     attn_res_partial,
     capped_swiglu,
+    cp_all_gather,
+    cp_short_conv,
     fake_quantize_expert_weight,
     l2_clip,
     log_scaling_tau,
     positions_in_sequence,
     relative_attention,
     rms_norm,
-    short_conv,
 )
-from miles_plugins.models.inkling.ops import seqlens_from_packed
+from miles_plugins.models.inkling.ops import cp_world, seqlens_from_packed
 from miles_plugins.models.kimi_k3.pipeline import bank_num_rows, pack_stage_boundary, unpack_stage_boundary
+
+
+class _SequenceSlice(NamedTuple):
+    """This rank's contiguous slice of the packed sequence (``--allgather-cp``; CP 1: all of it)."""
+
+    seqlens: list[int]  # every packed sequence, over all CP ranks
+    positions: torch.Tensor  # this slice's in-sequence positions
+    offset: int  # index of this slice's first row in the full packed sequence
+    cp_group: object  # None without CP
+
+
+def _sequence_slice(packed_seq_params: PackedSeqParams, local_total: int, device: torch.device) -> _SequenceSlice:
+    cp, cp_rank, cp_group = cp_world()
+    seqlens = seqlens_from_packed(packed_seq_params, local_total * cp)
+    offset = cp_rank * local_total
+    positions = positions_in_sequence(seqlens, device)[offset : offset + local_total]
+    return _SequenceSlice(seqlens, positions, offset, cp_group)
 
 
 class Inkling2RMSNorm(nn.Module):
@@ -123,37 +143,43 @@ class Inkling2Attention(MegatronModule):
             is_expert=False,
         )
 
-    def _kv(self, sources, positions):
+    def _kv(self, sources, sequence: _SequenceSlice):
+        """K and V of the whole packed sequence: each CP rank projects and convolves its slice."""
         k, _ = self.linear_k(sources[1])
         v, _ = self.linear_v(sources[2])
+        positions, group = sequence.positions, sequence.cp_group
         if self.is_local:
-            k = short_conv(k, positions, _lag_major(self.k_sconv_weight))
-            v = short_conv(v, positions, _lag_major(self.v_sconv_weight))
+            k = cp_short_conv(k, positions, _lag_major(self.k_sconv_weight), group=group)
+            v = cp_short_conv(v, positions, _lag_major(self.v_sconv_weight), group=group)
         else:
             width = self.inkling2.sconv_kernel_size
             k_dynamic = F.linear(sources[1], self.k_sconv_weight_proj).view(-1, self.num_kv_heads, width)
             v_dynamic = F.linear(sources[2], self.v_sconv_weight_proj).view(-1, self.num_kv_heads, width)
-            k = short_conv(k, positions, self.k_sconv_static_w, dynamic_weight=k_dynamic)
-            v = short_conv(v, positions, self.v_sconv_static_w, dynamic_weight=v_dynamic)
+            k = cp_short_conv(k, positions, self.k_sconv_static_w, dynamic_weight=k_dynamic, group=group)
+            v = cp_short_conv(v, positions, self.v_sconv_static_w, dynamic_weight=v_dynamic, group=group)
         k = l2_clip(k.view(-1, self.num_kv_heads, self.head_dim), self.inkling2.qk_l2_clip_threshold)
         v = v.view(-1, self.num_kv_heads, self.head_dim)
         if self.inkling2.use_value_norm_no_gamma:
             v = rms_norm(v, None, self.inkling2.rms_norm_eps, v.dtype)
+        if group is not None:
+            k, v = cp_all_gather(k, group), cp_all_gather(v, group)
         return k, v
 
     def forward(self, sources: tuple[torch.Tensor, ...], packed_seq_params: PackedSeqParams) -> torch.Tensor:
-        """sources: (q, k, v) normalized inputs, each [T, 1, hidden]; returns [T, 1, hidden]."""
+        """sources: (q, k, v) normalized inputs, each [T, 1, hidden]; returns [T, 1, hidden].
+        Under CP, T is this rank's slice and the keys span every rank's."""
         total = sources[0].shape[0]
         sources = tuple(s.view(total, -1) for s in sources)
-        seqlens = seqlens_from_packed(packed_seq_params, total)
-        positions = positions_in_sequence(seqlens, sources[0].device)
+        sequence = _sequence_slice(packed_seq_params, total, sources[0].device)
         projected, _ = self.linear_q(sources[0])
         q, r, gate, sink = projected.split(self.q_split, dim=-1)
-        k, v = self._kv(sources, positions)
+        k, v = self._kv(sources, sequence)
         tau = (
             None
             if self.is_local
-            else log_scaling_tau(positions, self.inkling2.log_scaling_n_floor, self.inkling2.log_scaling_alpha)
+            else log_scaling_tau(
+                sequence.positions, self.inkling2.log_scaling_n_floor, self.inkling2.log_scaling_alpha
+            )
         )
         q = l2_clip(
             q.view(total, self.num_heads, self.head_dim),
@@ -169,12 +195,22 @@ class Inkling2Attention(MegatronModule):
         )
         rel_logits = torch.einsum("thd,de->the", r, self.rel_proj)
         out, lse = relative_attention(
-            q, k, v, rel_logits, seqlens, window=self.window, block_mask_cache=self._block_masks
+            q,
+            k,
+            v,
+            rel_logits,
+            sequence.seqlens,
+            window=self.window,
+            block_mask_cache=self._block_masks,
+            q_offset=sequence.offset,
         )
         out = out.float() * torch.sigmoid(gate.view(total, self.num_heads, self.head_dim).float())
         out = out * torch.sigmoid(lse - sink.float()).unsqueeze(-1)
         out, _ = self.linear_proj(out.to(sources[0].dtype).view(total, 1, -1))
-        return short_conv(out.view(total, -1), positions, _lag_major(self.attn_sconv_weight)).view(total, 1, -1)
+        out = cp_short_conv(
+            out.view(total, -1), sequence.positions, _lag_major(self.attn_sconv_weight), group=sequence.cp_group
+        )
+        return out.view(total, 1, -1)
 
 
 class Inkling2Router(TopKRouter):
@@ -322,12 +358,12 @@ class Inkling2TransformerLayer(TransformerLayer):
         attention = self.self_attention(self._attention_input(partial, blocks), packed_seq_params)
         mlp_input = self._mlp_input(partial, blocks, attention, is_boundary)
         mlp_output, _ = self.mlp(mlp_input)
-        seqlens = seqlens_from_packed(packed_seq_params, mlp_output.shape[0])
-        positions = positions_in_sequence(seqlens, mlp_output.device)
-        mlp_output = short_conv(
-            mlp_output.to(partial.dtype).view(positions.shape[0], -1),
-            positions,
+        sequence = _sequence_slice(packed_seq_params, mlp_output.shape[0], mlp_output.device)
+        mlp_output = cp_short_conv(
+            mlp_output.to(partial.dtype).view(sequence.positions.shape[0], -1),
+            sequence.positions,
             _lag_major(self.mlp_sconv_weight),
+            group=sequence.cp_group,
         ).view_as(partial)
 
         if is_boundary:

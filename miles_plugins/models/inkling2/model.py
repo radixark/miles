@@ -138,7 +138,6 @@ def build_inkling2_config(text_cfg: dict, args) -> TransformerConfig:
         # Local and full-attention layers own different parameters, so layers are not stacked.
         hetereogenous_dist_checkpoint=True,
     )
-    assert config.context_parallel_size == 1, "Inkling2 supports CP=1"
     assert args.virtual_pipeline_model_parallel_size is None, "Inkling2 does not support VPP"
     # This config carries only the first/last stage sizes; other split flags would be dropped.
     assert (
@@ -254,6 +253,10 @@ def _frozen_vision_tower(hf_checkpoint: str) -> torch.nn.Module:
 
 
 def inkling2_model_provider(pre_process=True, post_process=True, vp_stage=None, *, args: TrainerConfig):
+    # The layers take each CP rank's slice as a contiguous run of the packed sequence.
+    assert (
+        args.backend.context_parallel_size == 1 or args.allgather_cp
+    ), "Inkling2 CP requires --allgather-cp (zigzag CP is not supported)"
     text_cfg = load_inkling2_text_config(args.hf_checkpoint)
     config = build_inkling2_config(text_cfg, args.backend)
     config.inkling2 = replace(config.inkling2, expert_fake_quant=_expert_formats(args.hf_checkpoint, text_cfg))
@@ -273,6 +276,7 @@ def inkling2_model_provider(pre_process=True, post_process=True, vp_stage=None, 
 def inkling2_mm_model_provider(pre_process=True, post_process=True, vp_stage=None, *, args: TrainerConfig):
     """The text model plus the frozen vision tower, kept outside the module tree so DDP, the
     optimizer, checkpoints and weight sync never see it (the engine keeps its own copy)."""
+    assert args.backend.context_parallel_size == 1, "image positions index the full sequence; CP splits it"
     model = inkling2_model_provider(pre_process, post_process, vp_stage, args=args)
     if model.pre_process:
         model.__dict__["vision_tower"] = _frozen_vision_tower(args.hf_checkpoint)
