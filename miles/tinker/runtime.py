@@ -167,17 +167,29 @@ def classify_lora_groups(target_modules, layout: HfLoraTargets) -> dict[str, boo
 
 
 class MilesBackend:
-    def __init__(self, trainer, router_url: str, lora_layout: HfLoraTargets, dp_size: int = 1) -> None:
-        self.trainer = trainer
-        self.router_url = router_url
+    def __init__(self, trainer, router_url: str | None, lora_layout: HfLoraTargets, dp_size: int = 1) -> None:
+        self._trainer = trainer
+        self._router_url = router_url
         self.lora_layout = lora_layout
         self.dp_size = dp_size
+
+    @property
+    def trainer(self):
+        if self._trainer is None:
+            raise UserInputError("Training is disabled in inference mode; use --tinker-mode training or combined")
+        return self._trainer
+
+    @property
+    def router_url(self) -> str:
+        if self._router_url is None:
+            raise UserInputError("Sampling is disabled in training mode; use --tinker-mode inference or combined")
+        return self._router_url
 
     def lora_groups(self, target_modules) -> dict[str, bool]:
         return classify_lora_groups(target_modules, self.lora_layout)
 
     async def trainer_dead(self) -> bool:
-        return await self.trainer.has_errored_cell()
+        return self._trainer is not None and await self._trainer.has_errored_cell()
 
     async def load_slot(self, slot: int, rank: int, alpha: float, source: dict | None = None) -> dict | None:
         return _slot_failure(await self.trainer.load_slot(slot, rank, alpha, source=source))

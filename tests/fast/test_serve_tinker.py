@@ -6,6 +6,7 @@ import pytest
 import serve_tinker
 from tests.fast.fixtures.serve_tinker_fakes import tinker_startup
 
+from miles.tinker.core.types import UserInputError
 from miles.tinker.runtime import MilesBackend, take_checkpoint_root
 from miles.utils import http_utils
 from miles.utils.async_utils import with_disposer
@@ -15,6 +16,25 @@ _ = tinker_startup
 
 
 class TestServe:
+    async def test_training_only_skips_inference_startup(self, tinker_startup: SimpleNamespace) -> None:
+        tinker_startup.args.tinker_mode = "training"
+        tinker_startup.args.starts_inference_engines = False
+
+        await with_disposer(serve_tinker.serve, tinker_startup.args)
+
+        assert tinker_startup.trainer.request is not None
+        assert not tinker_startup.controller.initialized
+        assert http_utils._client_concurrency == 0
+
+    async def test_inference_only_skips_trainer_startup(self, tinker_startup: SimpleNamespace) -> None:
+        tinker_startup.args.tinker_mode = "inference"
+
+        await with_disposer(serve_tinker.serve, tinker_startup.args)
+
+        assert tinker_startup.trainer.request is None
+        assert tinker_startup.controller.initialized
+        assert tinker_startup.controller.disposed
+
     async def test_observed_engines_initialize_a_client_that_can_sample(self, tinker_startup: SimpleNamespace) -> None:
         """A gateway starting with unknown topology can sample after its engines initialize."""
         args = tinker_startup.args
@@ -110,6 +130,28 @@ class TestServe:
         assert not tinker_startup.orchestration_calls
         assert not tinker_startup.controller.initialized
         assert tinker_startup.trainer.request is None
+
+
+class TestDisabledComponents:
+    async def test_inference_only_rejects_training_without_reporting_a_dead_trainer(self) -> None:
+        backend = MilesBackend(trainer=None, router_url="http://router:30000", lora_layout=None)
+
+        assert not await backend.trainer_dead()
+        with pytest.raises(UserInputError, match="Training is disabled"):
+            await backend.optim_step({})
+
+    async def test_training_only_rejects_sampling_before_network_io(self) -> None:
+        backend = MilesBackend(trainer=object(), router_url=None, lora_layout=None)
+        payload = {
+            "prompt_tokens": [1, 2],
+            "num_samples": 1,
+            "sampling_params": tinker_types.SamplingParams(max_tokens=1).model_dump(),
+            "prompt_logprobs": False,
+            "topk_prompt_logprobs": 0,
+        }
+
+        with pytest.raises(UserInputError, match="Sampling is disabled"):
+            await backend.sample(payload=payload, lora_name=None)
 
 
 class TestTrainerTokenBudget:
