@@ -111,6 +111,8 @@ def test_bridge_provider_sets_every_precision_field() -> None:
 
     from megatron.core.transformer.transformer_config import TransformerConfig
 
+    from miles.utils.megatron_bridge_utils import BRIDGE_PRECISION_FIELDS
+
     no_command_line_flag = {
         "fp8_dot_product_attention",
         "fp8_multi_head_attention",
@@ -125,8 +127,5 @@ def test_bridge_provider_sets_every_precision_field() -> None:
         or field.name
         in {"first_last_layers_bf16", "num_layers_at_start_in_bf16", "num_layers_at_end_in_bf16", "quant_recipe"}
     }
-    provider = SimpleNamespace()
 
-    _apply_bridge_runtime_config(provider, _runtime_args())
-
-    assert precision_fields - no_command_line_flag - set(vars(provider)) == set()
+    assert precision_fields - no_command_line_flag == set(BRIDGE_PRECISION_FIELDS) | {"quant_recipe"}

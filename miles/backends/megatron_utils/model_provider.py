@@ -41,6 +41,9 @@ def _apply_bridge_runtime_config(provider, args: TrainerConfig) -> None:
     parallelism, memory, and numerics settings that really come from args. Put
     new training flags here, not spread across the code.
     """
+    # Imported here: test_bridge_mtp_detachment.py exec()s this function's AST in a bare namespace (no module names).
+    from miles.utils.megatron_bridge_utils import apply_dsa_backend_args, apply_pipeline_layout, apply_precision_args
+
     # Bridge providers may default to frozen parts (Qwen3-VL MoE freezes the language model and ViT);
     # start from fully trainable and let miles args freeze parts below.
     for freeze_field in ("freeze_language_model", "freeze_vision_model", "freeze_vision_projection"):
@@ -88,30 +91,8 @@ def _apply_bridge_runtime_config(provider, args: TrainerConfig) -> None:
     # communication overlap
     provider.tp_comm_overlap = args.backend.tp_comm_overlap
 
-    # precision fields as core_transformer_config_from_args sets them; a missed one silently trains in BF16
-    provider.fp8 = args.backend.fp8
-    provider.fp8_recipe = args.backend.fp8_recipe
-    provider.fp8_param = args.backend.fp8_param_gather
-    provider.fp8_quantizer_factory = args.backend.fp8_quantizer_factory
-    provider.fp8_margin = args.backend.fp8_margin
-    provider.fp8_interval = args.backend.fp8_interval
-    provider.fp8_amax_history_len = args.backend.fp8_amax_history_len
-    provider.fp8_amax_compute_algo = args.backend.fp8_amax_compute_algo
-    provider.fp8_wgrad = args.backend.fp8_wgrad
-    provider.fp8_output_proj = args.backend.fp8_output_proj
-    provider.fp4 = args.backend.fp4
-    provider.fp4_recipe = args.backend.fp4_recipe
-    provider.fp4_param = args.backend.fp4_param_gather
-    provider.fp4_quantizer_factory = args.backend.fp4_quantizer_factory
-    provider.first_last_layers_bf16 = args.backend.first_last_layers_bf16
-    provider.num_layers_at_start_in_bf16 = args.backend.num_layers_at_start_in_bf16
-    provider.num_layers_at_end_in_bf16 = args.backend.num_layers_at_end_in_bf16
-    provider.quant_recipe = None
-    if args.backend.te_precision_config_file:
-        # imported here: tests exec this function body in a bare namespace
-        from megatron.core.quantization.utils import load_quantization_recipe
-
-        provider.quant_recipe = load_quantization_recipe(args.backend.te_precision_config_file)
+    # before the fake-QAT check below, which reads fp8 / fp4
+    apply_precision_args(provider, args)
 
     # attention kernel selection
     provider.attention_backend = args.backend.attention_backend
@@ -133,9 +114,6 @@ def _apply_bridge_runtime_config(provider, args: TrainerConfig) -> None:
         provider.moe_router_bias_update_rate = args.backend.moe_router_bias_update_rate
     if args.backend.moe_aux_loss_coeff is not None:
         provider.moe_aux_loss_coeff = args.backend.moe_aux_loss_coeff
-
-    # Imported here: test_bridge_mtp_detachment.py exec()s this function's AST in a bare namespace (no module names).
-    from miles.utils.megatron_bridge_utils import apply_dsa_backend_args, apply_pipeline_layout
 
     apply_pipeline_layout(provider, args)
     apply_dsa_backend_args(provider, args)
