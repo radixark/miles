@@ -23,6 +23,12 @@ def postprocess_rollout_data(
     # whole trailing rollouts instead.
     is_compact = any(s.rollout_id is not None for s in data)
 
+    if is_compact and args.use_dynamic_global_batch_size:
+        # The DP schedule counts a compact batch in rollouts, so this is one step over all of them.
+        metadata["dynamic_global_batch_size"] = len(
+            {s.rollout_id if s.rollout_id is not None else s.index for s in data}
+        )
+
     if not args.disable_rollout_trim_samples and not is_compact:
         global_batch_size = args.global_batch_size
         if args.use_dynamic_global_batch_size:

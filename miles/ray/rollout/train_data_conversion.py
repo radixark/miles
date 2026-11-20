@@ -412,6 +412,12 @@ def split_train_data_by_dp(
     if can_precompute_dp_schedule(args, data, train_parallel_config):
         shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=train_parallel_config)
     else:
+        rollout_ids = data.get("rollout_ids", [])
+        if "dynamic_global_batch_size" in data and len(set(rollout_ids)) < len(rollout_ids):
+            raise ValueError(
+                "--use-dynamic-global-batch-size counts a compact batch in rollouts, which only the rollout-side "
+                "DP schedule trains; this batch is scheduled on the training side"
+            )
         shards = split_train_data_by_dp_raw(args, data, dp_size=train_parallel_config.dp_size)
     return shards
 
