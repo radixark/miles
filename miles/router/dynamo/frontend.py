@@ -55,6 +55,23 @@ def runtime_env(
     options: LaunchOptions | None = None,
     managed_env: Mapping[str, str | None] | None = None,
 ) -> dict[str, str]:
+    overrides = runtime_env_overrides(config, options=options, managed_env=managed_env)
+    env = dict(inherited_env)
+    for key, value in overrides.items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
+    return env
+
+
+def runtime_env_overrides(
+    config: DynamoConfig,
+    *,
+    options: LaunchOptions | None = None,
+    managed_env: Mapping[str, str | None] | None = None,
+) -> dict[str, str | None]:
+    """Render launch-owned updates; None explicitly removes an inherited variable."""
     managed = dict(
         DYN_NAMESPACE=config.namespace,
         DYN_DISCOVERY_BACKEND=config.discovery.backend,
@@ -77,15 +94,8 @@ def runtime_env(
     for key, value in explicit.items():
         if key in managed and value != managed[key]:
             raise ValueError(f"{key} conflicts with the resolved Dynamo launch configuration")
-    env = {**inherited_env, **explicit}
-    # Run-owned identity/protocol values replace inherited shell settings. All other
-    # env survives; explicitly conflicting config values above are errors, not ignored.
-    for key, value in managed.items():
-        if value is None:
-            env.pop(key, None)
-        else:
-            env[key] = value
-    return env
+    # Run-owned identity/protocol values win; unrelated explicit options remain available.
+    return {**explicit, **managed}
 
 
 def launch_args(

@@ -1,4 +1,8 @@
+import json
+import os
 import shlex
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -106,8 +110,63 @@ def test_allocated_listener_replaces_inherited_address_without_changing_engine_a
 
     ctx = SimpleNamespace(self_addrs={"dynamo_system": HostAndPort(host="[::1]", port=18003)})
     engine_argv = ["python", "-m", "sglang.launch_server", "--model-path", "/models/a b;$HOME"]
-    command = sidecar_command(shlex.join(engine_argv), ctx=ctx)
-    assert shlex.split(command) == ["env", "DYN_SYSTEM_PORT=18003", "DYN_SYSTEM_HOST=::1", *engine_argv]
+    command = sidecar_command(shlex.join(engine_argv), ctx=ctx, config=config, api_key=None)
+    argv = shlex.split(command)
+    assert argv[0] == "env"
+    assert "DYN_SYSTEM_PORT=18003" in argv
+    assert "DYN_SYSTEM_HOST=::1" in argv
+    assert argv[-len(engine_argv) :] == engine_argv
+    assert argv[argv.index("DYN_SGLANG_API_KEY") - 1] == "-u"
+
+
+@pytest.mark.parametrize("api_key", [None, "engine-key"])
+def test_sidecar_env_is_a_delta_and_cleanup_runs_on_engine_node(config, monkeypatch, api_key):
+    driver_keys = (
+        "PATH",
+        "LD_LIBRARY_PATH",
+        "HOSTNAME",
+        "NCCL_SOCKET_IFNAME",
+        "GLOO_SOCKET_IFNAME",
+        "CUDA_VISIBLE_DEVICES",
+    )
+    for key in (*driver_keys, "MILES_DRIVER_ONLY"):
+        monkeypatch.setenv(key, "driver-value")
+    config = config.model_copy(update={"env": {"MILES_EXPLICIT_SETTING": "enabled"}})
+    args = make_args(dynamo_config=config, sglang_api_key=api_key)
+    spec = InferenceEngineSpec.create(args)[0]
+    ctx = WorkerLaunchContext(args=args, cell_index=0, worker_in_cell_index=0, num_workers_per_cell=1, gpu_ids=[0])
+    delta = spec.env_var(ctx)
+    assert not set((*driver_keys, "MILES_DRIVER_ONLY")) & delta.keys()
+    assert delta["MILES_EXPLICIT_SETTING"] == "enabled"
+
+    worker_env = {key: "engine-value" for key in driver_keys}
+    worker_env.update(
+        PATH=f"/engine/bin:{os.defpath}",
+        MILES_ENGINE_ONLY="worker-owned",
+        DYN_SGLANG_API_KEY="stale-worker-key",
+        DYN_SYSTEM_HOST="old-host",
+        DYN_SYSTEM_PORT="9999",
+        DYN_NAMESPACE_PREFIX="old-prefix",
+        NATS_SERVER="nats://old-server:4222",
+        DYN_FILE_KV="/old-discovery",
+    )
+    names = [*worker_env, "MILES_DRIVER_ONLY", "MILES_EXPLICIT_SETTING"]
+    code = f"import json, os; print(json.dumps({{key: os.environ.get(key) for key in {names!r}}}))"
+    launch_ctx = SimpleNamespace(self_addrs={"dynamo_system": HostAndPort(host="[::1]", port=18003)})
+    command = sidecar_command(shlex.join([sys.executable, "-c", code]), ctx=launch_ctx, config=config, api_key=api_key)
+    result = subprocess.run(shlex.split(command), env=worker_env | delta, capture_output=True, text=True, check=True)
+    actual = json.loads(result.stdout)
+
+    for key in driver_keys:
+        assert actual[key] == worker_env[key]
+    assert actual["MILES_ENGINE_ONLY"] == "worker-owned"
+    assert actual["MILES_DRIVER_ONLY"] is None
+    assert actual["MILES_EXPLICIT_SETTING"] == "enabled"
+    assert actual["DYN_SGLANG_API_KEY"] == api_key
+    assert actual["DYN_SYSTEM_HOST"] == "::1"
+    assert actual["DYN_SYSTEM_PORT"] == "18003"
+    for key in ("DYN_NAMESPACE_PREFIX", "NATS_SERVER", "DYN_FILE_KV"):
+        assert actual[key] is None
 
 
 @pytest.mark.parametrize("api_key", [None, "test-key"])

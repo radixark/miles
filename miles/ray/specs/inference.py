@@ -379,7 +379,14 @@ class InferenceEngineSpec(BaseCommandSpec):
             gated_launch_port=ctx.self_addrs[GATE_PORT_NAME].port,
             random_seed=random_seed,
         )
-        return dynamo_launch.sidecar_command(command, ctx=ctx) if dynamo is not None else command
+        if dynamo is not None:
+            command = dynamo_launch.sidecar_command(
+                command,
+                ctx=ctx,
+                config=dynamo,
+                api_key=args.sglang.get_value("api_key", group=server_group_config),
+            )
+        return command
 
 
 def _compute_inference_engine_scheduling(

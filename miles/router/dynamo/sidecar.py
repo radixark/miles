@@ -1,10 +1,9 @@
 import json
-import os
 import shlex
 from sglang.srt.server_args import ServerArgs
 from miles.backends.sglang_utils.sglang_config import ServerGroupConfig, SglangConfig
 from miles.router.dynamo.config import Address
-from miles.router.dynamo.frontend import launch_args, runtime_env
+from miles.router.dynamo.frontend import launch_args, runtime_env_overrides
 from miles.utils.workers.argv_utils import _record_field_names
 from miles.utils.workers.worker_spec import PortInfo
 
@@ -19,9 +18,13 @@ def sidecar_ports(*, dp_size: int) -> list[PortInfo]:
 
 
 def sidecar_env(config, *, api_key: str | None) -> dict[str, str]:
-    return runtime_env(
+    # Ray needs an env delta, so the driver's unrelated environment must not cross nodes.
+    return {key: value for key, value in _sidecar_env_overrides(config, api_key=api_key).items() if value is not None}
+
+
+def _sidecar_env_overrides(config, *, api_key: str | None) -> dict[str, str | None]:
+    return runtime_env_overrides(
         config,
-        inherited_env=os.environ,
         options=config.sidecar,
         managed_env={
             "DYN_SGLANG_CONTROLLER_MANAGED": "true",
@@ -73,11 +76,19 @@ def sidecar_overrides(config, *, sglang: SglangConfig, group: ServerGroupConfig,
     return {**group.overrides, **managed}
 
 
-def sidecar_command(command: str, *, ctx) -> str:
+def sidecar_command(command: str, *, ctx, config, api_key: str | None) -> str:
     # Listener addresses are allocated after env_var; env exec preserves the native process lifecycle.
+    # Env deltas cannot remove remote inherited values; unset launch-owned keys on the engine node.
+    removals = [
+        arg
+        for key, value in _sidecar_env_overrides(config, api_key=api_key).items()
+        if value is None
+        for arg in ("-u", key)
+    ]
     return shlex.join(
         [
             "env",
+            *removals,
             f"DYN_SYSTEM_PORT={ctx.self_addrs['dynamo_system'].port}",
             f"DYN_SYSTEM_HOST={ctx.self_addrs['dynamo_system'].host.strip('[]')}",
             *shlex.split(command),
