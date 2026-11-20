@@ -1,5 +1,7 @@
 from argparse import Namespace
+from functools import partial
 
+import pytest
 import torch
 import torch.distributed as dist
 from tests.ci.ci_register import register_cpu_ci
@@ -10,7 +12,7 @@ from miles.backends.training_utils.loss.hub.advantages import compute_advantages
 from miles.backends.training_utils.loss.objective import compute_advantages_and_returns
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set_parallel_state
 
-register_cpu_ci(est_time=50, suite="stage-b-cpu", labels=["precision"])
+register_cpu_ci(est_time=80, suite="stage-b-cpu", labels=["precision"])
 
 
 def _parallel_state(rank: int = 0, world_size: int = 1) -> ParallelState:
@@ -299,3 +301,77 @@ def _worker_reused_zero_kl(rank: int, world_size: int, port: int) -> None:
 
 def test_reused_zero_kl_matches_single_rank_baseline_with_context_parallelism() -> None:
     run_multiprocess(_worker_reused_zero_kl)
+
+
+def _worker_reinforce_plus_plus_layout(
+    rank: int, world_size: int, port: int, *, qkv_format: str, max_seq_len: int | None
+) -> None:
+    init_gloo(rank, world_size, port=port)
+    try:
+        total_lengths = [8, 11]
+        response_lengths = [5, 6]
+        max_seq_lens = [max_seq_len] * len(total_lengths) if qkv_format == "bshd" else None
+        loss_masks = [torch.tensor([1.0, 1.0, 0.0, 1.0, 1.0]), torch.tensor([1.0, 1.0, 0.0, 0.0, 1.0, 1.0])]
+        full_log_probs = [torch.linspace(-1.0, -3.0, response_length) for response_length in response_lengths]
+        full_ref_log_probs = [torch.linspace(-2.0, -1.5, response_length) for response_length in response_lengths]
+
+        def shard(tensor: torch.Tensor, i: int) -> torch.Tensor:
+            return slice_log_prob_with_cp(
+                tensor.clone(), total_lengths[i], response_lengths[i], qkv_format, max_seq_len
+            )
+
+        def rollout_data(log_probs: list[torch.Tensor], ref_log_probs: list[torch.Tensor]) -> dict:
+            data = {
+                "log_probs": log_probs,
+                "ref_log_probs": ref_log_probs,
+                "rewards": [1.0, -2.0],
+                "response_lengths": response_lengths,
+                "loss_masks": [mask.clone() for mask in loss_masks],
+                "total_lengths": total_lengths,
+            }
+            if max_seq_lens is not None:
+                data["max_seq_lens"] = max_seq_lens
+            return data
+
+        for gamma in (1.0, 0.9):
+            args = Namespace(
+                advantage_estimator="reinforce_plus_plus",
+                use_rollout_logprobs=False,
+                skip_actor_forward_only=False,
+                kl_coef=0.1,
+                kl_loss_type="k1",
+                gamma=gamma,
+                lambd=1.0,
+                qkv_format=qkv_format,
+                use_opd=False,
+                normalize_advantages=False,
+            )
+
+            set_parallel_state(_parallel_state(rank=rank, world_size=world_size))
+            cp_data = rollout_data(
+                [shard(t, i) for i, t in enumerate(full_log_probs)],
+                [shard(t, i) for i, t in enumerate(full_ref_log_probs)],
+            )
+            compute_advantages_and_returns(args, cp_data)
+            cp_returns = [
+                all_gather_with_cp(ret, total_lengths[i], response_lengths[i], qkv_format, max_seq_len)
+                for i, ret in enumerate(cp_data["returns"])
+            ]
+
+            set_parallel_state(_parallel_state())
+            baseline = rollout_data([t.clone() for t in full_log_probs], [t.clone() for t in full_ref_log_probs])
+            compute_advantages_and_returns(args, baseline)
+
+            for cp_return, baseline_return in zip(cp_returns, baseline["returns"], strict=True):
+                torch.testing.assert_close(cp_return, baseline_return)
+    finally:
+        dist.destroy_process_group()
+
+
+@pytest.mark.parametrize(
+    "qkv_format,max_seq_len",
+    [("thd", None), ("bshd", 12), ("bshd", 16)],
+    ids=["thd", "bshd_rows_moved", "bshd_row_counts_differ"],
+)
+def test_reinforce_plus_plus_cp2_matches_cp1(qkv_format: str, max_seq_len: int | None) -> None:
+    run_multiprocess(partial(_worker_reinforce_plus_plus_layout, qkv_format=qkv_format, max_seq_len=max_seq_len))

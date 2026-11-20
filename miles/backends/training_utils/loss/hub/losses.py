@@ -136,19 +136,29 @@ def policy_loss_function(
     full_log_probs = None
     full_old_log_probs = None
     if need_full_log_probs:
+        # the local rows follow the CP split of args.qkv_format: bshd splits each sample's padded max_seq_len
+        max_seq_lens_iter = max_seq_lens if max_seq_lens is not None else [None] * len(total_lengths)
         full_log_probs = [
-            all_gather_with_cp(log_prob, total_length, response_length)
-            for log_prob, total_length, response_length in zip(
-                layout.per_sample(log_probs), total_lengths, response_lengths, strict=False
+            all_gather_with_cp(
+                log_prob, total_length, response_length, qkv_format=args.qkv_format, max_seq_len=max_seq_len
+            )
+            for log_prob, total_length, response_length, max_seq_len in zip(
+                layout.per_sample(log_probs), total_lengths, response_lengths, max_seq_lens_iter, strict=False
             )
         ]
         if args.skip_actor_forward_only and not args.use_rollout_logprobs:
             full_old_log_probs = [full_log_prob.detach() for full_log_prob in full_log_probs]
         else:
             full_old_log_probs = [
-                all_gather_with_cp(old_log_prob, total_length, response_length)
-                for old_log_prob, total_length, response_length in zip(
-                    layout.per_sample(old_log_probs), total_lengths, response_lengths, strict=False
+                all_gather_with_cp(
+                    old_log_prob, total_length, response_length, qkv_format=args.qkv_format, max_seq_len=max_seq_len
+                )
+                for old_log_prob, total_length, response_length, max_seq_len in zip(
+                    layout.per_sample(old_log_probs),
+                    total_lengths,
+                    response_lengths,
+                    max_seq_lens_iter,
+                    strict=False,
                 )
             ]
 
