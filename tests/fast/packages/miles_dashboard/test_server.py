@@ -65,6 +65,12 @@ def test_meta(client):
     assert meta["data_buffer_length"] is None  # never reported in this fixture
 
 
+def test_responses_are_gzipped_for_browsers_that_accept_it(client):
+    response = client.get("/api/meta", headers={"Accept-Encoding": "gzip"})
+    assert response.headers["content-encoding"] == "gzip"
+    assert response.json()["run_name"] == "dummy-run"
+
+
 class TestMeta:
     def test_meta_reports_the_step_key_for_each_namespaced_metric(self, tmp_path: Path) -> None:
         """Each namespaced metric must report the exact axis recorded with its point."""
