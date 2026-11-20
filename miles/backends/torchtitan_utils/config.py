@@ -9,7 +9,7 @@ from types import ModuleType
 
 import torch
 import torch.distributed as dist
-from torchtitan.components.optim import AdamW, LRSchedulersContainer, Optim, OptimizersContainer
+from torchtitan.components.optim import AdamW, DistMuon, LRSchedulersContainer, Optim, OptimizersContainer
 from torchtitan.config import TrainingConfig
 from torchtitan.config.configs import DebugConfig
 from torchtitan.config.parallelism import ParallelismConfig
@@ -192,7 +192,26 @@ def _num_pipeline_microbatches(args: TrainerConfig) -> int:
     return max(args.backend.global_batch_size // dp_size // args.backend.micro_batch_size, 1)
 
 
-def _optim_config(args: TrainerConfig) -> Optim.Config:
+def _dist_muon_config(args: TrainerConfig, model: BaseModel.Config, parallelism: ParallelismConfig) -> DistMuon.Config:
+    module = _model_package(args.backend.titan_model_name)
+    layouts_fn = getattr(
+        module, "dist_muon_layouts", None
+    )  # config-access-exempt: only model packages that declare their Muon layouts support --optimizer muon
+    if layouts_fn is None:
+        raise ValueError(f"--optimizer muon needs {module.__name__}.dist_muon_layouts(); this model has none")
+    pattern, compute_sharding_by_fqn, bucket_configs = layouts_fn(model, parallelism)
+    return DistMuon.Config(
+        pattern=pattern,
+        bucket_configs=bucket_configs,
+        compute_sharding_by_fqn=compute_sharding_by_fqn,
+        lr=args.backend.lr,
+        weight_decay=args.backend.weight_decay,
+        momentum=args.backend.muon_momentum,
+        adjust_lr_fn="match_rms_adamw",
+    )
+
+
+def _optim_config(args: TrainerConfig, model: BaseModel.Config, parallelism: ParallelismConfig) -> Optim.Config:
     if args.backend.lr_decay_style == "constant":
         lr_scheduler = LRSchedulersContainer.Config(warmup_steps=args.backend.lr_warmup_iters, min_lr_factor=1.0)
     else:
@@ -208,8 +227,11 @@ def _optim_config(args: TrainerConfig) -> Optim.Config:
         eps=args.backend.adam_eps,
         weight_decay=args.backend.weight_decay,
     )
+    optimizers = [adamw]
+    if args.backend.optimizer == "muon":
+        optimizers.insert(0, _dist_muon_config(args, model, parallelism))
     return Optim.Config(
-        optimizer=OptimizersContainer.Config(optimizers=[adamw]),
+        optimizer=OptimizersContainer.Config(optimizers=optimizers),
         lr_scheduler=lr_scheduler,
         max_norm=args.backend.clip_grad,
     )
@@ -281,8 +303,13 @@ def build_trainer_config(
     dump_subdir: str,
     with_lora: bool = False,
 ) -> TitanTrainer.Config:
-    if args.backend.optimizer != "adam":
-        raise ValueError(f"torchtitan backend supports --optimizer adam, got {args.backend.optimizer!r}")
+    if args.backend.optimizer not in ("adam", "muon"):
+        raise ValueError(f"torchtitan backend supports --optimizer adam or muon, got {args.backend.optimizer!r}")
+    if args.backend.optimizer == "muon" and args.offload_train:
+        raise ValueError(
+            "--optimizer muon needs --no-offload-train: DistMuon pins each parameter's storage at build time, "
+            "and offloading the trainer to the host between steps reallocates it"
+        )
 
     ties_embeddings = load_hf_config(hf_assets_path).tie_word_embeddings
     if ties_embeddings and args.backend.pipeline_model_parallel_size > 1:
@@ -309,6 +336,7 @@ def build_trainer_config(
         model=model,
         hf_assets_path=hf_assets_path,
         compile_backend=compile_backend,
+        row_norm_projection=args.backend.titan_row_norm_projection,
         output_dir=os.path.join(
             args.backend.save or tempfile.mkdtemp(prefix="miles-torchtitan-"), "torchtitan", dump_subdir
         ),
@@ -321,7 +349,7 @@ def build_trainer_config(
             enable_cpu_offload=args.backend.optimizer_cpu_offload,
             disable_cuda_graphs=True,
         ),
-        optim=_optim_config(args),
+        optim=_optim_config(args, model, parallelism),
         checkpointer=_checkpointer_config(args, dump_subdir=dump_subdir, with_lora=with_lora),
         activation_remat=FullActivationRematConfig() if args.backend.gradient_checkpointing else None,
         loss=RLLossAdapter.Config(),

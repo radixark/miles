@@ -28,6 +28,10 @@ class TorchtitanArgs(FSDPArgs):
     titan_fsdp_gather_once: bool = False
     # FSDP's gradient reduce dtype: bfloat16 halves the reduce-scatter buffers and bytes
     titan_fsdp_reduce_dtype: str = "float32"
+    # --optimizer muon: DistMuon on the model's matrix parameters, AdamW on the rest
+    muon_momentum: float = 0.95
+    # keep each weight row at its pretrained norm after every optimizer step (models trained on a hypersphere)
+    titan_row_norm_projection: bool = False
 
 
 def build_torchtitan_parser(extra_args_provider=None):

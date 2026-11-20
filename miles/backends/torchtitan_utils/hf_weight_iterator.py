@@ -27,7 +27,7 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._engine_dtypes = _checkpoint_dtypes(self.args.hf_checkpoint)
+        self._engine_dtypes = checkpoint_dtypes(self.args.hf_checkpoint)
         hf_config = load_hf_config(self.args.hf_checkpoint)
         text_config = (
             getattr(hf_config, "text_config", None)
@@ -246,16 +246,17 @@ _SAFETENSORS_DTYPES = {
 }
 
 
-def _checkpoint_dtypes(hf_checkpoint: str) -> dict[str, torch.dtype]:
+def checkpoint_shard_files(hf_checkpoint: str) -> list[str]:
     index_path = os.path.join(hf_checkpoint, "model.safetensors.index.json")
     if os.path.isfile(index_path):
         with open(index_path) as f:
-            shards = sorted(set(json.load(f)["weight_map"].values()))
-    else:
-        shards = sorted(os.path.basename(p) for p in glob.glob(os.path.join(hf_checkpoint, "*.safetensors")))
+            return sorted(set(json.load(f)["weight_map"].values()))
+    return sorted(os.path.basename(p) for p in glob.glob(os.path.join(hf_checkpoint, "*.safetensors")))
 
+
+def checkpoint_dtypes(hf_checkpoint: str) -> dict[str, torch.dtype]:
     dtypes: dict[str, torch.dtype] = {}
-    for shard in shards:
+    for shard in checkpoint_shard_files(hf_checkpoint):
         with safetensors.safe_open(os.path.join(hf_checkpoint, shard), framework="pt") as handle:
             for name in handle.keys():
                 dtype = _SAFETENSORS_DTYPES.get(handle.get_slice(name).get_dtype())
