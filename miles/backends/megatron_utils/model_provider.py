@@ -41,7 +41,7 @@ def _apply_bridge_runtime_config(provider, args: TrainerConfig) -> None:
     parallelism, memory, and numerics settings that really come from args. Put
     new training flags here, not spread across the code.
     """
-    # Imported here: test_bridge_mtp_detachment.py exec()s this function's AST in a bare namespace (no module names).
+    # imported here: conftest's apply_bridge_runtime_config fixture execs this function without the module's imports
     from miles.utils.megatron_bridge_utils import apply_dsa_backend_args, apply_pipeline_layout, apply_precision_args
 
     # Bridge providers may default to frozen parts (Qwen3-VL MoE freezes the language model and ViT);
