@@ -4,7 +4,7 @@ import math
 import os
 from argparse import Namespace
 
-from miles.utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sampling
+from miles.utils.rollout_topk_logprobs import requests_support_logprobs, validate_rollout_topk_logprobs_sampling
 
 
 def validate_score_centering_args(args: Namespace) -> None:
@@ -30,7 +30,6 @@ def validate_score_centering_args(args: Namespace) -> None:
         "use_opsm": "sequence masking changes the score-centering estimator",
         "true_on_policy_mode": "score centering uses float32 probability arithmetic",
         "recompute_logprobs_via_prefill": "sampler probabilities must be recorded at generation time",
-        "sglang_speculative_algorithm": "speculative candidate-logprob semantics are not verified",
         "custom_pg_loss_reducer_function_path": "use the standard token/sample reducer",
         "multi_lora": "per-sample Tinker losses bypass the score-centering loss",
         "use_opd": "distillation composition is not supported",
@@ -41,5 +40,16 @@ def validate_score_centering_args(args: Namespace) -> None:
             args, option
         ):  # config-access-exempt: option is selected from the required compatibility field names
             raise ValueError(f"Score centering is incompatible with --{option.replace('_', '-')}: {reason}")
+    speculative = args.sglang_speculative_algorithm
+    if speculative and speculative.upper() != "DFLASH":
+        raise ValueError(
+            f"Score centering is incompatible with --sglang-speculative-algorithm {speculative}: "
+            "only DFLASH's candidate log-probs are verified"
+        )
+    if speculative and not requests_support_logprobs(args):
+        raise ValueError(
+            "Score centering with DFLASH needs filtered sampling (--rollout-top-p below 1 or a positive "
+            "--rollout-top-k): SGLang verifies DFlash's draws only for requests that return the sampling support"
+        )
     if os.environ.get("SGLANG_RETURN_ORIGINAL_LOGPROB", "").lower() in ("1", "true"):
         raise ValueError("Score centering requires SGLANG_RETURN_ORIGINAL_LOGPROB=0 on rollout servers")
