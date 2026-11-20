@@ -45,6 +45,7 @@ class TestSessionVerifierAdapterFields:
         assert args.assistant_text_threshold == 0.73
         assert args.enable_spec is True
         assert args.hf_checkpoint == config.hf_checkpoint
+        assert args.allow_truncated_continuation == config.allow_truncated_continuation
         assert args.rollout_batch_size == config.rollout_batch_size
         assert dict(config) == before
         args.hf_checkpoint = "/local-only"

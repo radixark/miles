@@ -186,7 +186,12 @@ jobs:
           set -euo pipefail
           git fetch -q --depth=1 origin "$BEFORE"
           variants=()
-          for variant in cu13 tpu; do
+          candidates=(cu13)
+          # The TPU image (docker/build.py) and its CI (pr-test-tpu.yml) belong to radixark/miles.
+          if [ "$GITHUB_REPOSITORY" = radixark/miles ]; then
+            candidates+=(tpu)
+          fi
+          for variant in "${candidates[@]}"; do
             current=$(python3 docker/image_inputs.py --variant "$variant" --rev HEAD)
             base=$(python3 docker/image_inputs.py --variant "$variant" --rev "$BEFORE")
             if [ "$current" != "$base" ]; then
@@ -209,7 +214,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.variant) || github.event_name == 'push' && needs.push-variants.outputs.variants || '["cu13", "tpu"]') }}
+        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.variant) || github.event_name == 'push' && needs.push-variants.outputs.variants || github.repository == 'radixark/miles' && '["cu13", "tpu"]' || '["cu13"]') }}
     # Automatic builds of a variant run one at a time: a build outlasts the poll
     # interval, and overlapping ones race to push its dev / latest. A newer pending build
     # replaces an older one, which is safe because builds clone branch HEADs when they
@@ -266,6 +271,7 @@ jobs:
             --image-tag ${{ inputs.image_tag || 'dev' }} \
             --dockerfile ${{ inputs.dockerfile || 'docker/Dockerfile' }} \
             ${{ inputs.custom_tag && format('--custom-tag {0}', inputs.custom_tag) || '' }} \
+            --image-repo "$GITHUB_REPOSITORY" \
             --push
 
       - name: Point latest to current dev
@@ -273,7 +279,7 @@ jobs:
         # simulate_schedule must not move it.
         if: github.event_name == 'schedule'
         run: |
-          docker buildx imagetools create -t "radixark/miles:latest${TAG_POSTFIX}" "radixark/miles:dev${TAG_POSTFIX}"
+          docker buildx imagetools create -t "${GITHUB_REPOSITORY}:latest${TAG_POSTFIX}" "${GITHUB_REPOSITORY}:dev${TAG_POSTFIX}"
 
       - name: Prune old dev tags
         if: github.event_name == 'schedule'
@@ -283,7 +289,7 @@ jobs:
           # days however often builds run, so the count limit alone never deletes it.
           MIN_AGE_DAYS=14
           CUTOFF=$(date -u -d "${MIN_AGE_DAYS} days ago" +%Y%m%d%H%M)
-          IMAGE=radixark/miles
+          IMAGE=${GITHUB_REPOSITORY}
 
           # Authenticate with Docker Hub API
           TOKEN=$(curl -s -X POST "https://hub.docker.com/v2/users/login/" \

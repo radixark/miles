@@ -27,7 +27,12 @@ from miles.utils.args.runtime import TrainerConfig
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora.utils import is_multi_lora_enabled, targets_expert_leaves
-from miles.utils.megatron_bridge_utils import apply_dsa_backend_args, apply_pipeline_layout, load_auto_bridge
+from miles.utils.megatron_bridge_utils import (
+    apply_dsa_backend_args,
+    apply_pipeline_layout,
+    apply_precision_args,
+    load_auto_bridge,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +207,7 @@ def _setup_lora_model_via_bridge(args: TrainerConfig) -> list:
         provider.moe_permute_fusion = False
     apply_pipeline_layout(provider, args)
     apply_dsa_backend_args(provider, args)
+    apply_precision_args(provider, args)
     provider.finalize()
 
     if is_multi_lora_enabled(args):

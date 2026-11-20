@@ -25,6 +25,7 @@ from miles.utils.test_utils.mock_sglang_server import (
 from miles.utils.test_utils.session_verify_agent import (
     ASSISTANT_INPUT_FOLLOWUP_TEXT,
     ASSISTANT_INPUT_TEXTS,
+    CUTS_KEY,
     EXPECTATIONS_KEY,
     INITIAL_USER_PROMPT,
     MOCK_TOOL_RESULTS,
@@ -100,6 +101,7 @@ _EXPECTED_AGENT_METADATA = {
             "tool after no tool call",
         )
     ],
+    CUTS_KEY: [],
     UNFINISHED_KEY: None,
     "rollback_count": 2,
     "user_count": 5,

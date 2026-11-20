@@ -189,6 +189,7 @@ def test_pr_eligibility_uses_common_and_hardware_inputs(repository, variant, pat
             "ARCH": {"cu13": "amd64", VARIANT: "rocm10-mi35x"}.get(variant, ""),
             "BASE_SHA": "older-event-base",
             "PR_NUMBER": "42",
+            "GITHUB_REPOSITORY": "radixark/miles",
             "GITHUB_OUTPUT": str(output),
         },
     )
@@ -196,16 +197,21 @@ def test_pr_eligibility_uses_common_and_hardware_inputs(repository, variant, pat
 
 
 @pytest.mark.parametrize(
-    "path,variants",
+    "github_repository,path,variants",
     [
-        ("requirements.txt", ["cu13", "tpu"]),
-        ("docker/patch/cuda.patch", ["cu13"]),
-        ("docker/tpu_patch/fix.patch", ["tpu"]),
-        ("docker/Dockerfile.rocm", []),
-        ("source.py", []),
+        ("radixark/miles", "requirements.txt", ["cu13", "tpu"]),
+        ("radixark/miles", "docker/patch/cuda.patch", ["cu13"]),
+        ("radixark/miles", "docker/tpu_patch/fix.patch", ["tpu"]),
+        ("radixark/miles", "docker/Dockerfile.rocm", []),
+        ("radixark/miles", "source.py", []),
+        # The TPU image belongs to radixark/miles: a copy builds only cu13.
+        ("example/miles-copy", "requirements.txt", ["cu13"]),
+        ("example/miles-copy", "docker/tpu_patch/fix.patch", []),
     ],
 )
-def test_rolling_push_builds_only_supported_variants_with_changed_inputs(repository, path, variants):
+def test_rolling_push_builds_only_supported_variants_with_changed_inputs(
+    repository, github_repository, path, variants
+):
     root, git = repository
     before = git("rev-parse", "HEAD")
     (root / path).write_text("changed\n")
@@ -219,7 +225,7 @@ def test_rolling_push_builds_only_supported_variants_with_changed_inputs(reposit
         ["bash", "-c", step["run"]],
         cwd=root,
         check=True,
-        env={**os.environ, "BEFORE": before, "GITHUB_OUTPUT": str(output)},
+        env={**os.environ, "BEFORE": before, "GITHUB_REPOSITORY": github_repository, "GITHUB_OUTPUT": str(output)},
     )
     assert json.loads(output.read_text().removeprefix("variants=")) == variants
     assert "needs.push-variants.outputs.variants != '[]'" in workflow["jobs"]["build-and-push"]["if"]
@@ -292,6 +298,7 @@ def test_registry_decision_uses_the_rocm_tag(tmp_path, published, rebuild, needs
             "INSPECT_TAG": "true",
             "PR_NUMBER": "123",
             "ARCH": "rocm10-mi35x",
+            "GITHUB_REPOSITORY": "example/miles-copy",
             "GITHUB_OUTPUT": str(output),
             "CALLS": str(calls),
         },
@@ -300,8 +307,9 @@ def test_registry_decision_uses_the_rocm_tag(tmp_path, published, rebuild, needs
     assert "radixark/miles:pr-123-rocm10-mi35x" in calls.read_text()
 
 
+@pytest.mark.parametrize("github_repository", ["radixark/miles", "example/miles-copy"])
 @pytest.mark.parametrize("fork", [True, False])
-def test_close_cleanup_deletes_only_the_expected_tags(tmp_path, fork):
+def test_close_cleanup_deletes_only_the_expected_tags(tmp_path, fork, github_repository):
     workflow = yaml.safe_load((ROOT / ".github/workflows/docker-pr-tag-cleanup.yml").read_text())
     script = workflow["jobs"]["delete-pr-tag"]["steps"][0]["run"]
     script = script[script.index("# One tag per PR_IMAGE_ARCHES") :].replace(
@@ -319,10 +327,17 @@ def test_close_cleanup_deletes_only_the_expected_tags(tmp_path, fork):
             "PATH": f"{tmp_path}:{os.environ['PATH']}",
             "FORK": str(fork).lower(),
             "TOKEN": "test",
+            "GITHUB_REPOSITORY": github_repository,
             "CALLS": str(calls),
         },
     )
-    tags = [line.rsplit("/", 2)[-2] for line in calls.read_text().splitlines()]
-    assert tags == (
-        ["pr-123-rocm10-mi35x"] if fork else ["pr-123", "pr-123-arm64", "pr-123-tpu", "pr-123-rocm10-mi35x"]
-    )
+    deleted = calls.read_text().splitlines() if calls.exists() else []
+    assert all(f"/repositories/{github_repository}/tags/" in line for line in deleted)
+    tags = [line.rsplit("/", 2)[-2] for line in deleted]
+    if github_repository == "radixark/miles":
+        assert tags == (
+            ["pr-123-rocm10-mi35x"] if fork else ["pr-123", "pr-123-arm64", "pr-123-rocm10-mi35x", "pr-123-tpu"]
+        )
+    else:
+        # A copy never builds the ROCm or TPU PR images, so it leaves radixark/miles' tags alone.
+        assert tags == ([] if fork else ["pr-123", "pr-123-arm64"])

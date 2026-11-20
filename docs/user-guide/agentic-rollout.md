@@ -196,11 +196,17 @@ History handling depends on the selected server version:
   rollback is rejected.
 - **v2 (Experimental) is an append-only tree.** A request attaches to the deepest checkpoint
   whose complete message path prefixes the request. Any unmatched suffix creates
-  a branch, and existing branches are never deleted. A path whose last generation
-  ended with `finish_reason=length` cannot be extended. By default, a leaf becomes
+  a branch, and existing branches are never deleted. By default, a leaf becomes
   no sample when a later request re-sent its exact prompt tokens; a later request
   that differs is a separate branch and its own sample
   (`--session-sample-picker-path`).
+
+Both versions can extend a turn that ended with `finish_reason=length`. The
+server first appends tokens that close the turn's open reasoning and tool-call
+blocks and end the turn; they train with loss mask 0, and partial tool-call
+arguments stay as sampled. A family that declares no closer (`default`,
+`inkling`, `muse_spark`) returns HTTP 409 instead, as does any run started with
+`--no-allow-truncated-continuation`.
 
 Whether a replayed message counts as "the same" as the stored one is decided by
 `--session-message-matcher` (default `strict`); see
@@ -278,7 +284,7 @@ replaces the sampled `<|observation|>` stop token with `<|user|>`.
 ### Verify a new model TITO
 
 To add a named family, register its `TITOTokenizer` and `FIXED_TEMPLATE` in
-[`tito_tokenizer.py`](https://github.com/radixark/miles/blob/main/miles/utils/chat_template_utils/tito_tokenizer.py),
+[`tito_tokenizer/`](https://github.com/radixark/miles/tree/main/miles/utils/chat_template_utils/tito_tokenizer),
 add a checkpoint for it to
 `tests/fast/utils/chat_template_utils/test_continuation_roles.py`, which fails
 until the continuation roles match what the renderer accepts, then run both
@@ -296,7 +302,7 @@ python scripts/tools/verify_session_tito_tokenizer.py \
     --rollout-num-gpus-per-engine 1
 ```
 
-The GPU check runs two rollout steps:
+The GPU check runs three rollout steps:
 
 - **Spec rollout.** After a tool call, it appends each role the family can
   append; after a reply to a prompt that asks for no tool (sent with
@@ -307,12 +313,20 @@ The GPU check runs two rollout steps:
   mismatch; assistant text is not checked. Some steps need the model to call
   the tool or to stop calling it; a sample whose model does not stops there,
   and the run fails when too many spec samples stop early
-  (`SPEC_UNFINISHED_RATIO_THRESHOLD`).
+  (`UNFINISHED_RATIO_THRESHOLD`).
+- **Truncate rollout.** It generates one reply in full, regenerates it with
+  `max_tokens` so that it stops inside its reasoning, a tool call or its
+  answer, and continues the cut turn. In a run that continues truncated turns
+  the continuation must succeed, the next prompt must close the cut turn with
+  the family's closer, and every one of the three places must be covered;
+  otherwise the continuation must get HTTP 409. A sample whose reply has
+  nothing to cut there stops early and counts toward the same ratio.
 - **Normal rollout.** It answers a tool call with `tool` messages and an answer
   with the next `user` question, the two continuations agents send most. Its
   mismatch rates are the ones CI tracks across runs.
 
-Pass `--no-session-verify-spec-trajectory` to run the normal rollout alone.
+Pass `--no-session-verify-spec-trajectory` to run the normal rollout alone,
+without the spec and truncate rollouts.
 
 ### Choose replay matching
 

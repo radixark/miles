@@ -2,15 +2,16 @@
 """CLI: run the multi-role TITO session-server verifier against a real model.
 
 Boots the miles rollout pipeline (sglang + miles-router) under
-``--debug-rollout-only`` and runs two rollout steps (see
+``--debug-rollout-only`` and runs three rollout steps (see
 ``miles.utils.test_utils.session_verify_agent``): the spec rollout probes every
 continuation the selected family's ``FixedTemplate`` continuation roles accept
-or refuse, and the normal rollout answers tool calls with tool messages and
-answers with user questions.  PASS iff no sample hits an HTTP error from the
-server-side prefix check, every spec probe gets the status the spec decides,
-the per-sample mismatch gates hold, and few enough spec samples stop early
-because the model did not call the tool, or did not stop calling it, where a
-step needs that (``SPEC_UNFINISHED_RATIO_THRESHOLD``).
+or refuse, the truncate rollout continues a reply cut by ``max_tokens``, and
+the normal rollout answers tool calls with tool messages and answers with user
+questions.  PASS iff no sample hits an HTTP error from the server-side prefix
+check, every probe gets the status the family declares, continued cut turns
+are closed by the family's closer, the per-sample mismatch gates hold, and few
+enough spec and truncate samples stop early because the model did not do what
+a step needs (``UNFINISHED_RATIO_THRESHOLD``).
 
 This script is a thin entrypoint over miles' canonical ``parse_args``: all
 flags are miles' canonical flags (``--rollout-num-gpus-per-engine`` instead of
@@ -59,7 +60,7 @@ import sys
 
 from miles.utils.args.runtime import AllConfig
 from miles.utils.arguments import parse_args
-from miles.utils.test_utils.session_verify_agent import fixed_template, spec_probe_steps
+from miles.utils.test_utils.session_verify_agent import CONTINUE_CUT_STEP, fixed_template, spec_probe_steps
 from miles.utils.test_utils.session_verify_runner import (
     SESSION_VERIFY_INVARIANT_ARGS,
     run_session_verify,
@@ -138,6 +139,7 @@ def _runner_namespace(
         session_verify_cycles=generate_values["session_verify_cycles"],
         session_verify_spec_trajectory=session_verify_spec_trajectory,
         tito_model=config.tito_model,
+        allow_truncated_continuation=config.allow_truncated_continuation,
         session_message_matcher=config.session_message_matcher,
         rollout_num_gpus_per_engine=config.rollout_num_gpus_per_engine,
         rollout_num_gpus=config.rollout_num_gpus,
@@ -169,7 +171,7 @@ def _runner_namespace(
     )
 
 
-def _print_rollout_table(tito_model: str, *, spec_trajectory: bool) -> None:
+def _print_rollout_table(tito_model: str, *, spec_trajectory: bool, allow_truncated_continuation: bool) -> None:
     fixed = fixed_template(tito_model)
     print("Rollout steps:")
     for step, kind in enumerate(session_verify_kinds(spec_trajectory)):
@@ -181,6 +183,9 @@ def _print_rollout_table(tito_model: str, *, spec_trajectory: bool) -> None:
         print("Spec probes (200 if the spec accepts the role there, else 400):")
         for step in spec_probe_steps(fixed):
             print(f"  - {step}")
+        status = "200: the run continues truncated turns" if allow_truncated_continuation else "409: it does not"
+        print(f"Truncate probe ({status}):")
+        print(f"  - {CONTINUE_CUT_STEP}")
     print()
 
 
@@ -211,7 +216,11 @@ def main() -> int:
     print(f"Spec rollout:           {args.session_verify_spec_trajectory}")
     print()
 
-    _print_rollout_table(args.tito_model, spec_trajectory=args.session_verify_spec_trajectory)
+    _print_rollout_table(
+        args.tito_model,
+        spec_trajectory=args.session_verify_spec_trajectory,
+        allow_truncated_continuation=args.allow_truncated_continuation,
+    )
 
     try:
         run_session_verify(args=args)

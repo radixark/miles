@@ -64,7 +64,9 @@ def _discover_regular_ci_files() -> list[str]:
     return sorted(files)
 
 
-def plan_file_run(all_tests, test_file: str, image_tag: str, *, hw: str = "auto") -> dict[str, str]:
+def plan_file_run(
+    all_tests, test_file: str, image_tag: str, *, hw: str = "auto", image_repo: str = "radixark/miles"
+) -> dict[str, str]:
     """Map one registered test file to the hw/suite/runner/image that runs it.
 
     An explicit file request is the selection, so domain labels and the
@@ -82,7 +84,7 @@ def plan_file_run(all_tests, test_file: str, image_tag: str, *, hw: str = "auto"
     else:
         if _IMAGE_TAG_PATTERN.fullmatch(image_tag) is None:
             raise FileRunError(f"invalid CI image tag: {image_tag!r}")
-        image = f"radixark/miles:{image_tag}"
+        image = f"{image_repo}:{image_tag}"
     registrations = [t for t in all_tests if t.filename == test_file]
     if not registrations:
         raise FileRunError(f"{test_file} has no CI registration; /rerun-test runs only registered test files")
@@ -203,9 +205,14 @@ def collect_snapshot_tests(source_root: str | Path):
 
 
 def resolve_file_run(
-    test_file: str, image_tag: str, source_root: str | Path = ".", *, hw: str = "auto"
+    test_file: str,
+    image_tag: str,
+    source_root: str | Path = ".",
+    *,
+    hw: str = "auto",
+    image_repo: str = "radixark/miles",
 ) -> dict[str, str]:
-    return plan_file_run(collect_snapshot_tests(source_root), test_file, image_tag, hw=hw)
+    return plan_file_run(collect_snapshot_tests(source_root), test_file, image_tag, hw=hw, image_repo=image_repo)
 
 
 def main() -> int:
@@ -217,6 +224,7 @@ def main() -> int:
             image_tag,
             os.environ.get("CI_SOURCE_ROOT") or ".",
             hw=hw,
+            image_repo=os.environ["GITHUB_REPOSITORY"],
         )
     except FileRunError as error:
         if isinstance(error, RocmFileTimeoutError):

@@ -21,6 +21,8 @@ class SessionServerConfig(FrozenStrictBaseModel):
     tito_model: str
     # resolved --allow-stop-token-replace
     allow_stop_token_replace: bool
+    # resolved --allow-truncated-continuation
+    allow_truncated_continuation: bool
     apply_chat_template_kwargs: dict[str, Any] | None
     use_rollout_routing_replay: bool
     use_rollout_indexer_replay: bool
@@ -61,6 +63,7 @@ def compute_session_server_config(
         chat_template_path=args.chat_template_path,
         tito_model=args.tito_model,
         allow_stop_token_replace=args.allow_stop_token_replace,
+        allow_truncated_continuation=args.allow_truncated_continuation,
         apply_chat_template_kwargs=args.apply_chat_template_kwargs,
         use_rollout_routing_replay=args.use_rollout_routing_replay,
         use_rollout_indexer_replay=args.use_rollout_indexer_replay,
