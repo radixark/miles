@@ -7,6 +7,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from tests.fast.fixtures.bridge_precision_fixtures import BRIDGE_PRECISION_ARG_DEFAULTS
 import torch
 
 from miles.utils.args.runtime import TrainerConfig
@@ -54,6 +55,7 @@ def apply_bridge_runtime_config() -> Callable:
 @pytest.fixture
 def runtime_args() -> argparse.Namespace:
     backend = argparse.Namespace(
+        **BRIDGE_PRECISION_ARG_DEFAULTS,
         tensor_model_parallel_size=1,
         pipeline_model_parallel_size=1,
         expert_model_parallel_size=1,
@@ -73,24 +75,6 @@ def runtime_args() -> argparse.Namespace:
         cpu_offloading_num_layers=0,
         distribute_saved_activations=False,
         tp_comm_overlap=False,
-        fp8=None,
-        fp8_recipe=None,
-        fp8_param_gather=False,
-        fp8_quantizer_factory=None,
-        fp8_margin=0,
-        fp8_interval=1,
-        fp8_amax_history_len=1,
-        fp8_amax_compute_algo="most_recent",
-        fp8_wgrad=True,
-        fp8_output_proj=False,
-        fp4=None,
-        fp4_recipe="nvfp4",
-        fp4_param_gather=False,
-        fp4_quantizer_factory=None,
-        first_last_layers_bf16=False,
-        num_layers_at_start_in_bf16=1,
-        num_layers_at_end_in_bf16=1,
-        te_precision_config_file=None,
         attention_backend="auto",
         mtp_num_layers=1,
         mtp_detach_heads=True,
