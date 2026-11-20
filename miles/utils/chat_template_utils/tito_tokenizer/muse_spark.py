@@ -20,9 +20,10 @@ _EOM_ENDS_TURN = ("self", "commentary")
 # An empty final message: tail-only closing cannot turn a sampled <|eom|> into <|eot|>.
 _FINAL_MESSAGE = _START + _HEADER + "user" + _MESSAGE + _EOT
 
-# Complete ATEM tags; a partial opening tag is sampled text.
+# Complete ATEM tags; a partial opening tag is sampled text.  A sampled opening tag may hold
+# more than the name="..." the template writes.
 _ATEM_TAG = re.compile(
-    r'<atem:(function_calls)>|<atem:(invoke|parameter) name="[^"]*">|</atem:(function_calls|invoke|parameter)>'
+    r"<atem:(function_calls)>|<atem:(invoke|parameter)\b[^<>]*>|</atem:(function_calls|invoke|parameter)>"
 )
 # element -> (closing tag, text the template writes after it, whether the template starts it on a new line)
 _ATEM_CLOSE = {
@@ -90,7 +91,9 @@ def _scan(tokenizer: Any, completion_ids: list[int]) -> _Turn:
                 header_ids.append(token_id)
         elif state == "body":
             if token_id in ends:
-                messages.append(_Message(decode(header_ids), not messages, decode(body_ids), ends[token_id]))
+                messages.append(
+                    _Message(header=decode(header_ids), first=not messages, body=decode(body_ids), end=ends[token_id])
+                )
                 state = "ended" if token_id == eot else "between"
             elif token_id == start:
                 return stop(f"{_START} in a message body")
@@ -102,9 +105,9 @@ def _scan(tokenizer: Any, completion_ids: list[int]) -> _Turn:
             return stop(f"{decode([token_id])} after the end of a message")
 
     if state == "header":
-        messages.append(_Message(decode(header_ids), not messages))
+        messages.append(_Message(header=decode(header_ids), first=not messages))
     elif state == "body":
-        messages.append(_Message(decode(header_ids), not messages, decode(body_ids)))
+        messages.append(_Message(header=decode(header_ids), first=not messages, body=decode(body_ids)))
     return _Turn(tuple(messages), is_open=state in ("header", "body"))
 
 
@@ -140,7 +143,7 @@ def _close_atem(body: str) -> str:
 
 
 def _end_token(message: _Message) -> str:
-    return _EOM if message.recipient == "self" else _EOT
+    return _EOM if message.recipient in _EOM_ENDS_TURN else _EOT
 
 
 def _closing_text(turn: _Turn) -> str:
@@ -258,7 +261,7 @@ class MuseSparkTITOTokenizer(TITOTokenizer):
 
         The parsed message has no place for an unfinished message and the
         template cannot render a partial one, so the template renders
-        ``TRUNCATED_TURN_KEY`` verbatim instead.
+        ``TRUNCATED_TURN_KEY`` as stored instead.
         """
         if choice.get("finish_reason") != "length":
             return assistant_message

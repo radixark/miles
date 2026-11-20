@@ -17,8 +17,7 @@ each cut:
 
 The stored view holds text, so where the last sampled token and the closer
 re-tokenize differently at their junction, the render is text-equal but not
-token-equal (``_TEXT_ONLY_CUTS``: 38 of 453 cuts, in a message header or an
-ATEM block).  There the comparator must still find no special-token or
+token-equal (``_TEXT_ONLY_CUTS``, in a message header or an ATEM block).  There the comparator must still find no special-token or
 non-assistant difference.
 """
 
@@ -175,12 +174,13 @@ def _expected(completion: str, cut: int) -> tuple[str, str]:
                 return _HEADER[len(header) :] + "user<|message|><|eot|>", "answer"
             partial = header[len(_HEADER) :]
             kind = "answer" if any(r.startswith(partial) for r in ("self", "user", "commentary")) else "tool_call"
-            return "<|message|>" + ("<|eom|>" if partial == "self" else "<|eot|>"), kind
+            return "<|message|>" + ("<|eom|>" if partial in ("self", "commentary") else "<|eot|>"), kind
         if match.start(2) <= cut <= match.end(2):
             if recipient == "self":
                 return "<|eom|>", "reasoning"
             if recipient in ("user", "commentary"):
-                return "<|eot|>", "answer"
+                # The template ends a commentary message with <|eom|>, also as the turn's last.
+                return ("<|eom|>" if recipient == "commentary" else "<|eot|>"), "answer"
             return _expected_atem_closer(match.group(2), cut - match.start(2)) + "<|eot|>", "tool_call"
         if cut == match.end():
             return ("" if recipient in ("self", "commentary") else _FINAL_MESSAGE), "answer"
@@ -282,3 +282,30 @@ def test_check_turn_structure_reports_what_a_cut_leaves_open(tito):
     broken = sampled[:3] + [tito.tokenizer.convert_tokens_to_ids("<|start|>")]
     assert problems(broken) == ["<|start|> in a message body"]
     assert tito.close_truncated_turn(prompt_ids + broken, start) == []
+
+
+def test_closer_counts_an_opening_tag_with_more_than_its_name(tito):
+    prompt = _encode(tito, "<|start|>assistant")
+    cut = _encode(tito, ' to=get_weather<|message|><atem:function_calls>\n<atem:invoke  name="get_weather" id="1">\n')
+    cut += _encode(tito, '<atem:parameter name="city">Par')
+
+    closer = tito.close_truncated_turn(prompt + cut, len(prompt))
+
+    assert _decode(tito, closer) == "</atem:parameter>\n</atem:invoke>\n</atem:function_calls><|eot|>"
+
+
+def test_text_that_spells_a_control_token_stays_text_in_the_stored_turn(tito):
+    messages, _ = _FIXTURES["answer_only"]
+    args = extract_template_args(
+        tito.resolve_request_args({"chat_template_kwargs": {}, "tools": _TOOLS}, turn_args=None)
+    )
+    prompt_ids = _render_ids(tito, messages, args, add_generation_prompt=True)
+    # The model spells the control token with ordinary tokens.
+    spelled = [token_id for piece in ("<", "|eot|", ">") for token_id in _encode(tito, piece)]
+    sampled = _encode(tito, " to=user<|message|>Use ") + spelled
+    closed = prompt_ids + sampled + tito.close_truncated_turn(prompt_ids + sampled, len(prompt_ids))
+
+    stored = _store(tito, sampled, finish_reason="length")
+    rendered = _render_ids(tito, messages + [stored], args)
+
+    assert _hard(tito.create_comparator().compare_sequences(rendered, closed)) == []

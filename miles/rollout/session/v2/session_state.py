@@ -30,6 +30,7 @@ from miles.rollout.session.errors import MessageValidationError, TokenizationErr
 from miles.rollout.session.linear_trajectory import (
     SessionRegistry,
     assert_continuation_roles,
+    assert_no_server_message_keys,
     assert_pretokenized_prefix,
     close_truncated_checkpoint,
 )
@@ -143,6 +144,7 @@ def _render_token_ids(
       new prompt and the stored snapshot keeps only sampled tokens.
     """
     if parent is None:
+        assert_no_server_message_keys(request_messages, tito_tokenizer)
         return tito_tokenizer.apply_chat_template(
             request_messages,
             add_generation_prompt=True,
@@ -152,6 +154,7 @@ def _render_token_ids(
 
     stored = parent.path_messages()
     _validate_suffix_roles(request_messages[len(stored) :], tito_tokenizer)
+    assert_no_server_message_keys(request_messages[len(stored) :], tito_tokenizer)
     effective_messages = stored + request_messages[len(stored) :]
     assert_continuation_roles(
         effective_messages, appended_from=len(stored), fixed_template=tito_tokenizer.FIXED_TEMPLATE

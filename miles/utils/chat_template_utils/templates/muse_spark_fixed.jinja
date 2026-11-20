@@ -250,9 +250,9 @@
         {%- set turn = namespace(start='') -%}
         {%- generation %}
         {%- if message.get('truncated_turn') is not none -%}
-        {#- A turn cut by finish_reason=length, as sampled plus its closer (MuseSparkTruncation); rendered verbatim -#}
+        {#- A turn cut by finish_reason=length, as sampled plus its closer (MuseSparkTruncation); text that spells a control token stays text, as esc keeps it elsewhere -#}
         {%- for part in message['truncated_turn'] -%}
-            {{- ('' if loop.first else '<|start|>') ~ part.header ~ '<|message|>' ~ part.body ~ part.end -}}
+            {{- ('' if loop.first else '<|start|>') ~ (part.header | replace('<|', '< |')) ~ '<|message|>' ~ (part.body | replace('<|', '< |')) ~ part.end -}}
         {%- endfor -%}
         {%- else -%}
         {%- set reasoning = message.get('reasoning_content') or message.get('reasoning') -%}
