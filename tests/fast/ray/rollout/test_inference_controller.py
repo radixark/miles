@@ -8,8 +8,8 @@ import pytest
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 from tests.fast.ray.rollout.conftest import make_args
 
-from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout import inference_controller as inference_controller_module
+from miles.ray.rollout.engine_topology_reporter import EngineTopologyReporter
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin
 from miles.ray.rollout.inference_controller import (
     InferenceController,
@@ -56,6 +56,7 @@ def _make_cell_info(
             sglang_api_key=None,
             needs_offload=False,
             update_weights=True,
+            health_check_timeout_seconds=20,
         ),
     )
 
@@ -71,6 +72,7 @@ def _make_cell_meta(info: CellInfo) -> ServerCellMetadata:
         worker_name=info.worker_names[0],
         needs_offload=info.meta["needs_offload"],
         update_weights=info.meta["update_weights"],
+        health_check_timeout_seconds=20,
         workers_hash=info.workers_hash,
     )
 
@@ -329,6 +331,7 @@ def _make_controller(
     controller.context_lock = ContextLock("InferenceController")
     controller._engine_provider = engines
     controller._router_providers = [_FakeWorkerProvider([])]
+    controller._engine_topology_reporter = EngineTopologyReporter()
     return controller
 
 
@@ -400,17 +403,17 @@ class TestHealthCheckerActiveness:
         assert srv.health_checker_activeness.get().active
 
     @pytest.mark.asyncio
-    async def test_preparing_a_rollout_awaits_the_dashboard_engine_registration(self, monkeypatch):
-        """The dashboard hook is a coroutine, so prepare_rollout must await it instead of leaving it unscheduled."""
+    async def test_preparing_a_rollout_awaits_the_engine_topology_report(self, monkeypatch):
+        """The topology report is a coroutine, so prepare_rollout must await it instead of leaving it unscheduled."""
         awaited: list[tuple[dict, _FakeWorkerProvider]] = []
 
         async def _record(servers: dict, *, provider: _FakeWorkerProvider) -> None:
             awaited.append((servers, provider))
 
-        monkeypatch.setattr(dashboard_hooks, "register_engines", _record)
         servers = {"default": _RecordingServer()}
         engine_provider = _FakeWorkerProvider([])
         controller = _make_controller(servers, engine_provider=engine_provider)
+        monkeypatch.setattr(controller._engine_topology_reporter, "report_if_changed", _record)
 
         await controller.prepare_rollout(rollout_id=0)
 
@@ -782,6 +785,7 @@ class TestEngineMetaContract:
             worker_name="inference-engine-0-0-1-0",
             needs_offload=False,
             update_weights=True,
+            health_check_timeout_seconds=20,
             workers_hash="pseudo-hash-0",
         )
 
@@ -1314,9 +1318,6 @@ class TestInitLifecycle:
 
         monkeypatch.setattr(inference_controller_module, "create_rollout_servers", _no_servers)
         monkeypatch.setattr(inference_controller_module, "resolve_router_addrs", _no_router_addrs)
-        monkeypatch.setattr(
-            dashboard_hooks, "register_router", lambda args: pytest.fail("debug_train_only has no router")
-        )
         provider = _RefusingWorkerProvider()
         controller = InferenceController(
             make_args(debug_train_only=True),
@@ -1388,15 +1389,12 @@ class TestInitLifecycle:
         assert controller._eval_fleet is None
 
     @pytest.mark.asyncio
-    async def test_init_registers_routing_and_waits_for_every_startup_gate(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_init_waits_for_every_startup_gate(self, monkeypatch: pytest.MonkeyPatch):
         """Returning before every server has its cells would start a rollout against engines that are not up."""
-        registered: list[Namespace] = []
-        monkeypatch.setattr(dashboard_hooks, "register_router", registered.append)
         gate = asyncio.Event()
         ready, blocked = _RecordingServer(), _RecordingServer(cells_gate=gate)
         _patch_init(monkeypatch, servers={"default": ready, "frozen": blocked})
-        args = make_args()
-        controller = self._controller(args)
+        controller = self._controller(make_args())
 
         task = asyncio.create_task(controller.init())
         for _ in range(20):
@@ -1407,7 +1405,6 @@ class TestInitLifecycle:
         await asyncio.wait_for(task, timeout=5)
         await controller.dispose()
 
-        assert registered == [args]
         assert blocked.waited_init_expected_num_cells == 1
 
     @pytest.mark.asyncio
@@ -1660,6 +1657,7 @@ def _registration_snapshot(*, model_id: str = "model-a", run_uuid: str = _RUN_UU
         sglang_api_key=None,
         needs_offload=False,
         update_weights=True,
+        health_check_timeout_seconds=20,
     )
 
     cell = RegisteredCellInfo(

@@ -12,9 +12,10 @@ FROM lmsysorg/sglang:${SGLANG_TPU_IMAGE_TAG}
 # ======================================== Arguments =============================================
 
 ARG SGLANG_TPU_REPO=sgl-project/sglang-torchtpu
-# sglang-torchtpu main (2026-11-06); swap the commit for a release image tag once one ships.
+# sglang-torchtpu main (2026-11-18, with sgl-project/sglang-torchtpu#2270); swap the commit for a release image tag
+# once one ships.
 # .github/workflows/tpu-contract.yml tests this commit.
-ARG SGLANG_TPU_COMMIT=108d775ea43d29f713fb486a496a46fe4e1682e6
+ARG SGLANG_TPU_COMMIT=9836f74c7ae127d763d8766e655086d084ea0b99
 ARG TORCH_VERSION=2.14.1
 ARG TORCHVISION_VERSION=0.29.1
 # the triton torch 2.14 pairs with; torchtitan imports triton unconditionally
@@ -27,28 +28,32 @@ ARG MILES_COMMIT=main
 ARG WHEELS_REPO=radixark/miles-wheels
 ARG WHEELS_TAG=cu130-torch214-x86_64
 # torch_tpu main + docker/tpu_patch/torch_tpu_job_local_worlds.patch (--update-weight-transfer-mode ici)
-ARG TORCH_TPU_WHEELS_TAG=torch-tpu-e8468781a-pr6110
-ARG TORCH_TPU_WHEEL=torch_tpu-0.2.1.dev20261103-cp312-cp312-manylinux_2_31_x86_64.whl
+# + docker/tpu_patch/torch_tpu_chunk_cat.patch (FSDP2's reduce-scatter copy-in)
+ARG TORCH_TPU_WHEELS_TAG=torch-tpu-e8468781a-pr6110-pr6728-v2
+ARG TORCH_TPU_WHEEL=torch_tpu-0.2.1.dev2026111702-cp312-cp312-manylinux_2_31_x86_64.whl
 ARG TARGETARCH
 
 # ====================================== Install sglang-torchtpu ============================================
 
 # The base image's /sgl-workspace/sglang is a source tree without git history, installed editable. The commit
-# pins the same python/pyproject_tpu.toml stack as the release (torch_tpu, libtpu, jax), so only the source
-# changes and the reinstall needs no dependencies.
+# pins the release's torch_tpu and libtpu but a newer jax, so the reinstall takes no dependencies except the
+# python/pyproject_tpu.toml jax and jaxlib pins, installed with their own dependencies.
 RUN SGLANG_VERSION=$(python3 -c 'import importlib.metadata as m; print(m.version("sglang"))') && \
     SGLANG_TPU_VERSION=$(python3 -c 'import importlib.metadata as m; print(m.version("sglang-tpu"))') && \
     rm -rf /sgl-workspace/sglang && git init -q /sgl-workspace/sglang && cd /sgl-workspace/sglang && \
     git fetch -q --depth 1 https://github.com/${SGLANG_TPU_REPO}.git ${SGLANG_TPU_COMMIT} && git checkout -q FETCH_HEAD && \
     cp python/pyproject_tpu.toml python/pyproject.toml && \
+    grep -oE '"jax(lib)?==[^"]+"' python/pyproject.toml | tr -d '"' | xargs pip install && \
     SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SGLANG=${SGLANG_VERSION} pip install --no-deps -e python && \
     SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SGLANG_TPU=${SGLANG_TPU_VERSION} pip install --no-deps -e .
 
 # ====================================== Torch ============================================
 
 # torch_tpu with job-local worlds (google-pytorch/torch_tpu#6110), so a trainer and an engine can share one slice
-# (ICI weight sync); same libtpu as the release. Rebuild: bazel build --config=wheel_release --config=no_rbe
-# //ci/wheel:torch_tpu_wheel on google-pytorch/torch_tpu e8468781a (main, 2026-11-03) with the patch applied.
+# (ICI weight sync), and a _chunk_cat.out kernel (google-pytorch/torch_tpu#6728), without which the trainer's first
+# backward spends ~100 s compiling FSDP2's gradient copy-in per vocabulary-sized unit; same libtpu as the release.
+# Rebuild: bazel build --config=wheel_release --config=no_rbe //ci/wheel:torch_tpu_wheel on google-pytorch/torch_tpu
+# e8468781a (main, 2026-11-03) with both patches applied in that order.
 RUN curl -fsSL -o "/tmp/${TORCH_TPU_WHEEL}" \
     "https://github.com/${WHEELS_REPO}/releases/download/${TORCH_TPU_WHEELS_TAG}/${TORCH_TPU_WHEEL}" && \
     pip install --no-deps --force-reinstall "/tmp/${TORCH_TPU_WHEEL}" && rm "/tmp/${TORCH_TPU_WHEEL}"
@@ -73,9 +78,11 @@ RUN git clone https://github.com/${TORCHTITAN_REPO}.git /root/torchtitan && \
 # ====================================== Install main package ============================================
 
 # miles, without the CUDA-only requirements; its transformers and ray pins replace the release's
+# the dashboard plugin is installed only when MILES_COMMIT already has it
 RUN git clone https://github.com/radixark/miles.git /root/miles && \
     cd /root/miles && git checkout ${MILES_COMMIT} && \
     pip install --no-deps -e . && \
+    if [ -d packages/miles-dashboard ]; then pip install --no-deps -e packages/miles-dashboard; fi && \
     grep -vE '^\s*(#|$)|nvidia-resiliency-ext|ring_flash_attn|torchft-nightly' requirements.txt > /tmp/requirements-tpu.txt && \
     pip install -c /opt/torch-constraints.txt --extra-index-url https://download.pytorch.org/whl/cpu -r /tmp/requirements-tpu.txt && \
     rm /tmp/requirements-tpu.txt

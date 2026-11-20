@@ -20,6 +20,7 @@ def _payload(*, num_gpus: int, disaggregation_mode: str) -> dict[str, Any]:
     return dict(
         internal_states=[dict(world_size=num_gpus)],
         disaggregation_mode=disaggregation_mode,
+        pp_size=1,
         disaggregation_bootstrap_port=12090 if disaggregation_mode == "prefill" else None,
     )
 

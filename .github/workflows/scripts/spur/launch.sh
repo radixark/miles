@@ -22,6 +22,7 @@
 #
 # Runner environment (the runner's .env):
 #   SLURM_PARTITION, SLURM_ACCOUNT, SLURM_QOS
+#   CI_SRC            source checkout (defaults to GITHUB_WORKSPACE)
 #   CI_NODE_SCRATCH  node-local directory for the checkout copy and the
 #                    persistent model / dataset / HF cache
 # Optional:
@@ -56,6 +57,7 @@ done
 : "${SLURM_QOS:?set in the runner environment}"
 : "${CI_NODE_SCRATCH:?set in the runner environment}"
 : "${GITHUB_WORKSPACE:?}"
+# Keep the default in sync with ROCM_FILE_RUN_LIMIT_SECONDS in tests/ci/rocm.py.
 TIME_LIMIT="${TIME_LIMIT:-03:00:00}"
 SUBMIT_ATTEMPTS="${SUBMIT_ATTEMPTS:-3}"
 if [[ ! "$TIME_LIMIT" =~ ^([0-9]+-)?[0-9]+:[0-9]{2}:[0-9]{2}$ ]]; then
@@ -72,7 +74,7 @@ rm -rf "$RUN_DIR"
 mkdir -p "$RUN_DIR"
 
 # Read by job.sh; sbatch exports the submitting environment.
-export CI_SRC="$GITHUB_WORKSPACE" CI_NODE_SCRATCH CI_GPUS="$GPUS"
+export CI_SRC="${CI_SRC:-$GITHUB_WORKSPACE}" CI_NODE_SCRATCH CI_GPUS="$GPUS"
 export CI_EXIT_FILE="$RUN_DIR/exit_code" CI_SUMMARY_FILE="$RUN_DIR/summary.md"
 
 JOB_ID=""

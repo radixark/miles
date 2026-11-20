@@ -4,16 +4,9 @@ import torch
 
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import MetricEvent
+from miles.utils.observers import Observers
 
-from .base import (
-    MilesDashboardBackend,
-    MlflowBackend,
-    PrometheusBackend,
-    TensorboardBackend,
-    TrackingBackend,
-    TrackingManager,
-    WandbBackend,
-)
+from .base import MlflowBackend, PrometheusBackend, TensorboardBackend, TrackingBackend, TrackingManager, WandbBackend
 from .ci_history import CiHistoryBackend
 
 # The full registry lives here, not base.py: base must never import a backend
@@ -26,7 +19,6 @@ BACKEND_REGISTRY: dict[str, tuple[type[TrackingBackend], str]] = {
     "mlflow": (MlflowBackend, "use_mlflow"),
     "prometheus": (PrometheusBackend, "use_prometheus"),
     "ci_history": (CiHistoryBackend, "ci_enable_metrics_capture"),
-    "miles_dashboard": (MilesDashboardBackend, "use_miles_dashboard"),
 }
 
 logger = logging.getLogger(__name__)
@@ -50,8 +42,16 @@ def log(args, metrics, step_key: str):
     _manager.log(metrics, step=step, step_key=step_key)
 
     if is_event_logger_initialized():
-        serializable_metrics = {k: (v.item() if isinstance(v, torch.Tensor) else v) for k, v in metrics.items()}
-        get_event_logger().log(MetricEvent, {"metrics": serializable_metrics}, print_log=False)
+        get_event_logger().log(MetricEvent, {"metrics": _serializable(metrics)}, print_log=False)
+    # not in BACKEND_REGISTRY: backends are picked by a --use-* flag, observers by being installed
+    observers = Observers()
+    if observers.active:
+        with observers.isolated("metrics"):
+            observers.metrics(_serializable(metrics), step_key=step_key, step=step)
+
+
+def _serializable(metrics) -> dict:
+    return {k: (v.item() if isinstance(v, torch.Tensor) else v) for k, v in metrics.items()}
 
 
 def finish_tracking():

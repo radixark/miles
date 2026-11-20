@@ -115,7 +115,7 @@ per engine restart.
 ## Watching it
 
 Telemetry lands under `$OUTPUT_DIR/<run_id>/dump_details`; serve the dashboard
-with `python -m miles.dashboard.serve --dump-details <dir> --follow`. Useful
+with `python -m miles_dashboard.serve --dump-details <dir> --follow`. Useful
 driver-log signals:
 
 ```bash

@@ -297,6 +297,7 @@ class TestAddCellRollback:
             worker_name=f"{cell_id}-0",
             needs_offload=needs_offload,
             update_weights=True,
+            health_check_timeout_seconds=20,
             workers_hash="pseudo-hash-0",
         )
 
@@ -640,6 +641,7 @@ async def _make_serving_server(monkeypatch, *, num_cells: int) -> RolloutServer:
                     worker_name=f"default-{cell_index}-0",
                     needs_offload=True,
                     update_weights=True,
+                    health_check_timeout_seconds=20,
                     workers_hash=f"pseudo-hash-{cell_index}",
                 )
             )

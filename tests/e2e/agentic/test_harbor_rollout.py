@@ -50,7 +50,7 @@ from types import SimpleNamespace
 
 from tests.ci.ci_register import register_cuda_ci
 
-from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS
+from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, resolve_provider
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
@@ -65,7 +65,13 @@ register_cuda_ci(
 REPO = Path(__file__).resolve().parents[3]
 HARBOR_EXAMPLE_DIR = REPO / "examples" / "experimental" / "harbor"
 sys.path.insert(0, str(HARBOR_EXAMPLE_DIR))
-from launch_common import agentic_pythonpath_dirs, agentic_train_args, harbor_env_vars  # noqa: E402
+from launch_common import (  # noqa: E402
+    METADATA_KEY,
+    agentic_pythonpath_dirs,
+    agentic_train_args,
+    harbor_env_vars,
+    preflight_task_dirs,
+)
 
 TB2_REPO = "https://github.com/laude-institute/terminal-bench-2.git"
 TASKS_DIR = "/root/datasets/terminal-bench-2"  # native Harbor task dirs; cloned in prepare()
@@ -110,7 +116,7 @@ def probe_e2b_endpoint() -> None:
     enough to prove it answers.
     """
     api_url = os.environ.get("E2B_API_URL", "").strip()
-    if os.environ.get("HARBOR_ENV_TYPE", "").strip().lower() != "e2b" or not api_url:
+    if resolve_provider(os.environ.get("HARBOR_ENV_TYPE", "").strip().lower()) != "e2b" or not api_url:
         return
     try:
         request = urllib.request.Request(f"{api_url}/nodes", headers={"X-API-Key": "probe"})
@@ -148,7 +154,7 @@ def execute(worker_env: dict[str, str]):
     rollout_args = (
         f"--prompt-data {PROMPT_DATA} "
         "--input-key prompt "
-        "--metadata-key metadata "
+        f"--metadata-key {METADATA_KEY} "
         "--num-rollout 1 "
         "--rollout-batch-size 1 "
         "--n-samples-per-prompt 2 "
@@ -199,6 +205,7 @@ if __name__ == "__main__":
     worker_env = harbor_worker_env()
     probe_e2b_endpoint()
     prepare()
+    preflight_task_dirs(PROMPT_DATA, TASKS_DIR)
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
     execute(worker_env)
