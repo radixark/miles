@@ -1,12 +1,14 @@
 import asyncio
 import logging
 import os
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
 import ray
 
+from miles.utils.args.custom_function import CustomFunctionConfig
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import MILES_HOST_IP_ENV, is_port_available
 from miles.utils.port_range import service_port_range
@@ -64,28 +66,45 @@ async def call_agent_abort_hook(args) -> None:
     distinct (module, config).
     Backends that don't expose one are left to drain as before.
     """
-    from miles.utils.args.custom_view import compute_custom_function_config
+    for hook_path, abort_hook, agent_function in _agent_function_hooks(args, "abort"):
+        try:
+            fn_args = compute_custom_function_config(args, agent_function)
+            await abort_hook(fn_args)
+        except Exception as e:
+            logger.warning(f"Agent abort hook {hook_path} failed: {e}")
 
+
+async def call_agent_preflight_hook(args) -> None:
+    """Invoke the optional ``preflight`` hook of every agent function the run can call; its error fails the run.
+
+    An agent function's error aborts only its own sample, so a setup that fails
+    every sample would otherwise leave the rollout dropping and refilling samples
+    without end. Called once, before the first rollout.
+    """
+    for _, preflight_hook, agent_function in _agent_function_hooks(args, "preflight"):
+        await preflight_hook(compute_custom_function_config(args, agent_function))
+
+
+def _agent_function_hooks(
+    args, hook_name: str
+) -> Iterator[tuple[str, Callable[..., Awaitable[None]], CustomFunctionConfig]]:
+    """The ``hook_name`` callable next to each agent function the run can call, once per distinct (module, config)."""
     agent_functions = [args.custom_agent_function_path] if args.custom_agent_function_path else []
-    # resolved at startup and carried by both rollout and orchestrator configs, so abort never rereads the YAML
+    # resolved at startup and carried by both rollout and orchestrator configs, so a hook never rereads the YAML
     agent_functions += args.rollout_dataset_agent_functions
-    # one abort per (module, config): two agents in one module with different typed configs each get theirs
+    # one call per (module, config): two agents in one module with different typed configs each get theirs
     called: list[tuple[str, Any]] = []
     for agent_function in agent_functions:
         module_path, _, _ = agent_function.path.rpartition(".")
         if not module_path or (module_path, agent_function.config) in called:
             continue
         called.append((module_path, agent_function.config))
+        hook_path = f"{module_path}.{hook_name}"
         try:
-            abort_hook = load_function(f"{module_path}.abort")
+            hook = load_function(hook_path)
         except (AttributeError, ModuleNotFoundError):
-            continue  # plugin doesn't expose an abort hook; nothing to tear down
-
-        try:
-            fn_args = compute_custom_function_config(args, agent_function)
-            await abort_hook(fn_args)
-        except Exception as e:
-            logger.warning(f"Agent abort hook {module_path}.abort failed: {e}")
+            continue  # plugin doesn't expose this hook
+        yield hook_path, hook, agent_function
 
 
 class SingletonMeta(type):

@@ -2,7 +2,7 @@
 
 DSA indexer names are mapped here, not in `convert_deepseekv3_to_hf`, so its rope-interleave half-swap never runs
 (`qk_rope_head_dim == 0`). The three `alpha_*` of one mHC site arrive on the same rank and are buffered until they
-can be emitted as one `hc_*_scale` tensor.
+can be emitted as one `hc_*_scale` tensor. Names are the checkpoint's: the text stack under `model.language_model.`.
 """
 
 import re
@@ -71,6 +71,13 @@ def _convert_hc_scale(layer_idx: str, site: str, alpha_name: str, param: torch.T
 
 
 def convert_glm5_next_to_hf(args, name, param):
+    return [
+        (hf_name.replace("model.", "model.language_model.", 1) if hf_name.startswith("model.") else hf_name, tensor)
+        for hf_name, tensor in _convert_text_stack(args, name, param)
+    ]
+
+
+def _convert_text_stack(args, name, param):
     match = _LAYER_PATTERN.match(name)
     if match:
         layer_idx, rest = match.groups()
