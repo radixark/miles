@@ -112,6 +112,26 @@ a sandbox still runs; an agent still running two minutes later is stopped.
 `--custom-agent-function-mode inline` runs the agent on the rollout's event loop,
 as before; use it for debugging and for agents that keep state across calls.
 
+### Optional startup check
+
+The module named by `--custom-agent-function-path` may expose a `preflight`
+function alongside the agent entry point:
+
+```python
+async def preflight(args) -> None:
+    ...  # raise if this host cannot run the agent at all
+```
+
+Miles calls it once in the rollout process at startup, before waiting for the
+inference engines, with the same `args` as `abort` below, and an exception there
+fails the run. During the run, an exception from the agent function aborts only
+its own sample, so check here what every sample needs, such as a tool on `PATH`
+or a readable credential; otherwise a broken setup shows up only as every sample
+aborting. The hook is optional.
+
+See [`harbor_agent_function.preflight`](https://github.com/radixark/miles/blob/main/examples/experimental/harbor/harbor_agent_function.py)
+for an implementation.
+
 ### Optional teardown hook
 
 The module named by `--custom-agent-function-path` may expose an `abort` function
@@ -228,18 +248,41 @@ but treat it as best-effort until it passes the checks below.
 | NVIDIA Nemotron 3 Nano / Super / Ultra | `nemotron3` |
 | Kimi K2.5 / K2.6 | `kimi25` / `kimi26` |
 | MiniMax M2.5 / M2.7 | `minimax_m25` / `minimax_m27` |
-| DeepSeek-V3.2 / V4 | `deepseekv32` / `deepseekv4` |
+| DeepSeek-V3.2 / V4 / V4.1 | `deepseekv32` / `deepseekv4` / `deepseekv41` |
 | Inkling / Inkling-Small | `inkling` |
 | Unregistered model or custom template (best-effort) | `default` |
 
 More model families and verification history live in
 [issue #712](https://github.com/radixark/miles/issues/712).
 
+### Know which turn may follow an assistant
+
+Each family's `FIXED_TEMPLATE` states which role may directly follow an
+assistant message: `roles_after_tool_call` after one with `tool_calls`,
+`roles_after_no_tool_call` after one without. Both default to the family's
+append surface, `allowed_append_roles`. When a request appends messages to a
+stored history, the session server refuses any other continuation with HTTP
+400 before rendering and leaves the session unchanged, so the agent can send a
+different turn. DeepSeek-V4, for example, accepts only `tool` messages after a
+tool call and no `tool` message after a reply without one.
+
+A request rendered from scratch (a session's first request or a retry of it,
+or a v2 request that extends no stored node) is not checked this way: only the
+renderer decides its history, because a family can render a turn from scratch
+that it cannot append.
+
+These sets state what the runtime accepts, which can be wider than what the
+model was trained on: GLM accepts a `user` turn after a tool call because TITO
+replaces the sampled `<|observation|>` stop token with `<|user|>`.
+
 ### Verify a new model TITO
 
 To add a named family, register its `TITOTokenizer` and `FIXED_TEMPLATE` in
 [`tito_tokenizer.py`](https://github.com/radixark/miles/blob/main/miles/utils/chat_template_utils/tito_tokenizer.py),
-then run both checks. Either failure blocks support.
+add a checkpoint for it to
+`tests/fast/utils/chat_template_utils/test_continuation_roles.py`, which fails
+until the continuation roles match what the renderer accepts, then run both
+checks. Either failure blocks support.
 
 ```bash
 # CPU / fast: rendered token sequences remain append-only
@@ -252,6 +295,24 @@ python scripts/tools/verify_session_tito_tokenizer.py \
     --sglang-reasoning-parser <rp> --sglang-tool-call-parser <tcp> \
     --rollout-num-gpus-per-engine 1
 ```
+
+The GPU check runs two rollout steps:
+
+- **Spec rollout.** After a tool call, it appends each role the family can
+  append; after a reply to a prompt that asks for no tool (sent with
+  `tool_choice: "none"` as a guard), it appends a `tool` message. Each gets the
+  status the continuation roles decide, 200 or 400. It also rolls back twice,
+  appends a `system` message and injects `assistant` messages where the family
+  accepts them. Accepted turns must show no special-token or non-assistant
+  mismatch; assistant text is not checked. Some steps need the model to call
+  the tool or to stop calling it; a sample whose model does not stops there,
+  and the run fails when too many spec samples stop early
+  (`SPEC_UNFINISHED_RATIO_THRESHOLD`).
+- **Normal rollout.** It answers a tool call with `tool` messages and an answer
+  with the next `user` question, the two continuations agents send most. Its
+  mismatch rates are the ones CI tracks across runs.
+
+Pass `--no-session-verify-spec-trajectory` to run the normal rollout alone.
 
 ### Choose replay matching
 

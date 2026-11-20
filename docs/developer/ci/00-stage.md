@@ -43,13 +43,13 @@ Both workflows treat `pull_request.closed` (including merges) as cancellation-on
 
 Both PR workflows expose reusable `workflow_call` entry points. Called runs group concurrency by `inputs.ref`, so redispatching the same release branch cancels the older run; literal `pr-test-` and `pr-test-rocm-` prefixes keep the workflows in separate concurrency groups.
 
-**Image selection (`resolve-ci-image`).** Both workflows select a test image only when GPU tests are selected, using the same priority:
+**Image selection (`resolve-ci-image-<arch>` for CUDA, `resolve-ci-image` for ROCm).** Both workflows select a test image only when GPU tests are selected, using the same priority:
 
 | Priority | Source |
 |---|---|
 | 1 | `image_tag` from the calling workflow |
 | 2 | `ci_image_tag` from a manual run |
-| 3 | The PR image matching the current build inputs (CUDA only) |
+| 3 | The PR image matching the current build inputs |
 | 4 | The backend's image-tag directive in the PR description |
 | 5 | The backend's default image |
 
@@ -57,10 +57,10 @@ Specify a tag without a repository prefix. The backend-specific names are:
 
 | Backend | PR tag | PR-body directive | Default tag | Repository |
 |---|---|---|---|---|
-| CUDA | `pr-<num>` | `ci-image-tag:` | `dev` | `radixark/miles` |
-| ROCm | none | `ci-rocm-image-tag:` | `miles-rocm10-mi35x` | `rocm/sgl-dev` |
+| CUDA | `pr-<num>` | `ci-image-tag:` | `dev` | The running repository (`$GITHUB_REPOSITORY`; `radixark/miles` here) |
+| ROCm | `pr-<num>-rocm10-mi35x` | `ci-rocm-image-tag:` | `miles-rocm10-mi35x` | `radixark/miles` for PR tags; `rocm/sgl-dev` otherwise |
 
-**Image builds.** CUDA checks for image changes even when no GPU tests are selected. If a PR changes the image's inputs relative to the base, CI reuses a matching PR image or builds a new one, and that build must succeed before image selection and GPU execution. See [Docker Build](/developer/ci/02-docker-build) for the input mapping and build process. ROCm builds no PR image.
+**Image builds.** Each backend checks for image changes only when the run selects its GPU tests or the PR carries `rebuild-ci-image`. If a PR changes an image's inputs relative to the base, CI reuses a matching PR image or builds a new one. Any required build must succeed before image selection and GPU execution. See [Docker Build](/developer/ci/02-docker-build) for the input mapping and build process.
 
 **Policy resolution (`resolve-ci-policy`).**
 
@@ -95,7 +95,7 @@ Shard sizing and concurrency policy live in [CI Maintenance](../../../.claude/ru
 
 **PR admission.** In `pr-test.yml`, a PR event starts jobs only when the PR's base is the default branch or the PR carries a `run-ci*` label. Otherwise `resolve-ci-policy` is skipped, and because every other job needs it, the run starts nothing. A stacked PR therefore runs `PR Test` only while labeled; retargeting a PR to `main` is an `edited` event, which does not start a run.
 
-**Dependencies / gating.** In `pr-test.yml`, `stage-a-cpu` requires only `resolve-ci-policy`; all four `stage-b-cpu` shards additionally wait for every `stage-a-cpu` shard to succeed. PR-image preparation requires the `stage-a-cpu` success/bypass gate, and image resolution additionally requires selected CUDA tests; NVIDIA GPU stages follow image resolution. `stage-b-cpu` does not gate that chain and is skipped if `stage-a-cpu` fails, including with `bypass-fastfail` or broad cadences. Resolved nightly, weekly, or release cadence and the `bypass-fastfail` PR label admit the chain after an actual `stage-a-cpu` failure and make each suite continue after a test failure. This fast-fail exception does not itself select GPU tests or bypass policy or Docker/image failure; cadence and labels determine selection as described above. GPU tiers `b` and `c` describe cost/role and can run concurrently after these gates, subject to runner and GPU capacity. Scheduled, manual, and called release runs retain their existing image preparation.
+**Dependencies / gating.** In `pr-test.yml`, `stage-a-cpu` requires only `resolve-ci-policy`; all four `stage-b-cpu` shards additionally wait for every `stage-a-cpu` shard to succeed. PR-image preparation requires the `stage-a-cpu` success/bypass gate and selected CUDA tests. Each CUDA stage declares its `image_arch` in `tests/ci/hardware.py::CUDA_STAGES` and requires `resolve-ci-image-<image_arch>`, which requires `docker-build-<image_arch>`. `stage-b-cpu` does not gate that chain and is skipped if `stage-a-cpu` fails, including with `bypass-fastfail` or broad cadences. Resolved nightly, weekly, or release cadence and the `bypass-fastfail` PR label admit the chain after an actual `stage-a-cpu` failure and make each suite continue after a test failure. This fast-fail exception does not itself select GPU tests or bypass policy or Docker/image failure; cadence and labels determine selection as described above. GPU tiers `b` and `c` describe cost/role and can run concurrently after these gates, subject to runner and GPU capacity. Scheduled, manual, and called release runs retain their existing image preparation.
 
 **Release CI.** `release-branch-cut.yml` calls `pr-test.yml` for CPU and CUDA coverage and passes the prune-exempt `release-vX.Y.Z-ci` image tag recorded in `release-lock.json`.
 
@@ -125,11 +125,12 @@ Without a dispatch label nothing leaves its home stage, so scheduled and called 
 
 The [shared CUDA/ROCm rules](#shared-by-cuda-and-rocm) apply. This section contains only ROCm-specific behavior:
 
+- **Repository.** `pr-test-rocm.yml` runs only in `radixark/miles`, whose MI350 runners it uses: `resolve-ci-policy`, which every other job needs, requires that repository.
 - **Spur execution.** `pr-test-rocm.yml` runs GPU suites through `_run-ci-rocm.yml`; see the [stage roster](#stage-roster) for suites and shard counts. `num_gpus` sets each Spur job's allocation on Miles' two 8-GPU MI355X nodes. A 1-, 2-, or 4-GPU job sees only its allocated GPUs and can share a node; an 8-GPU job reserves the whole node. Login-node runner processes limit concurrency. There are no CPU jobs, and ROCm is outside the `release-ci` gate.
 - **Dependencies.** ROCm installs the selected SGLang and Megatron-LM checkouts editable with `--no-deps` and prepares SGLang's pinned Rust toolchain.
 - **Secrets.** ROCm explicitly passes `AMD_WANDB_API_KEY` and `AMD_NEON_DATABASE_URL`. The workflow maps the former to `WANDB_API_KEY` for W&B, and Spur forwards both into the container.
 - **Test registration.** Tests opt in through `register_rocm_ci`; CUDA registrations do not select ROCm tests. Hardware-specific layouts belong in separate `test_amd_<name>.py` files.
-- **Changed-file jobs.** PRs with `run-ci-amd`, `run-ci-all`, or `nightly` also run eligible changed ROCm files not covered by the selected suites, using the [single-file plan](01-label.md#manage-ci-from-pr-comments). `long` and `ft-long` require explicit `run-ci-long` and `run-ci-ft-long` labels. The planner reports skips and, if more than four files are eligible, lists them without launching file jobs. They resolve their image as the suites do and share the ROCm `/rerun-test` queue. Without a usable diff, only suite selection applies.
+- **Changed-file jobs.** PRs with `run-ci-amd`, `run-ci-all`, or `nightly` also run eligible changed ROCm files not covered by the selected suites, using the [single-file plan](01-label.md#manage-ci-from-pr-comments). `long` and `ft-long` require explicit `run-ci-long` and `run-ci-ft-long` labels. The planner reports skips and, if more than four files are eligible, lists them without launching file jobs. They use the suite's resolved image and share the ROCm `/rerun-test` queue. Without a usable diff, only suite selection applies.
 - **External nightly.** SGLang's [ROCm 10 nightly](https://github.com/sgl-project/sglang/blob/main/.github/workflows/nightly-test-amd-miles-rocm10.yml) runs the same MI350 suites with `--cadence nightly`, still under their former `nightly-` names, which `run_suite.py` maps to them until that workflow moves, on its own MI35X runners and the newest Miles image.
 
 ## TPU contract job
@@ -146,7 +147,9 @@ trainer share one TPU v7x 2x2x1 host and sync weights over ICI) in a JobSet on s
 queued through its Kueue PR-gate queue alongside sglang-torchtpu's PR jobs. A PR runs the Qwen3-4B smoke only while
 it carries `run-ci-tpu`, again on every push; the nightly runs every launcher on `main`, and `workflow_dispatch` takes
 a launcher list and any branch.
-Fork PRs cannot run it: the cluster's credentials come from GitHub's OIDC token through Workload Identity Federation.
+It runs only in `radixark/miles`, on every trigger: the cluster and the `dev-tpu` / `pr-<number>-tpu` images belong to that
+repository. Fork PRs cannot run it either: the cluster's credentials come from GitHub's OIDC token through Workload
+Identity Federation.
 
 The image is the rolling `radixark/miles:dev-tpu`, or `radixark/miles:pr-<number>-tpu` for a PR that changes the TPU
 image's inputs, chosen the way the CUDA suites choose theirs; the pod checks out the commit under test over the

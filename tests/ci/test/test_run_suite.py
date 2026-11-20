@@ -417,7 +417,8 @@ class TestWorkflowScopeSeam:
         assert workflow.count("uses: ./.github/workflows/_run-cpu-ci.yml") == 2
         assert workflow.count("uses: ./.github/workflows/_run-ci.yml") == 5
         assert workflow.count("uses: ./.github/workflows/_run-ci-b200.yml") == 1
-        assert workflow.count("uses: ./.github/workflows/_build-pr-ci-image.yml") == 1
+        # One call per PR image architecture.
+        assert workflow.count("uses: ./.github/workflows/_build-pr-ci-image.yml") == 2
         assert "cpu_runner" not in workflow
 
         gpu_workflow = self._reusable_workflow("_run-ci.yml")
@@ -438,7 +439,7 @@ class TestWorkflowScopeSeam:
 
     def test_docker_build_waits_for_cpu_gate_and_preserves_bypass(self):
         workflow = self._workflow()
-        caller = workflow.split("  docker-build:", 1)[1].split("  resolve-ci-image:", 1)[0]
+        caller = workflow.split("  docker-build-amd64:", 1)[1].split("  resolve-ci-image-amd64:", 1)[0]
 
         assert "needs: [resolve-ci-policy, stage-a-cpu]" in caller
         assert "always() && !cancelled()" in caller
@@ -460,22 +461,27 @@ class TestWorkflowScopeSeam:
         assert "value: ${{ jobs.docker-build.outputs.tag_available }}" in reusable
         assert "needs: [docker-decide]" in reusable
         # Rebuilds follow the build inputs, not whether the PR diff touched them.
-        assert "python3 docker/image_inputs.py --rev HEAD^1" in reusable
+        assert 'python3 docker/image_inputs.py --variant "$VARIANT" --rev HEAD^1' in reusable
         assert "python3 docker/image_inputs.py --read-label" in reusable
         assert "github.event.pull_request.head.repo.full_name == github.repository" in reusable
-        assert "python3 docker/build.py --variant cu13 --image-tag custom" in reusable
+        # The architecture picks the variant and tag from docker/image_inputs.py.
+        assert 'python3 docker/image_inputs.py --pr "$PR_NUMBER" --arch "$ARCH"' in reusable
+        assert (
+            'python3 docker/build.py --variant "$VARIANT" --image-tag custom --custom-tag "$TAG" --image-repo "$GITHUB_REPOSITORY" --push'
+            in reusable
+        )
 
     def test_docker_decision_logs_in_only_for_tag_inspection(self):
         reusable = self._reusable_workflow("_build-pr-ci-image.yml")
         decide_job = reusable.split("  docker-decide:", 1)[1].split("  docker-build:", 1)[0]
 
-        compare = decide_job.index("python3 docker/image_inputs.py --rev HEAD^1")
+        compare = decide_job.index('python3 docker/image_inputs.py --variant "$VARIANT" --rev HEAD^1')
         login = decide_job.index("- name: Login to Docker Hub")
         inspect = decide_job.index("docker buildx imagetools inspect")
         assert compare < login < inspect
         assert "if: steps.prepare.outputs.inspect_tag == 'true'" in decide_job
 
-    def test_docker_force_rebuild_uses_live_label_for_decision_and_consumption(self):
+    def test_docker_force_rebuild_reads_the_live_label_and_leaves_it(self):
         reusable = self._reusable_workflow("_build-pr-ci-image.yml")
         decide_job = reusable.split("  docker-decide:", 1)[1].split("  docker-build:", 1)[0]
 
@@ -485,11 +491,11 @@ class TestWorkflowScopeSeam:
         assert "LABELS=$(gh api --paginate" in decide_job
         assert 'grep -Fxq "rebuild-ci-image" <<< "$LABELS"' in decide_job
         assert "github.event.pull_request.labels.*.name" not in decide_job
-        assert "needs.docker-decide.outputs.force_rebuild == 'true'" in reusable
+        assert "labels/rebuild-ci-image" not in reusable
 
     def test_policy_job_is_a_thin_python_adapter(self):
         workflow = self._workflow()
-        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("  docker-build:", 1)[0]
+        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("  docker-build-amd64:", 1)[0]
         assert "uses: actions/checkout@v4" in policy_block
         assert "persist-credentials: false" in policy_block
         assert "run: python -m tests.ci.ci_policy" in policy_block
@@ -505,7 +511,7 @@ class TestWorkflowScopeSeam:
 
     def test_policy_job_passes_trigger_facts(self):
         workflow = self._workflow()
-        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("  docker-build:", 1)[0]
+        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("  docker-build-amd64:", 1)[0]
         assert "EVENT_NAME: ${{ github.event_name }}" in policy_block
         assert "SCHEDULE: ${{ github.event.schedule || '' }}" in policy_block
         assert "PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}" in policy_block
@@ -600,7 +606,7 @@ class TestWorkflowScopeSeam:
         bypass_gate = "needs.resolve-ci-policy.outputs.bypass_fastfail == 'true'"
         assert gpu_stages.count(bypass_gate) == 6
         assert gpu_stages.count("needs.resolve-ci-policy.result == 'success'") == 6
-        assert gpu_stages.count("needs.resolve-ci-image.result == 'success'") == 6
+        assert gpu_stages.count("needs.resolve-ci-image-amd64.result == 'success'") == 6
         assert "needs.stage-a-cpu.result == 'failure'" not in gpu_stages
 
     def test_each_cuda_stage_consumes_the_fail_open_skip_list(self):
@@ -634,7 +640,7 @@ class TestWorkflowScopeSeam:
         )
 
         policy_header = workflow.split("  resolve-ci-policy:", 1)[1].split("    runs-on:", 1)[0]
-        docker_caller = workflow.split("  docker-build:", 1)[1].split("  resolve-ci-image:", 1)[0]
+        docker_caller = workflow.split("  docker-build-amd64:", 1)[1].split("  resolve-ci-image-amd64:", 1)[0]
         reusable = self._reusable_workflow("_build-pr-ci-image.yml")
 
         assert "github.event.action != 'closed'" in policy_header
@@ -655,10 +661,14 @@ class TestRocmWorkflowScopeSeam:
         )
         assert "cancel-in-progress: true" in workflow
         header = workflow.split("  resolve-ci-policy:\n", 1)[1].split("    runs-on:", 1)[0]
-        assert "if: github.event.action != 'closed'" in header
+        assert "if: github.repository == 'radixark/miles' && github.event.action != 'closed'" in header
         image = workflow.split("  resolve-ci-image:\n", 1)[1].split("    runs-on:", 1)[0]
-        assert "needs: [resolve-ci-policy]" in image
-        assert "always()" not in image
+        build = workflow.split("  docker-build-rocm10-mi35x:\n", 1)[1].split("  resolve-ci-image:\n", 1)[0]
+        assert "github.event.action != 'closed'" in build
+        assert "needs: [resolve-ci-policy]" in build
+        assert "arch: rocm10-mi35x" in build
+        assert "needs: [resolve-ci-policy, docker-build-rocm10-mi35x]" in image
+        assert "needs.docker-build-rocm10-mi35x.result == 'success'" in image
         stage = workflow.split("  stage-c-4-gpu-mi350:\n", 1)[1]
         assert "needs.resolve-ci-policy.result == 'success'" in stage
 

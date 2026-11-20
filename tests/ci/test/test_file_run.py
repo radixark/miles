@@ -1,18 +1,69 @@
 """Unit tests for `tests/ci/file_run.py`, the /rerun-test resolve step."""
 
 import json
+import os
 import shlex
 import shutil
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import yaml
 from tests.ci.ci_register import CIRegistry, HWBackend, register_cpu_ci
 from tests.ci.file_run import CPU_SUITES, CUDA_SUITE_RUNS_ON, FileRunError, main, plan_file_run, resolve_file_run
 from tests.ci.rocm import main as rocm_main
 from tests.ci.run_suite import CI_SUITES
 
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
+
+
+@pytest.mark.parametrize("hw", ["cuda", "rocm"])
+@pytest.mark.parametrize("published", [False, True])
+@pytest.mark.parametrize("pin", ["", "debug"])
+def test_comment_file_run_uses_a_pin_or_its_published_pr_image(tmp_path, hw, published, pin):
+    root = Path(__file__).resolve().parents[3]
+    workflow = yaml.safe_load((root / ".github/workflows/run-ci-file.yml").read_text())
+    steps = workflow["jobs"]["resolve-file-run"]["steps"]
+    step = next(step for step in steps if step.get("id") == "image")
+    calls, output = tmp_path / "calls", tmp_path / "output"
+    binary = tmp_path / "docker"
+    binary.write_text('#!/bin/sh\nprintf "%s\\n" "$*" > "$CALLS"\n' + f"exit {0 if published else 1}\n")
+    binary.chmod(0o755)
+    # Exercise the real workflow branch; the public HTTP helper has its own
+    # status/error tests, so stub only its CLI here.
+    python = tmp_path / "python3"
+    python.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" > "$CALLS"\n'
+        + ('printf "pr-42-rocm10-mi35x\\n"\n' if published else 'printf "\\n"\n')
+    )
+    python.chmod(0o755)
+    subprocess.run(
+        ["bash", "-c", step["run"]],
+        check=True,
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "CI_HW": hw,
+            "CI_IMAGE_TAG": pin,
+            "PULL_NUMBER": "42",
+            "GITHUB_REPOSITORY": "example/miles-copy",
+            "CALLS": str(calls),
+            "GITHUB_OUTPUT": str(output),
+        },
+    )
+    tag = "pr-42-rocm10-mi35x" if hw == "rocm" else "pr-42"
+    expected = pin or (tag if published else ("" if hw == "rocm" else "dev"))
+    assert output.read_text() == f"tag={expected}\n"
+    if pin:
+        assert not calls.exists()
+    else:
+        if hw == "rocm":
+            assert ".github/workflows/scripts/rocm_pr_image.py 42" in calls.read_text()
+        else:
+            assert f"example/miles-copy:{tag}" in calls.read_text()
+    resolver = next(step for step in steps if step.get("id") == "resolve")
+    assert resolver["env"]["CI_IMAGE_TAG"] == "${{ steps.image.outputs.tag }}"
 
 
 def _make(
@@ -42,6 +93,13 @@ def test_every_cuda_suite_has_a_runner_mapping():
 
 def test_every_cpu_suite_is_allowed():
     assert set(CPU_SUITES) == set(CI_SUITES[HWBackend.CPU])
+
+
+def test_cuda_file_image_comes_from_the_given_repository():
+    plan = plan_file_run(
+        [_make("tests/e2e/x/test_a.py")], "tests/e2e/x/test_a.py", "pr-7", image_repo="example/miles-copy"
+    )
+    assert plan["container_image"] == "example/miles-copy:pr-7"
 
 
 @pytest.mark.parametrize(
@@ -256,17 +314,19 @@ def test_main_writes_github_outputs(monkeypatch, tmp_path):
     monkeypatch.setenv("TEST_FILE", "tests/ci/test/test_file_run.py")
     monkeypatch.setenv("CI_IMAGE_TAG", "")
     monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    monkeypatch.setenv("GITHUB_REPOSITORY", "example/miles-copy")
 
     assert main() == 0
     lines = output_path.read_text().splitlines()
     assert "hw=cpu" in lines
     assert "suite=stage-a-cpu" in lines
     assert "runs_on=" in lines
-    assert "container_image=radixark/miles:dev" in lines
+    assert "container_image=example/miles-copy:dev" in lines
     assert "timeout_seconds=1800" in lines
 
 
 def test_main_rejects_rocm_file_over_spur_budget_and_reports_the_limit(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("GITHUB_REPOSITORY", "radixark/miles")
     output_path = tmp_path / "github-output"
     source = tmp_path / "source"
     test_file = source / "tests" / "e2e" / "long" / "test_over_budget.py"
@@ -308,6 +368,7 @@ def test_rocm_image_resolver_follows_the_cuda_order(monkeypatch, tmp_path, input
 
 
 def test_main_fails_closed_on_an_unregistered_file(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("GITHUB_REPOSITORY", "radixark/miles")
     output_path = tmp_path / "github-output"
     monkeypatch.setenv("TEST_FILE", "tests/e2e/test_does_not_exist.py")
     monkeypatch.setenv("CI_IMAGE_TAG", "")

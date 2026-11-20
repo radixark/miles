@@ -79,6 +79,44 @@ class TestInitRunsExactlyOnce:
             await _inited_executor().init()
 
 
+class TestAgentSetupCheck:
+    async def test_the_check_runs_the_agent_preflight_on_the_executor_args(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A check that skipped the hook would let a setup no sample can run on start the run."""
+        args = make_args()
+        executor = RolloutExecutor(
+            args=args, router_providers=[], session_server_provider=None, inference_controller_provider=MagicMock()
+        )
+        preflighted: list[object] = []
+
+        async def preflight(args) -> None:
+            preflighted.append(args)
+
+        monkeypatch.setattr(executor_module, "call_agent_preflight_hook", preflight)
+
+        await executor.check_agent_setup()
+        assert preflighted == [args]
+
+    async def test_a_replay_of_saved_rollouts_skips_the_agent_preflight(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A replay calls no agent function, so it must not need what the agent needs."""
+        executor = RolloutExecutor(
+            args=make_args(load_debug_rollout_data="/saved/{rollout_id}.pt"),
+            router_providers=[],
+            session_server_provider=None,
+            inference_controller_provider=MagicMock(),
+        )
+        preflighted: list[object] = []
+
+        async def preflight(args) -> None:
+            preflighted.append(args)
+
+        monkeypatch.setattr(executor_module, "call_agent_preflight_hook", preflight)
+
+        await executor.check_agent_setup()
+        assert preflighted == []
+
+
 def _fresh_executor() -> RolloutExecutor:
     return RolloutExecutor(
         args=make_args(),

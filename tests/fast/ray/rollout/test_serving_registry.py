@@ -39,6 +39,7 @@ async def test_injected_registry_owns_registration_and_cleanup():
                 worker_name="cell-0-0",
                 needs_offload=False,
                 update_weights=True,
+                health_check_timeout_seconds=20,
                 workers_hash="test-hash",
             ),
             router_api_client=router,

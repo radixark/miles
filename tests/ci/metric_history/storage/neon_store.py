@@ -56,7 +56,8 @@ _BASELINE_SQL = """
 SELECT mv.value
 FROM metric_values mv
 JOIN runs r USING (run_id)
-WHERE r.test_path = %s
+WHERE r.repository = %s
+  AND r.test_path = %s
   AND r.backend = %s
   AND r.suite = %s
   AND mv.metric_key = %s
@@ -68,10 +69,10 @@ LIMIT %s
 
 _INSERT_RUN_SQL = """
 INSERT INTO runs (
-    run_id, test_path, backend, suite,
+    run_id, repository, test_path, backend, suite,
     commit_sha, pr_number, github_run_id, github_run_attempt,
     event_name, ref, created_at, trusted
-) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
 
 _INSERT_METRIC_SQL = (
@@ -81,7 +82,8 @@ _INSERT_METRIC_SQL = (
 
 
 class NeonMetricHistoryStore(MetricHistoryStore):
-    def __init__(self, dsn: str | None = None):
+    def __init__(self, dsn: str | None = None, *, repository: str):
+        self._repository = repository
         if dsn is None:
             dsn = os.environ.get(NEON_DATABASE_URL_ENV)
             if not dsn:
@@ -115,6 +117,7 @@ class NeonMetricHistoryStore(MetricHistoryStore):
                     _INSERT_RUN_SQL,
                     (
                         run_id,
+                        self._repository,
                         identity.test_path,
                         identity.backend,
                         identity.suite,
@@ -154,7 +157,7 @@ class NeonMetricHistoryStore(MetricHistoryStore):
             with conn.cursor() as cur:
                 cur.execute(
                     _BASELINE_SQL,
-                    (test_path, backend, suite, metric_key, step, limit),
+                    (self._repository, test_path, backend, suite, metric_key, step, limit),
                 )
                 rows = cur.fetchall()
         finally:
@@ -180,8 +183,8 @@ class NeonMetricHistoryStore(MetricHistoryStore):
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    f"UPDATE runs SET trusted = false WHERE {column} = %s AND trusted = true",
-                    (value,),
+                    f"UPDATE runs SET trusted = false WHERE repository = %s AND {column} = %s AND trusted = true",
+                    (self._repository, value),
                 )
                 affected = cur.rowcount
             conn.commit()

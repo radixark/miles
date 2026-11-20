@@ -44,6 +44,13 @@ def _part_routers(part: nn.Module) -> list[tuple[int, nn.Module]]:
     return sorted(routers, key=lambda pair: pair[0])
 
 
+def router_top_k(model_parts: list[nn.Module]) -> int:
+    """The experts each token takes, shared by every router here."""
+    top_ks = {router.top_k for part in model_parts for _, router in _part_routers(part)}
+    assert len(top_ks) == 1, f"expected one top-k shared by every router, got {sorted(top_ks)}"
+    return top_ks.pop()
+
+
 def _allow_forward_side_effects_in_compiled_checkpoints() -> None:
     # the router pre-hook writes Python state inside the block; a compiled checkpoint refuses that
     # unless the write stays out of the recompute, which reuses the saved ids anyway

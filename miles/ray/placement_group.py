@@ -521,6 +521,8 @@ async def create_rollout_components(
 
     rollout_executor = create_rollout_executor_handle(capability=capability)
     await wait_until_worker_not_initialized(rollout_executor)
+    # before the minutes-long engine wait, so a broken agent setup fails fast
+    await rollout_executor.check_agent_setup()
 
     inference_controller = create_inference_controller_handle(capability=capability)
     await init_or_reset_inference_controller(inference_controller, args=args, trainers=list(trainer_handles.values()))

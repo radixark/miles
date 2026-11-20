@@ -40,6 +40,7 @@ def _make_meta(*, needs_offload: bool = False) -> ServerCellMetadata:
         worker_name="inference-engine-0-0-0-0",
         needs_offload=needs_offload,
         update_weights=True,
+        health_check_timeout_seconds=20,
         workers_hash="pseudo-hash-0",
     )
 

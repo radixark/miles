@@ -578,6 +578,10 @@ def run_all_checks_via_tito(
         n = case.pretokenize_n
         if n >= len(msgs) or msgs[n].get("role") == "assistant":
             continue
+        # The session server refuses a continuation outside the family's continuation roles
+        # before rendering; test_continuation_roles checks that the renderer raises on it.
+        if msgs[n - 1].get("role") == "assistant" and msgs[n]["role"] not in fixed_template.roles_after(msgs[n - 1]):
+            continue
         for variant in variants:
             kwargs = {**variant, **extra}
             results.append(
