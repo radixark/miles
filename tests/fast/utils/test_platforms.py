@@ -1,12 +1,13 @@
 import pytest
 
 from miles import platforms
+from miles.platforms.xpu import XpuPlatform
 
 
 def test_an_unknown_accelerator_is_refused(monkeypatch):
-    """Any value but cuda or tpu would otherwise run the CUDA platform silently."""
+    """Any value but cuda, tpu or xpu would otherwise run the CUDA platform silently."""
     monkeypatch.setenv("MILES_ACCELERATOR", "TPU")
-    with pytest.raises(ValueError, match="expected cuda or tpu"):
+    with pytest.raises(ValueError, match="expected cuda, tpu or xpu"):
         platforms._select_platform()
 
 
@@ -21,3 +22,9 @@ def test_a_dynamic_helper_runs_eager_where_the_platform_compiles_static_shapes_o
 
     monkeypatch.setattr(platforms.current_platform, "dynamic_shapes", True)
     assert platforms.torch_compile(dynamic=True)(helper) is not helper
+
+
+def test_xpu_is_selected_by_name(monkeypatch):
+    """MILES_ACCELERATOR=xpu picks the XPU platform."""
+    monkeypatch.setenv("MILES_ACCELERATOR", "xpu")
+    assert isinstance(platforms._select_platform(), XpuPlatform)
