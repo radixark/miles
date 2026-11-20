@@ -1074,6 +1074,32 @@ def _resolve_allow_stop_token_replace(args: argparse.Namespace) -> bool:
     return allowed
 
 
+def _resolve_allow_truncated_continuation(args: argparse.Namespace) -> bool:
+    if not args.use_session_server:
+        if args.allow_truncated_continuation is not None:
+            raise ValueError(
+                "--allow-truncated-continuation requires --use-session-server; "
+                "this flag only configures the session-server TITO middleware."
+            )
+        return False
+    fixed_template = TITOTokenizerType.get_tokenizer_class(TITOTokenizerType(args.tito_model)).FIXED_TEMPLATE
+    family_default = fixed_template.truncation_closer is not None
+    if args.allow_truncated_continuation and not family_default:
+        raise ValueError(
+            f"--allow-truncated-continuation is not supported with --tito-model={args.tito_model}: "
+            "this family declares no closer for a turn cut by finish_reason=length."
+        )
+    # An explicit flag wins over the --tito-model family default.
+    allowed = family_default if args.allow_truncated_continuation is None else args.allow_truncated_continuation
+    source = (
+        f"--tito-model={args.tito_model} default"
+        if args.allow_truncated_continuation is None
+        else "explicit --allow-truncated-continuation"
+    )
+    logger.info(f"Session server truncated-turn continuation {'allowed' if allowed else 'rejected'} ({source})")
+    return allowed
+
+
 def _check_stop_token_replace_streaming_session(args: argparse.Namespace, *, sglang: SglangConfig) -> None:
     if args.allow_stop_token_replace and sglang.common_value("enable_streaming_session"):
         raise ValueError(
@@ -1310,6 +1336,7 @@ def miles_validate_args(args):
         )
 
     args.allow_stop_token_replace = _resolve_allow_stop_token_replace(args)
+    args.allow_truncated_continuation = _resolve_allow_truncated_continuation(args)
 
     if args.debug_disable_optimizer:
         args.no_load_optim = True
