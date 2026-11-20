@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from miles.utils.chat_template_utils.tito_tokenizer.base import FixedTemplate
-from miles.utils.chat_template_utils.tito_tokenizer.qwen import Qwen3TITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer.qwen import _QWEN35_TRUNCATION, Qwen3TITOTokenizer
+from miles.utils.chat_template_utils.truncation import MarkerPair, TruncationGrammar
 
 
 class Nemotron3TITOTokenizer(Qwen3TITOTokenizer):
@@ -34,6 +35,13 @@ class Nemotron3TITOTokenizer(Qwen3TITOTokenizer):
         template=None,
         extra_kwargs={"truncate_history_thinking": False},
         consistant_kwargs=["low_effort"],
+        # Qwen3.5's markers, but the template puts no blank line after ``</think>``
+        # and a newline after ``</tool_call>``.
+        truncation_closer=TruncationGrammar(
+            think=MarkerPair("<think>", "\n</think>"),
+            tool_blocks=(MarkerPair("<tool_call>", "\n</tool_call>\n"), *_QWEN35_TRUNCATION.tool_blocks[1:]),
+            end_of_turn="<|im_end|>",
+        ),
     )
 
     _default_assistant_start_str: str = "<|im_start|>assistant\n"
