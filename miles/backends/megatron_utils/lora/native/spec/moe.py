@@ -125,5 +125,12 @@ class PackedGroupedExpertsSpec(GroupedExpertsSpec):
     hf_block_pattern = r"mlp\.experts"
 
 
+class DeepSeekV4GroupedExpertsSpec(GroupedExpertsSpec):
+    """DeepSeek-V4's routed experts under the raw converter's names, ``ffn.experts.<n>.w1``/``w3`` (gate/up) and
+    ``w2``."""
+
+    hf_block_pattern = r"ffn\.experts\.(?:\d+|\*)"
+
+
 def _sub_expert_delta(delta, index: int, x: torch.Tensor, host: nn.Module, *_host_args) -> torch.Tensor:
     return delta(x, host, index)
