@@ -3014,6 +3014,21 @@ class TestDataSourceSelection:
 
         assert "legacy buffered data source" in caplog.text
 
+    def test_mask_offpolicy_in_partial_rollout_is_accepted_on_class_based_rollout(self) -> None:
+        """The default class-based rollout path accepts --mask-offpolicy-in-partial-rollout without MILES_USE_LEGACY_ROLLOUT_V1."""
+        parser = get_megatron_arg_parser()
+        args = parser.parse_args(
+            [*REQUIRED_ARGS, "--num-rollout", "1", "--partial-rollout", "--mask-offpolicy-in-partial-rollout"]
+        )
+
+        miles_validate_args(args)
+
+        assert args.partial_rollout is True
+        assert args.mask_offpolicy_in_partial_rollout is True
+        assert (
+            args.rollout_function_path == "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
+        )
+
 
 class TestMultiLoRAValidation:
     @pytest.fixture(autouse=True)

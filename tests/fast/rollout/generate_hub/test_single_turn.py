@@ -273,6 +273,57 @@ class TestResumedSingleTurn:
             output_starts=[len(PROMPT_TOKENS), len(tokens_after_turn1)],
         )
 
+    @pytest.mark.parametrize(
+        "generation_env",
+        [{"args_kwargs": {"extra_argv": ["--partial-rollout", "--mask-offpolicy-in-partial-rollout"]}}],
+        indirect=True,
+    )
+    def test_resumed_partial_rollout_extends_offpolicy_loss_mask(
+        self, variant: str, generation_env: GenerateEnv
+    ) -> None:
+        """Resuming an aborted sample under --mask-offpolicy-in-partial-rollout masks prior tokens and keeps new ones."""
+        if variant == "multi_turn":
+            pytest.skip("not tested yet")
+        partial_text = "\\boxed"
+        partial_tokens = [59, 79075]
+        partial_log_probs = [-0.0, -0.0078125]
+
+        remaining_text = "{8}"
+        remaining_tokens = [90, 23, 92]
+        remaining_log_probs = [-0.0, -0.0078125, -0.015625]
+
+        sample = _make_sample()
+        sample.index = 0
+        generation_env.mock_server.process_fn = lambda _: ProcessResult(text=partial_text, finish_reason="abort")
+        if variant == "old_sglang_rollout":
+            sample = run(sglang_rollout.generate_and_rm(generation_env.args, sample, dict(SAMPLING_PARAMS)))
+        else:
+            sample = run(
+                inference_rollout_common.generate_and_rm(
+                    GenerateState(generation_env.args), sample, dict(SAMPLING_PARAMS)
+                )
+            )
+        assert sample.status == Sample.Status.ABORTED
+        assert sample.loss_mask is None
+        assert sample.response_length == len(partial_tokens)
+
+        generation_env.mock_server.process_fn = lambda _: ProcessResult(text=remaining_text, finish_reason="stop")
+        if variant == "old_sglang_rollout":
+            sample = run(sglang_rollout.generate_and_rm(generation_env.args, sample, dict(SAMPLING_PARAMS)))
+        else:
+            sample = run(
+                inference_rollout_common.generate_and_rm(
+                    GenerateState(generation_env.args), sample, dict(SAMPLING_PARAMS)
+                )
+            )
+        assert sample.status == Sample.Status.COMPLETED
+        assert sample.response == partial_text + remaining_text
+        assert sample.response_length == len(partial_tokens) + len(remaining_tokens)
+        assert sample.tokens == PROMPT_TOKENS + partial_tokens + remaining_tokens
+        assert sample.rollout_log_probs == partial_log_probs + remaining_log_probs
+        assert sample.loss_mask == [0] * len(partial_tokens) + [1] * len(remaining_tokens)
+        sample.validate()
+
 
 class TestFinishReason:
     @pytest.mark.parametrize(
