@@ -95,3 +95,35 @@ class TestBackendCheckpointOwnership:
             assert actor.args.start_rollout_id == 3
         finally:
             torch.set_rng_state(original)
+
+    @pytest.mark.parametrize("saved_on,restored", [("xpu", True), ("cuda", False)])
+    def test_device_rng_state_follows_the_current_platform(
+        self,
+        cpu_checkpoint_actor: SimpleNamespace,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        saved_on: str,
+        restored: bool,
+    ) -> None:
+        """The device RNG state is saved based on the platform's device type and restored only on a matching platform."""
+        actor = cpu_checkpoint_actor
+        device_states = [torch.arange(16, dtype=torch.uint8)]
+        restored_states = []
+        monkeypatch.setattr(torch.cuda, "get_rng_state_all", lambda: device_states)
+        monkeypatch.setattr(torch.xpu, "get_rng_state_all", lambda: device_states)
+        monkeypatch.setattr(torch.xpu, "set_rng_state_all", restored_states.append)
+        original = torch.get_rng_state()
+        try:
+            monkeypatch.setattr(checkpoint, "current_platform", SimpleNamespace(device_type=saved_on))
+            checkpoint.save(actor=actor, iteration=6)
+            assert set(torch.load(tmp_path / "iter_0000007" / "rng.pt", weights_only=False)) == {"torch", saved_on}
+
+            monkeypatch.setattr(checkpoint, "current_platform", SimpleNamespace(device_type="xpu"))
+            checkpoint.finalize_load(actor=actor, checkpoint_payload=checkpoint.load(actor=actor))
+            if restored:
+                [states] = restored_states
+                assert all(torch.equal(a, b) for a, b in zip(states, device_states, strict=True))
+            else:
+                assert restored_states == []
+        finally:
+            torch.set_rng_state(original)
