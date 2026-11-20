@@ -395,6 +395,28 @@ shared experts, MTP, and non-language components automatically. Common
 additional exceptions include final transformer layers and MLA projections
 whose contraction axis does not match a one-dimensional scaling layout.
 
+## Stochastic rounding of BF16 weights
+
+At RL learning rates, many updates to the FP32 master weights are smaller than
+half a BF16 spacing, so rounding the masters to nearest leaves those BF16 weights
+unchanged ([arXiv:2611.13545](https://arxiv.org/abs/2611.13545)). Setting
+`OPEN_TRAINING_BF16_STOCHASTIC_ROUNDING_FLAG=1` in the trainer environment (for
+example `--train-env-vars '{"OPEN_TRAINING_BF16_STOCHASTIC_ROUNDING_FLAG": "1"}'`)
+rounds the masters into the BF16 weights stochastically after every optimizer
+step; rollout and training both use the rounded weights. It applies to `--bf16`
+training with the distributed optimizer, on the GPU or with
+`--optimizer-cpu-offload`. Miles refuses `--use-precision-aware-optimizer`
+without `--optimizer-cpu-offload` at startup, since TE FusedAdam then keeps the
+master weights and casts them itself.
+
+The random bits are Transformer Engine's NVFP4 stochastic-rounding generator
+(Philox4x32-10) and depend only on the seed, the optimizer step, and the
+parameter shard, so `--rematerialize-param-from-master-weight` and resumed runs
+rebuild the same weights. See
+[`miles/kernels/quant/stochastic_round.py`](https://github.com/radixark/miles/blob/main/miles/kernels/quant/stochastic_round.py)
+and
+[`miles/utils/bf16_stochastic_rounding.py`](https://github.com/radixark/miles/blob/main/miles/utils/bf16_stochastic_rounding.py).
+
 ## Hardware support
 
 | GPU | BF16 | FP8 block-wise | MXFP8 | NVFP4 |

@@ -19,6 +19,8 @@ class Platform:
     triton_kernels = True
     # FlexAttention compiles to a block-sparse kernel here
     flex_attention = True
+    # a multimodal model's encoders train here; elsewhere the trainer builds its language model alone
+    trains_multimodal_encoders = True
     # the process group has a rooted reduce
     rooted_reduce = True
     # the process group has PREMUL_SUM, which FSDP picks for a gradient divide factor other than the group size

@@ -1,4 +1,5 @@
-"""GLM-5.3-Flash through native LoRA: the launcher's targets, HF-named adapters, KDA's plain linears — no GPU."""
+"""GLM-5.3-Flash through native LoRA: the launcher's targets, HF-named adapters, KDA's plain linears, shared-outer
+routed experts — no GPU."""
 
 import argparse
 import shlex
@@ -20,6 +21,7 @@ from miles.utils.lora.arguments import _hf_modules, _native_serving_targets, _re
 from miles.utils.lora.utils import get_adapter_target_modules
 
 HIDDEN, RANK = 8, 2
+EXPERTS, INTERMEDIATE = 3, 5
 PREFIX = "model.language_model.layers."
 GLM5_NEXT = MODEL_SPECS["glm5_next"]
 _KDA_HOSTS = ("q_proj", "k_proj", "v_proj", "b_proj", "f_a_proj", "f_b_proj", "g_a_proj", "g_b_proj", "o_proj")
@@ -36,6 +38,8 @@ _KDA_LEAVES = (
 )
 _DSA_LEAVES = ("q_a_proj", "q_b_proj", "kv_a_proj_with_mqa", "o_proj")
 _MLP_LEAVES = ("gate_proj", "up_proj", "down_proj")
+# HF GLM-5.3-Flash packs its routed experts, so targets name the packed projections
+_EXPERT_TARGETS = [f"{PREFIX}*.mlp.experts.gate_up_proj", f"{PREFIX}*.mlp.experts.down_proj"]
 
 
 class _Linear(nn.Module):
@@ -94,9 +98,20 @@ def _layer(layer_number, attention, mlp):
     return layer
 
 
+class _GroupedLinear(nn.Module):
+    def __init__(self, out_features, in_features):
+        super().__init__()
+        for index in range(EXPERTS):
+            self.register_parameter(f"weight{index}", nn.Parameter(torch.randn(out_features, in_features)))
+
+
 def _moe():
     moe = nn.Module()
+    moe.config = SimpleNamespace(moe_ffn_hidden_size=INTERMEDIATE)
     moe.experts = nn.Module()
+    moe.experts.num_local_experts = EXPERTS
+    moe.experts.linear_fc1 = _GroupedLinear(2 * INTERMEDIATE, HIDDEN)
+    moe.experts.linear_fc2 = _GroupedLinear(HIDDEN, INTERMEDIATE)
     moe.shared_experts = _mlp()
     return moe
 
@@ -167,13 +182,21 @@ def _model(targets):
     return model
 
 
+@pytest.fixture(autouse=True)
+def _single_rank_comms(monkeypatch):
+    from megatron.core import parallel_state
+
+    monkeypatch.setattr(parallel_state, "get_expert_model_parallel_rank", lambda: 0)
+    monkeypatch.setattr(parallel_state, "get_expert_model_parallel_world_size", lambda: 1)
+
+
 @pytest.fixture
 def launcher_targets(monkeypatch):
     return _launcher_targets(monkeypatch)
 
 
 def test_the_launcher_trains_every_projection_native_lora_runs(launcher_targets):
-    """Routed experts and the absorbed kv_b_proj have no native adapter; everything else is trained."""
+    """The launcher leaves the routed experts and the absorbed kv_b_proj out; everything else is trained."""
     assert set(launcher_targets) == (
         {f"{PREFIX}0.self_attn.{leaf}" for leaf in _KDA_LEAVES}
         | {f"{PREFIX}0.mlp.{leaf}" for leaf in _MLP_LEAVES}
@@ -215,3 +238,30 @@ def test_kv_b_proj_is_rejected_since_the_absorbed_dsa_never_calls_it():
         _native_serving_targets(
             launch_args, hf_config, _resolve_lora_targets(launch_args, hf_config), _hf_modules(hf_config)
         )
+
+
+def test_every_linear_with_shared_outer_experts_is_served():
+    """All-linear without the absorbed kv_b_proj: the routed experts validate as shared-outer adapters."""
+    launch_args = SimpleNamespace(
+        target_modules="all-linear",
+        exclude_modules="*.self_attn.kv_b_proj",
+        multi_lora=False,
+        megatron_to_hf_mode="raw",
+        lora_type="canonical_lora",
+        experts_shared_outer_loras=True,
+    )
+    hf_config = _hf_config()
+    hf_targets = _resolve_lora_targets(launch_args, hf_config)
+    served = _native_serving_targets(launch_args, hf_config, hf_targets, _hf_modules(hf_config))
+    assert {f"{PREFIX}1.mlp.experts.gate_up_proj", f"{PREFIX}1.mlp.experts.down_proj"} <= set(served)
+
+
+def test_routed_experts_take_shared_outer_adapters_under_the_expert_agnostic_names():
+    """Every expert shares gate/up's lora_A and down's lora_B; each keeps its own other half."""
+    exported = dict(export_lora_hf_named(iter_adapters([_model(_EXPERT_TARGETS)])))
+
+    experts = f"{PREFIX}1.mlp.experts."
+    assert exported[f"{experts}gate_proj.lora_A.weight"].shape == (1, RANK, HIDDEN)
+    assert exported[f"{experts}up_proj.lora_B.weight"].shape == (EXPERTS, INTERMEDIATE, RANK)
+    assert exported[f"{experts}down_proj.lora_A.weight"].shape == (EXPERTS, RANK, INTERMEDIATE)
+    assert exported[f"{experts}down_proj.lora_B.weight"].shape == (1, HIDDEN, RANK)

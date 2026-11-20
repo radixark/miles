@@ -44,6 +44,16 @@ def patch_megatron_model(model):
             delattr(model_config, "share_embeddings_and_output_weights")
 
 
+def apply_pipeline_layout(provider, args) -> None:
+    # arg name != provider field; arg default None, so propagate only when the user set it
+    if args.backend.decoder_first_pipeline_num_layers is not None:
+        provider.num_layers_in_first_pipeline_stage = args.backend.decoder_first_pipeline_num_layers
+    if args.backend.decoder_last_pipeline_num_layers is not None:
+        provider.num_layers_in_last_pipeline_stage = args.backend.decoder_last_pipeline_num_layers
+    if args.backend.pipeline_model_parallel_layout is not None:
+        provider.pipeline_model_parallel_layout = args.backend.pipeline_model_parallel_layout
+
+
 def apply_dsa_backend_args(provider, args) -> None:
     """Resolve DSV4 kernel selection separately from the GLM DSA backend option."""
     explicit = getattr(

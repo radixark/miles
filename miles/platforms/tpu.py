@@ -13,6 +13,8 @@ class TpuPlatform(Platform):
     triton_kernels = False
     # torch_tpu runs FlexAttention as one dense L x L mask
     flex_attention = False
+    # the encoders' FlexAttention has no TPU kernel and recompiles every step; their recompute's eager replay aborts
+    trains_multimodal_encoders = False
     # tpu_dist has no rooted reduce
     rooted_reduce = False
     # tpu_dist has no PREMUL_SUM
