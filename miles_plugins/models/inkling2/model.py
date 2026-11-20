@@ -129,6 +129,7 @@ def build_inkling2_config(text_cfg: dict, args) -> TransformerConfig:
         moe_router_dtype="fp32",
         moe_grouped_gemm=True,
         moe_token_dispatcher_type="alltoall",
+        moe_permute_accumulation_in_fp32=True,
         recompute_granularity=args.recompute_granularity,
         recompute_method=args.recompute_method,
         recompute_num_layers=args.recompute_num_layers,
