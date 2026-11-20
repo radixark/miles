@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 from torch.distributed import HashStore
 
 from miles.backends.training_utils.weight_update.protocols.broadcast import UpdateWeightFromDistributed
@@ -28,7 +29,15 @@ def _build_protocol(
         patch(f"{_BROADCAST_MODULE}.get_parallel_state", return_value=parallel_state),
         patch(f"{_BROADCAST_MODULE}.create_world_ticket_lock") as create_lock,
     ):
-        protocol = UpdateWeightFromDistributed(Namespace(check_weight_update_equal=False))
+        protocol = UpdateWeightFromDistributed(
+            Namespace(
+                check_weight_update_equal=False,
+                sglang=make_sglang_config(pp_size=1),
+                pause_generation_mode="retract",
+                fully_async=False,
+                colocate=False,
+            )
+        )
     return protocol, create_lock
 
 
