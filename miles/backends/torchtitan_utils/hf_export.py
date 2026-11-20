@@ -36,7 +36,7 @@ def save_hf_checkpoint(trainer, *, hf_checkpoint: str, path: str) -> None:
     weight_map.update(_copy_untouched_tensors(hf_checkpoint, trained=set(weight_map), path=path))
     with open(os.path.join(path, "model.safetensors.index.json"), "w") as f:
         json.dump({"metadata": {}, "weight_map": weight_map}, f, indent=1)
-    _copy_non_weight_files(hf_checkpoint, path=path)
+    _copy_files_outside_the_index(hf_checkpoint, path=path)
     logger.info(f"saved HF checkpoint to {path}: {num_trained} trained, {len(weight_map) - num_trained} copied")
     dist.barrier()
 
@@ -74,9 +74,11 @@ def _save_shard(tensors: dict[str, torch.Tensor], *, path: str, file_name: str) 
     return {name: file_name for name in tensors}
 
 
-def _copy_non_weight_files(hf_checkpoint: str, *, path: str) -> None:
+def _copy_files_outside_the_index(hf_checkpoint: str, *, path: str) -> None:
+    # a weight file the index does not list (the MTP head's mtp.safetensors) is copied whole
+    indexed = {*checkpoint_shard_files(hf_checkpoint), "model.safetensors.index.json"}
     for entry in os.listdir(hf_checkpoint):
-        if entry.endswith((".safetensors", ".safetensors.index.json")):
+        if entry in indexed:
             continue
         source = os.path.join(hf_checkpoint, entry)
         if os.path.isdir(source):

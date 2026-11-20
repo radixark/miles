@@ -190,15 +190,14 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
             torch.accelerator.empty_cache()
 
     def _save_checkpoint(self, rollout_id: int) -> None:
-        # --save-hf exports the servable weights only; the DCP checkpoint (params + optimizer state) is skipped
-        if self.args.save_hf is not None and not is_lora_enabled(self.args):
+        if is_lora_enabled(self.args):
+            self._lora_checkpoint.save(rollout_id)
+        elif self.args.save_hf is not None:
+            # --save-hf exports the servable weights only; the DCP checkpoint (params + optimizer state) is skipped
             save_hf_checkpoint(
                 self.trainer,
                 hf_checkpoint=self.args.hf_checkpoint,
                 path=self.args.save_hf.format(rollout_id=rollout_id),
             )
-            return
-        if is_lora_enabled(self.args):
-            self._lora_checkpoint.save(rollout_id)
         else:
             self.trainer.engine.save_checkpoint(last_step=True)
