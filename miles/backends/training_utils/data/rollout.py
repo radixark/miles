@@ -174,7 +174,7 @@ def prepare_rollout_data(
     # An output store column holds segments, whose rows replay reads per micro batch.
     for key in ("rollout_routed_experts", "rollout_indexer_topk"):
         if key in rollout_data and not is_segments_column(rollout_data[key]):
-            rollout_data[key] = [torch.from_numpy(r) for r in rollout_data[key]]
+            rollout_data[key] = [torch.from_numpy(r).to(torch.int32) for r in rollout_data[key]]
     return rollout_data
 
 

@@ -22,6 +22,7 @@ MILES_PREFER_IPV6_ENV = "MILES_PREFER_IPV6"
 
 _CONNECT_ATTEMPT_TIMEOUT_SECONDS = 1.0
 _CONNECT_RETRY_INTERVAL_SECONDS = 0.5
+_ASYNC_JSON_DECODE_THRESHOLD_BYTES = 65536
 
 
 def find_available_port(base_port: int):
@@ -216,6 +217,21 @@ def _next_actor():
     return actor
 
 
+async def _decode_response_json(response):
+    content = getattr(
+        response, "content", None
+    )  # config-access-exempt: HTTP response stubs in unit tests may only define .json()
+    if isinstance(content, (bytes, bytearray, memoryview)) and len(content) >= _ASYNC_JSON_DECODE_THRESHOLD_BYTES:
+        try:
+            return await asyncio.to_thread(json.loads, content)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return response.text
+    try:
+        return response.json()
+    except json.JSONDecodeError:
+        return response.text
+
+
 async def _post(client, url, payload, max_retries=60, action="post", headers=None):
     retry_count = 0
     while retry_count < max_retries:
@@ -230,10 +246,7 @@ async def _post(client, url, payload, max_retries=60, action="post", headers=Non
                     url, json=payload or {}, headers=headers
                 )  # config-access-exempt: attribute selected at runtime from action
             response.raise_for_status()
-            try:
-                output = response.json()
-            except json.JSONDecodeError:
-                output = response.text
+            output = await _decode_response_json(response)
         except Exception as e:
             retry_count += 1
 
