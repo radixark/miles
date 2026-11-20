@@ -36,7 +36,10 @@ jobs:
           # none are missed
           for attempt in 1 2 3 4 5; do
             sleep 15
-            run_ids=$(gh api "repos/${REPO}/actions/runs?head_sha=${HEAD_SHA}&status=action_required" --jq '.workflow_runs[].id')
+            # oldest first: the last run approved cancels the others in its
+            # concurrency group, and only runs created after a label was added
+            # carry it
+            run_ids=$(gh api "repos/${REPO}/actions/runs?head_sha=${HEAD_SHA}&status=action_required&per_page=100" --jq '.workflow_runs | sort_by(.id) | .[].id')
             for run_id in ${run_ids}; do
               echo "approving run ${run_id}"
               gh api -X POST "repos/${REPO}/actions/runs/${run_id}/approve" || true
