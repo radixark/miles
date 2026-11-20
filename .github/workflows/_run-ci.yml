@@ -125,6 +125,16 @@ jobs:
       CUDA_CACHE_PATH: /data/miles_ci/jit/nv
       FLASHINFER_WORKSPACE_BASE: /data/miles_ci/jit
     steps:
+      # Before any job code: the runner mounts the host docker socket (root on the host) into job
+      # containers, and every runner's job-container docker hook must have dropped it.
+      - name: Refuse a job container holding the host docker socket
+        shell: bash
+        run: |
+          if [ -e /var/run/docker.sock ]; then
+            echo "::error::/var/run/docker.sock is mounted; install tests/ci/github_runner/job-container-docker on this runner"
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
