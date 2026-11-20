@@ -86,6 +86,23 @@ def assert_continuation_roles(
             )
 
 
+def assert_no_server_message_keys(messages: list[dict[str, Any]], tito_tokenizer: TITOTokenizer) -> None:
+    """Refuse a client message that carries a key only the server writes (``SERVER_MESSAGE_KEYS``).
+
+    The fixed template renders those keys as stored, so a client-supplied one
+    would put text into the prompt that the message's own fields do not show.
+    *messages* are the ones the request adds; a replayed stored message gets
+    its keys from the store. Shared verbatim by the v1 render and the v2 render.
+    """
+    for index, message in enumerate(messages):
+        forged = sorted(key for key in tito_tokenizer.SERVER_MESSAGE_KEYS if key in message)
+        if forged:
+            raise MessageValidationError(
+                f"new message {index} (role={message.get('role')!r}) carries server-only keys {forged}; "
+                "the session server writes them and a request must not"
+            )
+
+
 def close_truncated_checkpoint(
     token_ids: list[int], *, completion_start: int, tito_tokenizer: TITOTokenizer, allowed: bool
 ) -> list[int]:
@@ -251,6 +268,7 @@ class LinearTrajectory:
 
         token_ids = self.trajectory_token_ids[checkpoint_index] if checkpoint_index >= 0 else []
         if not token_ids:
+            assert_no_server_message_keys(request_messages, tito_tokenizer)
             return tito_tokenizer.apply_chat_template(
                 request_messages,
                 add_generation_prompt=True,
@@ -271,6 +289,7 @@ class LinearTrajectory:
                 f"{e}; the selected TITO fixed template does not support appending this role"
             ) from e
 
+        assert_no_server_message_keys(request_messages[len(stored_messages) :], tito_tokenizer)
         effective_messages = stored_messages + request_messages[len(stored_messages) :]
         assert_continuation_roles(
             effective_messages, appended_from=len(stored_messages), fixed_template=tito_tokenizer.FIXED_TEMPLATE
