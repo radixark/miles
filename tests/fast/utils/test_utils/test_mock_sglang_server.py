@@ -1,12 +1,14 @@
 import asyncio
 import concurrent.futures
 import time
+import types
 
 import pytest
 import requests
 
 from miles.utils.http_utils import MILES_HOST_IP_ENV
 from miles.utils.misc import NodeProbeMixin
+from miles.utils.test_utils import mock_sglang_server
 from miles.utils.test_utils.mock_sglang_server import (
     Counter,
     MockSGLangServer,
@@ -120,13 +122,23 @@ class TestMockServerBasic:
         assert len(mock_server.request_log) == 0
         assert mock_server.max_concurrent == 0
 
-    @pytest.mark.parametrize("latency,min_time,max_time", [(0.0, 0.0, 0.3), (0.5, 0.5, 1.0)])
-    def test_latency(self, latency, min_time, max_time):
+    @pytest.mark.parametrize("latency,expected_sleeps", [(0.0, []), (0.5, [0.5])])
+    def test_latency(self, monkeypatch, latency, expected_sleeps):
+        # Record the server's own sleeps: a wall-clock upper bound flakes on a loaded hosted runner.
+        sleeps = []
+
+        async def recording_sleep(delay):
+            sleeps.append(delay)
+            await asyncio.sleep(delay)
+
+        # The module uses asyncio only for this sleep; patching asyncio.sleep itself would also catch uvicorn's.
+        monkeypatch.setattr(mock_sglang_server, "asyncio", types.SimpleNamespace(sleep=recording_sleep))
         with with_mock_server(latency=latency) as server:
             start = time.time()
             requests.post(f"{server.url}/generate", json={"input_ids": [1], "sampling_params": {}}, timeout=5.0)
             elapsed = time.time() - start
-            assert min_time <= elapsed < max_time
+        assert sleeps == expected_sleeps
+        assert elapsed >= latency
 
     def test_max_concurrent_with_latency(self):
         with with_mock_server(latency=0.1) as server:
