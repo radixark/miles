@@ -25,6 +25,8 @@ class TpuPlatform(Platform):
     prefill_weight_versions = False
     # the tpu compile backend takes static shapes only
     dynamic_shapes = False
+    # sglang-torchtpu's true on-policy log-prob kernel returns fp32, as the trainer's same kernel does
+    true_on_policy_fp32_logprobs = True
     nvml_numa_affinity = False
     # sglang-torchtpu turns "auto" into an fp8 KV cache without scales, which skews rollout logprobs against the
     # bf16 trainer; fp8 stays available through --sglang-kv-cache-dtype fp8_e4m3

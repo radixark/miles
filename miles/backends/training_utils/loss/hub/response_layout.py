@@ -61,7 +61,6 @@ _PADDED_ROWS_REQUIREMENTS: dict[str, Callable[[Namespace], bool]] = {
 }
 # features whose code reads per-sample tensors, or that PaddedRows does not score
 _UNSUPPORTED_FEATURES: dict[str, Callable[[Namespace], bool]] = {
-    "--true-on-policy-mode": lambda args: args.true_on_policy_mode,
     "--log-probs-backend fused": lambda args: args.log_probs_backend == "fused",
     "--allgather-cp": lambda args: args.allgather_cp,
     "--use-sampling-support-replay": lambda args: args.use_sampling_support_replay,
@@ -419,6 +418,8 @@ class PaddedRows:
 
     def score(self, logits, *, with_entropy, entropy_requires_grad):
         # Decided by the run's arguments, so the old and new log-probs of a run come from one function.
+        if self.args.true_on_policy_mode:
+            return self._true_on_policy_score(logits.squeeze(0), with_entropy=with_entropy)
         # RowLogProb has no entropy gradient and needs the whole vocabulary on this rank.
         if self.args.entropy_coef == 0 and get_parallel_state().tp.size == 1:
             return RowLogProb.apply(logits.squeeze(0), self._targets, self.args.rollout_temperature, with_entropy)
@@ -434,6 +435,18 @@ class PaddedRows:
             debug_unified_grad_fused_logprob=self.args.debug_unified_grad_fused_logprob,
         )
         return log_probs.squeeze(-1), entropy
+
+    def _true_on_policy_score(self, logits, *, with_entropy):
+        """The rollout engine's own log-prob kernel; entropy, for the logs only, from RowLogProb without a gradient."""
+        # TPU only (padded rows run on a static-shape platform, and the mode is validated for TPU at startup)
+        from miles.backends.torchtitan_utils import true_on_policy
+
+        log_probs = true_on_policy.log_probs(logits, self._targets, self.args.rollout_temperature)
+        entropy = None
+        if with_entropy:
+            with torch.no_grad():
+                _, entropy = RowLogProb.apply(logits, self._targets, self.args.rollout_temperature, True)
+        return log_probs, entropy
 
     def map_logit_rows(self, logits, fn, side=None, *, side_fill=0):
         extra = None if side is None else self.rows_at_positions(side, fill=side_fill)
