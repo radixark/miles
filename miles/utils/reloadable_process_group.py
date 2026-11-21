@@ -30,15 +30,10 @@ def monkey_patch_torch_dist():
         if len(args) >= 3 and args[2] == "gloo" or "backend" in kwargs and kwargs["backend"] == "gloo":
             return group
 
-        # Get ranks from arguments
-        if len(args) >= 1 and args[0] is not None:
-            ranks = args[0]
-        elif "ranks" in kwargs and kwargs["ranks"] is not None:
-            ranks = kwargs["ranks"]
-        else:
-            # If no ranks specified, use all ranks in world
-            ranks = list(range(dist.get_world_size()))
-        if len(ranks) == 1:
+        # A singleton NCCL group can still allocate communication buffers once
+        # used, so it must be destroyed on offload and recreated on reload.
+        # A non-member has no group to manage.
+        if group == dist.GroupMember.NON_GROUP_MEMBER:
             return group
 
         group = ReloadableProcessGroup(group, inner_args=args, inner_kwargs=kwargs)
