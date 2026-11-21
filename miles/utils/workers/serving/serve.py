@@ -30,6 +30,7 @@ def main() -> None:
             worker_in_cell_index=identity.worker_in_cell_index,
             num_workers_per_cell=identity.num_workers_per_cell,
             gpu_ids=identity.gpu_ids,
+            num_workers_per_node=identity.workers_per_pod,
         )
     )
     overridden = sorted(name for name in PLATFORM_IDENTITY_ENV_VARS if name in env_vars)

@@ -407,12 +407,14 @@ class _BaseActorManager(Generic[SpecT]):
 
     @property
     def launch_context(self) -> WorkerLaunchContext:
+        scheduling = self.spec.scheduling(self.manager.scaling)
         return WorkerLaunchContext(
             args=self.spec.args,
             cell_index=self.parent.cell_index,
             worker_in_cell_index=self.worker_in_cell_index,
-            num_workers_per_cell=self.spec.scheduling(self.manager.scaling).num_workers_per_cell,
+            num_workers_per_cell=scheduling.num_workers_per_cell,
             gpu_ids=self.gpu_ids,
+            num_workers_per_node=scheduling.num_gpus_per_node or None,
         )
 
     def _compute_remote_options(self) -> dict:
@@ -631,6 +633,7 @@ def _ctor_context(launch_context: WorkerLaunchContext) -> WorkerCtorContext:
         worker_in_cell_index=launch_context.worker_in_cell_index,
         num_workers_per_cell=launch_context.num_workers_per_cell,
         gpu_ids=launch_context.gpu_ids,
+        num_workers_per_node=launch_context.num_workers_per_node,
         capability=DeferredBackendCapability(create=_create_ray_backend_capability),
     )
 

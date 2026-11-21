@@ -44,6 +44,17 @@ class TrainConfig(BaseConfig):
             help="Extra environment variables for training process, e.g. PyTorch memory management ones.",
         ),
     ] = "{}"
+    trainer_cpu_threads: A[
+        int | None,
+        Arg(
+            help=(
+                "Number of PyTorch intra-op CPU threads per trainer worker. "
+                "When unset, defaults to auto-sizing from available host CPUs divided by local trainer workers "
+                "(capped at 48) if --optimizer-cpu-offload is enabled, and leaves Ray's single-thread default "
+                "unchanged otherwise."
+            ),
+        ),
+    ] = None
     train_memory_margin_bytes: A[
         int,
         Arg(help="Add margin for train memory allocation. By default we will reserve 1GB as margin."),
