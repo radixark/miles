@@ -1886,13 +1886,26 @@ def miles_validate_args(args):
     _resolve_rollout_functions(args)
 
     if args.namespaced_radix_cache is None:
-        args.namespaced_radix_cache = args.fully_async and args.pause_generation_mode == "in_place"
+        never_flushes_cache = args.fully_async and args.pause_generation_mode == "in_place"
+        # The default must not turn on a partition that the assert below rejects: the v1 session
+        # server cannot carry the per-call radix cache key. (--fully-async already rules out the
+        # legacy rollout API.) An explicit --namespaced-radix-cache with v1 is still rejected.
+        v1_session_server = args.use_session_server not in (False, "v2")
+        args.namespaced_radix_cache = never_flushes_cache and not v1_session_server
         if args.namespaced_radix_cache:
             logger.info(
                 "--fully-async with --pause-generation-mode in_place never flushes the engine cache: "
                 "defaulting to --namespaced-radix-cache so prefix KV computed under old "
                 "weights cannot serve a later rollout call. Pass "
                 "--no-namespaced-radix-cache to keep one shared cache."
+            )
+        elif never_flushes_cache:
+            logger.warning(
+                "--fully-async with --pause-generation-mode in_place never flushes the engine cache, "
+                "but --use-session-server v1 does not support --namespaced-radix-cache, so it stays off: "
+                "prefix KV computed under old weights can serve later rollout calls. Use "
+                "--use-session-server v2 to partition the cache, or pass --no-namespaced-radix-cache "
+                "to silence this warning."
             )
 
     if args.namespaced_radix_cache:
