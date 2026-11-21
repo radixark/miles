@@ -161,12 +161,6 @@ def _check_runtime(model):
             "GPU delta does not admit DeepSeek-V4.1 shared-expert fusion, which serves the shared expert from the "
             "routed experts' buffers"
         )
-    if not hasattr(
-        model, "use_npu_arch35_mxfp8_wo_a"
-    ):  # config-access-exempt: Only SGLang main's DeepseekV4ForCausalLM records whether its NPU MXFP8 wo_a GEMM is on.
-        raise ValueError(
-            "GPU delta maps DeepSeek-V4.1 on SGLang main's DeepseekV4ForCausalLM, which this tree predates"
-        )
     mega = sorted(
         prefix
         for prefix, module in model.named_modules()

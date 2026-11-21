@@ -70,6 +70,14 @@ The DeepSeek-V4.1 and Kimi-K3 mappings mirror SGLang main's loaders on a best-ef
 basis, as placeholders without end-to-end tests yet; end-to-end testing will start from
 them. GDN and other model mappings are not implemented.
 
+The dtype recorded for each tensor in the selected HF checkpoint is canonical.
+Miles may train that tensor in higher precision and casts the exported value back
+to the checkpoint dtype before computing XOR. For example, DeepSeek-V4.1-Flash's
+released compressor norm, indexer key norm and Engram Q/K gains are BF16. Miles
+can train them in FP32 and publish BF16 deltas to BF16 serving parameters.
+Admission rejects a serving parameter that narrows one of these gains below its
+checkpoint precision.
+
 Static tensors never carry trainer updates; the user guide's
 [limits](../../../../docs/advanced/gpu-delta-weight-transfer.md#limits) define them. A bundled
 draft's shared embedding and head follow the target; a speculative token map, which gives

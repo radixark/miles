@@ -181,6 +181,23 @@ def test_checkpoint_reader_rejects_different_canonical_layout_before_rollout(tmp
     assert not protocol._baseline_captured and not events
 
 
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+def test_v41_fp32_trainer_gain_follows_hf_checkpoint_dtype(tmp_path, dtype):
+    from safetensors.torch import save_file
+
+    name = "layers.0.engram.q_weight"
+    exported = torch.tensor([[1.003, 1.008]], dtype=torch.float32)
+    save_file({name: torch.ones_like(exported, dtype=dtype)}, tmp_path / "model.safetensors")
+    config = {"architectures": ["DeepseekV41ForCausalLM"], "text_config": {"num_hidden_layers": 1}}
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    protocol = gpu_delta.UpdateWeightFromGpuDelta(
+        Namespace(hf_checkpoint=tmp_path, custom_update_weight_post_write_path=None)
+    )
+    protocol.get_export_plan()
+    canonical = protocol._match_layout(name, exported)
+    assert torch.equal(canonical.view(torch.uint8), exported.to(dtype).view(torch.uint8))
+
+
 @pytest.mark.parametrize("duplicate_owner", [False, True])
 def test_pipeline_stage_inventory_requires_unique_owners_before_baseline_declaration(
     tmp_path, single_rank, monkeypatch, duplicate_owner

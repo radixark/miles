@@ -475,6 +475,57 @@ def test_canonical_shadow_first_fill_orders_its_allocation_stream_across_threads
     torch.testing.assert_close(shadow.cpu(), expected + 10, rtol=0, atol=0)
 
 
+def test_v41_gains_require_serving_checkpoint_precision(monkeypatch):
+    from sglang.srt import runtime_context
+    from sglang.srt.models.deepseek_v4 import DeepseekV4ForCausalLM
+
+    from miles.backends.sglang_utils.gpu_delta.bindings import CanonicalShadows
+    from miles.backends.sglang_utils.gpu_delta.checkpoint import CanonicalCheckpoint
+    from miles.backends.sglang_utils.gpu_delta.layout import GpuDeltaLayout
+    from miles.backends.sglang_utils.gpu_delta.models.deepseek_v4 import DeepseekV4Mapping
+    from miles.utils.gpu_delta.publication import static_policy
+
+    model = DeepseekV4ForCausalLM.__new__(DeepseekV4ForCausalLM)
+    torch.nn.Module.__init__(model)
+    model.config = SimpleNamespace(architectures=["DeepseekV4ForCausalLM"], model_type="deepseek_v41")
+    model.num_fused_shared_experts = 0
+    monkeypatch.setattr(runtime_context, "get_platform", lambda: SimpleNamespace(is_cuda=True))
+    monkeypatch.setattr(runtime_context, "get_parallel", lambda: SimpleNamespace(attn_dcp_size=1))
+    # Exercise SGLang's loader remap and GPU-delta admission without constructing the rest of the decoder.
+    monkeypatch.setattr(DeepseekV4Mapping, "_layer", lambda self, index: None)
+    gains = {}
+    for leaf, shape in (
+        ("attn.compressor.norm.weight", (512,)),
+        ("attn.indexer.k_norm.weight", (128,)),
+        ("engram.q_weight", (4, 5120)),
+        ("engram.k_weight", (4, 5120)),
+    ):
+        name = f"layers.14.{leaf}"
+        parts = model.remap_weight_name_to_dpsk_hf_format(name).split(".")
+        module = model
+        for part in parts[:-1]:
+            module = module._modules.setdefault(part, torch.nn.Module())
+        weight = torch.nn.Parameter(torch.ones(shape, device="cuda", dtype=torch.bfloat16))
+        module.register_parameter(parts[-1], weight)
+        gains[name] = weight
+
+    policy = static_policy({"architectures": ["DeepseekV41ForCausalLM"], "text_config": {"num_hidden_layers": 15}})
+
+    def admit(dtype):
+        inventory = {name: {"dtype": dtype, "shape": list(weight.shape)} for name, weight in gains.items()}
+        checkpoint = CanonicalCheckpoint(inventory, policy, {}, "a" * 64)
+        return GpuDeltaLayout(model, checkpoint, CanonicalShadows({}, create=True))
+
+    plan = admit("BF16")
+    assert {binding.name: binding.storage[0].data_ptr() for binding in plan.bindings} == {
+        name: weight.data_ptr() for name, weight in gains.items()
+    }
+    with pytest.raises(ValueError, match="4 mismatched tensors") as error:
+        admit("F32")
+    for name in gains:
+        assert f"{name}: checkpoint=F32, canonical=F32; served=['BF16']" in str(error.value)
+
+
 def test_computed_images_survive_graph_replay_and_failure_gate():
     from miles.backends.sglang_utils.gpu_delta import layout
     from miles.backends.sglang_utils.gpu_delta.bindings import ComputedImage, ConsumerSnapshot, _direct_binding
