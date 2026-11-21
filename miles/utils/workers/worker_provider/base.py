@@ -40,6 +40,12 @@ class BaseWorkerProvider(abc.ABC):
     def expected_num_cells(self, *, group_id: str) -> int | None:
         return None
 
+    @property
+    def restarts_lost_cells(self) -> bool:
+        """Whether a cell whose workers died comes back without miles' fault tolerance (e.g. Kubernetes
+        recreating the pod group, or an external fleet re-registering an engine)."""
+        return True
+
     def get_handle(self, worker_name: str) -> BaseWorkerHandle:
         (infos,) = self.get_worker_infos(cell_ids=[cell_id_of_worker(worker_name)])
         handles = self.get_handles_of_worker_infos(infos)
