@@ -61,7 +61,9 @@ class WeightTransferProtocol(ABC):
         return True
 
     @abstractmethod
-    def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None: ...
+    def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
+        """Send one bucket. The protocol may clear ``bucket`` once it no longer needs it, to release its
+        tensors, so callers must not read it after this call."""
 
     def after_base_weights(self) -> None:  # noqa: B027 — optional hook
         """Hook after the base-weight stream completes (e.g. await in-flight writes)."""
