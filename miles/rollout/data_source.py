@@ -102,6 +102,9 @@ class RolloutDataSource(DataSource):
                 processor=processor,
                 max_length=args.rollout_max_prompt_len,
             )
+            path, _ = _parse_generalized_path(args.prompt_data)
+            # None for a directory dataset: its identity cannot be checked on resume
+            self.dataset_sha256 = _hash_file(path) if os.path.isfile(path) else None
             if self.args.rollout_shuffle:
                 self.dataset.shuffle(self.epoch_id)
         else:
@@ -147,6 +150,7 @@ class RolloutDataSource(DataSource):
             "sample_group_index": self.sample_group_index,
             "sample_index": self.sample_index,
             "metadata": self.metadata,
+            "sha256": self.dataset_sha256,
         }
         save_simple_checkpoint(directory=directory, data=state_dict)
 
@@ -162,6 +166,15 @@ class RolloutDataSource(DataSource):
                 "its first prompt",
                 needs_flag=False,
             )
+        saved_sha256 = state_dict.get("sha256")
+        if saved_sha256 is not None and saved_sha256 != self.dataset_sha256:
+            raise RolloutDataResumeMismatch(
+                f"the --prompt-data dataset changed since the checkpoint was saved: sha256 was {saved_sha256}, "
+                f"now {self.dataset_sha256}{_RESET_HINT}"
+            )
+        if saved_sha256 is None and self.args.rollout_data_reset_on_load:
+            # a checkpoint saved before datasets were hashed cannot show it holds this dataset, so the flag wins
+            raise RolloutDataResumeMismatch("the checkpoint does not record which --prompt-data dataset it holds")
         self.sample_offset = state_dict.get("sample_offset", 0)
         self.epoch_id = state_dict.get("epoch_id", 0)
         self.sample_group_index = state_dict.get("sample_group_index", 0)

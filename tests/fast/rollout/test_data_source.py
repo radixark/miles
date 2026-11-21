@@ -26,7 +26,9 @@ class TestReadOnlyDataSource:
 
 
 def _make_args(**overrides) -> SimpleNamespace:
-    defaults = dict(rollout_global_dataset=False, save=None, load=None, rollout_shuffle=False)
+    defaults = dict(
+        rollout_global_dataset=False, save=None, load=None, rollout_shuffle=False, rollout_data_reset_on_load=False
+    )
     return SimpleNamespace(**{**defaults, **overrides})
 
 
@@ -49,10 +51,11 @@ def test_load_reads_nothing_without_a_global_dataset(tmp_path: Path) -> None:
     assert source.epoch_id == 0
 
 
-def _bare_source(**overrides) -> RolloutDataSource:
+def _bare_source(dataset_sha256: str | None = None, **overrides) -> RolloutDataSource:
     source = RolloutDataSource.__new__(RolloutDataSource)
     source.args = _make_args(**overrides)
     source.metadata = {}
+    source.dataset_sha256 = dataset_sha256
     return source
 
 
@@ -82,6 +85,44 @@ def test_load_restores_the_state_it_finds(tmp_path: Path) -> None:
     source.load(tmp_path)
 
     assert (source.sample_offset, source.epoch_id) == (7, 1)
+
+
+def test_a_checkpoint_of_another_dataset_is_not_resumed(tmp_path: Path) -> None:
+    """A position in one prompt file is meaningless in another; resuming it silently skips or repeats prompts."""
+    torch.save({"sample_offset": 508, "epoch_id": 1, "sha256": "a" * 64}, tmp_path / "state.pt")
+    source = _bare_source(dataset_sha256="b" * 64, rollout_global_dataset=True)
+
+    with pytest.raises(RolloutDataResumeMismatch, match="changed since the checkpoint was saved") as err:
+        source.load(tmp_path)
+    assert err.value.needs_flag
+
+
+def test_a_checkpoint_of_the_same_dataset_resumes_with_the_flag(tmp_path: Path) -> None:
+    """A run keeping --rollout-data-reset-on-load still resumes its own later checkpoints in place."""
+    torch.save({"sample_offset": 7, "epoch_id": 1, "sha256": "a" * 64}, tmp_path / "state.pt")
+    source = _bare_source(dataset_sha256="a" * 64, rollout_global_dataset=True, rollout_data_reset_on_load=True)
+
+    source.load(tmp_path)
+
+    assert (source.sample_offset, source.epoch_id) == (7, 1)
+
+
+def test_an_unhashed_checkpoint_starts_over_with_the_flag(tmp_path: Path) -> None:
+    """Nothing shows an old checkpoint holds this dataset, so the operator's reset request decides."""
+    torch.save({"sample_offset": 508, "epoch_id": 1}, tmp_path / "state.pt")
+    source = _bare_source(dataset_sha256="b" * 64, rollout_global_dataset=True, rollout_data_reset_on_load=True)
+
+    with pytest.raises(RolloutDataResumeMismatch, match="does not record"):
+        source.load(tmp_path)
+
+
+def test_save_records_the_dataset_hash(tmp_path: Path) -> None:
+    source = _bare_source(dataset_sha256="a" * 64, rollout_global_dataset=True)
+    source.sample_offset = source.epoch_id = source.sample_group_index = source.sample_index = 0
+
+    source.save(tmp_path)
+
+    assert torch.load(tmp_path / "state.pt")["sha256"] == "a" * 64
 
 
 class _ReadOnlyDataSource(DataSource):
