@@ -36,6 +36,16 @@ class TrainConfig(BaseConfig):
             ),
         ),
     ] = "te"
+    glm5_kda_tp_sharding: A[
+        bool,
+        Arg(
+            help=(
+                "Shard the KDA heads of GLM-5.3-Flash over TP instead of running all of them on every TP rank. "
+                "Does not support context parallelism (CP > 1). HF-to-torch_dist conversion and mbridge export "
+                "assume the replicated module; torch_dist checkpoints load either way."
+            ),
+        ),
+    ] = False
     true_on_policy_mode: A[bool, Arg(help="Whether to enable true-on-policy mode.")] = False
     train_env_vars: A[
         Any,
