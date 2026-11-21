@@ -3,14 +3,14 @@
 sglang-torchtpu's true on-policy mode (SGLANG_TPU_ENABLE_TRUE_ON_POLICY=1) serves every linear, RMSNorm, the attention
 and the returned log-probs with programs whose bytes for a row do not depend on the batch
 (sglang_tpu.rl.true_on_policy).
-Here each block of a dense Qwen3 or Qwen3.5-family model (Qwen3.5, Qwen3.6, Qwen3.8), the final norm and the lm_head
-call the same ops in the engine's order, so the trainer's log-probs equal the rollout's bit for bit. Engine habits:
+Here each block of a Qwen3 or Qwen3.5-family model (Qwen3.5, Qwen3.6, Qwen3.8), dense or MoE, the final norm and the
+lm_head call the same ops in the engine's order, so the trainer's log-probs equal the rollout's bit for bit. Engine habits:
 - the residual add happens inside the next norm's kernel (Qwen3 normalizes the unrounded fp32 sum, Qwen3.5 rounds it
   to bf16 first); blocks pass [hidden | residual] (2 x dim) to each other instead of their bf16 sum;
 - RoPE is sglang's RotaryEmbedding, with its cos/sin table built on the device as the engine builds it at load;
 - every parameter is read in the serving dtype, bf16, including the ones a checkpoint stores in fp32.
 The backward is the gradient of the same math (plain torch, splash attention for the attention, the trainer's own
-kernel for the gated delta net); it does not need to be bitwise.
+kernels for the gated delta net and the MoE); it does not need to be bitwise.
 
 TPU only: it imports sglang_tpu, torch_tpu and jax.
 """
@@ -22,10 +22,12 @@ import torch.nn.functional as F
 from sglang.srt.layers.rotary_embedding import get_rope
 from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
 from sglang_tpu.rl import true_on_policy as ops
+from torchtitan.models.common.activation import Softmax
 from torchtitan.models.common.attention.attention import GQAttention, QKVLinear
 from torchtitan.models.common.attention.gdn import GDN
 from torchtitan.models.common.moe import MoE
 from torchtitan.models.qwen3_5.model import Qwen35Attention
+from torchtitan.models.qwen3_5.moe import SigmoidGatedFeedForward
 
 from miles.backends.torchtitan_utils import packed_sequences
 from miles.kernels.tpu.flash_attention import _backward_op as _splash_backward
@@ -34,10 +36,12 @@ from miles.kernels.tpu.flash_attention import _forward_op as _splash_forward
 # Sequence slots of the packed attention, a static count: a micro-batch's samples and its padding tail must fit
 # (check_microbatch). Arbitrary; each slot adds a page-table row and one scratch KV page to every attention call.
 MAX_SEQUENCES = 128
+# The epsilon of the engine's top-k renormalization (sglang's fused_topk_torch_native)
+_ROUTE_NORM_EPSILON = 1e-20
 
 
 def install(model: torch.nn.Module) -> None:
-    """Route a dense Qwen3 or Qwen3.5-family forward through the engine's ops (before its blocks are compiled)."""
+    """Route a Qwen3 or Qwen3.5-family forward through the engine's ops (before its blocks are compiled)."""
     blocks = list(model.get_submodule("layers").children())
     _check_supported(blocks)
     # Qwen3.5's norms scale by 1 + weight and round the residual sum first (the engine's GemmaRMSNorm)
@@ -85,7 +89,7 @@ def _check_supported(blocks) -> None:
     for block in blocks:
         attention = block.attention
         if isinstance(block.feed_forward, MoE):
-            raise ValueError("true on-policy training on TPU covers dense feed-forward blocks, not MoE")
+            _check_moe(block.feed_forward)
         if isinstance(attention, GDN):
             continue
         if isinstance(attention, GQAttention):
@@ -96,6 +100,15 @@ def _check_supported(blocks) -> None:
             raise ValueError(f"true on-policy training on TPU does not cover {type(attention).__name__}")
         if attention.scaling is not None and abs(attention.scaling - attention.head_dim**-0.5) > 1e-9:
             raise ValueError("the engine's attention scales by head_dim**-0.5")
+
+
+def _check_moe(moe) -> None:
+    router = moe.router
+    # the engine's TopK for Qwen: softmax scores, the top-k renormalized to sum to 1, no scaling
+    if not (isinstance(router.score_func, Softmax) and router.route_norm and router.route_scale == 1.0):
+        raise ValueError("true on-policy MoE covers softmax top-k routing, renormalized, without scaling")
+    if moe.shared_experts is not None and not isinstance(moe.shared_experts, SigmoidGatedFeedForward):
+        raise ValueError("true on-policy MoE covers no shared expert or Qwen3.5's sigmoid-gated one")
 
 
 def _engine_rope(attention) -> RotaryEmbedding:
@@ -158,7 +171,10 @@ def _block_forward(
         h, residual = ops.rms_norm(*flat.split(dim, dim=-1), norm.weight, _eps(norm), gemma=gemma)
     attn = attend(h, attention_metadata, positions)
     h, residual = ops.rms_norm(attn, residual, ffn_norm.weight, _eps(ffn_norm), gemma=gemma)
-    ffn = _feed_forward(block.feed_forward, h)
+    if isinstance(block.feed_forward, MoE):
+        ffn = _moe(block.feed_forward, h, padding_mask, aux_loss_denominator)
+    else:
+        ffn = _feed_forward(block.feed_forward, h)
     return torch.cat([ffn, residual], dim=-1).reshape(*x.shape[:-1], 2 * dim)
 
 
@@ -236,6 +252,39 @@ def _feed_forward(feed_forward, x):
     w13 = feed_forward.w13.weight  # [2, F, D]: gate, then up
     gate, up = ops.matmul(x, w13.reshape(-1, w13.shape[-1])).view(x.shape[0], 2, -1).unbind(-2)
     return ops.matmul(F.silu(gate) * up, feed_forward.w2.weight)
+
+
+def _moe(moe, x, padding_mask, aux_loss_denominator):
+    """The engine's MoE value (its router math, its fused experts kernel, its shared expert); torchtitan's MoE carries
+    the gradient."""
+    with torch.no_grad():
+        engine = _engine_routed_experts(moe, x)
+        if moe.shared_experts is not None:
+            engine = engine + _engine_shared_expert(moe.shared_experts, x)  # the engine adds it to the routed output
+    own = moe(x, padding_mask_T=padding_mask, aux_loss_denominator=aux_loss_denominator)
+    return engine + (own - own.detach())
+
+
+def _engine_routed_experts(moe, x):
+    router, experts = moe.router, moe.routed_experts
+    scores = ops.matmul(x, router.gate.weight).float().softmax(dim=-1)
+    # the engine's stable top-k: highest score first, ties to the lowest expert id; the kernel combines in this order
+    scores, expert_ids = torch.sort(scores, dim=-1, descending=True, stable=True)
+    scores, expert_ids = scores[:, : router.top_k], expert_ids[:, : router.top_k]
+    weights = scores / (scores.sum(dim=-1, keepdim=True, dtype=torch.float32) + _ROUTE_NORM_EPSILON)
+    w13, w2 = experts.w13.weight, experts.w2.weight  # [E, 2, F, D] (gate, up) and [E, D, F]
+    return ops.moe_experts(
+        x,
+        w13.flatten(1, 2).transpose(1, 2),  # [E, D, 2F]: gate || up, as the engine lays them out
+        w2.transpose(1, 2),  # [E, F, D]
+        weights.to(x.dtype),
+        expert_ids.to(torch.int32),
+    )
+
+
+def _engine_shared_expert(shared, x):
+    out = _feed_forward(shared, x)
+    return torch.sigmoid(ops.matmul(x, shared.gate.weight)) * out
 
 
 def _final_norm_forward(norm, gemma, x):
