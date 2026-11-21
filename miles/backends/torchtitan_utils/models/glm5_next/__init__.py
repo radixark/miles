@@ -20,6 +20,7 @@ from miles.backends.torchtitan_utils.models.glm5_next.layers import (
     ShortConv,
 )
 from miles.backends.torchtitan_utils.models.glm5_next.model import Glm5NextBlock, Glm5NextModel
+from miles.utils.hf_utils.config import hf_text_config
 
 __all__ = ["build_model_config"]
 
@@ -66,10 +67,7 @@ class _Architecture:
 
     @classmethod
     def from_hf_config(cls, hf_config) -> "_Architecture":
-        text = (
-            getattr(hf_config, "text_config", None)
-            or hf_config  # config-access-exempt: only multimodal checkpoints nest the decoder under text_config
-        )
+        text = hf_text_config(hf_config)
         _require_supported(text)
         linear = (
             getattr(text, "linear_attn_config", None)
