@@ -460,6 +460,7 @@ def build_trainer_config(
         checkpoint_model=model,
         hf_assets_path=hf_assets_path,
         compile_backend=compile_backend,
+        true_on_policy=args.true_on_policy_mode,
         output_dir=os.path.join(
             args.backend.save or tempfile.mkdtemp(prefix="miles-torchtitan-"), "torchtitan", dump_subdir
         ),
