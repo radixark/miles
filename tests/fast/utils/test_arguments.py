@@ -2204,6 +2204,21 @@ class TestMtpTrainingValidation:
     def test_mtp_training_keeps_the_layers(self):
         assert self._validate(["--enable-mtp-training", "--mtp-num-layers", "1"]).mtp_num_layers == 1
 
+    def test_gpu_delta_admits_declared_mtp_layers_only_when_frozen(self, tmp_path):
+        launch = [
+            "--update-weight-transfer-mode",
+            "gpu-delta",
+            "--hf-checkpoint",
+            str(tmp_path),
+            "--update-weight-disk-dir",
+            str(tmp_path / "updates"),
+            "--mtp-num-layers",
+            "1",
+        ]
+        assert self._validate(launch).mtp_num_layers is None
+        with pytest.raises(AssertionError, match="static receiver MTP draft"):
+            self._validate([*launch, "--enable-mtp-training"])
+
     def test_mtp_training_needs_layers_to_train(self):
         with pytest.raises(AssertionError, match="needs --mtp-num-layers > 0"):
             self._validate(["--enable-mtp-training"])

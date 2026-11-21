@@ -13,6 +13,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 
@@ -231,19 +232,44 @@ def test_source_bounds_empty_plans_and_missing_destinations(planner):
     assert empty.bind_launch(None, None, None) is None
 
 
-def test_cpu_views_share_one_mirror_and_require_fresh_paused_binding(planner):
+def test_cpu_views_share_one_mirror_and_require_fresh_paused_binding(planner, monkeypatch):
     from miles.backends.sglang_utils.gpu_delta.bindings import TensorBinding
+    from miles.backends.sglang_utils.gpu_delta.byte_views import DestinationSegment
+    from miles.backends.sglang_utils.gpu_delta.receiver import _BindingTable
 
+    monkeypatch.setitem(sys.modules, "miles.utils.gpu_delta.apply", planner)
     storage = torch.zeros(96, dtype=torch.uint8)
-    views = (storage[4:20], storage.as_strided((2, 8), (16, 1), 40))
-    outputs = [
-        (TensorBinding(str(index), "U8", (16,), [[0, 16]], (view,), destinations=(view,)), index * 16, 16)
-        for index, view in enumerate(views)
+    prefix = torch.zeros(3, dtype=torch.uint8)
+    bindings = [
+        TensorBinding("prefix", "U8", (3,), [[0, 3]], (prefix,), destinations=(prefix,)),
+        TensorBinding(
+            "segments",
+            "U8",
+            (32,),
+            [[0, 32]],
+            (storage,),
+            segments=(
+                DestinationSegment(((0, 16),), (storage[4:20],)),
+                DestinationSegment(((16, 32),), (storage.as_strided((2, 8), (16, 1), 40),)),
+            ),
+        ),
     ]
-    group = planner.plan_apply(outputs)
+    table = _BindingTable(
+        SimpleNamespace(bindings=bindings, derived=[], computed=[]),
+        {"prefix": (0, {"nbytes": 3}), "segments": (1, {"nbytes": 32})},
+    )
+    (full_plan,) = table.plan_batches([np.array([0, 1])], ())
+    offsets, size, full = full_plan
+    assert offsets.tolist() == [[0, 1], [0, 16]]
+    assert size == 48 and full.sources == [0, 16, 32]
+    assert len(full.cpu_storages) == 2
+    # Dropping the prefix moves both segments without changing their physical CPU destinations.
+    ((offsets, size, group),) = table.plan_batches([np.array([1])], [full_plan])
+    assert offsets.tolist() == [[1], [0]] and size == 32
     group.prepare_metadata(0)
     assert len(group.cpu_storages) == 1
     key = next(iter(group.cpu_storages))
+    assert group.cpu_storages[key] is full.cpu_storages[key]
     assert group.cpu_storages[key].data_ptr() == storage.data_ptr()
     with pytest.raises(ValueError, match="paused CUDA mirror"):
         list(group.pointer_rows(4096))

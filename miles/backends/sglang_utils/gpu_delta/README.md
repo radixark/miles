@@ -367,9 +367,12 @@ engine ID, and an older build's cohorts, which hold no lock).
 
 Compressed tensors are grouped by active model layer, with separate embedding,
 head and remaining standalone groups first. Empty groups are omitted. Each batch
-must fit HBM; there is no intra-layer streaming. Active membership, normalized
-views and canonical offsets are cached, while frame lengths, arena offsets and
-omitted ranges are rebuilt from each publication.
+must fit HBM; there is no intra-layer streaming. The first publication prepares
+affine geometry for every local matrix and physical small-mask destination,
+including tensors without frames.
+Later publications reuse exact active batches and repack the offsets and pointer
+tables of batches whose membership changes. Frame lengths, arena offsets and
+omitted ranges come from the current publication.
 
 Preparation builds one numeric frame table, validates workspace/output geometry,
 uploads small metadata/XOR masks, prepares derived values and prebinds launches of the
@@ -396,9 +399,9 @@ attempts to drain both streams. Foreign tensor aliases retain allocations and re
 producer/consumer streams are fenced before free in their original CUDA context.
 The ordinary Torch allocator and its settings remain unchanged.
 
-Prepared XOR kernels update existing buffers during pause. The canonical
-plan digest is qualified once, but fresh frames and native decode status are
-validated every update. Before apply, identity checks cover every live parameter
+Prepared XOR kernels update existing buffers during pause. The receiver qualifies the canonical
+plan digest once and validates fresh frames and native decode status every update.
+Before apply, identity checks cover every live parameter
 slot and consumer object, with tensor geometry deduplicated at admission. Pointer
 identity cannot detect unrelated same-buffer writes by another updater.
 

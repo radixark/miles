@@ -750,36 +750,61 @@ class ByteApplyGroup:
         return partial(self._launch_cpu_bound if self.cpu_targets else _launch_prebound, calls)
 
 
-def plan_apply(outputs):
-    """One affine batch with runtime contracts, without model names."""
-    groups, cpu_storages = {}, {}
-    for binding, offset, size in outputs:
-        if not binding.destinations:
+def _piece(source, source_offset, target, cpu_storage_views):
+    ts, tt = _normalize(target.shape, target.stride())
+    contract = (*source, ts, tt)
+    cpu = None
+    if target.device.type == "cuda":
+        pointer = target.data_ptr()
+    elif target.device.type == "cpu":
+        storage = target.untyped_storage()
+        key = target.device, storage.data_ptr()
+        byte_offset = target.data_ptr() - key[1]
+        if key not in cpu_storage_views:
+            cpu_storage_views[key] = torch.empty(0, dtype=torch.uint8, device="cpu").set_(
+                storage, 0, (storage.nbytes(),), (1,)
+            )
+        cpu = key, byte_offset, cpu_storage_views[key]
+        # Only the offset alignment is known until the paused CUDA mirror is bound.
+        pointer = 16 + byte_offset
+    else:
+        raise ValueError(f"unsupported GPU delta destination device: {target.device}")
+    return contract, source_offset, pointer, cpu
+
+
+def apply_geometry(views, size, cpu_storage_views):
+    """Resolve matrix destinations relative to one canonical decoded tensor, shared by all its segments."""
+    canonical = torch.empty(size, dtype=torch.uint8, device="meta")
+    pieces = []
+    for view in views:
+        if not view.destinations:
             raise ValueError("GPU delta apply requires affine byte destinations")
-        canonical = torch.empty(size, dtype=torch.uint8, device="meta")
-        source = binding.selected_bytes(canonical)
-        ss, st = _normalize(source.shape, source.stride())
-        for target in binding.destinations:
-            ts, tt = _normalize(target.shape, target.stride())
-            contract = (math.prod(ss), ss, st, ts, tt)
+        selected = view.selected_bytes(canonical)
+        shape, stride = _normalize(selected.shape, selected.stride())
+        source = math.prod(shape), shape, stride
+        offset = selected.storage_offset()
+        pieces.extend(_piece(source, offset, target, cpu_storage_views) for target in view.destinations)
+    return tuple(pieces)
+
+
+def raw_geometry(byte_target, cpu_storage_views):
+    """Raw masks have already been selected and widened to the served dtype when they reach apply."""
+    size = byte_target.numel()
+    return (_piece((size, (size,), (1,)), 0, byte_target, cpu_storage_views),)
+
+
+def group_apply(placed):
+    """Group cached pieces by kernel contract at this batch's decoded offsets."""
+    groups, cpu_storages = {}, {}
+    for pieces, offset in placed:
+        for contract, source_offset, pointer, cpu in pieces:
             sources, targets, cpu_targets = groups.setdefault(contract, ([], [], []))
-            sources.append(offset + source.storage_offset())
-            if target.device.type == "cpu":
-                storage = target.untyped_storage()
-                key = target.device, storage.data_ptr()
-                byte_offset = target.data_ptr() - storage.data_ptr()
-                if key not in cpu_storages:
-                    cpu_storages[key] = torch.empty(0, dtype=torch.uint8, device="cpu").set_(
-                        storage, 0, (storage.nbytes(),), (1,)
-                    )
+            if cpu is not None:
+                key, byte_offset, storage = cpu
+                cpu_storages[key] = storage
                 cpu_targets.append((len(targets), key, byte_offset))
-                # Mirrors have aligned CUDA bases. This placeholder preserves
-                # offset alignment for preparation but cannot be launched.
-                targets.append(16 + byte_offset)
-            elif target.device.type == "cuda":
-                targets.append(target.data_ptr())
-            else:
-                raise ValueError(f"unsupported GPU delta destination device: {target.device}")
+            sources.append(offset + source_offset)
+            targets.append(pointer)
     if not groups:
         return None
     sources, targets, contracts, cpu_targets = [], [], [], []
@@ -791,3 +816,9 @@ def plan_apply(outputs):
     return ByteApplyGroup(
         sources, targets, tuple(contracts), cpu_targets=tuple(cpu_targets), cpu_storages=cpu_storages
     )
+
+
+def plan_apply(outputs):
+    """Plan an uncached batch from individual binding views."""
+    cpu_storage_views = {}
+    return group_apply((apply_geometry((view,), size, cpu_storage_views), offset) for view, offset, size in outputs)

@@ -1477,8 +1477,6 @@ def miles_validate_args(args):
         assert args.prefill_num_servers is None, "P2P weight transfer mode has not been tested when PD is enabled."
         assert args.lora_rank <= 0, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
 
-    validate_gpu_delta_args(args)
-
     if args.update_weight_transfer_mode == "disk-delta":
         assert not args.colocate, (
             "Disk-delta weight transfer mode is not compatible with --colocate. Colocate transfers "
@@ -1833,6 +1831,7 @@ def miles_validate_args(args):
                 "output layer and hidden states, so the MTP loss also trains the policy"
             )
     resolve_mtp_num_layers(args)
+    validate_gpu_delta_args(args)
 
     if args.use_rollout_routing_replay:
         args.use_routing_replay = True

@@ -343,16 +343,21 @@ class TestReceiverPreparation(unittest.TestCase):
         table = receiver._BindingTable(SimpleNamespace(bindings=bindings, derived=[], computed=[]), entries)
         rows = np.arange(len(bindings))
         backend = SimpleNamespace(batch_plan=None, layers_per_batch=1)
-        # This test checks grouping/cache ownership, not Triton launch plans.
-        with patch.dict(
-            sys.modules,
-            {"miles.utils.gpu_delta.apply": SimpleNamespace(plan_apply=lambda outputs: None)},
-        ):
-            previous = receiver._plan_layers(backend, table, rows)
-            self.assertIs(receiver._plan_layers(backend, table, rows), previous)
+        # Keep Triton out of this grouping test; native tests exercise the launched plans.
+        geometry = Mock(return_value=())
+        planner = SimpleNamespace(apply_geometry=geometry, group_apply=list, raw_geometry=Mock())
+        with patch.dict(sys.modules, {"miles.utils.gpu_delta.apply": planner}):
+            self.assertEqual(receiver._plan_layers(backend, table, rows[:0]), [])
+            self.assertEqual(geometry.call_count, len(rows))
             reduced = receiver._plan_layers(backend, table, rows[1:])
-            self.assertIsNot(reduced, previous)
-            self.assertEqual(reduced[3][0][0, 0], 1)
+            self.assertEqual(reduced[3][0].tolist(), [[1], [0]])
+            self.assertEqual(geometry.call_count, len(rows))
+            full = receiver._plan_layers(backend, table, rows)
+            self.assertEqual(full[3][0].tolist(), [[0, 1], [0, 16]])
+            for index, (before, after) in enumerate(zip(reduced, full, strict=True)):
+                self.assertEqual(before is after, index != 3)
+            self.assertIs(receiver._plan_layers(backend, table, rows), full)
+            self.assertEqual(geometry.call_count, len(rows))
             for count, expected in ((1, [[0], [1], [2], [3]]), (2, [[0, 1], [2, 3]])):
                 backend = SimpleNamespace(batch_plan=None, layers_per_batch=count)
                 grouped = receiver._plan_layers(backend, table, rows)
@@ -362,6 +367,7 @@ class TestReceiverPreparation(unittest.TestCase):
                 )
                 self.assertIs(receiver._plan_layers(backend, table, rows), grouped)
             self.assertEqual(receiver._plan_layers(backend, table, rows[:0]), [])
+            self.assertEqual(geometry.call_count, len(rows))
 
     def test_binding_table_selects_active_rows_and_derived_sources(self):
         bindings = [

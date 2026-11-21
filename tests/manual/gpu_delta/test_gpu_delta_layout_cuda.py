@@ -21,11 +21,21 @@ from miles.utils.gpu_delta.publication import canonical_encoding
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 
 
+def _raw_backend(device, items):
+    from miles.backends.sglang_utils.gpu_delta.receiver import _BindingTable
+
+    layout = SimpleNamespace(bindings=[binding for binding, _ in items], derived=[], computed=[])
+    entries = {binding.name: (i, {"nbytes": mask.numel()}) for i, (binding, mask) in enumerate(items)}
+    table = _BindingTable(layout, entries)
+    assert table.plan_batches([], ()) == []
+    return SimpleNamespace(device=device, binding_table=table, raw_plan=None)
+
+
 @pytest.mark.parametrize("kind", ["ue8m0", "bf16-norm"])
 def test_converted_small_xor_uses_prebound_kernel_and_is_exactly_reversible(kind):
     from unittest.mock import patch
 
-    from miles.backends.sglang_utils.gpu_delta.bindings import TensorBinding, prepare_raw_xor
+    from miles.backends.sglang_utils.gpu_delta.bindings import TensorBinding, _direct_binding, prepare_raw_xor
     from miles.backends.sglang_utils.gpu_delta.receiver import PreparedDelta
     from miles.utils.gpu_delta import apply
 
@@ -60,21 +70,34 @@ def test_converted_small_xor_uses_prebound_kernel_and_is_exactly_reversible(kind
         old, new = old.view(torch.uint8), new.view(torch.uint8)
     original = target.clone()
     mask = old ^ new
-    backend = SimpleNamespace(device=device, raw_plan=None)
-    first_group = None
-    for wanted in (expected, original):
+    host = torch.tensor([1, 2], dtype=torch.uint8)
+    host_binding = _direct_binding("host", {"dtype": "U8", "shape": [2], "encoding": "xor_raw_bytes"}, host)
+    host_mask = torch.tensor([3, 5], dtype=torch.uint8)
+    backend = _raw_backend(device, [(binding, mask), (host_binding, host_mask)])
+    assert set(backend.binding_table.raw_pieces) == {id(target), id(host)}
+    for items, wanted, host_expected in (
+        ([(binding, mask)], expected, [1, 2]),
+        ([(host_binding, host_mask), (binding, mask)], original, [2, 7]),
+        ([(host_binding, host_mask)], original, [1, 2]),
+    ):
         prepared = PreparedDelta(backend)
+        prepared.stream = torch.cuda.current_stream()
+        prepared.timings["raw_h2d_bytes"] = 0
         prepared.error = torch.zeros(1, dtype=torch.int32, device=device)
         before = target.clone()
-        updates = prepare_raw_xor([(binding, mask)])
-        prepared._prepare_raw_apply(updates)
+        include_host = any(item[0] is host_binding for item in items)
+        updates = prepare_raw_xor(items)
+        with patch.object(apply, "raw_geometry", side_effect=AssertionError("raw layout was re-planned")):
+            prepared._prepare_raw_apply(updates)
         assert torch.equal(target, before)
-        if first_group is None:
-            first_group = backend.raw_plan[1]
-        else:
-            assert backend.raw_plan[1] is first_group
+        assert bool(prepared.cpu_storages) == include_host
+        if include_host:
+            prepared._bind_cpu_mirrors()
         with patch.object(apply, "_compiled", side_effect=AssertionError("paused compilation")):
             prepared.raw_apply()
+        if include_host:
+            prepared._commit_cpu()
+        assert host.tolist() == host_expected
         assert torch.equal(target.view(torch.uint8), wanted.view(torch.uint8))
     if kind == "ue8m0":
         assert target.flatten().view(torch.int32)[0].item() == 0x00400000
@@ -237,7 +260,7 @@ def test_expert_delta_matches_full_loader_layout_and_scale_refresh(independent_m
     for target, original in zip(update.destinations, before, strict=False):
         torch.testing.assert_close(target, original, rtol=0, atol=0)
     device = torch.device("cuda", torch.cuda.current_device())
-    prepared = PreparedDelta(SimpleNamespace(device=device, raw_plan=None))
+    prepared = PreparedDelta(_raw_backend(device, raw_items))
     prepared.error = torch.zeros(1, dtype=torch.int32, device=device)
     prepared._prepare_raw_apply(raw_updates)
     prepared.raw_apply()

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-from miles.backends.sglang_utils.gpu_delta.bindings import REMOTE_EXPERT, TensorBinding, prepare_raw_xor
+from miles.backends.sglang_utils.gpu_delta.bindings import REMOTE_EXPERT, prepare_raw_xor
 from miles.backends.sglang_utils.gpu_delta.byte_views import _byte_view
 from miles.backends.sglang_utils.gpu_delta.checkpoint import read_canonical_checkpoint
 from miles.backends.sglang_utils.gpu_delta.derived import prepare_updates
@@ -90,6 +90,7 @@ class _BindingTable:
         self.ordinals = np.asarray([entries[b.name][0] for b in self.bindings], dtype=np.int64)
         self.nbytes = np.asarray([entries[b.name][1]["nbytes"] for b in self.bindings], dtype=np.int64)
         self.raw = np.asarray([b.is_raw for b in self.bindings], dtype=bool)
+        self.apply_pieces = None
         non_layers = {"embed_tokens": [], "lm_head": [], "standalone": []}
         layers, storage_rows = {}, {}
         for row, binding in enumerate(self.bindings):
@@ -115,6 +116,42 @@ class _BindingTable:
         ]
         self.image_rows, self.image_indices = np.asarray(pairs, np.int64).reshape(-1, 2).T
 
+    def plan_batches(self, groups, previous):
+        from miles.utils.gpu_delta.apply import apply_geometry, group_apply, raw_geometry
+
+        # Even an empty first update admits the whole local catalog. Segments of one
+        # binding share its canonical bytes. CPU aliases share a single storage view.
+        if self.apply_pieces is None:
+            cpu_storages = {}
+            self.raw_pieces = {
+                id(binding.storage[0]): raw_geometry(_byte_view(binding.storage[0]), cpu_storages)
+                for binding in self.bindings
+                if binding.is_raw
+            }
+            self.apply_pieces = tuple(
+                () if binding.is_raw else apply_geometry(binding.apply_bindings(), size, cpu_storages)
+                for binding, size in zip(self.bindings, self.nbytes.tolist(), strict=True)
+            )
+
+        # Membership churn can move later batches. Reuse an identical batch by its
+        # canonical row sequence, retaining only plans used by this publication.
+        cached = {plan[0][0].tobytes(): plan for plan in previous}
+        plans = []
+        for rows in groups:
+            ordinals = self.ordinals[rows]
+            plan = cached.get(ordinals.tobytes())
+            if plan is None:
+                sizes = self.nbytes[rows]
+                aligned = (sizes + 15) // 16 * 16
+                offsets = np.cumsum(aligned) - aligned
+                group = group_apply(
+                    (self.apply_pieces[row], offset)
+                    for row, offset in zip(rows.tolist(), offsets.tolist(), strict=True)
+                )
+                plan = np.stack((ordinals, offsets)), int(offsets[-1] + sizes[-1]), group
+            plans.append(plan)
+        return plans
+
     def select(self, tensors):
         local = tensors[self.ordinals]
         matrices = (local["frame_count"] != 0) & ~self.raw
@@ -136,8 +173,6 @@ def _plan_layers(backend, table, rows):
     """Cache membership, canonical offsets and apply geometry, never wire frames."""
     key = rows.tobytes()
     if backend.batch_plan is None or backend.batch_plan[0] != key:
-        from miles.utils.gpu_delta.apply import plan_apply
-
         active = np.zeros(len(table.bindings), dtype=bool)
         active[rows] = True
         groups = [group[active[group]] for group in table.non_layers]
@@ -149,22 +184,8 @@ def _plan_layers(backend, table, rows):
             np.concatenate(model_layers[start : start + layers_per_batch])
             for start in range(0, len(model_layers), layers_per_batch)
         )
-        plans = []
-        for group in groups:
-            outputs, size = [], 0
-            for row in group:
-                offset = (size + 15) // 16 * 16
-                binding, nbytes = table.bindings[row], int(table.nbytes[row])
-                outputs.append((binding, offset, nbytes))
-                size = offset + nbytes
-            # Segment views share one decoded canonical payload. Only the apply
-            # plan expands them; DE membership and output offsets stay unique.
-            apply_outputs = [
-                (view, offset, nbytes) for binding, offset, nbytes in outputs for view in binding.apply_bindings()
-            ]
-            tensor_offsets = np.stack((table.ordinals[group], [offset for _, offset, _ in outputs]))
-            plans.append((tensor_offsets, size, plan_apply(apply_outputs)))
-        backend.batch_plan = (key, plans)
+        previous = backend.batch_plan[1] if backend.batch_plan is not None else ()
+        backend.batch_plan = key, table.plan_batches(groups, previous)
     return backend.batch_plan[1]
 
 
@@ -441,23 +462,18 @@ class PreparedDelta:
         """Bind the small-mask XOR launch completely before the scheduler pause."""
         if not updates:
             return False
-        from miles.utils.gpu_delta.apply import plan_apply
+        from miles.utils.gpu_delta.apply import group_apply
 
-        key = tuple(
-            (target.device, target.data_ptr(), tuple(target.shape), tuple(target.stride()), target.dtype)
-            for target, _, _ in updates
-        )
+        # prepare_raw_xor may reorder by conversion dtype. Preserve the physical mask order.
+        key = tuple(id(target) for target, _, _ in updates)
         cached = self.backend.raw_plan
         if cached is None or cached[0] != key:
-            outputs, offset = [], 0
+            pieces = self.backend.binding_table.raw_pieces
+            placed, offset = [], 0
             for target, mask, _ in updates:
-                size = mask.numel()
-                binding = TensorBinding(
-                    "small-mask", "U8", (size,), [[0, size]], (target,), destinations=(_byte_view(target),)
-                )
-                outputs.append((binding, offset, size))
-                offset += size
-            group = plan_apply(outputs)
+                placed.append((pieces[id(target)], offset))
+                offset += mask.numel()
+            group = group_apply(placed)
             self.backend.raw_plan = key, group
         else:
             group = cached[1]
