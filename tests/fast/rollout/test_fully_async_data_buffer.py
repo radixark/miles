@@ -108,6 +108,7 @@ def _make_args() -> Namespace:
             rollout_batch_size=1,
             rollout_seed=0,
             use_output_store=False,
+            use_partial_groups_on_abort=False,
         )
     )
 
@@ -167,6 +168,7 @@ def _make_single_policy_args(**overrides) -> Namespace:
         rollout_batch_size=1,
         rollout_seed=0,
         use_output_store=False,
+        use_partial_groups_on_abort=False,
     )
     defaults.update(overrides)
     return Namespace(**defaults)

@@ -188,6 +188,39 @@ class TestLegacyRolloutSampleOwnership:
         assert event.source_sample_indices == [0]
         assert event.reason == "dynamic_filter"
 
+    async def test_a_partial_group_records_the_aborted_source_it_leaves_out(self, monkeypatch, tmp_path: Path) -> None:
+        """The legacy loop trains a partial group and resolves only its aborted source."""
+        group = [make_sample(index=index, reward=1.0) for index in range(4)]
+        group[3].status = Sample.Status.ABORTED
+        args = make_args(
+            enable_sample_ownership_checker=True,
+            use_partial_groups_on_abort=True,
+            rollout_batch_size=1,
+            over_sampling_batch_size=1,
+            n_samples_per_prompt=4,
+            dynamic_sampling_filter_path=None,
+            rollout_sample_filter_path=None,
+            rollout_all_samples_process_path=None,
+            partial_rollout=False,
+            reward_key=None,
+            rollout_global_dataset=True,
+        )
+        state = _GenerateState([group])
+        monkeypatch.setattr(sglang_rollout, "GenerateState", lambda _args: state)
+        monkeypatch.setattr(sglang_rollout, "load_function", lambda _path: None)
+        monkeypatch.setattr(sglang_rollout.dumper_utils, "configure_sglang", _no_op)
+        monkeypatch.setattr(sglang_rollout, "abort", _empty_list)
+        monkeypatch.setattr(sglang_rollout, "recompute_samples_rollout_logprobs_via_prefill", _no_op)
+        set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="rollout_executor")))
+
+        output, _ = await sglang_rollout.generate_rollout_async(args, 4, lambda count: [None] * count)
+
+        assert [sample.index for sample in output.samples[0]] == [0, 1, 2]
+        assert output.metrics["rollout/aborted_trajectories_dropped"] == 1
+        [event] = _drop_events(tmp_path)
+        assert event.source_sample_indices == [3]
+        assert event.reason == "aborted"
+
     async def test_sample_filter_records_removed_sources(self, monkeypatch, tmp_path: Path) -> None:
         """The legacy final sample filter resolves every group it removes in place."""
         groups = [[make_sample(index=0, reward=0.0)], [make_sample(index=1, reward=1.0)]]

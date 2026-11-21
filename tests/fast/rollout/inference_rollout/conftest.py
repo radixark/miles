@@ -21,6 +21,7 @@ class FakeGenerateState(GenerateState):
             partial_rollout=False,
             mask_offpolicy_in_partial_rollout=False,
             group_rm=True,
+            use_partial_groups_on_abort=False,
             **sglang_router_args("round_robin"),
             sglang=make_sglang_config(enable_deterministic_inference=False),
         )

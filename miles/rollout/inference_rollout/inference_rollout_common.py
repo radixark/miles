@@ -18,6 +18,7 @@ from miles.rollout.base_types import (
     RolloutFnTrainOutput,
     compute_kv_cache_namespace,
 )
+from miles.rollout.filter_hub.common_filters import drop_aborted_trajectories
 from miles.rollout.generate_hub.single_turn import generate
 from miles.rollout.generate_utils.generate_endpoint_utils import apply_sample_max_response_len, router_routes_by_key
 from miles.rollout.inference_rollout.compatibility import load_generate_function
@@ -194,7 +195,8 @@ async def generate_and_rm_group(
             return group
 
         if args.group_rm:
-            await batched_async_rm(args, group, inplace_set_reward_field=True)
+            scored, _ = drop_aborted_trajectories(args, group)
+            await batched_async_rm(args, scored, inplace_set_reward_field=True)
     except BaseException:
         # cancel siblings and let them settle: the group returns only after every
         # sample task is done, so no orphan generation or in-flight credit outlives it

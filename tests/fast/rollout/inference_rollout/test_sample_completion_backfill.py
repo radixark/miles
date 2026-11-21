@@ -218,6 +218,29 @@ async def test_aborted_group_is_classified_before_missing_reward(monkeypatch):
     assert "rollout/dynamic_filter/drop_group_has_missing_reward" not in output.metrics
 
 
+async def test_a_partial_group_trains_its_completed_samples(monkeypatch):
+    from tests.fast.utils.output_store.test_plan import ref
+
+    from miles.utils.output_store import dropped
+    from miles.utils.output_store.dropped import take_dropped_refs
+    from miles.utils.output_store.plan import StorePlan
+
+    monkeypatch.setattr(dropped, "_dropped", {})
+    harness = Harness(monkeypatch, make_args(rollout_batch_size=1, use_partial_groups_on_abort=True))
+    task = harness.run()
+    await asyncio.sleep(0)
+
+    aborted = harness.submitted_groups[0][-1]
+    aborted.status = Sample.Status.ABORTED
+    aborted.rollout_store_plan = StorePlan(fields={}, owned_refs=(ref("aborted"),))
+    harness.finish_group(0)
+    output, _ = await task
+
+    assert [[sample.index for sample in group] for group in output.samples] == [[10, 11, 12]]
+    assert output.metrics["rollout/aborted_trajectories_dropped"] == 1
+    assert list(take_dropped_refs()) == ["aborted"]
+
+
 async def test_backfill_submits_replacement_before_the_group_returns(monkeypatch):
     harness = Harness(monkeypatch, make_args(rollout_batch_size=2, rollout_submission_granularity="sample"))
     task = harness.run()
