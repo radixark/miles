@@ -492,6 +492,21 @@ class KimiDeltaAttention(LinearAttention):
         )
 
 
+def tp_region_in(x: torch.Tensor, sequence_parallel: bool, tp_group) -> torch.Tensor:
+    """Into a head-sharded region: all-gather the sequence (SP) or copy, with the backward reduce-scattering
+    (SP) or all-reducing the per-rank partial input gradients."""
+    if sequence_parallel:
+        return gather_from_sequence_parallel_region(x, tensor_parallel_output_grad=True, group=tp_group)
+    return copy_to_tensor_model_parallel_region(x, group=tp_group)
+
+
+def tp_region_out(x: torch.Tensor, sequence_parallel: bool, tp_group) -> torch.Tensor:
+    """Out of a head-sharded region: reduce-scatter (SP) or all-reduce the row-parallel partial sums."""
+    if sequence_parallel:
+        return reduce_scatter_to_sequence_parallel_region(x, group=tp_group)
+    return reduce_from_tensor_model_parallel_region(x, group=tp_group)
+
+
 class LinearAttentionLayer(MegatronModule):
     """``self_attention`` drop-in. ``allgather_cp``: the data pipeline already hands each CP rank a
     contiguous shard (``--allgather-cp``), so no zigzag relayout."""
@@ -536,11 +551,7 @@ class LinearAttentionLayer(MegatronModule):
         sequence_len_offset=None,
         **kwargs,
     ) -> tuple[torch.Tensor, None]:
-        x = self.input_layernorm(hidden_states)
-        if self.sequence_parallel:
-            x = gather_from_sequence_parallel_region(x, tensor_parallel_output_grad=True, group=self.tp_group)
-        else:
-            x = copy_to_tensor_model_parallel_region(x, group=self.tp_group)
+        x = tp_region_in(self.input_layernorm(hidden_states), self.sequence_parallel, self.tp_group)
 
         global_cu_seqlens = self._global_cu_seqlens(x, packed_seq_params)
         relayout = self.cp_size > 1 and not self.allgather_cp
@@ -558,9 +569,4 @@ class LinearAttentionLayer(MegatronModule):
 
         if relayout:
             core = packed_shard_to_zigzag(core, global_cu_seqlens, self.cp_group, self.cp_group.rank(), self.cp_size)
-        output = self.linear_attn.out_proj(core)
-        if self.sequence_parallel:
-            output = reduce_scatter_to_sequence_parallel_region(output, group=self.tp_group)
-        else:
-            output = reduce_from_tensor_model_parallel_region(output, group=self.tp_group)
-        return output, None
+        return tp_region_out(self.linear_attn.out_proj(core), self.sequence_parallel, self.tp_group), None

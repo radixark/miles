@@ -26,6 +26,10 @@ _KDA_SUFFIX_MAPPING = {
         "dt_bias",
         "o_norm.weight",
         "o_proj.weight",
+        # the head-sharded KDA (--glm5-kda-tp-sharding) keeps the q/k/v short convs as separate tensors, like HF
+        "q_conv1d.weight",
+        "k_conv1d.weight",
+        "v_conv1d.weight",
     ]
 }
 
