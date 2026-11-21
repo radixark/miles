@@ -418,7 +418,7 @@ def _config_args(**overrides: object) -> Namespace:
         save=None,
         load=None,
     )
-    return Namespace(backend=TorchtitanArgsNamespace(**{**base, **overrides}))
+    return Namespace(backend=TorchtitanArgsNamespace(**{**base, **overrides}), true_on_policy_mode=False)
 
 
 def _checkpoint_dir(tmp_path, **config) -> str:

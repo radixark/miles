@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 
 def _rollout_logprob_dtype(args: Namespace) -> torch.dtype:
-    if args.true_on_policy_mode:
+    if args.true_on_policy_mode and not current_platform.true_on_policy_fp32_logprobs:
         if args.backend.bf16:
             return torch.bfloat16
         if args.backend.fp16:

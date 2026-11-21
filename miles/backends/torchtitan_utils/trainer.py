@@ -64,6 +64,8 @@ class TitanTrainer(Configurable):
         output_dir: str
         # torch.compile backend for each transformer block; None runs them eager
         compile_backend: str | None = None
+        # --true-on-policy-mode: the forward runs the rollout engine's batch-invariant ops (true_on_policy.py)
+        true_on_policy: bool = False
 
         def __post_init__(self) -> None:
             TrainingEngine.Config.__post_init__(self)
@@ -93,6 +95,12 @@ class TitanTrainer(Configurable):
         self.model_parts = self.engine.model_parts
         if not platforms.current_platform.premul_sum_reduce:
             _force_sum_reduction(self.model_parts)
+        if config.true_on_policy:
+            # TPU only (validated at startup): it imports sglang_tpu
+            from miles.backends.torchtitan_utils import true_on_policy
+
+            for model in self.model_parts:
+                true_on_policy.install(model)
         if config.compile_backend is not None:
             _compile_blocks(self.model_parts, backend=config.compile_backend)
         self.optimizers = self.engine.optim.optimizers
@@ -151,6 +159,10 @@ class TitanTrainer(Configurable):
             if pad:
                 tokens = torch.nn.functional.pad(tokens, (0, pad), value=0)
                 positions = torch.cat([positions, torch.arange(pad, device=positions.device, dtype=positions.dtype)])
+            if self.config.true_on_policy:
+                from miles.backends.torchtitan_utils import true_on_policy
+
+                true_on_policy.check_microbatch(positions)
             input_dict = {
                 "input": tokens.to(self.device),
                 "labels": torch.full_like(tokens, index, dtype=torch.long, device=self.device),
