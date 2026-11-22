@@ -2,7 +2,7 @@
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from miles.utils.lora.utils import matches_lora_target
 
@@ -28,6 +28,8 @@ class HfLoraTargets:
     packed_expert_gate_up_layout: str | None = None
     # the HF vocab: the most head lora_B rows an HF-shaped source may hold
     vocab_size: int | None = None
+    # SGLang loads this family's adapters; False: rollouts can follow the trained policy only through merged weights
+    engine_serves_adapters: bool = True
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,7 @@ class _HfLoraModelSpec:
     tinker_name_renames: tuple[tuple[str, str], ...] = ()
     component_rows_by_fused_module: Callable[[dict], tuple[tuple[str, tuple[int, ...]], ...]] = lambda config: ()
     packed_expert_gate_up_layout: str | None = None
+    engine_serves_adapters: bool = True
 
 
 # official Tinker exports (checked against SDK 0.36 exports): HF names except the head and the stacked 3D experts
@@ -273,10 +276,11 @@ def _inkling_targets(config):
 
 
 def _inkling2_targets(config):
-    # the relative-position query wr_du is adapted with q/k/v/o, as Inkling's [q;k;v;r]; the attention output gate
-    # and the per-head sink logits are not. Every layer is MoE, and the checkpoint stacks each expert projection.
-    attention = _prefix_paths("attn", "wq_du", "wk_dv", "wv_dv", "wr_du", "wo_ud")
-    return attention, _prefix_paths("mlp.experts", "w13", "w2")
+    # TML's Inkling schema (docs/models/thinkingmachines/inkling-2-small.md): no adapter on attn_sink_proj; every layer
+    # is MoE without shared experts, adapted shared-outer
+    assert config["n_shared_experts"] == 0, config["n_shared_experts"]
+    attention = _prefix_paths("attn", "wq_du", "wk_dv", "wv_dv", "wr_du", "gate_attn", "wo_ud")
+    return attention, _PACKED_EXPERTS
 
 
 def _mimo_v2_targets(config):
@@ -289,9 +293,13 @@ def _mimo_v2_targets(config):
     return _QKVO_ATTENTION, tuple(mlp)
 
 
-# the text decoder sits under model.llm
+# the text decoder sits under model.llm; the unembed is trained by default, every padded-vocab row
 _INKLING2 = _HfLoraModelSpec(
-    _inkling2_targets, layer_prefix="model.llm.layers.*", unembed="model.llm.unembed", unwrap_text_config=True
+    _inkling2_targets,
+    layer_prefix="model.llm.layers.*",
+    unembed="model.llm.unembed",
+    unwrap_text_config=True,
+    default_train_unembed=True,
 )
 
 _HF_LORA_MODELS = {
@@ -369,9 +377,10 @@ _HF_LORA_MODELS = {
         unwrap_text_config=True,
         default_train_unembed=True,
     ),
-    # Inkling 2 Small and the looped Inkling 2 Mini share one layout
+    # Inkling 2 Small and the looped Inkling 2 Mini share one layout. SGLang has no LoRA path for the looped model
+    # (main and sgl-project/sglang#51926 adapt neither its fused qkvr nor its routed experts)
     "inkling2": _INKLING2,
-    "inkling2_loop": _INKLING2,
+    "inkling2_loop": replace(_INKLING2, engine_serves_adapters=False),
 }
 
 
@@ -396,6 +405,7 @@ def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
         component_rows_by_fused_module=spec.component_rows_by_fused_module(text_config),
         vocab_size=text_config.get("vocab_size"),
         packed_expert_gate_up_layout=spec.packed_expert_gate_up_layout,
+        engine_serves_adapters=spec.engine_serves_adapters,
     )
 
 

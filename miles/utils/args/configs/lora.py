@@ -95,7 +95,9 @@ class LoraConfig(BaseConfig):
                 "Train LoRA adapters in Megatron but keep rollout engines on the frozen "
                 "base policy: SGLang LoRA serving and adapter weight sync are disabled "
                 "(only the base weights are synced). For models without SGLang LoRA "
-                "support (e.g. Inkling native LoRA)."
+                "support (e.g. Inkling native LoRA). The torchtitan backend instead syncs the base "
+                "with the adapters merged in for a family whose engine serves no adapters "
+                "(Inkling 2 Mini), so rollouts follow the trained policy."
             )
         ),
     ] = False

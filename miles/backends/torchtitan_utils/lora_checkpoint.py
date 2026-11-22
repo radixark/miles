@@ -402,7 +402,7 @@ class TorchtitanLoraCheckpoint:
             lora_rank=args.lora_rank,
             lora_alpha=args.lora_alpha,
             lora_type=args.lora_type,
-            experts_shared_outer_loras=False,
+            experts_shared_outer_loras=args.experts_shared_outer_loras,
             base_model_fingerprint=base_model_fingerprint(load_hf_config(args.hf_checkpoint).to_dict()),
         )
 
