@@ -1,10 +1,14 @@
 """LoRA for the torchtitan backend: torchtitan's ``LoRATransform`` adapts exactly the projections miles' HF targets
-name; ``lora_names`` names the trained adapters back as HF PEFT tensors."""
+name; ``lora_names`` names the trained adapters back as HF PEFT tensors.
+
+Routed experts (``GroupedLinear``) are adapted when the HF checkpoint stores each grouped projection as one stacked
+tensor (Inkling2's ``mlp.experts.w13_weight``): torchtitan gives every expert its own ``lora_A`` and ``lora_B``, and
+they export stacked over the experts the same way. A family whose checkpoint names every expert apart is not adapted."""
 
 from torchtitan.config.transform import LoRATransform
 from torchtitan.config.transform.apply import transform_model_config_
 from torchtitan.models.base import BaseModel
-from torchtitan.models.common.linear import Linear
+from torchtitan.models.common.linear import GroupedLinear, Linear
 
 from miles.backends.torchtitan_utils.lora_names import hf_export_names
 from miles.utils.lora.utils import matches_lora_target
@@ -19,6 +23,11 @@ def convert_model_config(
         fqn: hf_export_names(sd_adapter, fqn, _weight_shape(cfg))
         for fqn, cfg, _, _ in model_config.traverse(Linear.Config)
     }
+    for fqn, cfg, _, _ in model_config.traverse(GroupedLinear.Config):
+        names = hf_export_names(sd_adapter, fqn, _grouped_weight_shape(cfg))
+        # experts the checkpoint names one by one would each need a slice of the grouped lora_A / lora_B
+        if len(names) == 1:
+            hf_names_by_projection[fqn] = names
     target_modules = _target_modules(hf_names_by_projection, hf_targets)
     return transform_model_config_(
         model_config, [LoRATransform(rank=rank, alpha=alpha, target_modules=sorted(target_modules))]
@@ -29,6 +38,12 @@ def _weight_shape(cfg: Linear.Config) -> tuple[int, ...]:
     if cfg.num_linears > 1:
         return (cfg.num_linears, cfg.out_features, cfg.in_features)
     return (cfg.out_features, cfg.in_features)
+
+
+def _grouped_weight_shape(cfg: GroupedLinear.Config) -> tuple[int, ...]:
+    if cfg.num_linears > 1:
+        return (cfg.group_size, cfg.num_linears, cfg.out_features, cfg.in_features)
+    return (cfg.group_size, cfg.out_features, cfg.in_features)
 
 
 def _is_targeted(hf_name: str, hf_targets: list[str]) -> bool:
@@ -45,9 +60,9 @@ def _target_modules(hf_names_by_projection: dict[str, list[str]], hf_targets: li
     missing = [target for target in hf_targets if not any(matches_lora_target(name, target) for name in exported)]
     if missing:
         raise ValueError(
-            f"LoRA targets {missing} name no Linear projection the torchtitan model exports: MoE routed experts "
-            "are grouped weights the torchtitan backend does not adapt yet (use --target-modules attn for MoE "
-            "models), and a tied lm_head has no weight of its own"
+            f"LoRA targets {missing} name no projection the torchtitan model exports: routed experts the HF "
+            "checkpoint stores one per expert are not adapted (use --target-modules attn for those MoE models), "
+            "and a tied lm_head has no weight of its own"
         )
 
     targeted = {

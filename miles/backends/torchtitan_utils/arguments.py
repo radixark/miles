@@ -123,11 +123,20 @@ def validate_torchtitan_args(args) -> None:
     validate_response_layout_args(args)
 
 
+_LORA_MODELS = ("qwen3", "inkling2")
+
+
 def _validate_lora_args(args) -> None:
-    if args.titan_model_name != "qwen3":
+    if args.titan_model_name not in _LORA_MODELS:
         raise ValueError(
-            f"torchtitan LoRA is validated on --titan-model-name qwen3 only; {args.titan_model_name} builds "
-            "projections whose module paths or HF names the LoRA target mapping does not handle yet"
+            f"torchtitan LoRA is validated on --titan-model-name {' / '.join(_LORA_MODELS)} only; "
+            f"{args.titan_model_name} builds projections whose module paths or HF names the LoRA target mapping "
+            "does not handle yet"
+        )
+    if args.optimizer != "adam":
+        raise ValueError(
+            f"torchtitan LoRA trains its adapters with AdamW; --optimizer {args.optimizer} lays out the frozen base "
+            "matrices"
         )
     if args.lora_type != "lora":
         raise ValueError(
@@ -141,6 +150,11 @@ def _validate_lora_args(args) -> None:
         )
     if args.lora_dropout != 0:
         raise ValueError(f"torchtitan's LoRA has no dropout; got --lora-dropout {args.lora_dropout}")
+    if args.titan_model_name == "inkling2" and lora_rollout_enabled(args):
+        raise ValueError(
+            "SGLang serves no LoRA adapter for Inkling 2: its attention fuses q/k/v/r/gate/sink into one qkvr and its "
+            "routed experts are no FusedMoE, so the adapter sync would fail at load; pass --lora-train-only"
+        )
     if lora_rollout_enabled(args) and args.colocate_memory_peak_device == "gpu":
         raise ValueError(
             "--colocate-memory-peak-device gpu pauses the LoRA grad buffers of the megatron backend, "

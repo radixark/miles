@@ -47,6 +47,7 @@ def _args(**overrides) -> Namespace:
         ci_test=False,
         use_routing_replay=False,
         use_rollout_routing_replay=False,
+        optimizer="adam",
         optimizer_cpu_offload=False,
         stream_optimizer_state_to_disk=False,
         stream_optimizer_state_moment_dtype="fp32",
@@ -296,8 +297,15 @@ def test_recording_routes_in_a_compiled_block_is_refused_without_dynamic_shapes(
 def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.14.0")
     validate_torchtitan_args(_args(lora_rank=8))
-    with pytest.raises(ValueError, match="qwen3 only"):
+    validate_torchtitan_args(_args(lora_rank=8, titan_model_name="inkling2", lora_train_only=True))
+    with pytest.raises(ValueError, match="no LoRA adapter for Inkling 2"):
+        validate_torchtitan_args(_args(lora_rank=8, titan_model_name="inkling2"))
+    with pytest.raises(ValueError, match="qwen3 / inkling2 only"):
         validate_torchtitan_args(_args(lora_rank=8, titan_model_name="glm5_next"))
+    with pytest.raises(ValueError, match="AdamW"):
+        validate_torchtitan_args(
+            _args(lora_rank=8, titan_model_name="inkling2", lora_train_only=True, optimizer="muon")
+        )
     with pytest.raises(ValueError, match="--lora-type lora"):
         validate_torchtitan_args(_args(lora_rank=8, lora_type="canonical_lora"))
     with pytest.raises(ValueError, match="kaiming"):

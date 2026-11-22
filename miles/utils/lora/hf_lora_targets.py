@@ -272,6 +272,13 @@ def _inkling_targets(config):
     return attention, tuple(mlp)
 
 
+def _inkling2_targets(config):
+    # the relative-position query wr_du is adapted with q/k/v/o, as Inkling's [q;k;v;r]; the attention output gate
+    # and the per-head sink logits are not. Every layer is MoE, and the checkpoint stacks each expert projection.
+    attention = _prefix_paths("attn", "wq_du", "wk_dv", "wv_dv", "wr_du", "wo_ud")
+    return attention, _prefix_paths("mlp.experts", "w13", "w2")
+
+
 def _mimo_v2_targets(config):
     # moe_layer_freq lists every layer's MLP: 1 for routed experts (per-expert modules), 0 for dense.
     mlp = []
@@ -281,6 +288,11 @@ def _mimo_v2_targets(config):
         mlp.extend(_ROUTED_EXPERTS)
     return _QKVO_ATTENTION, tuple(mlp)
 
+
+# the text decoder sits under model.llm
+_INKLING2 = _HfLoraModelSpec(
+    _inkling2_targets, layer_prefix="model.llm.layers.*", unembed="model.llm.unembed", unwrap_text_config=True
+)
 
 _HF_LORA_MODELS = {
     "llama": _HfLoraModelSpec(_dense_targets),
@@ -357,6 +369,9 @@ _HF_LORA_MODELS = {
         unwrap_text_config=True,
         default_train_unembed=True,
     ),
+    # Inkling 2 Small and the looped Inkling 2 Mini share one layout
+    "inkling2": _INKLING2,
+    "inkling2_loop": _INKLING2,
 }
 
 

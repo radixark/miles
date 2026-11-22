@@ -102,7 +102,8 @@ class Inkling2Block(Module):
         layer_id: int
         is_local: bool
         block_size: int
-        attention: Inkling2Attention.Config
+        # named as the module it builds, so LoRA targets (config paths) are state-dict paths
+        attn: Inkling2Attention.Config
         input_norm: Inkling2RMSNorm.Config
         mlp_norm: Inkling2RMSNorm.Config
         feed_forward: MoE.Config
@@ -117,7 +118,7 @@ class Inkling2Block(Module):
         self.layer_id = config.layer_id
         self.is_local = config.is_local
         self.is_block_boundary = config.layer_id % config.block_size == 0
-        self.attn = config.attention.build()
+        self.attn = config.attn.build()
         if config.is_local:
             self.attn_norm = config.input_norm.build()
         else:
@@ -273,11 +274,12 @@ class Inkling2Model(Decoder):
     def project_row_norms(self) -> None:
         """Rescale each pretrained-normalized projection row back to its norm at the first call.
 
-        Rows are local under FSDP and EP (both shard dim 0), so this needs no communication.
+        Rows are local under FSDP and EP (both shard dim 0), so this needs no communication. A frozen weight (the
+        LoRA base) never moves, so it is skipped.
         """
         targets = self._row_norm_targets
         for name, param in self.named_parameters():
-            if not _ROW_NORM_PARAM.search(name):
+            if not param.requires_grad or not _ROW_NORM_PARAM.search(name):
                 continue
             local = param.to_local() if isinstance(param, DTensor) else param
             if local.numel() == 0:

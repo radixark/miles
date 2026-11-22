@@ -2,7 +2,9 @@
 
 A fused projection (q/k/v, gate/up) carries one ``lora_a`` for all the HF projections it holds and stacks their
 ``lora_b`` rows exactly like its base weight, so ``lora_b`` splits through the adapter the way the base weight does
-and each HF projection gets a copy of the shared ``lora_A``. Needs only torch, so the weight iterator imports without
+and each HF projection gets a copy of the shared ``lora_A``. A grouped expert projection the checkpoint stores as one
+tensor (``experts.w13_weight``) exports as the module ``experts.w13`` with its factors stacked over the experts
+(``lora_A`` [E, r, in], ``lora_B`` [E, out, r]). Needs only torch, so the weight iterator imports without
 torchtitan."""
 
 from collections.abc import Iterator, Mapping
@@ -21,7 +23,7 @@ def iter_hf_adapter_tensors(sd_adapter, model_state: Mapping[str, torch.Tensor])
         projection = parts[0]
         lora_a = model_state[f"{projection}.lora_a.weight"]
         for hf_name, hf_lora_b in sd_adapter.to_hf({f"{projection}.weight": lora_b}).items():
-            module = hf_name.removesuffix(".weight")
+            module = _hf_module(hf_name)
             yield f"{module}.{_PEFT_FACTOR_BY_TITAN_NAME['lora_a']}.weight", lora_a
             yield f"{module}.{_PEFT_FACTOR_BY_TITAN_NAME['lora_b']}.weight", hf_lora_b
 
@@ -42,4 +44,11 @@ def split_adapter_key(key: str) -> tuple[str, str] | None:
 def hf_export_names(sd_adapter, projection: str, weight_shape: tuple[int, ...]) -> list[str]:
     """The HF modules a titan projection's weight exports as; several for a fused projection."""
     probe = torch.empty(weight_shape, device="meta")
-    return [name.removesuffix(".weight") for name in sd_adapter.to_hf({f"{projection}.weight": probe})]
+    return [_hf_module(name) for name in sd_adapter.to_hf({f"{projection}.weight": probe})]
+
+
+def _hf_module(hf_weight_name: str) -> str:
+    """``...q_proj.weight`` -> ``...q_proj``; a stacked expert tensor ``...experts.w13_weight`` -> ``...experts.w13``."""
+    if hf_weight_name.endswith(".weight"):
+        return hf_weight_name.removesuffix(".weight")
+    return hf_weight_name.removesuffix("_weight")

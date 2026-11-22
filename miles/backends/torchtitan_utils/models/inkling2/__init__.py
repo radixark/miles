@@ -216,7 +216,7 @@ def _block(arch: _Architecture, layer_id: int, *, enable_ep: bool) -> Inkling2Bl
         layer_id=layer_id,
         is_local=is_local,
         block_size=arch.block_size,
-        attention=_attention(arch, is_local=is_local),
+        attn=_attention(arch, is_local=is_local),
         input_norm=norm,
         mlp_norm=norm,
         feed_forward=_moe(arch, enable_ep=enable_ep),
