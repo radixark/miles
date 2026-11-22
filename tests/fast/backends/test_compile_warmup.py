@@ -32,7 +32,7 @@ def test_the_shard_looks_like_a_rollout_of_zero_tokens():
 
 def test_under_rollout_routing_replay_every_moe_layer_replays_the_top_k_padding_experts(monkeypatch):
     """The shard's routing rows go through the real replay attach and route each padding token to the next top_k experts."""
-    num_layers, top_k, num_experts = 3, 2, 8
+    num_layers, top_k, num_experts = 3, 2, 5
     shard = warmup_shard(2, routed_experts_shape=(num_layers, top_k))
     # as prepare_rollout_data hands the shard to replay
     rollout_data = {
