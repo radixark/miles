@@ -1,32 +1,182 @@
-import time
+from __future__ import annotations
+
+import dataclasses
+import shlex
+import sys
 
 import pytest
-import requests
+from tests.fast.backends.sglang_utils.conftest import make_engine_args, tiny_model_path
+
+pytest.importorskip("sglang")
+
+from miles.backends.sglang_utils import sglang_engine
+from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
+from miles.backends.sglang_utils.sglang_engine import _assert_launch_gate_served, compute_engine_launch_cmd
+from miles.utils.lora.utils import build_lora_config
 
 
-def test_flush_cache_sleeps_between_pending_request_retries(monkeypatch):
-    """Regression test for the fully_async weight-update crash: sglang
-    returns 400 (not an exception) while requests are still pending, so the
-    retry loop must back off on THAT path too, or all 60 "attempts" burn
-    through in a fraction of a second — nowhere near enough time for
-    in-flight generation to drain — and flush_cache raises TimeoutError
-    almost immediately after pause_generation instead of after ~60s."""
-    pytest.importorskip("sglang")
-    from miles.backends.sglang_utils.sglang_engine import SGLangEngine
-
-    engine = SGLangEngine.__new__(SGLangEngine)
-    engine.node_rank = 0
-    engine.server_host = "fake-host"
-    engine.server_port = 1234
-
-    sleep_calls = []
-    monkeypatch.setattr(time, "sleep", lambda s: sleep_calls.append(s))
-    monkeypatch.setattr(requests, "get", lambda url: type("Resp", (), {"status_code": 400})())
-
-    with pytest.raises(TimeoutError, match="Timeout while flushing cache"):
-        engine.flush_cache()
-
-    assert len(sleep_calls) == 60, (
-        f"expected the loop to back off on every one of its 60 attempts, got {len(sleep_calls)} sleeps "
-        "-- a 400 response (pending requests) must not skip the retry delay"
+def _cmd(
+    *,
+    worker_type: WorkerType = WorkerType.REGULAR,
+    args=None,
+    interpreter_prefix: list[str] | None = None,
+    addr_overrides: dict | None = None,
+    base_gpu_id: int = 0,
+    random_seed: int = 0,
+    **kwargs,
+) -> str:
+    addr_and_ports = dict(
+        host="10.0.0.1",
+        port=30000,
+        nccl_port=20031,
+        engine_info_bootstrap_port=20033,
+        gated_launch_port=20034,
+        dist_init_addr="10.0.0.1:20000",
+        disaggregation_bootstrap_port=None,
     )
+    addr_and_ports.update(addr_overrides or {})
+    return compute_engine_launch_cmd(
+        args or make_engine_args(),
+        interpreter_prefix=interpreter_prefix or [sys.executable],
+        node_rank=0,
+        worker_type=worker_type,
+        base_gpu_id=base_gpu_id,
+        sglang_overrides={},
+        num_gpus_per_engine=1,
+        tp_size=1,
+        pp_size=1,
+        dist_init_addr=addr_and_ports["dist_init_addr"],
+        nccl_port=addr_and_ports["nccl_port"],
+        host=addr_and_ports["host"],
+        port=addr_and_ports["port"],
+        disaggregation_bootstrap_port=addr_and_ports["disaggregation_bootstrap_port"],
+        engine_info_bootstrap_port=addr_and_ports["engine_info_bootstrap_port"],
+        gated_launch_port=addr_and_ports["gated_launch_port"],
+        random_seed=random_seed,
+        **kwargs,
+    )
+
+
+class TestComputeEngineLaunchCmd:
+    def test_the_command_preserves_every_interpreter_prefix_token(self):
+        """Every interpreter option stays ordered immediately before the SGLang module invocation."""
+        interpreter_prefix = [sys.executable, "-O", "-X", "faulthandler"]
+
+        tokens = shlex.split(_cmd(interpreter_prefix=interpreter_prefix))
+
+        assert tokens[: len(interpreter_prefix) + 2] == [*interpreter_prefix, "-m", "sglang.launch_server"]
+
+    def test_a_cpu_only_controller_renders_the_worker_device(self):
+        """A controller without an accelerator still renders a CUDA worker command."""
+        parsed = parse_server_args_argv(shlex.split(_cmd())[3:])
+
+        assert parsed.device == "cuda"
+
+    def test_the_command_launches_sglang_with_the_allocated_addressing(self):
+        """The rendered launch_server command carries the addr map."""
+        tokens = shlex.split(_cmd())
+        assert tokens[:3] == [sys.executable, "-m", "sglang.launch_server"]
+        parsed = parse_server_args_argv(tokens[3:])
+        assert parsed.host == "10.0.0.1" and parsed.port == 30000
+        assert parsed.dist_init_addr == "10.0.0.1:20000"
+        assert parsed.gated_launch_port == 20034
+        assert parsed.model_path == str(tiny_model_path())
+
+    def test_the_base_gpu_id_reaches_the_server_unchanged_under_a_visibility_mask(self, monkeypatch):
+        """Whoever renders the command may see a different set of devices than the engine will."""
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5,6,7")
+
+        parsed = parse_server_args_argv(shlex.split(_cmd(base_gpu_id=6))[3:])
+
+        assert parsed.base_gpu_id == 6
+
+    def test_a_bracketed_v6_host_is_stripped_for_the_server_but_kept_in_dist_addr(self):
+        """sglang binds a bare v6 host while the rendezvous addr stays bracketed."""
+        cmd = _cmd(addr_overrides=dict(host="[fd00::2]", port=31007, dist_init_addr="[fd00::1]:15003"))
+        parsed = parse_server_args_argv(shlex.split(cmd)[3:])
+        assert parsed.host == "fd00::2"
+        assert parsed.dist_init_addr == "[fd00::1]:15003"
+
+    def test_a_prefill_command_carries_the_bootstrap_port(self):
+        """PD-disaggregation prefill flags survive into the command."""
+        cmd = _cmd(worker_type=WorkerType.PREFILL, addr_overrides=dict(disaggregation_bootstrap_port=20090))
+        parsed = parse_server_args_argv(shlex.split(cmd)[3:])
+        assert parsed.disaggregation_mode == "prefill"
+        assert parsed.disaggregation_bootstrap_port == 20090
+
+    def test_the_command_names_the_seed_its_actor_was_given(self):
+        """sglang draws its own seed unless the argv names one, so the seed must survive the rendering."""
+        parsed = parse_server_args_argv(shlex.split(_cmd(random_seed=4242))[3:])
+        assert parsed.random_seed == 4242
+
+    def test_the_command_carries_the_api_key_from_args(self):
+        """--sglang-api-key reaches the server through the generic passthrough."""
+        cmd = _cmd(args=make_engine_args(sglang_api_key="secret"))
+        parsed = parse_server_args_argv(shlex.split(cmd)[3:])
+        assert parsed.api_key == "secret"
+
+
+class TestLoraTargetModules:
+    @pytest.mark.parametrize(
+        "adapter_targets",
+        [
+            [f"model.layers.*.self_attn.{projection}_proj" for projection in ("q", "k", "v")],
+            [f"model.layers.*.linear_attn.in_proj_{projection}" for projection in ("qkv", "z", "b", "a")],
+            [
+                "model.layers.*.linear_attn.in_proj_qkv",
+                "model.layers.*.linear_attn.in_proj_z",
+                "model.layers.*.linear_attn.in_proj_b",
+                "model.layers.*.linear_attn.in_proj_a",
+                "model.layers.*.linear_attn.out_proj",
+            ],
+            "all-linear",
+        ],
+        ids=["qkv", "gdn", "gdn-output", "inkling"],
+    )
+    @pytest.mark.parametrize("multi_lora", [False, True], ids=["single", "multi"])
+    def test_adapter_selection_reaches_engine_and_sync_config(self, adapter_targets, multi_lora):
+        args = make_engine_args(
+            lora_rank=16,
+            lora_alpha=32,
+            lora_dropout=0.0,
+            lora_adapter_targets=adapter_targets,
+            hf_lora_targets=["model.language_model.layers.*.self_attn.q_proj"],
+            multi_lora=multi_lora,
+            multi_lora_n_adapters=4,
+        )
+        targets = parse_server_args_argv(shlex.split(_cmd(args=args))[3:]).lora_target_modules
+        assert set(targets) == ({"all"} if adapter_targets == "all-linear" else set(adapter_targets))
+        assert build_lora_config(args, target_modules=adapter_targets)["target_modules"] == adapter_targets
+
+
+@dataclasses.dataclass
+class _SglangWithTheGate:
+    model_path: str = ""
+    gated_launch_port: int = 0
+
+
+@dataclasses.dataclass
+class _SglangWithoutTheGate:
+    model_path: str = ""
+
+
+class TestTheLaunchGateSglangMustServe:
+    @staticmethod
+    def _pretend_sglang_is(monkeypatch, server_args: type) -> None:
+        monkeypatch.setattr(sglang_engine, "ServerArgs", server_args)
+        _assert_launch_gate_served.cache_clear()
+
+    def test_an_sglang_that_serves_the_gate_is_accepted(self, monkeypatch) -> None:
+        """The run launches every engine through the gate, so the one field it needs is the whole check."""
+        self._pretend_sglang_is(monkeypatch, _SglangWithTheGate)
+
+        _assert_launch_gate_served()
+
+    def test_an_sglang_without_the_gate_is_refused(self, monkeypatch) -> None:
+        """An sglang serving nothing on that port leaves each cell waiting out its whole activation
+        deadline against an engine that is already up, so it has to be refused at spec time."""
+        self._pretend_sglang_is(monkeypatch, _SglangWithoutTheGate)
+
+        with pytest.raises(AssertionError, match="--gated-launch-port"):
+            _assert_launch_gate_served()

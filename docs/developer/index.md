@@ -45,6 +45,5 @@ short tour for new contributors.
 1. Pick something small from `good first issue` on [GitHub](https://github.com/radixark/miles/issues).
 2. Run the [Reproducibility recipe](https://github.com/radixark/miles/tree/main/examples/experimental/reproducibility) so you can be sure
    "I changed X and it broke" actually means that.
-3. Use `--debug-train-only` or `--debug-rollout-only` to scope your changes, and
-   `--list-only` to confirm your test is actually registered in CI.
+3. Use `--debug-train-only` or `--debug-rollout-only` to scope your changes.
 4. Open a PR. We'll review within ~48h.

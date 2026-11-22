@@ -10,23 +10,59 @@ DELETE is attempted on every path.
 """
 
 import asyncio
+import mmap
+import socket
+import threading
 from types import SimpleNamespace
 
+import httpx
+import numpy as np
 import pytest
 
-import miles.utils.http_utils as http_utils
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
-from miles.rollout.session.samples.codec import COMPUTED_FIELDS, COMPUTED_FIELDS_V2, encode_samples
-from miles.utils.http_utils import post_bytes_no_retry
+from miles.rollout.session.errors import OutputStoreContractError
+from miles.rollout.session.samples.codec import (
+    COMPUTED_FIELDS,
+    COMPUTED_FIELDS_V2,
+    ROLLOUT_SAMPLING_MASK_FIELDS,
+    decode_samples_and_merge_input_sample,
+    encode_samples,
+)
+from miles.rollout.session.types import SessionServerInstance
+from miles.utils.http_utils import PostStatusError, post_buffer_no_retry
+from miles.utils.output_store.plan import StorePlanError
 from miles.utils.types import Sample
 
 
 @pytest.mark.asyncio
-async def test_create_reads_session_server_instance_id_from_args(monkeypatch):
+@pytest.mark.parametrize(
+    ("create_kwargs", "expected_payload"),
+    [
+        ({}, {"evaluation": False}),
+        ({"evaluation": False}, {"evaluation": False}),
+        ({"evaluation": True}, {"evaluation": True}),
+        # Only the sampling fields the session fills travel; None and other keys stay behind.
+        (
+            {"sampling_params": {"temperature": 0.6, "top_p": 0.9, "top_k": 20, "max_new_tokens": 8}},
+            {"evaluation": False, "temperature": 0.6, "top_p": 0.9, "top_k": 20},
+        ),
+        # An eval dataset YAML can spell top_k as 40.0; the session body carries the integer.
+        (
+            {"sampling_params": {"temperature": 1.0, "top_p": 1.0, "top_k": 40.0}},
+            {"evaluation": False, "temperature": 1.0, "top_p": 1.0, "top_k": 40},
+        ),
+    ],
+)
+async def test_create_reads_session_server_instance_id_from_args(monkeypatch, create_kwargs, expected_payload):
     calls: list[tuple[str, str]] = []
 
     async def fake_post(url: str, payload: dict, action: str = "post"):
         calls.append((action, url))
+        assert payload == expected_payload
+        # 40.0 == 40 in Python, so the equality above cannot see a float leaking through
+        assert {key: type(value) for key, value in payload.items()} == {
+            key: type(value) for key, value in expected_payload.items()
+        }
         assert action == "post"
         assert url == "http://127.0.0.1:12345/sessions"
         return {"session_id": "session-123"}
@@ -34,11 +70,14 @@ async def test_create_reads_session_server_instance_id_from_args(monkeypatch):
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
 
     args = SimpleNamespace(
-        session_server_ip="127.0.0.1",
-        session_server_ports=[12345],
-        session_server_instance_ids={12345: "server-instance-123"},
+        session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345", instance_id="server-instance-123")],
+        use_sampling_support_replay=expected_payload.get("top_p", 1.0) < 1.0 or expected_payload.get("top_k", -1) > 0,
+        use_session_server=False,
+        rollout_temperature=expected_payload.get("temperature", 1.0),
+        rollout_top_p=expected_payload.get("top_p", 1.0),
+        rollout_top_k=expected_payload.get("top_k", -1),
     )
-    tracer = await OpenAIEndpointTracer.create(args)
+    tracer = await OpenAIEndpointTracer.create(args, **create_kwargs)
 
     assert tracer.base_url == "http://127.0.0.1:12345/sessions/session-123"
     assert tracer.session_server_id == "127.0.0.1:12345"
@@ -54,7 +93,12 @@ async def test_create_without_instance_id_on_args(monkeypatch):
 
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
 
-    args = SimpleNamespace(session_server_ip="127.0.0.1", session_server_ports=[12345])
+    args = SimpleNamespace(
+        session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345")],
+        use_sampling_support_replay=False,
+        use_session_server=False,
+        rollout_temperature=1.0,
+    )
     tracer = await OpenAIEndpointTracer.create(args)
 
     assert tracer.session_server_instance_id is None
@@ -78,10 +122,15 @@ async def test_create_distributes_sessions_across_port_range(monkeypatch):
         return encode_samples([], {}, "no_records")
 
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
-    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_bytes_no_retry", fake_post_bytes)
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_buffer_no_retry", fake_post_bytes)
 
     ports = [12345, 12346, 12347, 12348]
-    args = SimpleNamespace(session_server_ip="127.0.0.1", session_server_ports=ports)
+    args = SimpleNamespace(
+        session_server_instances=[SessionServerInstance(addr=f"127.0.0.1:{port}") for port in ports],
+        use_sampling_support_replay=False,
+        use_session_server=False,
+        rollout_temperature=1.0,
+    )
 
     chosen_ports = set()
     for _ in range(32):
@@ -102,6 +151,168 @@ async def test_create_distributes_sessions_across_port_range(monkeypatch):
 
     # 32 uniform picks over 4 ports miss a given port with p = (3/4)^32 ≈ 1e-4.
     assert len(chosen_ports) > 1
+
+
+class TestOpenAIEndpointTracerCreate:
+    @pytest.mark.asyncio
+    async def test_create_routes_to_selected_address_across_multiple_hosts(self, monkeypatch):
+        """create() sends the session POST to the whole selected host:port and reads that host's instance id, even when both hosts share a port."""
+        posted: list[str] = []
+
+        async def fake_post(url: str, payload: dict, action: str = "post"):
+            posted.append(url)
+            return {"session_id": "session-abc"}
+
+        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+        monkeypatch.setattr(
+            "miles.rollout.generate_utils.openai_endpoint_utils.random.choice", lambda instances: instances[1]
+        )
+
+        args = SimpleNamespace(
+            session_server_instances=[
+                SessionServerInstance(addr="10.0.0.1:5005", instance_id="instance-a"),
+                SessionServerInstance(addr="10.0.0.2:5005", instance_id="instance-b"),
+            ],
+            use_sampling_support_replay=False,
+            use_session_server=False,
+            rollout_temperature=1.0,
+        )
+        tracer = await OpenAIEndpointTracer.create(args)
+
+        assert posted == ["http://10.0.0.2:5005/sessions"]
+        assert tracer.session_server_id == "10.0.0.2:5005"
+        assert tracer.base_url == "http://10.0.0.2:5005/sessions/session-abc"
+        assert tracer.session_server_instance_id == "instance-b"
+
+    @staticmethod
+    def _capture_session_posts(monkeypatch) -> list[dict]:
+        bodies: list[dict] = []
+
+        async def fake_post(url: str, payload: dict, action: str = "post"):
+            bodies.append(payload)
+            return {"session_id": "session-abc"}
+
+        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+        return bodies
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("extra_key", "expected_body"),
+        [(None, {"evaluation": False}), ("train:-:7", {"evaluation": False, "extra_key": "train:-:7"})],
+        ids=["unkeyed", "keyed"],
+    )
+    async def test_create_posts_the_extra_key_for_the_server_to_lock_on_the_session(
+        self, monkeypatch, extra_key, expected_body
+    ):
+        """The extra key travels in the POST /sessions body, and no key posts {} so the server stores none."""
+        bodies = self._capture_session_posts(monkeypatch)
+
+        await OpenAIEndpointTracer.create(
+            SimpleNamespace(
+                session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345")],
+                use_sampling_support_replay=False,
+                use_session_server=False,
+                rollout_temperature=1.0,
+            ),
+            extra_key=extra_key,
+        )
+
+        assert bodies == [expected_body]
+
+    @pytest.mark.asyncio
+    async def test_agent_url_names_the_same_instance_from_outside_the_cluster(self, monkeypatch):
+        """The agent's URL and the driver's URL are the chosen record's two views of one
+        instance, so a session is never opened on one instance and dialed on another."""
+        posted: list[str] = []
+
+        async def fake_post(url: str, payload: dict, action: str = "post"):
+            posted.append(url)
+            return {"session_id": "session-abc"}
+
+        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+        monkeypatch.setattr(
+            "miles.rollout.generate_utils.openai_endpoint_utils.random.choice", lambda instances: instances[1]
+        )
+
+        args = SimpleNamespace(
+            session_server_instances=[
+                SessionServerInstance(addr="10.0.0.1:5005", external_addr="100.64.0.1:5005"),
+                SessionServerInstance(addr="10.0.0.2:5005", external_addr="100.64.0.2:5005"),
+            ],
+            use_sampling_support_replay=False,
+            use_session_server=False,
+            rollout_temperature=1.0,
+        )
+        tracer = await OpenAIEndpointTracer.create(args)
+
+        # The session is opened over the cluster network, not the external one.
+        assert posted == ["http://10.0.0.2:5005/sessions"]
+        assert tracer.base_url == "http://10.0.0.2:5005/sessions/session-abc"
+        assert tracer.agent_base_url == "http://100.64.0.2:5005/sessions/session-abc"
+
+    @pytest.mark.asyncio
+    async def test_agent_url_falls_back_to_the_cluster_address(self, monkeypatch):
+        """Without an external address, the agent dials the address the driver dials."""
+
+        async def fake_post(url: str, payload: dict, action: str = "post"):
+            return {"session_id": "session-abc"}
+
+        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+
+        args = SimpleNamespace(
+            session_server_instances=[SessionServerInstance(addr="10.0.0.1:5005")],
+            use_sampling_support_replay=False,
+            use_session_server=False,
+            rollout_temperature=1.0,
+        )
+        tracer = await OpenAIEndpointTracer.create(args)
+
+        assert tracer.agent_base_url == tracer.base_url
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "instances_kwargs", [{"session_server_instances": None}, {"session_server_instances": []}]
+    )
+    async def test_create_without_session_server_instances_raises_before_post(self, monkeypatch, instances_kwargs):
+        """create() raises a RuntimeError pointing at --use-session-server and issues no HTTP request when session_server_instances is null or empty."""
+        posted: list[str] = []
+
+        async def fake_post(url: str, payload: dict, action: str = "post"):
+            posted.append(url)
+            return {"session_id": "session-abc"}
+
+        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+
+        with pytest.raises(RuntimeError, match="session_server_instances is not set"):
+            await OpenAIEndpointTracer.create(SimpleNamespace(**instances_kwargs))
+
+        assert posted == []
+
+    @pytest.mark.asyncio
+    async def test_create_validates_sampling_replay_before_allocating_session(self, monkeypatch):
+        posted: list[str] = []
+
+        async def fake_post(url: str, payload: dict, action: str = "post"):
+            posted.append(url)
+            return {"session_id": "session-abc"}
+
+        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+        args = SimpleNamespace(
+            session_server_instances=[SessionServerInstance(addr="127.0.0.1:12345")],
+            use_sampling_support_replay=True,
+            use_session_server=False,
+            rollout_temperature=1.0,
+            rollout_top_p=0.95,
+            rollout_top_k=32,
+        )
+
+        with pytest.raises(ValueError, match="does not match the training temperature"):
+            await OpenAIEndpointTracer.create(
+                args,
+                sampling_params={"temperature": 0.7, "top_p": 0.95, "top_k": 32},
+            )
+
+        assert posted == []
 
 
 # ── collect_samples client behavior ──
@@ -142,7 +353,7 @@ class _CollectCalls:
                 raise delete_outcome
             return {}
 
-        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_bytes_no_retry", fake_post_bytes)
+        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_buffer_no_retry", fake_post_bytes)
         monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
 
 
@@ -161,11 +372,46 @@ async def test_collect_samples_single_post_then_delete(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_collect_samples_non_2xx_raises_with_body_and_still_deletes(monkeypatch):
-    calls = _CollectCalls(monkeypatch, post_outcome=RuntimeError("422: trim_count 2 exceeds allowed=1"))
-    with pytest.raises(RuntimeError, match="trim_count 2 exceeds allowed=1"):
+async def test_collect_samples_decoding_does_not_block_event_loop(monkeypatch):
+    _CollectCalls(monkeypatch, post_outcome=_computed_reply_payload())
+    decode_started = threading.Event()
+    release_decode = threading.Event()
+
+    def blocking_decode(*args, **kwargs):
+        decode_started.set()
+        if not release_decode.wait(timeout=1.0):
+            raise TimeoutError("sample decoding blocked the event loop")
+        return decode_samples_and_merge_input_sample(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "miles.rollout.generate_utils.openai_endpoint_utils.decode_samples_and_merge_input_sample",
+        blocking_decode,
+    )
+
+    collect_task = asyncio.create_task(_tracer().collect_samples(Sample(), max_seq_len=7))
+    while not decode_started.is_set():
+        if collect_task.done():
+            await collect_task
+        await asyncio.sleep(0)
+    release_decode.set()
+
+    result = await collect_task
+    assert len(result.samples) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "expected_error"),
+    [(422, PostStatusError), (OutputStoreContractError.status_code, StorePlanError)],
+    ids=["assembly-error", "store-contract"],
+)
+async def test_collect_samples_non_2xx_raises_with_body_and_still_deletes(monkeypatch, status, expected_error):
+    """A broken store contract comes back as StorePlanError, which stops the rollout; other errors cost the sample."""
+    url = "http://127.0.0.1:12345/sessions/sid-1/samples"
+    calls = _CollectCalls(monkeypatch, post_outcome=PostStatusError(url, status, "trim_count 2 exceeds allowed=1"))
+    with pytest.raises(expected_error, match="trim_count 2 exceeds allowed=1"):
         await _tracer().collect_samples(Sample(), max_seq_len=7)
-    assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1"
+    assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1?samples_received=false"
 
 
 @pytest.mark.asyncio
@@ -175,7 +421,16 @@ async def test_collect_samples_timeout_raises_and_still_deletes(monkeypatch):
     calls = _CollectCalls(monkeypatch, post_outcome=asyncio.TimeoutError())
     with pytest.raises(asyncio.TimeoutError):
         await _tracer().collect_samples(Sample(), max_seq_len=7)
-    assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1"
+    # The server may have built the reply; without it, the session deletes what it handed over too.
+    assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1?samples_received=false"
+
+
+@pytest.mark.asyncio
+async def test_collect_samples_undecodable_reply_counts_as_not_received(monkeypatch):
+    calls = _CollectCalls(monkeypatch, post_outcome=b"not a samples reply")
+    with pytest.raises(ValueError):
+        await _tracer().collect_samples(Sample(), max_seq_len=7)
+    assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1?samples_received=false"
 
 
 @pytest.mark.asyncio
@@ -185,54 +440,253 @@ async def test_collect_samples_delete_failure_is_tolerated(monkeypatch):
     assert len(result.samples) == 1
 
 
-# ── post_bytes_no_retry primitive ──
+# ── post_buffer_no_retry primitive ──
 
 
-class _FakeResponse:
-    def __init__(self, status_code: int, content: bytes = b"", text: str = ""):
-        self.status_code = status_code
-        self.content = content
-        self.text = text
+class _ReplyServer:
+    """Local HTTP/1.1 server: records each POST body, then lets `reply(server, writer)` answer it."""
+
+    def __init__(self, reply):
+        self.reply = reply
+        self.requests: list[bytes] = []
+        self.closing = asyncio.Event()
+
+    async def __aenter__(self):
+        self.server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        self.url = f"http://127.0.0.1:{self.server.sockets[0].getsockname()[1]}/sessions/sid-1/samples"
+        return self
+
+    async def __aexit__(self, *exc):
+        self.closing.set()
+        self.server.close()
+        await self.server.wait_closed()
+
+    async def _handle(self, reader, writer):
+        head = await reader.readuntil(b"\r\n\r\n")
+        length = next(
+            int(line.split(b":")[1]) for line in head.split(b"\r\n") if line.lower().startswith(b"content-length")
+        )
+        self.requests.append(await reader.readexactly(length))
+        await self.reply(self, writer)
+        writer.close()
 
 
-class _FakeClient:
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self.post_count = 0
+def _reply(status: int, body: bytes, *, declared_length: int | None = None, head: bytes | None = None):
+    async def write(server, writer):
+        length = len(body) if declared_length is None else declared_length
+        writer.write((head or f"HTTP/1.1 {status} X\r\ncontent-length: {length}\r\n\r\n".encode()) + body)
+        await writer.drain()
 
-    async def post(self, url, json=None):
-        self.post_count += 1
-        outcome = self.responses.pop(0)
-        if isinstance(outcome, Exception):
-            raise outcome
-        return outcome
+    return write
 
 
 @pytest.mark.asyncio
-async def test_post_bytes_no_retry_returns_raw_bytes(monkeypatch):
-    client = _FakeClient([_FakeResponse(200, content=b"\x00\x01binary")])
-    monkeypatch.setattr(http_utils, "_http_client", client)
-    assert await post_bytes_no_retry("http://x/samples", {}, timeout=5) == b"\x00\x01binary"
-    assert client.post_count == 1
+@pytest.mark.parametrize("body", [bytes(range(256)) * 4096, b""], ids=["1MiB", "empty"])
+async def test_post_buffer_no_retry_returns_the_body_as_a_writable_array(body):
+    async with _ReplyServer(_reply(200, body)) as server:
+        reply = await post_buffer_no_retry(server.url, {"max_seq_len": 7}, timeout=5)
+    assert reply.dtype == np.uint8 and reply.flags.writeable and reply.tobytes() == body
+    assert server.requests == [b'{"max_seq_len": 7}']
 
 
 @pytest.mark.asyncio
-async def test_post_bytes_no_retry_does_not_retry_and_carries_body(monkeypatch):
-    # Two queued outcomes; a retrying client would consume both. It must not.
-    client = _FakeClient([_FakeResponse(422, text="cursor 3 != len(accumulated_token_ids) 4"), RuntimeError("late")])
-    monkeypatch.setattr(http_utils, "_http_client", client)
-    with pytest.raises(RuntimeError, match="422.*cursor 3"):
-        await post_bytes_no_retry("http://x/samples", {}, timeout=5)
-    assert client.post_count == 1
+@pytest.mark.skipif(not hasattr(mmap, "MAP_POPULATE"), reason="MAP_POPULATE is Linux-only")
+async def test_post_buffer_no_retry_prefaults_the_reply_buffer_on_a_worker_thread(monkeypatch):
+    allocations = []
+    real_mmap = mmap.mmap
+
+    def recording_mmap(*args, **kwargs):
+        allocations.append((threading.get_ident(), kwargs["flags"]))
+        return real_mmap(*args, **kwargs)
+
+    monkeypatch.setattr(mmap, "mmap", recording_mmap)
+    async with _ReplyServer(_reply(200, b"sample")) as server:
+        reply = await post_buffer_no_retry(server.url, {}, timeout=5)
+    assert reply.tobytes() == b"sample"
+    [(thread, flags)] = allocations
+    assert thread != threading.get_ident()
+    assert flags & mmap.MAP_POPULATE
 
 
 @pytest.mark.asyncio
-async def test_post_bytes_no_retry_transport_error_propagates_once(monkeypatch):
-    client = _FakeClient([ConnectionError("boom"), RuntimeError("late")])
-    monkeypatch.setattr(http_utils, "_http_client", client)
-    with pytest.raises(ConnectionError, match="boom"):
-        await post_bytes_no_retry("http://x/samples", {}, timeout=5)
-    assert client.post_count == 1
+async def test_post_buffer_no_retry_works_without_linux_prefault_support(monkeypatch):
+    monkeypatch.delattr(mmap, "MAP_POPULATE", raising=False)
+    async with _ReplyServer(_reply(200, b"sample")) as server:
+        reply = await post_buffer_no_retry(server.url, {}, timeout=5)
+    assert reply.flags.writeable and reply.tobytes() == b"sample"
+    assert server.requests == [b"{}"]
+
+
+_ERROR_BODY = b"cursor 3 != len(accumulated_token_ids) 4"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply",
+    [
+        pytest.param(_reply(422, _ERROR_BODY), id="content-length"),
+        pytest.param(
+            _reply(
+                422,
+                b"%x\r\n%s\r\n0\r\n\r\n" % (len(_ERROR_BODY), _ERROR_BODY),
+                head=b"HTTP/1.1 422 X\r\ntransfer-encoding: chunked\r\n\r\n",
+            ),
+            id="chunked",
+        ),
+    ],
+)
+async def test_post_buffer_no_retry_does_not_retry_and_carries_body(reply):
+    async with _ReplyServer(reply) as server:
+        with pytest.raises(PostStatusError, match="422.*cursor 3") as raised:
+            await post_buffer_no_retry(server.url, {}, timeout=5)
+    assert (raised.value.status, raised.value.body) == (422, _ERROR_BODY.decode())
+    assert len(server.requests) == 1
+
+
+# `generate` turns exactly these into an ABORTED sample: (TimeoutError, httpx.TransportError).
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reply", "expected_error"),
+    [
+        pytest.param(_reply(200, b"x" * 50, declared_length=100), httpx.ReadError, id="body-cut-short"),
+        pytest.param(_reply(200, b"", declared_length=2**63), httpx.ReadError, id="length-overflows-mmap"),
+        pytest.param(_reply(200, b"abc", head=b"HTTP/1.1 200 OK\r\n\r\n"), httpx.RemoteProtocolError, id="no-length"),
+    ],
+)
+async def test_post_buffer_no_retry_transport_faults_raise_transport_errors_once(reply, expected_error):
+    async with _ReplyServer(reply) as server:
+        with pytest.raises(expected_error):
+            await post_buffer_no_retry(server.url, {}, timeout=5)
+    assert len(server.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_post_buffer_no_retry_allocation_failure_is_a_transport_error(monkeypatch):
+    def unavailable_mapping(*args, **kwargs):
+        raise OSError("allocation unavailable")
+
+    monkeypatch.setattr(mmap, "mmap", unavailable_mapping)
+    async with _ReplyServer(_reply(200, b"sample")) as server:
+        with pytest.raises(httpx.ReadError, match="cannot allocate reply buffer") as error:
+            await post_buffer_no_retry(server.url, {}, timeout=5)
+    assert isinstance(error.value.__cause__, OSError)
+    assert server.requests == [b"{}"]
+
+
+@pytest.mark.asyncio
+async def test_post_buffer_no_retry_refused_connection_is_a_transport_error():
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    with pytest.raises(httpx.ConnectError):
+        await post_buffer_no_retry(f"http://127.0.0.1:{port}/sessions/sid-1/samples", {}, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_post_buffer_no_retry_tries_other_addresses_before_sending_once(monkeypatch):
+    async with _ReplyServer(_reply(200, b"sample")) as server:
+        port = server.server.sockets[0].getsockname()[1]
+        with socket.socket() as unavailable:
+            unavailable.bind(("127.0.0.1", 0))
+            refused_port = unavailable.getsockname()[1]
+
+            async def resolve(host, requested_port, **kwargs):
+                assert host == "samples.test" and requested_port == port
+                return [
+                    (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", refused_port)),
+                    (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", port)),
+                ]
+
+            monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", resolve)
+            reply = await post_buffer_no_retry(server.url.replace("127.0.0.1", "samples.test"), {}, timeout=5)
+    assert reply.tobytes() == b"sample"
+    assert server.requests == [b"{}"]
+
+
+@pytest.mark.asyncio
+async def test_post_buffer_no_retry_stalled_reply_times_out():
+    async def stall(server, writer):
+        await server.closing.wait()
+
+    async with _ReplyServer(stall) as server:
+        with pytest.raises(TimeoutError):
+            await post_buffer_no_retry(server.url, {}, timeout=0.2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True], ids=["total-timeout", "cancel"])
+async def test_post_buffer_no_retry_closes_stalled_body_connection(cancel):
+    started = asyncio.Event()
+    closed = asyncio.Event()
+    requests = []
+
+    async def handle(reader, writer):
+        try:
+            requests.append(await reader.readuntil(b"\r\n\r\n"))
+            await reader.readexactly(2)
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nx")
+            await writer.drain()
+            started.set()
+            assert await reader.read() == b""
+            closed.set()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    async with await asyncio.start_server(handle, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        task = asyncio.create_task(post_buffer_no_retry(f"http://127.0.0.1:{port}/samples", {}, timeout=0.2))
+        await asyncio.wait_for(started.wait(), timeout=2)
+        if cancel:
+            task.cancel()
+        with pytest.raises(asyncio.CancelledError if cancel else TimeoutError):
+            await task
+        await asyncio.wait_for(closed.wait(), timeout=2)
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_post_buffer_no_retry_does_not_follow_redirects():
+    head = b"HTTP/1.1 307 Temporary Redirect\r\nLocation: /again\r\nContent-Length: 0\r\n\r\n"
+    async with _ReplyServer(_reply(307, b"", head=head)) as server:
+        with pytest.raises(RuntimeError, match="307"):
+            await post_buffer_no_retry(server.url, {}, timeout=5)
+    assert server.requests == [b"{}"]
+
+
+@pytest.mark.asyncio
+async def test_post_buffer_no_retry_stalled_upload_has_total_deadline():
+    connected = asyncio.Event()
+    release = asyncio.Event()
+    closed = asyncio.Event()
+    connections = []
+
+    async def handle(reader, writer):
+        connections.append(writer)
+        writer.transport.pause_reading()
+        connected.set()
+        try:
+            await release.wait()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            closed.set()
+
+    async with await asyncio.start_server(handle, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        started = asyncio.get_running_loop().time()
+        task = asyncio.create_task(
+            post_buffer_no_retry(f"http://127.0.0.1:{port}/samples", {"data": "x" * (8 * 1024 * 1024)}, timeout=0.5)
+        )
+        try:
+            await asyncio.wait_for(connected.wait(), timeout=2)
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(task, timeout=2)
+            assert asyncio.get_running_loop().time() - started < 1.5
+        finally:
+            release.set()
+            await asyncio.wait_for(closed.wait(), timeout=2)
+    assert len(connections) == 1
 
 
 # ── v2 wire (--use-session-server v2): metadata channel + extended fields ──
@@ -266,7 +720,7 @@ async def test_collect_samples_v2_payload_carries_metadata_and_decodes_extras(mo
         assert action == "delete"
         return {}
 
-    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_bytes_no_retry", fake_post_bytes)
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_buffer_no_retry", fake_post_bytes)
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
 
     tracer = OpenAIEndpointTracer(
@@ -289,8 +743,32 @@ async def test_create_selects_wire_fields_by_session_server_version(monkeypatch)
 
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
 
-    def args(version):
-        return SimpleNamespace(session_server_ip="127.0.0.1", session_server_ports=[7000], use_session_server=version)
+    def args(version, top_p=1.0, top_k=-1):
+        return SimpleNamespace(
+            session_server_instances=[SessionServerInstance(addr="127.0.0.1:7000")],
+            use_session_server=version,
+            use_sampling_support_replay=top_p < 1.0 or top_k > 0,
+            rollout_temperature=1.0,
+            rollout_top_p=top_p,
+            rollout_top_k=top_k,
+        )
+
+    def sampling_params(top_p, top_k):
+        return {"temperature": 1.0, "top_p": top_p, "top_k": top_k}
 
     assert (await OpenAIEndpointTracer.create(args(True))).samples_wire_fields == COMPUTED_FIELDS
     assert (await OpenAIEndpointTracer.create(args("v2"))).samples_wire_fields == COMPUTED_FIELDS_V2
+    assert (
+        await OpenAIEndpointTracer.create(args(True, 0.95, 32), sampling_params=sampling_params(0.95, 32))
+    ).samples_wire_fields == (COMPUTED_FIELDS + ROLLOUT_SAMPLING_MASK_FIELDS)
+    assert (
+        await OpenAIEndpointTracer.create(args("v2", 0.95, 32), sampling_params=sampling_params(0.95, 32))
+    ).samples_wire_fields == (COMPUTED_FIELDS_V2 + ROLLOUT_SAMPLING_MASK_FIELDS)
+    assert (
+        await OpenAIEndpointTracer.create(args(True, top_k=32), sampling_params=sampling_params(1.0, 32))
+    ).samples_wire_fields == (COMPUTED_FIELDS + ROLLOUT_SAMPLING_MASK_FIELDS)
+    assert (
+        await OpenAIEndpointTracer.create(
+            args(True, 0.95, 32), evaluation=True, sampling_params=sampling_params(0.95, 32)
+        )
+    ).samples_wire_fields == COMPUTED_FIELDS

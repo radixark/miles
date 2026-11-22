@@ -29,7 +29,7 @@ LORA_ARGS=(
    --lora-rank 32                    # LoRA rank (typical values: 8, 16, 32, 64)
    --lora-alpha 32                   # LoRA alpha (usually 2x rank)
    --lora-dropout 0.0                # LoRA dropout (0.0 for RL training)
-   --target-modules "gate_proj,up_proj,down_proj"
+   --target-modules "gate_up_proj,down_proj"
    --sglang-lora-backend triton      # !!! must for moe-lora !!!, else display "Current LoRA backend does not support LoRA on MoE layers; skipping MoE layer"
 )
 

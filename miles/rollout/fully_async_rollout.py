@@ -17,9 +17,15 @@ rollout engines, pausing producer submissions for the duration of the
 """
 
 import asyncio
+import copy
 import logging
+from collections import deque
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Any
 
 from miles.rollout.base_types import (
+    BaseRolloutFn,
     RolloutFnConstructorInput,
     RolloutFnEvalInput,
     RolloutFnEvalOutput,
@@ -27,28 +33,34 @@ from miles.rollout.base_types import (
     RolloutFnOutput,
     RolloutFnTrainInput,
     RolloutFnTrainOutput,
+    compute_kv_cache_namespace,
+    stamp_kv_cache_namespace,
 )
 from miles.rollout.fully_async_data_buffer import (
     DataBuffer,
     DataBufferConstructorInput,
     DataBufferInput,
     DefaultDataBuffer,
+    DefaultMultiDataBuffer,
     Group,
+    UnusedReason,
+    add_data_buffer_arguments,
     first_sample,
 )
 from miles.rollout.generate_utils.sample_utils import reward_log_summary, sample_text_preview
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
 from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 from miles.rollout.submission_scheduler import make_submission_scheduler
-from miles.utils.misc import load_function
+from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
+from miles.utils.function_registry import load_function
+from miles.utils.output_store.dropped import record_dropped_samples
+from miles.utils.simple_checkpointer import load_simple_checkpoint, save_simple_checkpoint
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
-NO_PROGRESS_WARN_SECS = 30.0
 
-
-class FullyAsyncRolloutFn:
+class FullyAsyncRolloutFn(BaseRolloutFn):
     """Continuous rollout generation decoupled from training steps.
 
     The worker runs as a long-lived task on the shared rollout event loop, created
@@ -57,8 +69,12 @@ class FullyAsyncRolloutFn:
     what it hands back into a batch.
     """
 
+    add_arguments = staticmethod(add_data_buffer_arguments)
+
     def __init__(self, input: RolloutFnConstructorInput):
+        super().__init__(input)
         self.args = input.args
+        assert self.args.buffer_filter_path is None, "fully-async rollout does not support buffer_filter_path"
         self.data_source = input.data_source
         self.state = GenerateState(input.args)
         # default to sample level backfill for fully async rollout
@@ -66,36 +82,65 @@ class FullyAsyncRolloutFn:
         assert input.args.async_unused_samples_handler in ("retry", "drop")
         # applied to every group we do not train on; "drop" discards instead of recycling
         self._handle_unused = (
-            self._recycle if input.args.async_unused_samples_handler == "retry" else (lambda prompt_group: None)
+            self._recycle if input.args.async_unused_samples_handler == "retry" else self._drop_unused
         )
         self._sample_filter = load_function(input.args.rollout_sample_filter_path)
         self._worker: asyncio.Task | None = None
+        self._worker_error_cancel_targets: set[asyncio.Task] = set()
         self._eval_prompt_dataset_cache: dict = {}
+        self._curr_kv_cache_namespace: str | None = None
         self._producer_resumed = asyncio.Event()
         self._producer_resumed.set()
-        self._output: DataBuffer | None = None
+        self._admission_changed = asyncio.Event()
+        default_buffer_cls = DefaultMultiDataBuffer if self.args.raw_megatron.is_multi_policy else DefaultDataBuffer
+        buffer_cls = load_function(self.args.custom_async_data_buffer_path) or default_buffer_cls
+        assert (
+            not self.args.async_submit_within_staleness or buffer_cls.admits is not DataBuffer.admits
+        ), f"--async-submit-within-staleness requires {buffer_cls.__name__} to implement admits()"
+        self._output: DataBuffer = buffer_cls(
+            DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused)
+        )
+        self._retry_buffer: deque[list[Sample]] = deque()
+        self._running_tasks: list[_RunningTask] = []
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         if input.evaluation:
             return await self._call_eval(input)
+        self._curr_kv_cache_namespace = compute_kv_cache_namespace(self.args, input)
         if self._worker is None:
-            buffer_cls = load_function(self.args.custom_async_data_buffer_path) or DefaultDataBuffer
-            self._output = buffer_cls(
-                DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused)
+            assert (
+                input.weight_version is not None or self.args.debug_rollout_only or self.args.debug_skip_weight_update
+            ), (
+                "the orchestration publishes the restored weight version before the producer starts, or every "
+                "group a checkpoint restored is filtered out as stale"
             )
             self._worker = asyncio.create_task(self._worker_loop())
+            self._worker.add_done_callback(self._on_worker_error)
             logger.info("Started fully-async rollout worker")
         return await self._drain(input)
 
+    async def dispose(self) -> None:
+        if (worker := self._worker) is None:
+            return
+        await _end_worker(worker)
+
     async def _call_eval(self, input: RolloutFnEvalInput) -> RolloutFnOutput:
         if input.generate_state is not None:
-            results = await run_eval_datasets(input.generate_state, self._eval_prompt_dataset_cache)
+            results = await run_eval_datasets(
+                input.generate_state,
+                self._eval_prompt_dataset_cache,
+                kv_cache_namespace=compute_kv_cache_namespace(self.args, input),
+            )
             return RolloutFnEvalOutput(data=results)
 
         logger.info("Pausing fully-async producer submissions for shared-engine eval")
         self._producer_resumed.clear()
         try:
-            results = await run_eval_datasets(self.state, self._eval_prompt_dataset_cache)
+            results = await run_eval_datasets(
+                self.state,
+                self._eval_prompt_dataset_cache,
+                kv_cache_namespace=compute_kv_cache_namespace(self.args, input),
+            )
         finally:
             self._producer_resumed.set()
             logger.info("Resumed fully-async producer submissions after eval")
@@ -110,10 +155,13 @@ class FullyAsyncRolloutFn:
         return self.args.rollout_batch_size
 
     def _submit_one_group(self) -> asyncio.Task:
-        samples = self.data_source.get_samples(1)
+        samples = [self._retry_buffer.popleft()] if self._retry_buffer else self.data_source.get_samples(1)
+        stamp_kv_cache_namespace(samples, namespace=self._curr_kv_cache_namespace)
         self._scheduler.on_submit(samples)
         [prompt_group] = samples
-        return asyncio.create_task(self._generate_group(prompt_group))
+        task = asyncio.create_task(self._generate_group(prompt_group))
+        self._running_tasks.append(_RunningTask(prompt_group=prompt_group, task=task))
+        return task
 
     async def _generate_group(self, prompt_group: list[Sample]) -> DataBufferInput:
         result = await generate_and_rm_group(
@@ -125,49 +173,73 @@ class FullyAsyncRolloutFn:
         )
         return DataBufferInput(prompt_group=prompt_group, group=result)
 
-    async def _worker_loop(self):
+    async def _worker_loop(self) -> None:
         active: set[asyncio.Task] = set()
         while True:
             await self._producer_resumed.wait()
-            while self._scheduler.has_capacity(pending_groups=len(active), group_budget=self._max_in_flight_groups()):
+            self._admission_changed.clear()
+            while (admits := self._output.admits(in_flight=len(active))) and self._scheduler.has_capacity(
+                pending_groups=len(active), group_budget=self._max_in_flight_groups()
+            ):
                 active.add(self._submit_one_group())
-            done, active = await self._scheduler.wait_for_progress(active)
+            if admits:
+                done, active = await self._scheduler.wait_for_progress(active)
+            else:
+                done, active = await self._wait_for_admission(active)
             for task in done:
-                await self._output.put(task.result())
+                prompt_group = next(x.prompt_group for x in self._running_tasks if x.task is task)
+                entry = self._collect_group_result(task, prompt_group)
+                await self._output.put(entry)
+                self._running_tasks = [x for x in self._running_tasks if x.task is not task]
+
+    async def _wait_for_admission(self, pendings: set[asyncio.Task]) -> tuple[set[asyncio.Task], set[asyncio.Task]]:
+        """Wait for a drain to start, an unused group to leave, or a group to finish (its put may reject it)."""
+        waiter = asyncio.create_task(self._admission_changed.wait())
+        try:
+            done, pending = await asyncio.wait(pendings | {waiter}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            waiter.cancel()
+        return done - {waiter}, pending - {waiter}
+
+    def _collect_group_result(self, task: asyncio.Task, prompt_group: list[Sample]) -> DataBufferInput:
+        if not task.cancelled():
+            return task.result()
+
+        logger.warning(
+            "Rollout group was cancelled; marking samples aborted: indices=%s",
+            [sample.index for sample in prompt_group],
+        )
+        return DataBufferInput(
+            prompt_group=prompt_group,
+            group=[replace(sample, status=Sample.Status.ABORTED) for sample in prompt_group],
+        )
 
     # -------------------------- consumer --------------------------
 
-    async def _next_group(self, current_version: int | None) -> DataBufferInput:
-        queue_get = asyncio.create_task(self._output.get(current_version=current_version))
-        try:
-            while True:
-                done, _ = await asyncio.wait(
-                    {queue_get, self._worker},
-                    return_when=asyncio.FIRST_COMPLETED,
-                    timeout=NO_PROGRESS_WARN_SECS,
-                )
-                # Checked before the queue: the worker loop never returns normally, so a
-                # dead worker fails the step now instead of after its backlog drains.
-                if self._worker in done:
-                    self._worker.result()
-                    raise RuntimeError("fully-async rollout worker exited without an exception")
-                if queue_get in done:
-                    return queue_get.result()
-                logger.warning(f"No completed rollout groups for {NO_PROGRESS_WARN_SECS}s")
-        finally:
-            if not queue_get.done():
-                queue_get.cancel()
+    def _on_worker_error(self, worker: asyncio.Task) -> None:
+        # The worker loop never returns normally, so any completion fails the waiting step.
+        logger.error("fully-async rollout worker ended", exc_info=None if worker.cancelled() else worker.exception())
+        for target in list(self._worker_error_cancel_targets):
+            target.cancel()
 
     async def _drain(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
         args = self.args
         assert args.rollout_global_dataset
 
-        target_data_size = args.rollout_batch_size
+        assert not self._worker.done(), "the fully-async rollout worker has ended"
+        self._worker_error_cancel_targets.add(asyncio.current_task())
+        self._admission_changed.set()
+        entries = await self._output.get(
+            current_version=input.weight_version,
+            num_groups=args.rollout_batch_size,
+            trainer_model_id=input.trainer_model_id,
+        )
+        self._worker_error_cancel_targets.discard(asyncio.current_task())
+
         data: list[Group] = []
         do_print = True
 
-        while len(data) < target_data_size:
-            entry = await self._next_group(input.weight_version)
+        for entry in entries:
             assert len(entry.group) == args.n_samples_per_prompt
 
             if do_print:
@@ -192,12 +264,73 @@ class FullyAsyncRolloutFn:
 
         data.sort(key=lambda group: first_sample(group).index)
 
+        before_filter = SampleOwnershipRecorder.flatten_samples(data)
         if self._sample_filter is not None:
             self._sample_filter(args, data)
+        kept = {id(sample) for sample in SampleOwnershipRecorder.flatten_samples(data)}
+        record_dropped_samples(sample for sample in before_filter if id(sample) not in kept)
+        SampleOwnershipRecorder.log_dropped_groups(
+            args=args, before=before_filter, after=data, reason="rollout_sample_filter"
+        )
 
-        return RolloutFnTrainOutput(samples=data, metrics=self._output.get_metrics())
+        return RolloutFnTrainOutput(samples=data, metrics=self._output.get_metrics(input.trainer_model_id))
 
-    def _recycle(self, prompt_group: list[Sample]) -> None:
+    def _recycle(self, prompt_group: list[Sample], reason: UnusedReason) -> None:
         for sample in prompt_group:
             sample.reset_for_retry()
-        self.data_source.add_samples([prompt_group])
+        self._retry_buffer.append(prompt_group)
+        self._admission_changed.set()
+
+    def _drop_unused(self, prompt_group: list[Sample], reason: UnusedReason) -> None:
+        SampleOwnershipRecorder.log_dropped_samples(args=self.args, samples=prompt_group, reason=reason.value)
+        self._admission_changed.set()
+
+    def save(self, directory: Path) -> None:
+        state = _FullyAsyncRolloutState(
+            retry_buffer=list(self._retry_buffer),
+            running=[_copy_and_reset_for_retry(x.prompt_group) for x in self._running_tasks],
+            output=self._output.state_dict(),
+        )
+        save_simple_checkpoint(directory=directory, data=state)
+
+    def load(self, directory: Path) -> None:
+        assert self._worker is None, "restore the fully async rollout state before producer startup"
+        state: _FullyAsyncRolloutState = load_simple_checkpoint(directory=directory)
+        assert not self._retry_buffer, "restore the fully async rollout state before any group was recycled"
+        self._retry_buffer = deque([*state.retry_buffer, *state.running])
+        self._output.load_state_dict(state.output)
+
+    def drop_saved_in_flight(self, directory: Path) -> None:
+        state: _FullyAsyncRolloutState = load_simple_checkpoint(directory=directory)
+        prompt_groups = [*state.retry_buffer, *state.running]
+        record_dropped_samples(prompt_groups)
+        samples = [sample for group in prompt_groups for sample in group]
+        SampleOwnershipRecorder.log_dropped_samples(args=self.args, samples=samples, reason="data_reset_on_load")
+        # the finished groups are in the buffer's own layout, which a custom buffer class may change
+        self._output.drop_saved_state(state.output, reason="data_reset_on_load")
+        logger.info(f"Dropped {len(prompt_groups)} saved queued or running prompt groups drawn from the reset data")
+
+
+@dataclass(frozen=True)
+class _RunningTask:
+    prompt_group: list[Sample]
+    task: asyncio.Task
+
+
+@dataclass(frozen=True)
+class _FullyAsyncRolloutState:
+    retry_buffer: list[list[Sample]]
+    running: list[list[Sample]]
+    output: Any
+
+
+def _copy_and_reset_for_retry(prompt_group: list[Sample]) -> list[Sample]:
+    copied = copy.deepcopy(prompt_group)
+    for sample in copied:
+        sample.reset_for_retry()
+    return copied
+
+
+async def _end_worker(worker: asyncio.Task) -> None:
+    worker.cancel()
+    await asyncio.wait({worker})

@@ -1,0 +1,222 @@
+# NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
+# WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
+
+
+import asyncio
+from pathlib import Path
+
+import typer
+from tests.e2e.ft.conftest_ft.cli_options import (
+    FaultTriggersOption,
+    FullyAsyncOption,
+    ModeOption,
+    NumStepsOption,
+    RolloutCrashIntervalSecondsOption,
+    SeedOption,
+    TrainerCrashIntervalSecondsOption,
+)
+from tests.e2e.ft.conftest_ft.execution import (
+    get_common_train_args,
+    get_ft_args,
+    materialize_cyclic_debug_rollout_data,
+    prepare,
+    run_training,
+)
+from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
+from tests.utils.ft.launch import get_fully_async_args, get_train_script
+from tests.utils.soak.core.config import SoakRunnerConfig, SoakTailConfig, SoakTargetConfig
+from tests.utils.soak.core.event_log import EventLog
+from tests.utils.soak.core.runner import SoakRunner
+from tests.utils.soak.core.utils import (
+    API_SERVER_ARGS,
+    DATA_DIR,
+    assert_fresh_dump_dir,
+    create_soak_config,
+    evidence_directory,
+    note_launch_outcome,
+    resolve_dump_dir,
+)
+from tests.utils.soak.ft import fault_triggers
+from tests.utils.soak.ft.actions.base import CellFaultForms
+from tests.utils.soak.ft.actions.factory import compute_mean_interval_seconds_of_kind, create_cell_fault_forms
+from tests.utils.soak.ft.checkers.healing import assert_healing
+from tests.utils.soak.ft.entrypoint import run_cell_soak
+from tests.utils.soak.ft.types import FaultTrigger
+
+from miles.utils.external_utils import command_utils
+from miles.utils.workers.types import ClusterBackend
+
+app: typer.Typer = typer.Typer()
+
+TEST_NAME: str = "random_crash"
+
+DEFAULT_SEED: int = 42
+DEFAULT_NUM_STEPS: int = 60
+DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS: float = 120.0
+DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS: float = 240.0
+
+
+@app.command(name="run")
+def run_ci(
+    mode: ModeOption,
+    seed: SeedOption = DEFAULT_SEED,
+    num_steps: NumStepsOption = DEFAULT_NUM_STEPS,
+    trainer_crash_interval_seconds: TrainerCrashIntervalSecondsOption = DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS,
+    rollout_crash_interval_seconds: RolloutCrashIntervalSecondsOption = DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS,
+    fully_async: FullyAsyncOption = False,
+    requested_triggers: FaultTriggersOption = None,
+) -> None:
+    """Random failure soak test, for whichever components the mode enables ft on.
+
+    Runs an async session that injects faults at random intervals via the
+    api server HTTP API. The mini FT controller auto-recovers; the test passes
+    if training completes without hanging.
+
+    Doubles as the per-mode CI entry point: a CI file calls ``run_ci(mode)`` (defaults);
+    manual runs use the ``run`` CLI subcommand with optional --seed/--num-steps/etc.
+    """
+    ft_mode: FTTestMode = resolve_mode(mode)
+    if fully_async:
+        assert_mode_supports_fully_async(ft_mode, mode=mode)
+    triggers = fault_triggers.resolve(
+        requested_triggers, has_real_rollout=ft_mode.has_real_rollout, trainer_ft="train" in ft_mode.ft_components
+    )
+    assert FaultTrigger.HOOK not in triggers or ft_mode.num_cells <= ft_mode.rollout_num_engines, (
+        f"Hook-triggered faults need every trainer cell to send weights to an engine, but {ft_mode.num_cells} "
+        f"cells share {ft_mode.rollout_num_engines} engines; run this mode with --fault-triggers timer"
+    )
+
+    config = create_soak_config(command_utils.default_config())
+    test_name: str = TEST_NAME + fault_triggers.compute_test_name_suffix(triggers)
+    if fully_async:
+        test_name += "_fully_async"
+    dump_dir: str = resolve_dump_dir(f"{test_name}_{mode}", run_id=config.run_id)
+    print(f"Dump directory: {dump_dir}, fault triggers: {sorted(triggers)}")
+    mean_interval_seconds_of_cell_type: dict[str, float] = compute_mean_interval_seconds_of_kind(
+        ft_mode.ft_components,
+        trainer_crash_interval_seconds=trainer_crash_interval_seconds,
+        rollout_crash_interval_seconds=rollout_crash_interval_seconds,
+    )
+    print(f"Seed: {seed}, Steps: {num_steps}, Mean injection intervals: {mean_interval_seconds_of_cell_type}")
+    print(f"FT components: {ft_mode.ft_components}, cluster backend: {config.cluster_backend.value}")
+    print(f"Train script: {get_train_script(fully_async=fully_async)}")
+
+    prepare(ft_mode, config=config)
+    train_args = _build_train_args(
+        ft_mode, config=config, dump_dir=dump_dir, num_steps=num_steps, fully_async=fully_async
+    ) + fault_triggers.compute_hook_train_args(triggers)
+
+    injector = _run_soak(
+        ft_mode,
+        config=config,
+        dump_dir=dump_dir,
+        seed=seed,
+        num_steps=num_steps,
+        mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,
+        train_args=train_args,
+        fully_async=fully_async,
+        cell_fault_forms=create_cell_fault_forms(
+            config, triggers=triggers, weight_update_all_gathers=mode == "kill_train__dp2_tp2"
+        ),
+    )
+
+    fault_triggers.assert_hook_evidence(forms=injector.forms, events=injector.event_log.events, dump_dir=dump_dir)
+    assert_healing(
+        ft_mode.ft_components,
+        events=injector.event_log.events,
+        forms=injector.forms,
+        context=f"{test_name} {mode}",
+    )
+
+    print(f"Random failure soak test PASSED ({test_name}, mode={mode}, seed={seed}, steps={num_steps})")
+
+
+def _build_train_args(
+    ft_mode: FTTestMode, *, config: command_utils.ExecuteTrainConfig, dump_dir: str, num_steps: int, fully_async: bool
+) -> str:
+    debug_rollout_data_dir = None if ft_mode.has_real_rollout else materialize_cyclic_debug_rollout_data(num_steps)
+    train_args = (
+        get_common_train_args(
+            ft_mode, dump_dir=dump_dir, num_steps=num_steps, debug_rollout_data_dir=debug_rollout_data_dir
+        )
+        + get_ft_args(
+            ft_mode, api_server_args=API_SERVER_ARGS, extra_ft_components=_compute_extra_ft_components(ft_mode)
+        )
+        + get_fully_async_args(fully_async=fully_async)
+        + "--mini-ft-controller-enable "
+    )
+    if "train" in ft_mode.ft_components and config.cluster_backend is ClusterBackend.RAY:
+        train_args += "--trainer-heartbeat-checker-first-wait 0 "
+    if ft_mode.has_real_rollout and config.cluster_backend is ClusterBackend.RAY:
+        train_args += (
+            f"--eval-interval {num_steps} --skip-eval-before-train "
+            f"--eval-prompt-data gsm8k {DATA_DIR}/gsm8k/test.parquet "
+            "--n-samples-per-eval-prompt 1 --eval-max-response-len 200 --eval-top-k 1 "
+        )
+    if ft_mode.has_real_rollout:
+        train_args += "--update-weight-transfer-mode p2p "
+        train_args += "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
+    assert_fresh_dump_dir(Path(dump_dir))
+    return train_args
+
+
+def _compute_extra_ft_components(ft_mode: FTTestMode) -> tuple[str, ...]:
+    return ("rollout",) if ft_mode.has_real_rollout and "rollout" not in ft_mode.ft_components else ()
+
+
+def _run_soak(
+    ft_mode: FTTestMode,
+    *,
+    config: command_utils.ExecuteTrainConfig,
+    dump_dir: str,
+    seed: int,
+    num_steps: int,
+    mean_interval_seconds_of_cell_type: dict[str, float],
+    train_args: str,
+    fully_async: bool,
+    cell_fault_forms: CellFaultForms,
+) -> SoakRunner:
+    evidence_dir = evidence_directory(Path(dump_dir))
+    event_log = EventLog(evidence_dir / "events.jsonl")
+    return asyncio.run(
+        run_cell_soak(
+            config=config,
+            dump_dir=Path(dump_dir),
+            sut_run=note_launch_outcome(
+                event_log=event_log,
+                request_id=None,
+                launching=asyncio.to_thread(
+                    run_training,
+                    train_args=train_args,
+                    mode=ft_mode,
+                    config=config,
+                    train_script=get_train_script(fully_async=fully_async),
+                ),
+                accept_replaced=False,
+            ),
+            runner_config=SoakRunnerConfig(
+                seed=seed,
+                target_configs={
+                    kind: SoakTargetConfig(
+                        expected_count=ft_mode.cell_counts_of_type[kind], mean_interval_seconds=interval
+                    )
+                    for kind, interval in mean_interval_seconds_of_cell_type.items()
+                },
+                tail=SoakTailConfig.create(num_rollout=num_steps),
+            ),
+            event_log=event_log,
+            evidence_dir=evidence_dir,
+            forms=cell_fault_forms,
+        )
+    )
+
+
+def assert_mode_supports_fully_async(ft_mode: FTTestMode, *, mode: str) -> None:
+    assert ft_mode.has_real_rollout, (
+        f"Mode {mode!r} has no rollout engines, so a fully-async soak would train off pre-recorded debug rollout "
+        f"data and would prove nothing about generating while training"
+    )
+
+
+if __name__ == "__main__":
+    app()

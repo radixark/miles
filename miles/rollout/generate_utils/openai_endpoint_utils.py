@@ -7,13 +7,18 @@ import logging
 import random
 from argparse import Namespace
 
+from miles.rollout.generate_utils.sampling_mask import should_return_sampling_mask
+from miles.rollout.session.errors import OutputStoreContractError
 from miles.rollout.session.samples.codec import (
     COMPUTED_FIELDS,
     COMPUTED_FIELDS_V2,
+    ROLLOUT_SAMPLING_MASK_FIELDS,
     SamplesReply,
     decode_samples_and_merge_input_sample,
 )
-from miles.utils.http_utils import post, post_bytes_no_retry
+from miles.rollout.session.types import CreateSessionRequest
+from miles.utils.http_utils import PostStatusError, post, post_buffer_no_retry
+from miles.utils.output_store.plan import StorePlanError
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -28,10 +33,13 @@ class OpenAIEndpointTracer:
         session_id: str,
         session_server_instance_id: str | None = None,
         samples_wire_fields: tuple[str, ...] = COMPUTED_FIELDS,
+        agent_router_url: str | None = None,
     ):
         self.router_url = router_url
         self.session_id = session_id
         self.base_url = f"{router_url}/sessions/{session_id}"
+        # The agent may run outside the cluster; the driver's own calls stay on base_url.
+        self.agent_base_url = f"{agent_router_url or router_url}/sessions/{session_id}"
         self.session_server_instance_id = session_server_instance_id
         # The samples-wire allowlist must match the server's encode: v1 default,
         # extended under --use-session-server v2 (create() selects from args;
@@ -44,28 +52,41 @@ class OpenAIEndpointTracer:
         return self.router_url.removeprefix("http://")
 
     @staticmethod
-    async def create(args: Namespace):
-        session_ip = getattr(args, "session_server_ip", None)
-        session_ports = getattr(args, "session_server_ports", None)
-        if not session_ip or not session_ports:
+    async def create(
+        args: Namespace,
+        *,
+        evaluation: bool = False,
+        sampling_params: dict | None = None,
+        extra_key: str | None = None,
+    ):
+        instances = args.session_server_instances
+        if not instances:
             raise RuntimeError(
-                "session_server_ip/session_server_ports are not set. "
-                "Pass --use-session-server to start the session server."
+                "session_server_instances is not set. Pass --use-session-server to start the session server."
             )
         # The only routing decision in the system: pick the owning instance once
         # per session; every later touch of the session reuses this URL.
-        session_port = random.choice(session_ports)
-        session_url = f"http://{session_ip}:{session_port}"
-        instance_ids = getattr(args, "session_server_instance_ids", None) or {}
-        session_server_instance_id = instance_ids.get(session_port)
-        response = await post(f"{session_url}/sessions", {}, action="post")
+        instance = random.choice(instances)
+        session_url = instance.url
+        # Drop engine-only sampling fields before validating the session creation body.
+        session_params = {
+            key: value for key, value in (sampling_params or {}).items() if key in CreateSessionRequest.model_fields
+        }
+        body = CreateSessionRequest.model_validate(
+            {**session_params, "evaluation": evaluation, "extra_key": extra_key}
+        )
+        use_v2 = args.use_session_server == "v2"
+        samples_wire_fields = COMPUTED_FIELDS_V2 if use_v2 else COMPUTED_FIELDS
+        if should_return_sampling_mask(args, sampling_params, evaluation=evaluation):
+            samples_wire_fields += ROLLOUT_SAMPLING_MASK_FIELDS
+        response = await post(f"{session_url}/sessions", body.model_dump(exclude_none=True), action="post")
         session_id = response["session_id"]
-        use_v2 = getattr(args, "use_session_server", None) == "v2"
         return OpenAIEndpointTracer(
             router_url=session_url,
             session_id=session_id,
-            session_server_instance_id=session_server_instance_id,
-            samples_wire_fields=COMPUTED_FIELDS_V2 if use_v2 else COMPUTED_FIELDS,
+            session_server_instance_id=instance.instance_id,
+            samples_wire_fields=samples_wire_fields,
+            agent_router_url=instance.external_url,
         )
 
     async def collect_samples(
@@ -75,20 +96,34 @@ class OpenAIEndpointTracer:
         body: dict = {"max_seq_len": max_seq_len}
         if agent_metadata is not None:
             body["metadata"] = agent_metadata
+        reply = None
         try:
             # Timeouts and transport errors propagate after cleanup, for `generate` to handle.
-            payload = await post_bytes_no_retry(
+            payload = await post_buffer_no_retry(
                 f"{self.base_url}/samples",
                 body,
                 timeout=_SESSION_REQUEST_TIMEOUT,
             )
+            reply = await asyncio.to_thread(
+                decode_samples_and_merge_input_sample,
+                payload,
+                input_sample,
+                fields=self.samples_wire_fields,
+            )
+        except PostStatusError as exc:
+            if exc.status == OutputStoreContractError.status_code:
+                # Raised again here so the rollout stops, as for a StorePlanError on /generate.
+                raise StorePlanError(f"session {self.session_id}: {exc.body}") from exc
+            raise
         finally:
+            # Without a decoded reply, the session's DELETE also deletes the objects it handed over.
+            delete_url = self.base_url if reply is not None else f"{self.base_url}?samples_received=false"
             try:
                 await asyncio.wait_for(
-                    post(self.base_url, {}, action="delete"),
+                    post(delete_url, {}, action="delete"),
                     timeout=_SESSION_REQUEST_TIMEOUT,
                 )
             except Exception as e:
                 logger.warning(f"Failed to delete session {self.session_id} after collecting samples: {e}")
 
-        return decode_samples_and_merge_input_sample(payload, input_sample, fields=self.samples_wire_fields)
+        return reply

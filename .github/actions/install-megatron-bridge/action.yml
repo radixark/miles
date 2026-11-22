@@ -1,0 +1,63 @@
+name: Install Megatron Bridge override
+description: Install an explicit Bridge ref without replacing runtime dependencies.
+inputs:
+  ref:
+    description: 'PR number (#N), branch, tag, or commit; empty reads the PR body.'
+    default: ''
+  pr_body:
+    description: 'PR description containing an optional ci-megatron-bridge-pr directive.'
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Resolve Bridge ref
+      id: resolve
+      shell: bash
+      env:
+        BRIDGE_REF: ${{ inputs.ref }}
+        PR_BODY: ${{ inputs.pr_body }}
+      run: |
+        if [ -z "$BRIDGE_REF" ]; then
+          BRIDGE_REF=$(printf '%s\n' "$PR_BODY" | grep -m1 -oP '^ci-megatron-bridge-pr:\s+\K\S+' || true)
+        fi
+        if [ -z "$BRIDGE_REF" ]; then
+          exit 0
+        fi
+        if [[ "$BRIDGE_REF" =~ ^#([0-9]+)$ ]]; then
+          BRIDGE_REF="refs/pull/${BASH_REMATCH[1]}/head"
+        elif [[ ! "$BRIDGE_REF" =~ ^[A-Za-z0-9_][A-Za-z0-9_./-]*$ ]]; then
+          echo "::error::Invalid Megatron Bridge ref: $BRIDGE_REF"
+          exit 1
+        fi
+        echo "ref=$BRIDGE_REF" >> "$GITHUB_OUTPUT"
+
+    - name: Checkout Bridge
+      if: steps.resolve.outputs.ref != ''
+      uses: actions/checkout@v4
+      with:
+        repository: radixark/Megatron-Bridge
+        ref: ${{ steps.resolve.outputs.ref }}
+        path: Megatron-Bridge
+        persist-credentials: false
+
+    - name: Install and verify Bridge
+      if: steps.resolve.outputs.ref != ''
+      shell: bash
+      run: |
+        git -C "$GITHUB_WORKSPACE/Megatron-Bridge" log -1 --format='Bridge commit: %H'
+        python -m pip install --no-deps --no-build-isolation --force-reinstall "$GITHUB_WORKSPACE/Megatron-Bridge"
+        python - <<'PY'
+        import json
+        import os
+        from importlib.metadata import distribution
+        from importlib.util import find_spec
+        from pathlib import Path
+
+        package = distribution("megatron-bridge")
+        checkout = Path(os.environ["GITHUB_WORKSPACE"]) / "Megatron-Bridge"
+        assert json.loads(package.read_text("direct_url.json"))["url"] == checkout.resolve().as_uri()
+        expected = Path(package.locate_file("megatron/bridge/__init__.py")).resolve()
+        actual = Path(find_spec("megatron.bridge").origin).resolve()
+        assert actual == expected, f"megatron.bridge resolved to {actual}, expected {expected}"
+        print(f"megatron-bridge {package.version}: {actual}")
+        PY

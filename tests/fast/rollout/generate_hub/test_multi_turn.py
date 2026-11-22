@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import re
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from itertools import groupby
@@ -12,13 +11,16 @@ import pytest
 from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
 
+from miles.rollout.session.types import SessionServerInstance
 from miles.utils.chat_template_utils import TITOTokenizerType, get_tito_tokenizer
+from miles.utils.function_registry import function_registry
 from miles.utils.processing_utils import load_tokenizer
+from miles.utils.test_utils import mock_tools
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
 from miles.utils.test_utils.mock_tools import SAMPLE_TOOLS, ThreeTurnStub, TwoTurnStub
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionSpan
 
-register_cpu_ci(est_time=130, suite="stage-b-cpu", labels=[])
+register_cpu_ci(est_time=130, suite="stage-b-cpu", labels=["rollout"])
 
 _ = generation_env, SAMPLE_TOOLS, TwoTurnStub, ThreeTurnStub
 
@@ -121,12 +123,22 @@ def verify_samples(actual: Sample | list[Sample], expected: list[ExpectedSampleI
             tokens=[],
             loss_mask=[],
             rollout_log_probs=[],
+            weight_versions=[],
             prefix_cache_info=Sample.PrefixCacheInfo(),
         )
         # Session server populates diagnostic metadata (token IDs,
-        # trim config, mismatch analysis, dashboard lifecycle timing) that
-        # varies with mock setup. Strip these before comparing structure.
-        for key in ("tito_session_mismatch", "accumulated_token_ids", "max_trim_tokens", "lifecycle", "leaf"):
+        # trim config, mismatch analysis, dashboard lifecycle timing, the
+        # template kwargs the last turn recorded) that varies with mock setup.
+        # Strip these before comparing structure.
+        for key in (
+            "session_id",
+            "tito_session_mismatch",
+            "accumulated_token_ids",
+            "max_trim_tokens",
+            "lifecycle",
+            "leaf",
+            "turn_args",
+        ):
             actual_partial.metadata.pop(key, None)
         assert actual_partial == expected_item.partial_sample
 
@@ -143,14 +155,18 @@ def expected_request(
     *,
     return_routed_experts: bool = False,
     return_indexer_topk: bool = False,
+    extra_key: str | None = None,
 ) -> dict:
-    return {
+    result = {
         "input_ids": input_ids,
         "sampling_params": sampling_params or DEFAULT_SAMPLING_PARAMS,
         "return_logprob": True,
         "return_routed_experts": return_routed_experts,
         "return_indexer_topk": return_indexer_topk,
     }
+    if extra_key is not None:
+        result["extra_key"] = extra_key
+    return result
 
 
 def expected_openai_request(messages: list[dict], **extra) -> dict:
@@ -162,6 +178,12 @@ def expected_openai_request(messages: list[dict], **extra) -> dict:
         "logprobs": True,
         "return_meta_info": True,
         "no_stop_trim": False,
+        # The R3 replay flags follow the launch flags and are always present.
+        "return_routed_experts": False,
+        "return_indexer_topk": False,
+        # The mock agent drops request_kwargs; the session fills the temperature the
+        # generator registered at creation.
+        "temperature": DEFAULT_SAMPLING_PARAMS["temperature"],
         "chat_template_kwargs": {"clear_thinking": False},
         **extra,
     }
@@ -251,6 +273,30 @@ class TestBasicMultiTurn:
         verify_samples(result.sample, expected)
 
 
+class TestRadixCacheExtraKey:
+    def test_every_turn_of_a_started_sample_carries_its_kv_cache_namespace(self, variant, generation_env):
+        """Both turns of a multi-turn sample send the same namespace key and the sample keeps it."""
+        generation_env.mock_server.process_fn = TwoTurnStub.process_fn
+
+        S = TwoTurnStub
+        sample = make_sample(prompt=S.PROMPT)
+        sample.kv_cache_namespace = "train:-:7"
+        result = _run_generate(variant, generation_env, sample)
+
+        extra_key = "train:-:7"
+        if is_agentic_variant(variant):
+            assert _strip_pretokenized(result.requests) == [
+                expected_openai_request(S.OPENAI_MESSAGES_FIRST_TURN, extra_key=extra_key),
+                expected_openai_request(S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT, extra_key=extra_key),
+            ]
+        else:
+            assert result.requests == [
+                expected_request(S.FIRST_PROMPT_TOKEN_IDS, extra_key=extra_key),
+                expected_request(S.SECOND_PROMPT_TOKEN_IDS, extra_key=extra_key),
+            ]
+        assert [s.kv_cache_namespace for s in listify(result.sample)] == ["train:-:7"]
+
+
 class TestExitConditions:
     @pytest.mark.parametrize(
         "generation_env",
@@ -272,13 +318,58 @@ class TestExitConditions:
         assert {m["name"] for m in messages[2:4]} == {"get_year", "get_temperature"}
         assert messages[4]["content"] == S.SECOND_RESPONSE
 
+    def test_weight_version_spans_from_the_engine_are_anchored_per_turn(self, variant, generation_env):
+        """Spans returned by the engine land as absolute token positions, one call per turn."""
+        if variant != "multi_turn":
+            pytest.skip("span anchoring asserted once, on the engine multi-turn path")
+
+        S = TwoTurnStub
+
+        def process_fn(prompt: str) -> ProcessResult:
+            base_result = S.process_fn(prompt)
+            num_tokens = len(TOKENIZER.encode(base_result.text, add_special_tokens=False))
+            num_prompt_tokens = len(TOKENIZER.encode(prompt, add_special_tokens=False))
+            version = "7" if base_result.text == S.FIRST_RESPONSE else "8"
+            return replace(
+                base_result,
+                meta_info=ProcessResultMetaInfo(
+                    weight_versions=[{"version": version, "start": 0, "end": num_tokens}],
+                    prefill_weight_versions=[
+                        {"version": "6", "start": 0, "end": 1},
+                        {"version": version, "start": 1, "end": num_prompt_tokens},
+                    ],
+                ),
+            )
+
+        generation_env.mock_server.process_fn = process_fn
+        result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
+
+        sample = result.sample
+        assert [[span.version for span in call.spans] for call in sample.weight_versions] == [["7"], ["8"]]
+        first_call, second_call = sample.weight_versions
+        first, second = first_call.spans[0], second_call.spans[0]
+        n1 = len(TOKENIZER.encode(S.FIRST_RESPONSE, add_special_tokens=False))
+        n2 = len(TOKENIZER.encode(S.SECOND_RESPONSE, add_special_tokens=False))
+        assert (first.abs_end - first.abs_start, second.abs_end - second.abs_start) == (n1, n2)
+        assert first.abs_start == len(S.FIRST_PROMPT_TOKEN_IDS)
+        assert first.abs_end < second.abs_start
+        assert second.abs_end == len(sample.tokens)
+        assert (first_call.output_start, second_call.output_start) == (first.abs_start, second.abs_start)
+        assert first_call.prefill_spans == [
+            WeightVersionSpan("6", 0, 1),
+            WeightVersionSpan("7", 1, len(S.FIRST_PROMPT_TOKEN_IDS)),
+        ]
+        assert second_call.prefill_spans == [
+            WeightVersionSpan("6", 0, 1),
+            WeightVersionSpan("8", 1, second.abs_start),
+        ]
+        sample.validate()
+
     def test_partial_rollout_not_supported(self, variant, generation_env):
-        if is_agentic_variant(variant):
-            pytest.skip("agentic_tool_call does not check partial_rollout flag")
-        generation_env.args.partial_rollout = True
+        env = replace(generation_env, args=generation_env.args.model_copy(update={"partial_rollout": True}))
 
         with pytest.raises(AssertionError, match="Partial rollout is not supported"):
-            _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
+            _run_generate(variant, env, make_sample(prompt=SINGLE_TURN_PROMPT))
 
     def test_abort_preserves_content(self, variant, generation_env):
         if is_agentic_variant(variant):
@@ -375,11 +466,11 @@ class TestExitConditions:
         verify_samples(result.sample, expected)
 
 
-class TestRespectMaxContextLen:
+class TestRespectMaxSeqLen:
     @pytest.mark.parametrize(
-        "generation_env", [{"args_kwargs": {"rollout_max_context_len": SINGLE_TURN_PROMPT_TOKEN_LEN}}], indirect=True
+        "generation_env", [{"args_kwargs": {"max_seq_len": SINGLE_TURN_PROMPT_TOKEN_LEN}}], indirect=True
     )
-    def test_prompt_exceeds_max_context_len_returns_truncated(self, variant, generation_env):
+    def test_prompt_exceeds_max_seq_len_returns_truncated(self, variant, generation_env):
         if is_agentic_variant(variant):
             pytest.skip("TODO: implement")
         result = _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
@@ -399,7 +490,7 @@ class TestRespectMaxContextLen:
         [
             {
                 "args_kwargs": {
-                    "rollout_max_context_len": len(TwoTurnStub.FIRST_PROMPT_TOKEN_IDS)
+                    "max_seq_len": len(TwoTurnStub.FIRST_PROMPT_TOKEN_IDS)
                     + token_len(TwoTurnStub.FIRST_RESPONSE)
                     + token_len(TwoTurnStub.FIRST_TOOL_RESPONSE)
                 }
@@ -407,7 +498,7 @@ class TestRespectMaxContextLen:
         ],
         indirect=True,
     )
-    def test_second_turn_exceeds_max_context_len_returns_truncated(self, variant, generation_env):
+    def test_second_turn_exceeds_max_seq_len_returns_truncated(self, variant, generation_env):
         if is_agentic_variant(variant):
             pytest.skip("TODO: implement")
         S = TwoTurnStub
@@ -437,11 +528,11 @@ class TestRespectMaxContextLen:
         "generation_env,expected_max_new_tokens",
         [
             (
-                {"args_kwargs": {"rollout_max_context_len": len(TwoTurnStub.SECOND_PROMPT_TOKEN_IDS) + 10}},
+                {"args_kwargs": {"max_seq_len": len(TwoTurnStub.SECOND_PROMPT_TOKEN_IDS) + 10}},
                 10,
             ),
             (
-                {"args_kwargs": {"rollout_max_context_len": len(TwoTurnStub.SECOND_PROMPT_TOKEN_IDS) + 100}},
+                {"args_kwargs": {"max_seq_len": len(TwoTurnStub.SECOND_PROMPT_TOKEN_IDS) + 100}},
                 64,
             ),
         ],
@@ -513,7 +604,6 @@ class TestRoutedExpertsMultiTurn:
                     # Must be in args BEFORE the session server starts: the R3
                     # decode now runs inside the worker during sample assembly.
                     "num_layers": 2,
-                    "moe_router_topk": 4,
                 }
             }
         ],
@@ -521,7 +611,7 @@ class TestRoutedExpertsMultiTurn:
     )
     def test_two_turns_routed_experts(self, variant, generation_env):
         S = TwoTurnStub
-        num_layers, moe_router_topk = generation_env.args.num_layers, generation_env.args.moe_router_topk
+        num_layers, moe_router_topk = generation_env.args.num_layers, 4
         if is_agentic_variant(variant):
             tito = get_tito_tokenizer(
                 TOKENIZER,
@@ -530,15 +620,15 @@ class TestRoutedExpertsMultiTurn:
             )
             first_prompt_token_ids = tito.apply_chat_template(
                 S.OPENAI_MESSAGES_FIRST_TURN,
-                tools=SAMPLE_TOOLS,
                 add_generation_prompt=True,
                 tokenize=True,
+                template_args=tito.default_template_args(SAMPLE_TOOLS),
             )
             second_prompt_token_ids = tito.apply_chat_template(
                 S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT,
-                tools=SAMPLE_TOOLS,
                 add_generation_prompt=True,
                 tokenize=True,
+                template_args=tito.default_template_args(SAMPLE_TOOLS),
             )
         else:
             first_prompt_token_ids = S.FIRST_PROMPT_TOKEN_IDS
@@ -637,6 +727,24 @@ class TestAgentMetadata:
         for m in mismatches:
             assert {"type", "segment_index", "expected_text", "actual_text", "detail"} == set(m.keys())
 
+    def test_a_sample_runs_its_own_agent_with_the_lower_seq_len(self, variant, generation_env):
+        """A mixed dataset's custom_agent_function_path and max_seq_len win over the run-wide ones, but only downward."""
+        generation_env.mock_server.process_fn = TwoTurnStub.process_fn
+        seen_seq_lens = []
+
+        async def dataset_agent(**kwargs):
+            seen_seq_lens.append(kwargs["metadata"].get("max_seq_len"))
+            return await mock_tools.run_agentic_tool_call(**kwargs)
+
+        sample = make_sample(prompt=TwoTurnStub.PROMPT)
+        sample.agent_function_path = "test3947.dataset_agent"
+        sample.max_seq_len = 100
+        run_limit = generation_env.args.max_seq_len
+        with function_registry.temporary("test3947.dataset_agent", dataset_agent):
+            _run_generate(variant, generation_env, sample)
+
+        assert seen_seq_lens == [100 if run_limit is None else min(run_limit, 100)]
+
     def test_agent_returns_none_metadata_unchanged(self, variant, generation_env):
         generation_env.mock_server.process_fn = TwoTurnStub.process_fn
         sample = make_sample(prompt=TwoTurnStub.PROMPT)
@@ -667,11 +775,12 @@ class TestAgentMetadata:
             mock_tools.AGENTIC_RETURN_METADATA = None
 
         samples = listify(result.sample)
-        (session_server_port,) = generation_env.args.session_server_ports
+        (session_server_instance,) = generation_env.args.session_server_instances
+        session_server_port = int(session_server_instance.addr.rsplit(":", 1)[1])
         expected_session_server_id = f"127.0.0.1:{session_server_port}"
         for s in samples:
             assert s.metadata["session_server_id"] == expected_session_server_id
-            assert re.fullmatch(r"[0-9a-f]{32}", s.metadata["session_server_instance_id"])
+            assert s.metadata["session_server_instance_id"] == f"{generation_env.args.run_uuid}-0"
 
 
 class TestAgentCollectionFailure:
@@ -720,6 +829,7 @@ class TestAgentNoRecords:
     def test_no_records_returns_aborted(self, agentic_variant):
         from tests.fast.fixtures.generation_fixtures import (
             GenerateEnv,
+            compute_generate_args,
             extra_argv_for_variant,
             make_args,
             with_session_server,
@@ -745,9 +855,8 @@ class TestAgentNoRecords:
                 extra_argv=noop_argv,
             )
             with with_session_server(mock_server.url, args, port=session_port):
-                args.session_server_ip = "127.0.0.1"
-                args.session_server_ports = [session_port]
-                env = GenerateEnv(args=args, mock_server=mock_server)
+                args.session_server_instances = [SessionServerInstance(addr=f"127.0.0.1:{session_port}")]
+                env = GenerateEnv(args=compute_generate_args(args), mock_server=mock_server)
                 result = _run_generate(agentic_variant, env, make_sample(prompt=TwoTurnStub.PROMPT))
 
         SingletonMeta.clear_all_instances()

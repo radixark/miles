@@ -2,16 +2,36 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+import yaml
 from tests.ci.ci_policy import REGULAR_CADENCE, resolve_policy
 from tests.ci.ci_register import CIRegistry, HWBackend, register_cpu_ci
+from tests.ci.hardware import CUDA_STAGES
 from tests.ci.stage_selection import PR_GPU_STAGES, ChangedFile, read_changed_files, select_skipped_gpu_stages
 
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
+
+WORKFLOW = Path(__file__).resolve().parents[3] / ".github/workflows/pr-test.yml"
+
+
+def test_a_cpu_failure_cannot_skip_the_gpu_stages_a_nightly_asked_for():
+    """bypass_fastfail is defeated by any job on the path that inherits the default success().
+
+    A job without `if` is gated on its whole dependency closure, so on 2026-09-10 a
+    stage-a-cpu failure skipped resolve-ci-image and with it all seven GPU stages, even
+    though the nightly policy had set bypass_fastfail=true.
+    """
+    workflow = WORKFLOW.read_text()
+    blocks = dict(re.findall(r"\n  ([a-z][a-z0-9-]*):\n(.*?)(?=\n  [a-z][a-z0-9-]*:\n|\Z)", workflow, re.S))
+    for job in ("docker-build-amd64", "docker-build-arm64", "resolve-ci-image-amd64"):
+        block = blocks[job]
+        assert "if:" in block, f"{job} inherits success() over the closure, defeating bypass_fastfail"
+        assert "always()" in block, f"{job} must not be gated on an unrelated upstream failure"
 
 
 def _registration(
@@ -20,14 +40,19 @@ def _registration(
     *,
     labels: list[str] | None = None,
     disabled: str | None = None,
+    hardware: list[str] | None = None,
 ) -> CIRegistry:
-    backend = HWBackend.ROCM if suite == "stage-c-4-gpu-mi350" else HWBackend.CUDA
+    backend = HWBackend.ROCM if suite.endswith("-mi350") else HWBackend.CUDA
+    if hardware is None and backend is HWBackend.CUDA:
+        # Mirror the home-stage invariant the registry enforces.
+        hardware = ["blackwell"] if suite.endswith("-b200") else ["hopper"]
     return CIRegistry(
         backend=backend,
         filename=filename,
         est_time=1,
         suite=suite,
         labels=["precision"] if labels is None else labels,
+        hardware=hardware or [],
         disabled=disabled,
     )
 
@@ -77,7 +102,7 @@ def test_docs_tooling_and_cpu_only_tests_skip_every_gpu_stage():
         CIRegistry(HWBackend.CPU, cpu_test, 1, "stage-a-cpu"),
     ]
     changed_files = (
-        ChangedFile("M", ("docs/ci/00-stage.md",)),
+        ChangedFile("M", ("docs/developer/ci/00-stage.md",)),
         ChangedFile("M", ("examples/README.md",)),
         ChangedFile("M", (".pre-commit-config.yaml",)),
         ChangedFile("M", ("scripts/tools/sync_example_docs.py",)),
@@ -128,6 +153,30 @@ def test_broad_scope_adds_every_runnable_stage():
     assert skipped == PR_GPU_STAGES - {"stage-b-2-gpu-h200", "stage-c-8-gpu-h100"}
 
 
+@pytest.mark.parametrize("changed_path", ["docs/index.md", "tests/e2e/test_hopper.py"])
+def test_blackwell_only_scope_keeps_b200_for_non_blackwell_changes(changed_path):
+    registrations = [
+        _registration("tests/e2e/test_hopper.py", "stage-c-8-gpu-h200", hardware=["hopper"]),
+        _registration("tests/e2e/test_blackwell_8.py", "stage-c-8-gpu-b200", hardware=["blackwell"]),
+        _registration("tests/e2e/test_blackwell_4.py", "stage-c-4-gpu-b200", hardware=["blackwell"]),
+        _registration("tests/e2e/test_rocm.py", "stage-c-4-gpu-mi350"),
+    ]
+    changed_files = (ChangedFile("M", (changed_path,)),)
+
+    skipped = set(_select(changed_files, registrations, raw_labels=("run-ci-blackwell-only",)))
+
+    assert skipped == PR_GPU_STAGES - {"stage-c-8-gpu-b200", "stage-c-4-gpu-b200"}
+
+
+def test_run_on_dispatch_keeps_a_selected_rocm_stage():
+    registrations = [_registration("tests/e2e/test_rocm.py", "stage-c-4-gpu-mi350")]
+    changed_files = (ChangedFile("M", ("miles/trainer.py",)),)
+
+    skipped = set(_select(changed_files, registrations, raw_labels=("run-ci-precision", "run-on-blackwell")))
+
+    assert "stage-c-4-gpu-mi350" not in skipped
+
+
 def test_bypass_fastfail_does_not_make_a_docs_change_affect_gpu_stages():
     registrations = [_registration("tests/fast-gpu/test_precision.py", "stage-b-2-gpu-h200")]
     changed_files = (ChangedFile("M", ("docs/index.md",)),)
@@ -145,6 +194,17 @@ def test_unknown_source_path_affects_every_runnable_gpu_stage():
     )
 
 
+@pytest.mark.parametrize(
+    ("changed_path", "skips_every_stage"),
+    [(".claude/skills/pr-ci-targeted/affected_tests.py", True), ("miles/trainer.py", False)],
+)
+def test_agent_tooling_under_dot_claude_affects_no_gpu_stage(changed_path, skips_every_stage):
+    registrations = [_registration(f"tests/e2e/{stage}.py", stage, labels=[]) for stage in PR_GPU_STAGES]
+    skipped = _select((ChangedFile("M", (changed_path,)),), registrations, raw_labels=())
+
+    assert (set(skipped) == PR_GPU_STAGES) is skips_every_stage
+
+
 def test_rename_from_unknown_source_path_affects_every_runnable_stage():
     changed_files = (ChangedFile("R100", ("miles/old.py", "docs/old-api.md")),)
 
@@ -155,7 +215,7 @@ def test_rename_from_unknown_source_path_affects_every_runnable_stage():
     ("event_name", "changed_files"),
     [("schedule", (ChangedFile("M", ("docs/index.md",)),)), ("workflow_dispatch", ()), ("pull_request", None)],
 )
-def test_non_pr_or_missing_diff_never_prunes(event_name, changed_files):
+def test_non_pr_or_missing_diff_keeps_all_runnable_stages(event_name, changed_files):
     assert _select(changed_files, _all_runnable_registrations(), event_name=event_name) == ()
 
 
@@ -174,7 +234,7 @@ def test_changed_labeled_test_without_its_label_keeps_current_selection_semantic
 def test_cli_publishes_all_gpu_stages_for_docs_diff(tmp_path):
     repo_root = Path(__file__).resolve().parents[3]
     diff_path = tmp_path / "changed-files.z"
-    diff_path.write_bytes(b"M\0docs/ci/00-stage.md\0")
+    diff_path.write_bytes(b"M\0docs/developer/ci/00-stage.md\0")
     output_path = tmp_path / "github-output"
     env = os.environ.copy()
     env.update(
@@ -198,3 +258,98 @@ def test_cli_publishes_all_gpu_stages_for_docs_diff(tmp_path):
     assert result.returncode == 0, result.stderr
     outputs = dict(line.split("=", 1) for line in output_path.read_text().splitlines())
     assert set(json.loads(outputs["skipped_stages"])) == PR_GPU_STAGES
+    assert outputs["needs_cuda_image"] == "false"
+
+
+@pytest.mark.parametrize("diff_payload", [b"M\0docker/Dockerfile\0", b"", b"invalid"])
+@pytest.mark.parametrize(
+    ("raw_labels", "registration_args", "expected_stages"),
+    [
+        ([], "", set()),
+        (["run-ci-cpu"], "", set()),
+        (["run-ci"], "", set()),
+        (["rebuild-ci-image"], "", set()),
+        (["run-ci-megatron"], None, set()),
+        (["run-ci-megatron"], ", disabled='unavailable'", set()),
+        (["run-ci-megatron"], ", nightly=True", set()),
+        (["run-ci-megatron"], "", {"stage-c-4-gpu-h200"}),
+        (["run-ci-amd"], "", {"stage-c-4-gpu-mi350"}),
+        (["run-ci-megatron", "run-ci-amd"], "", {"stage-c-4-gpu-h200", "stage-c-4-gpu-mi350"}),
+        (["run-ci-image"], "", {"stage-c-4-gpu-h200", "stage-c-4-gpu-mi350"}),
+        (["nightly"], ", nightly=True", {"stage-c-4-gpu-h200", "stage-c-4-gpu-mi350"}),
+    ],
+)
+def test_policy_cli_image_demand_matches_selected_gpu_tests(
+    tmp_path, diff_payload, raw_labels, registration_args, expected_stages
+):
+    repo_root = Path(__file__).resolve().parents[3]
+    test_dir = tmp_path / "tests/e2e"
+    test_dir.mkdir(parents=True)
+    source = (
+        "register_cpu_ci(est_time=1, suite='stage-a-cpu', labels=[])\n"
+        "register_rocm_ci(est_time=1, suite='stage-c-4-gpu-mi350', labels=['amd'])\n"
+    )
+    if registration_args is not None:
+        source += (
+            "register_cuda_ci(est_time=1, suite='stage-c-4-gpu-h200', labels=['megatron'], "
+            f"hardware=['hopper']{registration_args})\n"
+        )
+    (test_dir / "test_selection.py").write_text(source)
+    diff_path = tmp_path / "changed-files.z"
+    diff_path.write_bytes(diff_payload)
+    output_path = tmp_path / "github-output"
+    env = os.environ.copy()
+    env.update(
+        EVENT_NAME="pull_request",
+        PR_LABELS_JSON=json.dumps(raw_labels),
+        CADENCE_OVERRIDE="",
+        CHANGED_FILES_PATH=str(diff_path),
+        GITHUB_OUTPUT=str(output_path),
+        PYTHONPATH=str(repo_root),
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "tests.ci.ci_policy"], cwd=tmp_path, env=env, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    outputs = dict(line.split("=", 1) for line in output_path.read_text().splitlines())
+    assert PR_GPU_STAGES - set(json.loads(outputs["skipped_stages"])) == expected_stages
+    assert outputs["needs_cuda_image"] == str("stage-c-4-gpu-h200" in expected_stages).lower()
+
+
+def test_image_builds_and_resolvers_need_cuda():
+    cuda = WORKFLOW.read_text()
+    builds = cuda.split("\n  docker-build-amd64:\n", 1)[1].split("\n  resolve-ci-image-amd64:\n", 1)[0]
+    resolver = cuda.split("\n  resolve-ci-image-amd64:\n", 1)[1].split("\n  stage-a-cpu:\n", 1)[0]
+    assert "needs_cuda_image: ${{ steps.resolve.outputs.needs_cuda_image }}" in cuda
+    # Both the amd64 and the arm64 call.
+    assert builds.count("(needs.resolve-ci-policy.outputs.needs_cuda_image == 'true' ||") == 2
+    # A CPU-only PR build-tests its image on request.
+    assert builds.count("contains(github.event.pull_request.labels.*.name, 'rebuild-ci-image')) &&") == 2
+    assert "needs: [resolve-ci-policy, docker-build-amd64]" in resolver
+    assert "needs.docker-build-amd64.result == 'success'" in resolver
+    assert "needs.resolve-ci-policy.outputs.needs_cuda_image == 'true'" in resolver
+
+    rocm = WORKFLOW.with_name("pr-test-rocm.yml").read_text()
+    policy = rocm.split("\n  resolve-ci-policy:\n", 1)[1].split("    steps:", 1)[0]
+    build = rocm.split("\n  docker-build-rocm10-mi35x:\n", 1)[1].split("\n  resolve-ci-image:\n", 1)[0]
+    resolver = rocm.split("\n  resolve-ci-image:\n", 1)[1].split("    runs-on:", 1)[0]
+    for stage in ("stage-c-2-gpu-mi350", "stage-c-4-gpu-mi350", "stage-c-8-gpu-mi350"):
+        assert f"contains(fromJSON(steps.resolve.outputs.skipped_stages || '[]'), '{stage}')" in policy
+    assert "needs: [resolve-ci-policy]" in build
+    assert "arch: rocm10-mi35x" in build
+    assert "(needs.resolve-ci-policy.outputs.needs_rocm_image == 'true' ||" in build
+    assert "contains(github.event.pull_request.labels.*.name, 'rebuild-ci-image'))" in build
+    assert "needs: [resolve-ci-policy, docker-build-rocm10-mi35x]" in resolver
+    assert "needs.docker-build-rocm10-mi35x.result == 'success'" in resolver
+    assert "needs.resolve-ci-policy.outputs.needs_rocm_image == 'true'" in resolver
+
+
+def test_each_cuda_stage_requires_the_image_of_its_declared_architecture():
+    jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+    for name, stage in CUDA_STAGES.items():
+        # Both B200 stages are planned by one job.
+        job = jobs.get(name) or jobs["stage-c-b200"]
+        resolver = f"resolve-ci-image-{stage.image_arch}"
+        assert resolver in job["needs"], name
+        assert f"needs.{resolver}.outputs.container_image" in job["with"]["container_image"], name
+        assert f"docker-build-{stage.image_arch}" in jobs[resolver]["needs"]

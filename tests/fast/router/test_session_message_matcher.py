@@ -7,21 +7,55 @@ validation, v2 attach search, the effective history handed to TITO, and
 registry ownership.
 """
 
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.session.errors import MessageValidationError
 from miles.rollout.session.linear_trajectory import LinearTrajectory, SessionRegistry
 from miles.rollout.session.types import SessionRecord
-from miles.rollout.session.v2.session_state import SessionStateV2, position_for_request, prepare_pretokenized
+from miles.rollout.session.v2.session_state import (
+    SessionStateV2,
+    attach_point_for_request,
+    prepare_token_ids_and_request_args,
+)
 from miles.utils.chat_template_utils.message_matcher_hub import (
     loose_tool_call_message_matches,
     role_content_only_message_matches,
     strict_message_matches,
 )
 from miles.utils.chat_template_utils.tito_tokenizer import ALL_APPEND_ROLES, FixedTemplate, TITOTokenizer
+
+
+def _prepare_token_ids(session, request_messages, tools=None, *, tito_tokenizer, message_matcher=None) -> list[int]:
+    """v1: rollback + request args + render for a messages-only request; returns ``input_ids``."""
+    client_args = {"messages": request_messages}
+    if tools is not None:
+        client_args["tools"] = tools
+    prepared = session.prepare_token_ids_and_request_args(
+        client_args,
+        config=make_session_server_config(),
+        tito_tokenizer=tito_tokenizer,
+        message_matcher=message_matcher,
+    )
+    return prepared.body["input_ids"]
+
+
+def _prepare_token_ids_v2(state, request_messages, tools=None, *, tito_tokenizer, message_matcher=None) -> list[int]:
+    """v2: attach + request args + render for a messages-only request; returns ``input_ids``."""
+    client_args = {"messages": request_messages}
+    if tools is not None:
+        client_args["tools"] = tools
+    prepared, _parent = prepare_token_ids_and_request_args(
+        state,
+        client_args,
+        config=make_session_server_config(),
+        tito_tokenizer=tito_tokenizer,
+        message_matcher=message_matcher,
+    )
+    return prepared.body["input_ids"]
+
 
 _FIRST_TURN_TOKENS = [0]
 
@@ -70,8 +104,8 @@ class _RecordingTITOTokenizer(TITOTokenizer):
         messages: list[dict[str, Any]],
         *,
         add_generation_prompt: bool,
-        tools: list[dict[str, Any]] | None = None,
         tokenize: bool = False,
+        template_args: dict[str, Any] | None = None,
     ) -> list[int]:
         return list(_FIRST_TURN_TOKENS)
 
@@ -80,7 +114,8 @@ class _RecordingTITOTokenizer(TITOTokenizer):
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],
         pretokenized_token_ids: list[int],
-        tools: list[dict[str, Any]] | None = None,
+        *,
+        template_args: dict[str, Any] | None = None,
     ) -> list[int]:
         self.merge_calls.append({"old_messages": old_messages, "new_messages": new_messages})
         return list(pretokenized_token_ids) + [99]
@@ -91,9 +126,9 @@ class _ToolOnlyRecordingTITOTokenizer(_RecordingTITOTokenizer):
 
 
 def _session_with_one_checkpoint(tito: _RecordingTITOTokenizer) -> LinearTrajectory:
-    registry = SessionRegistry(SimpleNamespace(), tokenizer=None, tito_tokenizer=tito)
+    registry = SessionRegistry(tokenizer=None, tito_tokenizer=tito)
     session = registry.get_session(registry.create_session())
-    session.prepare_pretokenized([USER], tito_tokenizer=tito)
+    _prepare_token_ids(session, [USER], tito_tokenizer=tito)
     session.update_pretokenized_state([USER], STORED_ASSISTANT, [0], [1], 0)
     return session
 
@@ -103,7 +138,7 @@ class TestV1ReplayMatching:
         tito = _RecordingTITOTokenizer()
         session = _session_with_one_checkpoint(tito)
 
-        result = session.prepare_pretokenized([USER, REPLAYED_ASSISTANT, TOOL_RESULT], tito_tokenizer=tito)
+        result = _prepare_token_ids(session, [USER, REPLAYED_ASSISTANT, TOOL_RESULT], tito_tokenizer=tito)
 
         assert session.num_assistant == 0
         assert result == _FIRST_TURN_TOKENS
@@ -112,7 +147,8 @@ class TestV1ReplayMatching:
         tito = _RecordingTITOTokenizer()
         session = _session_with_one_checkpoint(tito)
 
-        result = session.prepare_pretokenized(
+        result = _prepare_token_ids(
+            session,
             [USER, REPLAYED_ASSISTANT, TOOL_RESULT],
             tito_tokenizer=tito,
             message_matcher=loose_tool_call_message_matches,
@@ -125,7 +161,8 @@ class TestV1ReplayMatching:
         tito = _RecordingTITOTokenizer()
         session = _session_with_one_checkpoint(tito)
 
-        session.prepare_pretokenized(
+        _prepare_token_ids(
+            session,
             [USER, REPLAYED_ASSISTANT, TOOL_RESULT],
             tito_tokenizer=tito,
             message_matcher=loose_tool_call_message_matches,
@@ -141,7 +178,8 @@ class TestV1ReplayMatching:
         session = _session_with_one_checkpoint(tito)
         replayed = {"role": "assistant", "content": "", "reasoning_content": None}
 
-        result = session.prepare_pretokenized(
+        result = _prepare_token_ids(
+            session,
             [USER, replayed, TOOL_RESULT],
             tito_tokenizer=tito,
             message_matcher=role_content_only_message_matches,
@@ -155,7 +193,8 @@ class TestV1ReplayMatching:
         session = _session_with_one_checkpoint(tito)
 
         with pytest.raises(MessageValidationError, match="appended message at index 3"):
-            session.prepare_pretokenized(
+            _prepare_token_ids(
+                session,
                 [USER, REPLAYED_ASSISTANT, TOOL_RESULT, {"role": "user", "content": "next"}],
                 tito_tokenizer=tito,
                 message_matcher=loose_tool_call_message_matches,
@@ -165,8 +204,8 @@ class TestV1ReplayMatching:
         tito = _RecordingTITOTokenizer()
         session = _session_with_one_checkpoint(tito)
         replay = [USER, REPLAYED_ASSISTANT, TOOL_RESULT]
-        tokens = session.prepare_pretokenized(
-            replay, tito_tokenizer=tito, message_matcher=loose_tool_call_message_matches
+        tokens = _prepare_token_ids(
+            session, replay, tito_tokenizer=tito, message_matcher=loose_tool_call_message_matches
         )
         next_assistant = {"role": "assistant", "content": "done"}
 
@@ -179,13 +218,14 @@ class TestV1ReplayMatching:
         tito = _RecordingTITOTokenizer()
         session = _session_with_one_checkpoint(tito)
         replay = [USER, REPLAYED_ASSISTANT, TOOL_RESULT]
-        tokens = session.prepare_pretokenized(
-            replay, tito_tokenizer=tito, message_matcher=loose_tool_call_message_matches
+        tokens = _prepare_token_ids(
+            session, replay, tito_tokenizer=tito, message_matcher=loose_tool_call_message_matches
         )
         next_assistant = {"role": "assistant", "content": "done"}
         session.update_pretokenized_state(replay, next_assistant, tokens, [7], 0)
 
-        result = session.prepare_pretokenized(
+        result = _prepare_token_ids(
+            session,
             [USER, STORED_ASSISTANT, TOOL_RESULT, next_assistant, {"role": "user", "content": "next"}],
             tito_tokenizer=tito,
         )
@@ -209,7 +249,6 @@ def _state_with_one_node() -> tuple[SessionStateV2, Any]:
         record=record,
         finish_reason="stop",
     )
-    state.active_leaf = node
     return state, node
 
 
@@ -217,26 +256,26 @@ class TestV2ReplayMatching:
     def test_strict_default_starts_a_new_root_on_reserialized_arguments(self):
         state, _ = _state_with_one_node()
 
-        position_for_request(state, [USER, REPLAYED_ASSISTANT, TOOL_RESULT])
+        attach = attach_point_for_request(state, [USER, REPLAYED_ASSISTANT, TOOL_RESULT])
 
-        assert state.active_leaf is None
+        assert attach.node is None
 
     def test_loose_matcher_attaches_at_the_stored_node(self):
         state, node = _state_with_one_node()
 
-        position_for_request(
+        attach = attach_point_for_request(
             state, [USER, REPLAYED_ASSISTANT, TOOL_RESULT], message_matcher=loose_tool_call_message_matches
         )
 
-        assert state.active_leaf is node
+        assert attach.node is node
 
     def test_tito_receives_the_stored_path_verbatim_plus_the_raw_replay_suffix(self):
         state, _ = _state_with_one_node()
         tito = _RecordingTITOTokenizer()
         replay = [USER, REPLAYED_ASSISTANT, TOOL_RESULT]
-        position_for_request(state, replay, message_matcher=loose_tool_call_message_matches)
-
-        result = prepare_pretokenized(state, replay, tools=None, tito_tokenizer=tito)
+        result = _prepare_token_ids_v2(
+            state, replay, tools=None, tito_tokenizer=tito, message_matcher=loose_tool_call_message_matches
+        )
 
         (call,) = tito.merge_calls
         assert call["old_messages"] == [USER, STORED_ASSISTANT]
@@ -247,13 +286,12 @@ class TestV2ReplayMatching:
 
 class TestRegistryOwnership:
     def test_defaults_to_the_strict_matcher(self):
-        registry = SessionRegistry(SimpleNamespace(), tokenizer=None, tito_tokenizer=_RecordingTITOTokenizer())
+        registry = SessionRegistry(tokenizer=None, tito_tokenizer=_RecordingTITOTokenizer())
 
         assert registry.message_matcher is strict_message_matches
 
     def test_holds_the_injected_matcher(self):
         registry = SessionRegistry(
-            SimpleNamespace(),
             tokenizer=None,
             tito_tokenizer=_RecordingTITOTokenizer(),
             message_matcher=loose_tool_call_message_matches,

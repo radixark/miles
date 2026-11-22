@@ -15,6 +15,8 @@ description: Launch recipe for DeepSeek-V3.2 (671 B total / 37 B active) — BF1
 
 In miles, V3.2 shares its DSA attention implementation with the GLM-5 family — both select it through `--spec miles_plugins.models.glm5.glm5 get_glm5_spec`. Weight import and export run through `DeepseekV32Bridge` (`miles_plugins/mbridge/deepseek_v32.py`), which adds the indexer tensors on top of the V3 bridge. Training is BF16, so the FP8 checkpoint is cast up before conversion.
 
+The raw path also supports Megatron's native DSA through `--dsa-impl megatron --dsa-kernel-backend cudnn`; `--dsa-impl miles` remains the default. See the shared [DSA training implementation selector](/models/glm/glm5#33-dsa-training-implementation) for conversion flags and checkpoint compatibility.
+
 ## 2. Supported Variants
 
 | Model | Active / Total | HF ID |
@@ -33,7 +35,7 @@ Run everything inside the `radixark/miles:latest` container at `/root/miles`. Th
 |---|---|---|
 | `--model-org` / `--model-name` | `deepseek-ai` / `DeepSeek-V3.2` | The HF repository to download, and the stem of every derived directory name. |
 | `--model-dir` | `/root/models` | Holds the HF checkpoint, the `-bf16` cast, and the Megatron `_torch_dist` directory as siblings. |
-| `--model-local-dir` | `/root/models` | Node-local destination that `prepare-cp` rsyncs into; worth changing only when `--model-dir` is on shared storage. |
+| `--model-local-dir` | `/root/models` | Node-local destination each trainer pod rsyncs into before training; worth changing only when `--model-dir` is on shared storage. |
 | `--data-dir` | `/root/datasets` | Where dapo-math-17k and aime-2024 are downloaded. |
 | `--megatron-path` | `/root/Megatron-LM` | Added to `PYTHONPATH` for both conversion and training. |
 | `--output-dir` | `/root/shared_data` | Training checkpoints land under `{output-dir}/{run-id}/checkpoints`. |
@@ -93,7 +95,7 @@ python scripts/run_deepseek_v32.py full-train \
    --actor-num-nodes 8 --rollout-num-gpus 8
 ```
 
-The `full-train` subcommand chains download → FP8 → BF16 cast → optional rollout quantization → `torch_dist` conversion → training. It does not run `prepare-cp`; call that separately if you stage checkpoints onto node-local disk.
+The `full-train` subcommand chains download → FP8 → BF16 cast → optional rollout quantization → `torch_dist` conversion → training. Staging onto node-local disk is not a separate stage: `train` rsyncs the HF checkpoint and `torch_dist` into `--model-local-dir` on every trainer pod before the job starts.
 
 ### 4.2 Individual stages
 
@@ -104,16 +106,13 @@ python scripts/run_deepseek_v32.py prepare --actor-num-nodes 8
 # re-run just the Megatron conversion
 python scripts/run_deepseek_v32.py prepare-megatron-ckpt --actor-num-nodes 8
 
-# rsync the HF checkpoint and torch_dist into --model-local-dir on every node
-python scripts/run_deepseek_v32.py prepare-cp --actor-num-nodes 8
-
 # train, assuming the stages above already ran
 python scripts/run_deepseek_v32.py train --actor-num-nodes 8 --rollout-num-gpus 8
 ```
 
 ### 4.3 Single-node smoke test
 
-The `--use-single-node` flag pins the run to one node with 4 training GPUs and 4 rollout GPUs, switches the parallelism to TP4 / PP1 / EP4, converts the checkpoint on that single node, and runs SGLang with 2-GPU engines. Pair it with a pruned checkpoint — the full 671 B model does not fit on 4 GPUs.
+The `--use-single-node` flag pins the run to one node, gives half of its GPUs to training and half to rollout (4 + 4 on an 8-GPU node), sets TP and EP to the training GPU count with PP1, converts the checkpoint on that single node, and runs SGLang with 2-GPU engines. Pair it with a pruned checkpoint — the full 671 B model does not fit on 4 GPUs.
 
 ## 5. Recipe Configuration
 
@@ -122,7 +121,7 @@ The `--use-single-node` flag pins the run to one node with 4 training GPUs and 4
 | Stage | TP | PP | CP | EP | expert-TP | Last PP stage |
 |---|---|---|---|---|---|---|
 | Training, multi-node | 2 | 4 | 1 | 16 | 1 | 13 layers |
-| Training, `--use-single-node` | 4 | 1 | 1 | 4 | 1 | — |
+| Training, `--use-single-node` | half the node (4) | 1 | 1 | half the node (4) | 1 | — |
 | `torch_dist` conversion, multi-node | 4 | 6 | — | 16 | 1 | 13 layers |
 
 61 layers do not divide evenly into PP=4, so `--decoder-last-pipeline-num-layers 13` splits the training stages 16 / 16 / 16 / 13. Megatron also requires the world size to be divisible by `expert-TP × EP × PP` = 64, so `--actor-num-nodes` has to be a multiple of 8 at 8 GPUs per node.
@@ -163,8 +162,8 @@ The `--enable-mis` flag turns on truncated importance sampling to correct the tr
 ```bash
 --sglang-mem-fraction-static 0.8
 --sglang-attention-backend nsa
---sglang-nsa-decode-backend flashmla_sparse
---sglang-nsa-prefill-backend flashmla_sparse
+--sglang-dsa-decode-backend flashmla_sparse
+--sglang-dsa-prefill-backend flashmla_sparse
 --sglang-kv-cache-dtype bf16
 --sglang-page-size 64  # the NSA KV cache requires 64 on CUDA
 --rollout-num-gpus-per-engine 8  # 2 with --use-single-node
@@ -172,7 +171,7 @@ The `--enable-mis` flag turns on truncated importance sampling to correct the tr
 --sglang-dp-size 8
 --sglang-enable-dp-attention
 --sglang-enable-dp-lm-head
---sglang-cuda-graph-max-bs 256
+--sglang-cuda-graph-max-bs-decode 256
 --sglang-moe-runner-backend flashinfer_trtllm_routed  # triton on H100 / H200
 ```
 

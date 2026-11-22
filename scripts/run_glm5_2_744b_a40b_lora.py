@@ -49,7 +49,7 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 app = typer.Typer()
 
@@ -63,15 +63,10 @@ _MEGATRON_MODEL_TYPE = {
     "GLM-5.2_5layer": "glm5.2-744B-A40B_5layer_lora",
 }
 
-# Standard attn + MLA + MLP/MoE, EXCLUDING the DSA indexer (wq_b/wk/weights_proj).
-_DEFAULT_TARGET_MODULES = (
-    "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj,q_a_proj,kv_a_proj_with_mqa,q_b_proj,kv_b_proj"
-)
-
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
-    run_id: str = U.create_run_id()
+class ScriptArgs(command_utils.ExecuteTrainConfig):
+    run_id: str = command_utils.create_run_id()
     model_name: Literal[
         "GLM-5.2",
         "GLM-5.2_5layer",
@@ -98,7 +93,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     lora_rank: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.0
-    target_modules: str = _DEFAULT_TARGET_MODULES
+    target_modules: str = "all-linear"
     # required for true on-policy under colocate (OFF -> KL ~1.0 vs ~1e-4); opt out only
     # when host RAM cannot take the ~372 GB/node mirror on the full model
     lora_base_cpu_backup: bool = True
@@ -110,7 +105,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_batch_size: int = 4
     n_samples_per_prompt: int = 4
     rollout_max_response_len: int = 0  # 0 => per-task default (gsm8k 512, dapo-math 4096)
-    # emitted as --seq-length + --rollout-max-context-len when > 0
+    # emitted as --seq-length + --max-seq-len when > 0
     seq_window: int = 0
     global_batch_size: int = 16
 
@@ -123,6 +118,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     sglang_mem_fraction_static: float = 0.5
     # sglang's own default (csgmv) crashes the DSA MoE-LoRA rollout under dp-attention
     sglang_lora_backend: str = "triton"
+    # fold the shared expert into the routed FusedMoE: serves MoE at engine EP=1, per-expert LoRA only
+    sglang_shared_experts_fusion: bool = False
     # serve from a pre-converted _fp8 ckpt (fits engine=8 / 1 node); train stays bf16
     fp8_rollout: bool = False
     # rollout-side fp8 checkpoint; defaults to <hf_checkpoint>_fp8 (e.g. GLM-5.2_fp8).
@@ -164,6 +161,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 
 def _download_dataset(args: ScriptArgs):
+    U = args.create_backend()
     match args.task:
         case "gsm8k":
             U.hf_download_dataset("zhuzilin/gsm8k", data_dir=args.data_dir)
@@ -172,6 +170,7 @@ def _download_dataset(args: ScriptArgs):
 
 
 def _prepare_download(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.data_dir} {args.model_dir}")
     repo = _HF_REPO.get(args.model_name)
     if repo is not None:
@@ -180,6 +179,7 @@ def _prepare_download(args: ScriptArgs):
 
 
 def _train(args: ScriptArgs):
+    U = args.create_backend()
     print(
         f"[run] GLM-5.2 LoRA: model={args.model_name} (megatron_model_type={args.megatron_model_type}), dsa-backend={args.dsa_attention_backend}, r3={args.use_r3}, {args.num_gpus_per_node} GPUs, rollout tp={args.rollout_num_gpus_per_engine}"
     )
@@ -192,11 +192,8 @@ def _train(args: ScriptArgs):
 
     # the full rollout config applies to the toys too (same glm_moe_dsa serving path)
     _is_full = True
-    _tm = args.target_modules
     # KEEP_MOE_LORA=0 drops the expert projections (attention-only LoRA)
     _keep_moe_lora = os.environ.get("KEEP_MOE_LORA", "1") != "0"
-    if _is_full and not _keep_moe_lora:
-        _tm = ",".join(m for m in _tm.split(",") if m.strip() not in ("gate_proj", "up_proj", "down_proj"))
     # the MOE_LORA_LAYERS subset feature is disabled; warn so it is not silently ignored
     _moe_lora_layers = os.environ.get("MOE_LORA_LAYERS", "").strip()
     if _moe_lora_layers:
@@ -204,7 +201,12 @@ def _train(args: ScriptArgs):
             f"[run_glm5_2_744b_a40b_lora] WARNING: MOE_LORA_LAYERS={_moe_lora_layers} is SET but the subset-rewrite "
             "feature is DISABLED (commented out for debugging) -> MoE-expert LoRA stays on ALL layers."
         )
-    lora_args = f'--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout {args.lora_dropout} --target-modules "{_tm}" '
+    lora_args = (
+        f"--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout {args.lora_dropout} "
+        f'--target-modules "{args.target_modules}" '
+    )
+    if not _keep_moe_lora:
+        lora_args += "--exclude-modules gate_proj,up_proj,gate_up_proj,down_proj "
     if _keep_moe_lora and args.experts_shared_outer_loras:
         lora_args += "--experts-shared-outer-loras "
     if _is_full:
@@ -258,21 +260,24 @@ def _train(args: ScriptArgs):
         _decode = "flashmla_kv" if _fp8_full else "flashmla_sparse"
         _cg = 256 if _fp8_full else 64
         _kv = "--sglang-kv-cache-dtype fp8_e4m3 " if _fp8_full else ""
+        # sglang fuses the shared expert only at EP=1
+        _ep = 1 if args.sglang_shared_experts_fusion else _eng
+        _fusion = "" if args.sglang_shared_experts_fusion else "--sglang-disable-shared-experts-fusion "
         sglang_args = (
             f"--rollout-num-gpus-per-engine {_eng} --sglang-mem-fraction-static {args.sglang_mem_fraction_static} "
-            f"--sglang-enable-dp-attention --sglang-ep-size {_eng} --sglang-dp-size {_eng} "
+            f"--sglang-enable-dp-attention --sglang-ep-size {_ep} --sglang-dp-size {_eng} "
             "--sglang-moe-dense-tp-size 1 --sglang-enable-dp-lm-head "
-            f"--sglang-attention-backend nsa --sglang-nsa-decode-backend {_decode} "
-            f"--sglang-nsa-prefill-backend flashmla_sparse --sglang-page-size 64 {_kv}"
-            f"--sglang-cuda-graph-max-bs {_cg} --sglang-max-running-requests 512 "
+            f"--sglang-attention-backend nsa --sglang-dsa-decode-backend {_decode} "
+            f"--sglang-dsa-prefill-backend flashmla_sparse --sglang-page-size 64 {_kv}"
+            f"--sglang-cuda-graph-max-bs-decode {_cg} --sglang-max-running-requests 512 "
             f"--sglang-chunked-prefill-size {2048 * _eng} --sglang-watchdog-timeout 3600 "
-            "--sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion "
+            f"--sglang-moe-runner-backend triton {_fusion}"
             # required: without it sglang miscounts the gate_up slices -> engine-init crash
             f"--sglang-max-lora-rank {args.lora_rank} "
             f"--sglang-lora-backend {args.sglang_lora_backend} "
         )
     else:
-        sglang_args = f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} --sglang-mem-fraction-static {args.sglang_mem_fraction_static} --sglang-cuda-graph-max-bs 64 --sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion --sglang-lora-backend {args.sglang_lora_backend} --sglang-reasoning-parser glm45 --sglang-tool-call-parser glm47 "
+        sglang_args = f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} --sglang-mem-fraction-static {args.sglang_mem_fraction_static} --sglang-cuda-graph-max-bs-decode 64 --sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion --sglang-lora-backend {args.sglang_lora_backend} --sglang-reasoning-parser glm45 --sglang-tool-call-parser glm47 "
 
     if args.fp8_rollout:
         # Serve the fp8 ckpt via --sglang-config; update_weights stays on so the per-step LoRA
@@ -295,17 +300,14 @@ def _train(args: ScriptArgs):
 
     misc_args = f"--attention-dropout 0.0 --hidden-dropout 0.0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --attention-backend flash --calculate-per-token-loss --actor-num-nodes 1 --actor-num-gpus-per-node {args.num_gpus_per_node} --num-gpus-per-node {args.num_gpus_per_node} --colocate "
 
-    wandb_args = U.get_default_wandb_args(__file__, run_id=args.run_id) if args.enable_wandb else ""
+    wandb_args = command_utils.get_default_wandb_args(__file__, run_id=args.run_id) if args.enable_wandb else ""
 
-    seq_args = (
-        f"--seq-length {args.seq_window} --rollout-max-context-len {args.seq_window} " if args.seq_window > 0 else ""
-    )
+    seq_args = f"--seq-length {args.seq_window} --max-seq-len {args.seq_window} " if args.seq_window > 0 else ""
 
     train_args = f"{ckpt_args} {lora_args} {rollout_args} {seq_args} {optimizer_args} {grpo_args} {r3_args} {wandb_args} {perf_args} {sglang_args} {save_args} {misc_args} {args.extra_args} "
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={
@@ -319,21 +321,21 @@ def _train(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare(args: ScriptArgs):
     """Download the model checkpoint (for a known HF repo) and the task dataset (gsm8k or dapo-math). Run once per node before training."""
     _prepare_download(args)
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def train(args: ScriptArgs):
     """Run GRPO LoRA training (assumes the dataset is already prepared)."""
     _train(args)
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def full_train(args: ScriptArgs):
     """Download the model checkpoint + dataset, then run GRPO LoRA training."""
     _prepare_download(args)

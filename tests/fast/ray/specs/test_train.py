@@ -1,0 +1,1029 @@
+import asyncio
+import builtins
+import sys
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+from unittest.mock import MagicMock
+
+import pytest
+from tests.fast.fixtures.args_fixtures import parse_fsdp_test_config, parse_megatron_test_config, replace_config_values
+from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
+from tests.fast.fixtures.megatron_config_fixtures import write_megatron_config, write_megatron_config_trainers
+from tests.fast.ray.rollout.conftest import make_args_with_sglang_config
+
+from miles.ray.placement_group import _get_placement_group_layout
+from miles.ray.specs import train as train_specs
+from miles.ray.specs.entrypoint import SERVE_SPEC_CLASSES
+from miles.ray.specs.train import (
+    TRAINER_CONCURRENCY_GROUPS,
+    TRAINER_CONTROLLER_WORKER_CLASS,
+    TrainerControllerSpec,
+    TrainerSpec,
+    _compute_trainer_controller_provider,
+    compute_trainer_configs,
+    compute_trainer_controller_pool_id,
+    compute_trainer_ids,
+    compute_trainer_pool_id,
+    external_trainer_controller_addrs,
+    trainer_controller_cell_id,
+    trainer_controller_worker_name,
+)
+from miles.ray.train.group import TrainerController
+from miles.ray.train_actor import TrainRayActor
+from miles.utils.args.runtime import AllConfig
+from miles.utils.args.trainer_utils import compute_trainer_config
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import (
+    build_values,
+    compute_static_connections,
+)
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import SECTION_OF_CATEGORY, LaunchPlan
+from miles.utils.workers.rpc.common.metadata import _find_rpc_config, declared_concurrency_groups
+from miles.utils.workers.serving.utils import parse_serve_worker_config
+from miles.utils.workers.types import DeployComponent, PlatformAccess
+from miles.utils.workers.worker_spec import WorkerCtorContext
+
+
+def _make_args(
+    *,
+    use_critic: bool = False,
+    train_backend: str = "megatron",
+    megatron_config: str | None = None,
+    critic_lr: float | None = None,
+    **updates: Any,
+) -> AllConfig:
+    argv = ["--actor-num-gpus-per-node", "4"]
+    if use_critic:
+        argv += ["--advantage-estimator", "ppo", "--critic-num-nodes", "1", "--critic-num-gpus-per-node", "4"]
+    if megatron_config is not None:
+        argv += ["--megatron-config", megatron_config]
+    if critic_lr is not None:
+        argv += ["--critic-lr", str(critic_lr)]
+    parse = parse_fsdp_test_config if train_backend == "fsdp" else parse_megatron_test_config
+    return replace_config_values(parse(*argv), **{**_TRAINER_TEST_DEFAULTS, **updates})
+
+
+_TRAINER_TEST_DEFAULTS: dict[str, Any] = dict(offload_train=False, offload_train_disk_dir="/tmp/offload")
+
+
+def specs_trainer(args: AllConfig) -> list[TrainerSpec]:
+    return [TrainerSpec.create(config) for config in TrainerSpec.slice_configs(args)]
+
+
+def specs_trainer_controller(args: AllConfig) -> list[TrainerControllerSpec]:
+    return [TrainerControllerSpec.create(config) for config in TrainerControllerSpec.slice_configs(args)]
+
+
+def _make_context(spec: TrainerSpec, scaling: AllConfig, **overrides) -> WorkerCtorContext:
+    kwargs = dict(
+        args=spec.args,
+        cell_index=0,
+        worker_in_cell_index=0,
+        num_workers_per_cell=spec.scheduling(scaling).num_workers_per_cell,
+        gpu_ids=[0],
+        capability=FakeBackendCapability(),
+    )
+    kwargs.update(overrides)
+    return WorkerCtorContext(**kwargs)
+
+
+def _install_fake_torch_memory_saver(monkeypatch, get_binary_path: MagicMock) -> MagicMock:
+    package = ModuleType("torch_memory_saver")
+    package.__path__ = []
+    utils = ModuleType("torch_memory_saver.utils")
+    utils.get_binary_path_from_package = get_binary_path
+    monkeypatch.setitem(sys.modules, "torch_memory_saver", package)
+    monkeypatch.setitem(sys.modules, "torch_memory_saver.utils", utils)
+    monkeypatch.setattr(Path, "read_bytes", lambda self: b"TMS_INIT_ENABLE_DISK_BACKUP")
+    return get_binary_path
+
+
+def _unavailable_fp8_probe() -> str:
+    raise RuntimeError("the fp8 hardware default is unavailable here")
+
+
+class TestSpecSet:
+    def test_only_the_actor_is_declared_without_a_critic(self):
+        """Most runs have no critic, so no idle critic workers may be scheduled."""
+        args = _make_args()
+        specs = specs_trainer(args)
+
+        assert [spec.name for spec in specs] == [compute_trainer_pool_id("actor")]
+
+    def test_the_critic_gets_its_own_spec(self):
+        """Actor and critic are separate worker sets even though they share GPUs."""
+        args = _make_args(use_critic=True)
+        specs = specs_trainer(args)
+
+        assert [spec.name for spec in specs] == [
+            compute_trainer_pool_id("actor"),
+            compute_trainer_pool_id("critic"),
+        ]
+
+    def test_the_critic_args_are_neutralized(self):
+        """A critic must not apply the actor's KL or on-policy distillation settings."""
+        args = _make_args(use_critic=True, kl_coef=0.1, use_kl_loss=True, use_opd=True)
+        specs = specs_trainer(args)
+
+        critic_args = specs[1].ctor_kwargs(_make_context(specs[1], args))["args"]
+        assert (critic_args.kl_coef, critic_args.use_opd) == (0, False)
+
+
+class TestScheduling:
+    def test_actor_and_critic_share_one_placement_group(self):
+        """Shared actor/critic PPO puts both roles on the same GPUs."""
+        args = _make_args(use_critic=True)
+        specs = specs_trainer(args)
+
+        assert {spec.scheduling(args).pg_name for spec in specs} == {"actor"}
+
+    def test_one_worker_per_gpu_without_independent_dp(self):
+        """The trainer world is one rank per GPU in a single cell."""
+        args = _make_args(actor_num_gpus_per_node=8)
+        (spec,) = specs_trainer(args)
+
+        assert (spec.scheduling(args).num_cells, spec.scheduling(args).num_workers_per_cell) == (1, 8)
+
+    def test_independent_dp_splits_the_world_into_cells(self):
+        """Each independent-DP replica becomes one cell the manager can restart alone."""
+        args = _make_args(actor_num_gpus_per_node=8, indep_dp=True, tensor_model_parallel_size=2)
+        (spec,) = specs_trainer(args)
+
+        assert (spec.scheduling(args).num_cells, spec.scheduling(args).num_workers_per_cell) == (4, 2)
+
+    def test_independent_dp_critic_cells_use_the_critic_gpu_shape(self):
+        """A critic sized differently from the actor must be split by its own GPU count."""
+        args = _make_args(
+            use_critic=True,
+            indep_dp=True,
+            tensor_model_parallel_size=2,
+            actor_num_nodes=3,
+            actor_num_gpus_per_node=8,
+            critic_num_nodes=2,
+            critic_num_gpus_per_node=4,
+        )
+        _actor_spec, critic_spec = specs_trainer(args)
+
+        assert (critic_spec.scheduling(args).num_cells, critic_spec.scheduling(args).num_workers_per_cell) == (4, 2)
+
+    def test_a_nondivisible_independent_dp_trainer_layout_is_rejected(self):
+        """A GPU count that cannot be split into equal cells must fail loudly instead of dropping ranks."""
+        args = _make_args(indep_dp=True, tensor_model_parallel_size=2, actor_num_nodes=1, actor_num_gpus_per_node=5)
+        (spec,) = specs_trainer(args)
+
+        with pytest.raises(AssertionError, match="is not a whole number of"):
+            spec.scheduling(args)
+
+    def test_a_cell_spanning_several_nodes_is_deployed_as_one_pod_per_node(self):
+        """A trainer rank owns one gpu, so a two-node cell has to be two pods of a node's worth."""
+        args = _make_args(actor_num_nodes=2, actor_num_gpus_per_node=8)
+        (spec,) = specs_trainer(args)
+
+        assert (spec.scheduling(args).pods_per_cell(), spec.scheduling(args).workers_per_pod()) == (2, 8)
+
+    def test_each_role_packs_its_pods_with_its_own_per_node_count(self):
+        """A critic on smaller nodes must not inherit the actor's packing, or every name and port shifts."""
+        args = _make_args(
+            use_critic=True,
+            actor_num_nodes=1,
+            actor_num_gpus_per_node=8,
+            critic_num_nodes=2,
+            critic_num_gpus_per_node=2,
+        )
+
+        actor_spec, critic_spec = specs_trainer(args)
+
+        assert (actor_spec.scheduling(args).pods_per_cell(), actor_spec.scheduling(args).workers_per_pod()) == (1, 8)
+        assert (critic_spec.scheduling(args).pods_per_cell(), critic_spec.scheduling(args).workers_per_pod()) == (2, 2)
+
+    def test_a_cell_smaller_than_a_node_fits_into_one_pod(self):
+        """An independent-DP cell of two ranks must not claim a pod bigger than the cell itself."""
+        args = _make_args(actor_num_gpus_per_node=8, indep_dp=True, tensor_model_parallel_size=2)
+        (spec,) = specs_trainer(args)
+
+        assert spec.scheduling(args).num_workers_per_cell == 2
+        assert (spec.scheduling(args).pods_per_cell(), spec.scheduling(args).workers_per_pod()) == (1, 2)
+
+    def test_a_worker_reserves_a_fraction_of_its_gpu(self):
+        """The rollout engine shares the same GPU slot, so the trainer must not claim it whole."""
+        args = _make_args()
+        (spec,) = specs_trainer(args)
+
+        assert spec.scheduling(args).num_gpus_per_worker == 0.4
+        assert spec.scheduling(args).num_gpu_slots_per_worker == 1
+
+    def test_a_trainer_worker_reserves_matching_fractional_cpu_and_gpu_resources(self):
+        """Claiming a whole CPU per worker would let Ray refuse to co-schedule the rollout engine."""
+        args = _make_args()
+        (spec,) = specs_trainer(args)
+
+        assert spec.scheduling(args).num_cpus_per_worker == 0.4
+        assert spec.scheduling(args).num_cpus_per_worker == spec.scheduling(args).num_gpus_per_worker
+
+    def test_a_policy_parallelism_override_reshapes_only_its_own_cells(self, tmp_path):
+        """The cell count is computed from that trainer's own args, so an override must reshape only its pool."""
+        args = _make_args(
+            indep_dp=True,
+            actor_num_gpus_per_node=8,
+            tensor_model_parallel_size=1,
+            megatron_config=write_megatron_config_trainers(
+                tmp_path, [{"model_id": "a", "overrides": {"tensor_model_parallel_size": 2}}, {"model_id": "b"}]
+            ),
+        )
+
+        spec_a, spec_b = specs_trainer(args)
+
+        assert (spec_a.scheduling(args).num_cells, spec_b.scheduling(args).num_cells) == (4, 8)
+
+    def test_a_critic_is_sized_by_the_critic_node_counts(self):
+        """The critic reads critic_num_*, so sizing it by the actor's counts would reserve the wrong pool."""
+        args = _make_args(use_critic=True, actor_num_gpus_per_node=8, critic_num_nodes=1, critic_num_gpus_per_node=2)
+        _actor_spec, critic_spec = specs_trainer(args)
+
+        assert critic_spec.scheduling(args).num_workers_per_cell == 2
+        assert critic_spec.scheduling(args).num_gpus_per_node == 2
+
+
+class TestConstructorArguments:
+    def test_each_worker_learns_its_own_rank(self):
+        """Ranks come from the spec now that no worker asks rank 0 for them."""
+        args = _make_args(actor_num_gpus_per_node=2)
+        (spec,) = specs_trainer(args)
+
+        ranks = [spec.ctor_kwargs(_make_context(spec, args, worker_in_cell_index=i))["rank"] for i in range(2)]
+        assert ranks == [0, 1]
+
+    def test_the_world_size_is_the_cell_size(self):
+        """A rank joins the process group of its own cell, not of the whole job."""
+        args = _make_args(actor_num_gpus_per_node=4)
+        (spec,) = specs_trainer(args)
+
+        assert spec.ctor_kwargs(_make_context(spec, args))["world_size"] == 4
+
+    def test_no_quorum_store_address_is_baked_into_the_spec(self):
+        """Every pod recomputes the spec, so an address minted here would give each pod its own quorum."""
+        args = _make_args(actor_num_gpus_per_node=8, indep_dp=True, tensor_model_parallel_size=2)
+        (spec,) = specs_trainer(args)
+
+        assert "indep_dp_store_addr" not in spec.ctor_kwargs(_make_context(spec, args))
+
+    @pytest.mark.parametrize(
+        "backend,multi_lora,actor_class",
+        [
+            ("megatron", False, "miles.backends.megatron_utils.actor.MegatronTrainRayActor"),
+            ("megatron", True, "miles.backends.megatron_utils.lora.actor.MultiLoRATrainRayActor"),
+            ("fsdp", False, "miles.backends.fsdp_utils.actor.FSDPTrainRayActor"),
+        ],
+        ids=["megatron", "multi-lora", "fsdp"],
+    )
+    def test_the_backend_selects_the_worker_class(self, backend, multi_lora, actor_class):
+        use_critic = backend == "megatron"
+        actor_spec, *critic_specs = specs_trainer(
+            _make_args(train_backend=backend, multi_lora=multi_lora, use_critic=use_critic)
+        )
+
+        assert actor_spec.worker_class == actor_class
+        assert [spec.worker_class for spec in critic_specs] == [
+            train_specs._TRAINER_ACTOR_CLASSES[backend]
+        ] * use_critic
+
+
+class TestConcurrencyGroups:
+    def test_the_heartbeat_rpc_is_always_isolated(self):
+        """A heartbeat queued behind a train step reads as a dead cell."""
+        args = _make_args(use_fault_tolerance=True)
+        (spec,) = specs_trainer(args)
+
+        assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1, "fault_injector": 1, "kill_self": 1}
+
+    def test_a_run_without_fault_tolerance_gets_a_plain_actor(self):
+        """A threaded trainer actor runs NCCL setup off the main thread and deadlocked a non-FT run."""
+        args = _make_args()
+        (spec,) = specs_trainer(args)
+
+        assert spec.concurrency_groups is None
+
+    def test_the_actor_is_not_annotated_statically(self):
+        """A static @ray.method(concurrency_group=...) makes Ray reject the plain non-FT actor."""
+        annotations: list[str | None] = [
+            getattr(getattr(TrainRayActor, name), "__ray_concurrency_group__", None)
+            for name in declared_concurrency_groups(TrainRayActor)
+        ]
+
+        assert annotations and annotations == [None] * len(annotations)
+
+    def test_both_trainer_roles_follow_the_same_gate(self):
+        """A critic threaded while its actor is not would deadlock exactly the run the gate protects."""
+        fault_tolerant_specs = specs_trainer(_make_args(use_critic=True, use_fault_tolerance=True))
+        plain_specs = specs_trainer(_make_args(use_critic=True))
+
+        assert [spec.concurrency_groups is None for spec in fault_tolerant_specs] == [False, False]
+        assert [spec.concurrency_groups is None for spec in plain_specs] == [True, True]
+
+    def test_the_isolated_methods_are_annotated_on_the_actor(self):
+        """Dropping an @rpc concurrency group would silently queue that call behind a train step."""
+        declared = declared_concurrency_groups(TrainRayActor)
+
+        assert {name: declared.get(name) for name in ("get_heartbeat_status", "control_fault_hook", "kill_self")} == {
+            "get_heartbeat_status": "heartbeat_status",
+            "control_fault_hook": "fault_injector",
+            "kill_self": "kill_self",
+        }
+
+    def test_every_annotated_group_is_declared(self):
+        """Ray rejects an actor whose method names a concurrency group the class never declares."""
+        annotated_groups: set[str] = set(declared_concurrency_groups(TrainRayActor).values())
+
+        assert annotated_groups
+        assert annotated_groups <= set(TRAINER_CONCURRENCY_GROUPS)
+
+    def test_the_same_methods_are_isolated_under_rpc_communication(self):
+        """The rpc server has its own group per method, and an unannotated one queues behind a train step."""
+        groups = {
+            name: _find_rpc_config(getattr(TrainRayActor, name)).concurrency_group
+            for name in ("get_heartbeat_status", "control_fault_hook", "kill_self")
+        }
+
+        assert groups == {
+            "get_heartbeat_status": "heartbeat_status",
+            "control_fault_hook": "fault_injector",
+            "kill_self": "kill_self",
+        }
+
+
+class TestEnvironmentVariables:
+    def test_user_env_vars_are_forwarded(self):
+        """--train-env-vars must reach the worker process."""
+        args = _make_args(train_env_vars={"MY_VAR": "1"})
+        (spec,) = specs_trainer(args)
+
+        assert spec.env_var(_make_context(spec, args))["MY_VAR"] == "1"
+
+    def test_user_train_env_vars_override_framework_defaults(self, monkeypatch):
+        """A user who overrides a framework default must win, otherwise the flag is unusable."""
+        monkeypatch.setenv("NCCL_CUMEM_ENABLE", "0")
+        monkeypatch.setenv("NVSHMEM_DISABLE_NCCL", "1")
+        monkeypatch.setenv("NVTE_FP8_BLOCK_SCALING_FP32_SCALES", "0")
+
+        args = _make_args(
+            train_env_vars={
+                "NCCL_CUMEM_ENABLE": "1",
+                "NVSHMEM_DISABLE_NCCL": "0",
+                "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
+            }
+        )
+        (spec,) = specs_trainer(args)
+        env_vars = spec.env_var(_make_context(spec, args))
+
+        assert (
+            env_vars["NCCL_CUMEM_ENABLE"],
+            env_vars["NVSHMEM_DISABLE_NCCL"],
+            env_vars["NVTE_FP8_BLOCK_SCALING_FP32_SCALES"],
+        ) == ("1", "0", "1")
+
+    def test_the_fp8_scaling_default_is_captured_when_the_spec_is_built(self, monkeypatch):
+        """The environment is rendered later inside the gpu-less worker manager, which would decide the wrong default."""
+        monkeypatch.delenv("NVTE_FP8_BLOCK_SCALING_FP32_SCALES", raising=False)
+        monkeypatch.setattr(train_specs, "default_fp8_block_scaling_fp32_scales", lambda: "0")
+        args = _make_args()
+        (spec,) = specs_trainer(args)
+        monkeypatch.setattr(train_specs, "default_fp8_block_scaling_fp32_scales", lambda: "1")
+
+        assert spec.env_var(_make_context(spec, args))["NVTE_FP8_BLOCK_SCALING_FP32_SCALES"] == "0"
+
+    def test_an_explicit_fp8_scaling_env_is_still_forwarded(self, monkeypatch):
+        """An operator who pinned the value in the launcher environment must still reach the trainer."""
+        monkeypatch.setenv("NVTE_FP8_BLOCK_SCALING_FP32_SCALES", "0")
+
+        args = _make_args()
+
+        (spec,) = specs_trainer(args)
+
+        assert spec.env_var(_make_context(spec, args))["NVTE_FP8_BLOCK_SCALING_FP32_SCALES"] == "0"
+
+    def test_a_later_fp8_scaling_env_change_does_not_reach_the_trainer(self, monkeypatch):
+        """The environment is rendered in another process, so a value looked up at render time is the wrong one."""
+        monkeypatch.delenv("NVTE_FP8_BLOCK_SCALING_FP32_SCALES", raising=False)
+        monkeypatch.setattr(train_specs, "default_fp8_block_scaling_fp32_scales", lambda: "0")
+
+        args = _make_args()
+
+        (spec,) = specs_trainer(args)
+        monkeypatch.setenv("NVTE_FP8_BLOCK_SCALING_FP32_SCALES", "1")
+
+        assert spec.env_var(_make_context(spec, args))["NVTE_FP8_BLOCK_SCALING_FP32_SCALES"] == "0"
+
+    def test_an_explicit_fp8_scaling_env_is_forwarded_without_probing_the_hardware(self, monkeypatch):
+        """A pinned value must reach the trainer even where the hardware default cannot be computed at all."""
+        monkeypatch.setenv("NVTE_FP8_BLOCK_SCALING_FP32_SCALES", "1")
+        monkeypatch.setattr(train_specs, "default_fp8_block_scaling_fp32_scales", _unavailable_fp8_probe)
+
+        args = _make_args()
+
+        (spec,) = specs_trainer(args)
+
+        assert spec.env_var(_make_context(spec, args))["NVTE_FP8_BLOCK_SCALING_FP32_SCALES"] == "1"
+
+    def test_an_empty_fp8_scaling_env_is_forwarded_verbatim(self, monkeypatch):
+        """An empty pin disables fp32 scales, so substituting the hardware default would silently re-enable them."""
+        monkeypatch.setenv("NVTE_FP8_BLOCK_SCALING_FP32_SCALES", "")
+        monkeypatch.setattr(train_specs, "default_fp8_block_scaling_fp32_scales", lambda: "1")
+
+        args = _make_args()
+
+        (spec,) = specs_trainer(args)
+
+        assert spec.env_var(_make_context(spec, args))["NVTE_FP8_BLOCK_SCALING_FP32_SCALES"] == ""
+
+    def test_train_env_vars_override_the_captured_fp8_scaling_default(self, monkeypatch):
+        """The captured default is written into the same dict and must not shadow a --train-env-vars entry."""
+        monkeypatch.delenv("NVTE_FP8_BLOCK_SCALING_FP32_SCALES", raising=False)
+        monkeypatch.setattr(train_specs, "default_fp8_block_scaling_fp32_scales", lambda: "0")
+
+        args = _make_args(train_env_vars={"NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1"})
+
+        (spec,) = specs_trainer(args)
+
+        assert spec.env_var(_make_context(spec, args))["NVTE_FP8_BLOCK_SCALING_FP32_SCALES"] == "1"
+
+    def test_the_critic_spec_captures_the_fp8_scaling_default_as_well(self, monkeypatch):
+        """The critic trainer imports transformer engine like the actor, so its spec needs the same captured value."""
+        monkeypatch.delenv("NVTE_FP8_BLOCK_SCALING_FP32_SCALES", raising=False)
+        monkeypatch.setattr(train_specs, "default_fp8_block_scaling_fp32_scales", lambda: "0")
+
+        args = _make_args(use_critic=True)
+
+        specs = specs_trainer(args)
+        monkeypatch.setattr(train_specs, "default_fp8_block_scaling_fp32_scales", lambda: "1")
+
+        assert [spec.env_var(_make_context(spec, args))["NVTE_FP8_BLOCK_SCALING_FP32_SCALES"] for spec in specs] == [
+            "0",
+            "0",
+        ]
+
+    def test_disk_offload_forwards_backend_flags_and_nondefault_chunk_size(self, monkeypatch):
+        """The disk backend must be switched on in place of the cpu one and use the requested chunk size."""
+        _install_fake_torch_memory_saver(monkeypatch, MagicMock(return_value=Path("/opt/tms.so")))
+        args = _make_args(offload_train=True, offload_train_target="disk", offload_train_disk_chunk_mb=128)
+
+        (spec,) = specs_trainer(args)
+        env_vars = spec.env_var(_make_context(spec, args))
+
+        assert (
+            env_vars["TMS_INIT_ENABLE_CPU_BACKUP"],
+            env_vars["TMS_INIT_ENABLE_DISK_BACKUP"],
+            env_vars["TMS_DISK_BACKUP_CHUNK_MB"],
+        ) == ("0", "1", "128")
+
+    def test_disk_offload_gets_a_directory_per_worker(self, monkeypatch):
+        """Two ranks sharing one directory would overwrite each other's offloaded weights."""
+        _install_fake_torch_memory_saver(monkeypatch, MagicMock(return_value=Path("/opt/tms.so")))
+        args = _make_args(offload_train=True, offload_train_target="disk")
+
+        (spec,) = specs_trainer(args)
+
+        directories = [
+            spec.env_var(_make_context(spec, args, cell_index=1, worker_in_cell_index=i))["TMS_DISK_BACKUP_DIR"]
+            for i in range(2)
+        ]
+        assert directories == ["/tmp/offload/cell00001_rank00000", "/tmp/offload/cell00001_rank00001"]
+
+    def test_a_library_without_the_disk_backend_is_rejected(self, monkeypatch):
+        """Launching disk offload against a library that cannot write to disk would
+        silently lose the offloaded weights."""
+        _install_fake_torch_memory_saver(monkeypatch, MagicMock(return_value=Path("/opt/tms.so")))
+        monkeypatch.setattr(Path, "read_bytes", lambda self: b"built without the disk backend")
+
+        args = _make_args(offload_train=True, offload_train_target="disk")
+
+        (spec,) = specs_trainer(args)
+
+        with pytest.raises(AssertionError, match="has no disk backend"):
+            spec.env_var(_make_context(spec, args))
+
+    def test_no_disk_directory_without_disk_offload(self):
+        """The cpu backup path must not be told to write to disk."""
+        args = _make_args(offload_train=False)
+        (spec,) = specs_trainer(args)
+
+        assert "TMS_DISK_BACKUP_DIR" not in spec.env_var(_make_context(spec, args))
+
+
+class TestTorchMemorySaverPreload:
+    def test_the_preload_library_is_resolved_from_the_package(self, monkeypatch):
+        """The hook must be preloaded from the installed package, not a hardcoded path."""
+        expected_path = Path("/opt/torch_memory_saver_hook_mode_preload_cu13.abi3.so")
+        get_binary_path = _install_fake_torch_memory_saver(monkeypatch, MagicMock(return_value=expected_path))
+
+        args = _make_args(offload_train=True, offload_train_target="cpu")
+
+        (spec,) = specs_trainer(args)
+        env_vars = spec.env_var(_make_context(spec, args))
+
+        get_binary_path.assert_called_once_with("torch_memory_saver_hook_mode_preload")
+        assert env_vars["LD_PRELOAD"] == str(expected_path)
+        assert env_vars["TMS_INIT_ENABLE"] == "1"
+        assert env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] == "1"
+
+    def test_fsdp_offload_does_not_enable_the_megatron_preload(self, monkeypatch):
+        """fsdp has its own offload implementation, so preloading the hook only breaks its allocator."""
+        original_import = builtins.__import__
+
+        def reject_torch_memory_saver_import(
+            name: str,
+            globals_: dict[str, object] | None = None,
+            locals_: dict[str, object] | None = None,
+            fromlist: tuple[str, ...] = (),
+            level: int = 0,
+        ) -> ModuleType:
+            if name.partition(".")[0] == "torch_memory_saver":
+                raise AssertionError("FSDP offload must not import torch_memory_saver")
+            return original_import(name, globals_, locals_, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", reject_torch_memory_saver_import)
+
+        args = _make_args(train_backend="fsdp", offload_train=True, offload_train_target="cpu")
+
+        (spec,) = specs_trainer(args)
+        env_vars = spec.env_var(_make_context(spec, args))
+
+        assert "LD_PRELOAD" not in env_vars
+        assert "TMS_INIT_ENABLE" not in env_vars
+
+    def test_a_missing_preload_library_is_not_swallowed(self, monkeypatch):
+        """Silently launching without the hook would make offload corrupt weights."""
+        _install_fake_torch_memory_saver(monkeypatch, MagicMock(side_effect=RuntimeError("missing preload library")))
+
+        args = _make_args(offload_train=True, offload_train_target="cpu")
+
+        (spec,) = specs_trainer(args)
+
+        with pytest.raises(RuntimeError, match="missing preload library"):
+            spec.env_var(_make_context(spec, args))
+
+
+class TestPorts:
+    def test_the_master_port_is_shared_across_the_cell(self):
+        """All ranks of a cell rendezvous on one address, so it is a master port."""
+        args = _make_args()
+        (spec,) = specs_trainer(args)
+
+        (master,) = [port for port in spec.port_infos if port.name == "master"]
+        assert master.mode == "master"
+        assert master.allow_dynamic is True
+
+
+@pytest.mark.parametrize("role", ["actor", "critic"])
+def test_the_pool_name_encodes_the_role(role):
+    """Spec names identify trainer cells apart from inference cells."""
+    assert compute_trainer_pool_id(role) == f"trainer-engine-{role}"
+
+
+class _FakeStaticProvider:
+    def __init__(self) -> None:
+        self.handles: list[str] = []
+
+    def get_handle(self, worker_name: str) -> object:
+        self.handles.append(worker_name)
+        return self
+
+
+def _controller_layout() -> LaunchPlan:
+    return LaunchPlan(
+        run_id="260101-000000-000",
+        release="miles-run-260101",
+        namespace="rl",
+        state_file="/cluster-storage/miles_data/miles-runs/run/state/orchestrator-260101-000000-000001.state",
+        orchestrator_command=["python", "/repo/train.py"],
+        worker_argv=["--actor-num-nodes", "1"],
+    )
+
+
+def _controller_context(spec: TrainerControllerSpec, capability: FakeBackendCapability) -> WorkerCtorContext:
+    return WorkerCtorContext(
+        args=spec.args,
+        cell_index=0,
+        worker_in_cell_index=0,
+        num_workers_per_cell=1,
+        gpu_ids=[],
+        capability=capability,
+    )
+
+
+def _controller_providers() -> FakeBackendCapability:
+    return FakeBackendCapability(
+        cells_provider=object(), static_provider=_FakeStaticProvider(), cell_operations=object()
+    )
+
+
+class TestSpecTrainerController:
+    def test_the_constructor_receives_its_deployment_identity_and_cell_operations(self) -> None:
+        """The controller receives the exact deployment identity and backend operations for its trainer release."""
+        operations = object()
+        capability = FakeBackendCapability(cells_provider=object(), cell_operations=operations)
+        args = _make_args(
+            run_uuid="run-uuid",
+            deploy_component=DeployComponent.TRAINER.value,
+            deploy_instance_id="policy-b",
+        )
+
+        spec = specs_trainer_controller(args)[0]
+        kwargs = spec.ctor_kwargs(_controller_context(spec, capability))
+
+        identity = kwargs["deployment_identity"]
+        assert (identity.run_uuid, identity.deploy_component, identity.deploy_instance_id) == (
+            "run-uuid",
+            DeployComponent.TRAINER.value,
+            "policy-b",
+        )
+        assert kwargs["cell_operations"] is operations
+
+    def test_one_controller_per_trainer_role(self):
+        """Each controller owns exactly one trainer pool, so a critic run needs a second one."""
+        assert specs_trainer_controller(_make_args())[0].name == "trainer-controller-actor"
+        assert specs_trainer_controller(_make_args(use_critic=True))[1].name == "trainer-controller-critic"
+
+    def test_it_is_a_gpuless_worker_on_both_backends(self):
+        """A gpu request would reserve a whole trainer slot for a process that only sends rpcs."""
+        args = _make_args()
+        spec = specs_trainer_controller(args)[0]
+
+        assert (spec.scheduling(args).num_cells, spec.scheduling(args).num_workers_per_cell) == (1, 1)
+        assert spec.scheduling(args).num_gpus_per_worker == 0
+        assert spec.scheduling(args).num_gpu_slots_per_worker == 0
+
+    def test_the_worker_class_is_the_controller_itself(self):
+        """The spec names the class a pod or actor constructs, so it must be the real implementation."""
+        spec = specs_trainer_controller(_make_args())[0]
+
+        assert spec.worker_class == TRAINER_CONTROLLER_WORKER_CLASS
+
+    def test_it_keeps_the_platform_delete_capability_used_to_suspend_cells(self):
+        """Fault injection deletes trainer pods, so moving readers off the orchestrator account must not break it."""
+        spec = specs_trainer_controller(_make_args())[0]
+
+        assert spec.platform_access is PlatformAccess.READ_DELETE
+
+    def test_the_worker_and_cell_names_are_stable(self):
+        """The driver looks the controller up by name, so these names are part of the release's contract."""
+        assert trainer_controller_worker_name("actor") == "trainer-controller-actor-00000-00000"
+        assert trainer_controller_cell_id("actor") == "trainer-controller-actor-00000"
+
+    def test_it_renders_into_static_workers_with_its_rpc_port(self):
+        """The release has to contain the controller pod, or the address book would point at nothing."""
+        args = _make_args()
+        spec = specs_trainer_controller(args)[0]
+
+        values = build_values(
+            [spec],
+            _controller_layout(),
+            scaling=args,
+            static_connections=compute_static_connections([spec], scaling=args),
+        ).as_values()
+
+        (entry,) = values["run"]["staticWorkers"]
+        assert SECTION_OF_CATEGORY[spec.category] == "staticWorkers"
+        assert entry["name"] == "trainer-controller-actor"
+        assert entry["ports"] == [{"name": "rpc", "port": 8000}]
+        worker_config = parse_serve_worker_config(entry["command"][entry["command"].index("--config") + 1])
+        spec_class = SERVE_SPEC_CLASSES[worker_config.worker_type]
+        served = spec_class.create(spec_class.config_class.model_validate(worker_config.args))
+        assert served.name == "trainer-controller-actor"
+        assert spec.worker_class == TRAINER_CONTROLLER_WORKER_CLASS
+        assert "resources" not in entry
+
+    def test_it_asks_for_a_provider_over_its_own_trainer_pool(self):
+        """A controller that watched both pools would try to heal the other role's cells."""
+        capability = _controller_providers()
+
+        args = _make_args(use_critic=True)
+        specs = specs_trainer_controller(args)
+        kwargs = [spec.ctor_kwargs(_controller_context(spec, capability)) for spec in specs]
+
+        assert capability.requested_pool_ids == [["trainer-engine-actor"], ["trainer-engine-critic"]]
+        assert [entry["cell_provider"] for entry in kwargs] == [capability.cells_provider] * 2
+
+    def test_no_controller_is_built_with_a_handle_on_the_inference_controller(self):
+        """The orchestration script drives the update window, so a trainer never reaches the engines itself."""
+        capability = _controller_providers()
+
+        args = _make_args(use_critic=True)
+        kwargs = [spec.ctor_kwargs(_controller_context(spec, capability)) for spec in specs_trainer_controller(args)]
+
+        assert capability.requested_static_pool_ids == []
+        assert all("inference_controller" not in entry for entry in kwargs)
+
+    def test_the_run_shape_flags_are_resolved_from_the_controller_payload(self):
+        """These are functions of the controller's own TrainerConfig, so the worker derives them from its payload."""
+        capability = _controller_providers()
+
+        spec = specs_trainer_controller(_make_args(kl_coef=0.1, use_opd=True, opd_type="megatron"))[0]
+        controller = TrainerController(**spec.ctor_kwargs(_controller_context(spec, capability)))
+
+        assert (controller._trainer_id, controller._with_ref, controller._with_opd_teacher) == ("actor", True, True)
+
+    def test_a_policy_that_switches_off_its_kl_loss_gets_no_reference_cells(self, tmp_path):
+        """with_ref is read off that trainer's own args, so one policy may need reference cells while another does not."""
+        args = _make_args(
+            use_kl_loss=True,
+            megatron_config=write_megatron_config_trainers(
+                tmp_path, [{"model_id": "a", "overrides": {"use_kl_loss": False}}, {"model_id": "b"}]
+            ),
+        )
+
+        spec_a, spec_b = specs_trainer_controller(args)
+
+        assert (
+            TrainerController(**spec_a.ctor_kwargs(_controller_context(spec_a, _controller_providers())))._with_ref
+            is False
+        )
+        assert (
+            TrainerController(**spec_b.ctor_kwargs(_controller_context(spec_b, _controller_providers())))._with_ref
+            is True
+        )
+
+    def test_the_critic_controller_gets_no_reference_or_teacher_cells(self):
+        """A critic controller must not hand its cells the actor's KL and OPD settings."""
+        spec = specs_trainer_controller(_make_args(use_critic=True, kl_coef=0.1, use_kl_loss=True, use_opd=True))[1]
+        critic = TrainerController(**spec.ctor_kwargs(_controller_context(spec, _controller_providers())))
+
+        assert (critic._with_ref, critic._with_opd_teacher) == (False, False)
+
+    def test_the_controller_is_built_from_its_own_trainer_config_payload(self):
+        """The controller reads its own sliced TrainerConfig, and init only adds the runtime inputs on top."""
+        spec = specs_trainer_controller(_make_args())[0]
+        actor_kwargs = spec.ctor_kwargs(_controller_context(spec, _controller_providers()))
+
+        assert actor_kwargs["args"] is spec.args
+        assert {"trainer_id", "role", "with_ref", "with_opd_teacher"}.isdisjoint(actor_kwargs)
+
+    def test_the_controller_pool_name_encodes_the_role(self):
+        """The two controllers of a critic run must not collide in the address book."""
+        assert compute_trainer_controller_pool_id("critic") == "trainer-controller-critic"
+
+
+class TestTrainerConfigs:
+    def test_a_single_policy_run_names_its_trainers_actor_and_critic(self):
+        """Every existing pool name, worker name and checkpoint path is written against these two ids."""
+        configs = compute_trainer_configs(_make_args(use_critic=True))
+
+        assert [config.trainer_id for config in configs] == ["actor", "critic"]
+        assert [config.model_id for config in configs] == [None, None]
+        assert [config.role for config in configs] == ["actor", "critic"]
+
+    def test_every_policy_of_a_multi_policy_run_gets_a_trainer_of_its_own(self, tmp_path):
+        """One TrainerController per trainer id is what keeps two policies from sharing cells."""
+        args = _make_args(megatron_config=write_megatron_config(tmp_path, "alpha", "beta"))
+
+        configs = compute_trainer_configs(args)
+
+        assert [config.trainer_id for config in configs] == ["alpha-actor", "beta-actor"]
+        assert [config.model_id for config in configs] == ["alpha", "beta"]
+        assert [config.role for config in configs] == ["actor", "actor"]
+
+    def test_the_pool_ids_of_two_policies_do_not_collide(self, tmp_path):
+        """Pool ids become Kubernetes names, so a collision would put both policies in one pool."""
+        args = _make_args(megatron_config=write_megatron_config(tmp_path, "alpha", "beta"))
+
+        specs = specs_trainer(args)
+
+        assert [spec.name for spec in specs] == ["trainer-engine-alpha-actor", "trainer-engine-beta-actor"]
+
+    def test_each_policy_gets_its_own_slice_of_the_placement_group(self, tmp_path):
+        """Two policies sharing the same slots would be scheduled onto the same gpus."""
+        args = _make_args(megatron_config=write_megatron_config(tmp_path, "alpha", "beta"))
+
+        specs = specs_trainer(args)
+
+        assert [spec.scheduling(args).pg_slot_offset for spec in specs] == [0, 4]
+
+    def test_the_slice_of_each_policy_follows_the_trainer_size(self, tmp_path):
+        """The stride is one trainer's gpu count; a hardcoded one overlaps as soon as a policy grows."""
+        args = _make_args(
+            megatron_config=write_megatron_config(tmp_path, "alpha", "beta", "gamma"),
+            actor_num_nodes=2,
+            actor_num_gpus_per_node=4,
+        )
+
+        specs = specs_trainer(args)
+
+        assert [spec.scheduling(args).pg_slot_offset for spec in specs] == [0, 8, 16]
+
+    def test_a_critic_shares_the_first_slice_with_its_actor(self):
+        """Actor and critic sit in one placement group on purpose; changing that must be deliberate."""
+        args = _make_args(use_critic=True)
+        specs = specs_trainer(args)
+
+        assert [(spec.name, spec.scheduling(args).pg_slot_offset) for spec in specs] == [
+            ("trainer-engine-actor", 0),
+            ("trainer-engine-critic", 0),
+        ]
+
+    def test_every_slice_fits_inside_the_placement_group(self, tmp_path):
+        """A slot past the end of the group is a pending bundle nobody ever schedules."""
+        megatron_config = write_megatron_config(tmp_path, "alpha", "beta", "gamma")
+        args = _make_args(megatron_config=megatron_config, actor_num_nodes=2, actor_num_gpus_per_node=4)
+        _, actor_num_gpus = _get_placement_group_layout(replace_config_values(args, rollout_num_gpus=8))
+
+        specs = specs_trainer(args)
+
+        for spec in specs:
+            reserved = spec.scheduling(args).num_cells * spec.scheduling(args).gpus_per_cell()
+            assert spec.scheduling(args).pg_slot_offset + reserved <= actor_num_gpus
+
+    def test_each_policy_gets_a_controller_of_its_own(self, tmp_path):
+        """A policy whose controller is another policy's would train the wrong ranks."""
+        args = _make_args(megatron_config=write_megatron_config(tmp_path, "alpha", "beta"))
+
+        specs = specs_trainer_controller(args)
+        kwargs = [spec.ctor_kwargs(_controller_context(spec, _controller_providers())) for spec in specs]
+
+        assert [entry["deployment_identity"].trainer_id for entry in kwargs] == ["alpha-actor", "beta-actor"]
+        assert [entry["args"].trainer_id for entry in kwargs] == ["alpha-actor", "beta-actor"]
+        assert [entry["args"].trainer_role for entry in kwargs] == ["actor", "actor"]
+
+    def test_a_worker_is_told_which_policy_it_serves_through_its_args(self, tmp_path):
+        """The worker namespaces its logs and metrics by this id; a shared one merges the two runs."""
+        args = _make_args(megatron_config=write_megatron_config(tmp_path, "alpha", "beta"))
+
+        kwargs = [spec.ctor_kwargs(_make_context(spec, args)) for spec in specs_trainer(args)]
+
+        assert [entry["args"].trainer_model_id for entry in kwargs] == ["alpha", "beta"]
+        assert [entry["role"] for entry in kwargs] == ["actor", "actor"]
+
+    def test_a_worker_of_every_policy_still_gets_the_plain_actor_role(self, tmp_path):
+        """The worker layer branches on the role literal, so a policy specific role would break training."""
+        args = _make_args(megatron_config=write_megatron_config(tmp_path, "alpha", "beta"))
+
+        single = _make_args()
+        [kwargs] = [spec.ctor_kwargs(_make_context(spec, single)) for spec in specs_trainer(single)]
+
+        assert (kwargs["args"].trainer_model_id, kwargs["role"]) == (None, "actor")
+        assert [spec.name for spec in specs_trainer(args)] == [
+            "trainer-engine-alpha-actor",
+            "trainer-engine-beta-actor",
+        ]
+
+    def test_a_policy_overlays_its_own_megatron_args_onto_its_worker(self, tmp_path):
+        """A per-policy --lr that never reaches the worker would train both policies identically."""
+        args = _make_args(
+            megatron_config=write_megatron_config_trainers(
+                tmp_path, [{"model_id": "alpha", "overrides": {"lr": 5e-7}}, {"model_id": "beta"}]
+            ),
+        )
+
+        kwargs = [spec.ctor_kwargs(_make_context(spec, args)) for spec in specs_trainer(args)]
+
+        assert [entry["args"].backend.lr for entry in kwargs] == [5e-7, 1e-6]
+
+    def test_the_critic_of_a_configured_policy_is_a_trainer_of_that_policy(self, tmp_path):
+        """A critic left without a model id would be built from raw args, ignoring the policy overlay."""
+        args = _make_args(
+            use_critic=True,
+            megatron_config=write_megatron_config_trainers(
+                tmp_path, [{"model_id": "alpha", "overrides": {"lr": 5e-7}}]
+            ),
+        )
+
+        configs = compute_trainer_configs(args)
+
+        assert [(config.trainer_id, config.role, config.model_id) for config in configs] == [
+            ("alpha-actor", "actor", "alpha"),
+            ("alpha-critic", "critic", "alpha"),
+        ]
+
+    def test_the_critic_args_stack_the_policy_overlay_and_the_critic_neutralization(self, tmp_path):
+        """The two transforms are not exclusive: the critic of a policy needs that policy's overlay too."""
+        args = _make_args(
+            use_critic=True,
+            kl_coef=0.1,
+            use_opd=True,
+            critic_lr=2e-6,
+            megatron_config=write_megatron_config_trainers(
+                tmp_path, [{"model_id": "alpha", "overrides": {"eps_clip": 0.3, "lr": 5e-7}}]
+            ),
+        )
+
+        critic_args = compute_trainer_config(args, compute_trainer_configs(args)[1])
+
+        assert (critic_args.eps_clip, critic_args.kl_coef, critic_args.use_opd) == (0.3, 0, False)
+        assert critic_args.backend.lr == 2e-6
+
+    def test_the_critic_pool_of_a_configured_policy_is_named_after_its_trainer_id(self, tmp_path):
+        """The critic pool must not collide with the policy's own pool nor with a plain 'critic' pool."""
+        args = _make_args(use_critic=True, megatron_config=write_megatron_config(tmp_path, "alpha"))
+
+        assert [spec.name for spec in specs_trainer(args)] == [
+            "trainer-engine-alpha-actor",
+            "trainer-engine-alpha-critic",
+        ]
+        assert [spec.name for spec in specs_trainer_controller(args)] == [
+            "trainer-controller-alpha-actor",
+            "trainer-controller-alpha-critic",
+        ]
+
+
+_TRAINER_IDS = ["actor", "critic"]
+
+
+def _addressed_args(tmp_path, **overrides):
+    return make_args_with_sglang_config(
+        tmp_path,
+        server_groups=[{"worker_type": "regular", "num_gpus": 8, "num_gpus_per_engine": 4}],
+        rollout_num_gpus=8,
+        **overrides,
+    )
+
+
+class TestStaticTrainerControllerAddrs:
+    def test_a_run_without_the_flag_names_no_controller(self, tmp_path):
+        """An all-in-one run finds its own controller, so nothing may be invented for it."""
+        assert external_trainer_controller_addrs(_addressed_args(tmp_path), trainer_ids=_TRAINER_IDS) is None
+
+    def test_the_one_trainer_of_a_run_is_named_by_its_own_entry(self, tmp_path):
+        """The trainer id is what tells the entry apart from the next run's, so even one trainer writes it."""
+        args = _addressed_args(tmp_path, trainer_controller_addrs=["actor=10.0.0.1:8000"])
+
+        addrs = external_trainer_controller_addrs(args, trainer_ids=["actor"])
+
+        assert (addrs["actor"].host, addrs["actor"].port) == ("10.0.0.1", 8000)
+
+    def test_each_trainer_is_addressed_separately(self, tmp_path):
+        """A critic is its own controller in its own pod, and calling the actor's would train the wrong model."""
+        args = _addressed_args(tmp_path, trainer_controller_addrs=["actor=10.0.0.1:8000", "critic=10.0.0.2:9000"])
+
+        addrs = external_trainer_controller_addrs(args, trainer_ids=_TRAINER_IDS)
+
+        assert [(addrs[trainer_id].host, addrs[trainer_id].port) for trainer_id in _TRAINER_IDS] == [
+            ("10.0.0.1", 8000),
+            ("10.0.0.2", 9000),
+        ]
+
+    def test_refuses_an_entry_that_names_no_trainer(self, tmp_path):
+        """A bare address belongs to whichever trainer the reader guesses, and a run may drive several."""
+        args = _addressed_args(tmp_path, trainer_controller_addrs=["10.0.0.1:8000"])
+
+        with pytest.raises(AssertionError, match="host:port"):
+            external_trainer_controller_addrs(args, trainer_ids=["actor"])
+
+    def test_refuses_a_trainer_id_that_is_not_one_of_the_run_s(self, tmp_path):
+        """A typo would otherwise leave the trainer it meant to name silently unaddressed."""
+        args = _addressed_args(tmp_path, trainer_controller_addrs=["actro=10.0.0.1:8000"])
+
+        with pytest.raises(AssertionError, match="exactly once"):
+            external_trainer_controller_addrs(args, trainer_ids=["actor"])
+
+    def test_refuses_a_run_whose_second_trainer_was_left_unaddressed(self, tmp_path):
+        """A trainer named by nothing would be reached at the first one's controller and train the wrong model."""
+        args = _addressed_args(tmp_path, trainer_controller_addrs=["actor=10.0.0.1:8000"])
+
+        with pytest.raises(AssertionError, match="exactly once"):
+            external_trainer_controller_addrs(args, trainer_ids=_TRAINER_IDS)
+
+    def test_refuses_two_controllers_for_one_trainer_id(self, tmp_path):
+        """One trainer id is one trainer, and silently using one of the two would drop the other."""
+        args = _addressed_args(tmp_path, trainer_controller_addrs=["actor=10.0.0.1:8000", "actor=10.0.0.2:8000"])
+
+        with pytest.raises(AssertionError, match="exactly once"):
+            external_trainer_controller_addrs(args, trainer_ids=["actor"])
+
+    def test_refuses_an_address_written_as_a_url(self, tmp_path):
+        """The flag takes host:port, and a pasted url would otherwise be read as a host named 'http'."""
+        args = _addressed_args(tmp_path, trainer_controller_addrs=["actor=http://10.0.0.1:8000"])
+
+        with pytest.raises(AssertionError, match="host:port"):
+            external_trainer_controller_addrs(args, trainer_ids=["actor"])
+
+
+class TestTrainerIds:
+    def test_a_single_policy_run_drives_one_trainer(self, tmp_path):
+        """The flag keys on trainer ids, so the ids a run drives are exactly the entries it takes."""
+        assert compute_trainer_ids(_addressed_args(tmp_path)) == ["actor"]
+
+    def test_a_critic_run_drives_a_trainer_per_trainer_id(self, tmp_path):
+        """A critic is deployed as its own trainer and so takes its own entry of the flag."""
+        assert compute_trainer_ids(_addressed_args(tmp_path, use_critic=True)) == ["actor", "critic"]
+
+
+class TestProviderSelection:
+    def test_a_given_trainer_controller_address_is_used_instead_of_the_backend_s(self, tmp_path):
+        """The trainer lives in another deployment, whose names this one's backend cannot resolve."""
+        args = _addressed_args(tmp_path, trainer_controller_addrs=["actor=10.0.0.1:8000"])
+        capability = FakeBackendCapability(static_provider=object())
+
+        provider = _compute_trainer_controller_provider(args, capability=capability, trainer_id="actor")
+
+        addrs = asyncio.run(provider.get_addrs("trainer-controller-actor-00000-00000"))
+        assert addrs["rpc"].addr == "http://10.0.0.1:8000"
+        assert capability.requested_static_pool_ids == []
+
+    def test_an_all_in_one_run_still_asks_its_own_backend_for_the_trainer_controller(self, tmp_path):
+        """Nothing addresses a ray actor statically, so the all-in-one path must be untouched."""
+        capability = FakeBackendCapability(static_provider=object())
+
+        provider = _compute_trainer_controller_provider(
+            _addressed_args(tmp_path), capability=capability, trainer_id="actor"
+        )
+
+        assert provider is capability.static_provider
+        assert capability.requested_static_pool_ids == ["trainer-controller-actor"]

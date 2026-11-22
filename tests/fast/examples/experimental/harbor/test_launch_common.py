@@ -1,0 +1,146 @@
+"""Offline tests for the launcher's Harbor-side wiring (no harbor, no keys)."""
+
+import json
+import sys
+import types
+from pathlib import Path
+from types import SimpleNamespace
+
+import launch_common
+import pytest
+
+
+def _args(**overrides):
+    defaults = dict(
+        harbor_env_type="e2b",
+        harbor_env_kwargs="",
+        harbor_tasks_dir="/tasks",
+        harbor_trials_dir="/trials",
+        agent_model_name="model",
+        agent_timeout=5400,
+        daytona_api_key_file="",
+        e2b_api_key_file="",
+        modal_config_file="",
+        novita_api_key_file="",
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+@pytest.fixture(autouse=True)
+def fake_harbor_and_sdk(monkeypatch):
+    """harbor and the provider SDKs only need to be importable for the preflight."""
+    for name in ("harbor", "e2b", "daytona", "modal", "novita_sandbox"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+
+
+def test_env_type_is_required(monkeypatch):
+    with pytest.raises(ValueError, match="HARBOR_ENV_TYPE"):
+        launch_common.harbor_env_vars(_args(harbor_env_type=""))
+
+
+def test_docker_is_refused_with_a_pointer_to_the_agent_server():
+    with pytest.raises(ValueError, match="swe-agent-harbor-docker"):
+        launch_common.harbor_env_vars(_args(harbor_env_type="docker"))
+    # the worker normalizes HARBOR_ENV_TYPE, so the guard must see the same value
+    with pytest.raises(ValueError, match="Docker daemon"):
+        launch_common.harbor_env_vars(_args(harbor_env_type=" Docker "))
+
+
+def test_missing_harbor_names_the_install(monkeypatch):
+    monkeypatch.setitem(sys.modules, "harbor", None)
+    with pytest.raises(RuntimeError, match="README install line"):
+        launch_common.harbor_env_vars(_args())
+
+
+@pytest.mark.parametrize("env_type", ["e2b", "agentenv"])
+def test_known_provider_is_provisioned_by_key_path(monkeypatch, tmp_path, fake_aenv, env_type):
+    """agentenv runs on the E2B provider, so it gets E2B's key and endpoint."""
+    fake_aenv("aenv 0.2.5")
+    key_file = tmp_path / "api_key"
+    key_file.write_text("e2b_secret\n")
+    monkeypatch.setenv("E2B_API_URL", "http://agentenv.internal:8000")
+
+    env = launch_common.harbor_env_vars(_args(harbor_env_type=env_type, e2b_api_key_file=str(key_file)))
+
+    assert env["HARBOR_ENV_TYPE"] == env_type  # Harbor still gets its own environment type
+    assert env["HARBOR_TASKS_DIR"] == "/tasks"
+    assert env["E2B_API_KEY_FILE"] == str(key_file)
+    assert env["E2B_API_URL"] == "http://agentenv.internal:8000"
+    assert "e2b_secret" not in str(env)
+
+
+def test_agentenv_without_aenv_stops_the_launch(fake_aenv):
+    """Harbor builds task Dockerfiles with aenv; a launch that cannot must not start."""
+    with pytest.raises(RuntimeError, match="aenv is not on PATH"):
+        launch_common.harbor_env_vars(_args(harbor_env_type="agentenv"))
+
+
+def test_unknown_provider_passes_through_with_a_notice(monkeypatch, capsys):
+    """The backend still reaches Harbor untouched; the operator is told no
+    credential wiring exists for it."""
+    env = launch_common.harbor_env_vars(_args(harbor_env_type="runloop"))
+    assert env["HARBOR_ENV_TYPE"] == "runloop"
+    assert "no credential wiring known for 'runloop'" in capsys.readouterr().out
+    assert not any("KEY" in var for var in env)
+
+
+def test_env_kwargs_and_server_knobs_are_forwarded_when_set(monkeypatch):
+    monkeypatch.setenv("E2B_API_KEY", "e2b_x")  # worker-env key supply
+    monkeypatch.setenv("HARBOR_RESPONSE_LENGTH_POLICY", "abort")
+    monkeypatch.setenv("HARBOR_OVERRIDE_CPUS", "2")
+    monkeypatch.setenv("HARBOR_CPU_ENFORCEMENT_POLICY", "request")
+    monkeypatch.delenv("HARBOR_MAX_SEQ_LEN", raising=False)
+
+    env = launch_common.harbor_env_vars(_args(harbor_env_kwargs='{"auto_snapshot": true}'))
+
+    assert env["HARBOR_ENV_KWARGS"] == '{"auto_snapshot": true}'
+    assert env["HARBOR_RESPONSE_LENGTH_POLICY"] == "abort"
+    assert env["HARBOR_OVERRIDE_CPUS"] == "2"
+    assert env["HARBOR_CPU_ENFORCEMENT_POLICY"] == "request"
+    assert "HARBOR_MAX_SEQ_LEN" not in env
+
+
+def test_agentic_wiring_is_the_shipped_wiring():
+    """One shared copy: the flags the GPU e2e exercises are the flags the recipes ship."""
+    args = launch_common.agentic_train_args(tito_model="qwen3", session_server_workers=4)
+    assert "--custom-agent-function-path harbor_agent_function.run" in args
+    assert "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate" in args
+    assert "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted" in args
+    assert "--tito-model qwen3" in args and "--session-server-workers 4" in args
+    assert "--session-server-port 30000" in args  # the default; multi-launcher hosts pass their own
+    # the miles-side paths must resolve, or every launcher fails at load_function time
+    from miles.rollout.filter_hub.dynamic_sampling_filters import check_no_aborted  # noqa: F401
+    from miles.rollout.generate_hub.agentic_tool_call import generate  # noqa: F401
+
+    for d in launch_common.agentic_pythonpath_dirs():
+        assert Path(d).is_dir(), d
+
+
+def _write_rows(path: Path, rows: list[dict]) -> str:
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    return str(path)
+
+
+def test_task_dir_preflight_lists_every_row_a_trial_could_not_run(tmp_path):
+    """During the run such a row only drops its own samples, so the launch is where all of them get named."""
+    (tmp_path / "tasks" / "task-1").mkdir(parents=True)
+    rows = [
+        {"prompt": "p", launch_common.METADATA_KEY: {"instance_id": "task-1"}},
+        {"prompt": "p", launch_common.METADATA_KEY: {"instance_id": "gone-a"}},
+        {"prompt": "p", launch_common.METADATA_KEY: {"instance_id": "gone-b"}},
+        {"prompt": "p"},
+    ]
+    data = _write_rows(tmp_path / "train.jsonl", rows)
+    with pytest.raises(ValueError, match=r"3 instance_id\(s\)") as raised:
+        launch_common.preflight_task_dirs(data, str(tmp_path / "tasks"))
+    assert "'gone-a'" in str(raised.value) and "'gone-b'" in str(raised.value)
+    assert "invalid instance_id ''" in str(raised.value)
+
+
+def test_task_dir_preflight_passes_when_every_row_has_its_task(tmp_path):
+    (tmp_path / "tasks" / "task-1").mkdir(parents=True)
+    data = _write_rows(
+        tmp_path / "train.jsonl", [{"prompt": "p", launch_common.METADATA_KEY: {"instance_id": "task-1"}}]
+    )
+    launch_common.preflight_task_dirs(data, str(tmp_path / "tasks"))

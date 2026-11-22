@@ -1,0 +1,43 @@
+infra:
+  image:
+    repository: myregistry.example/myteam/miles
+    tag: v0.9.3-cu128
+    pullPolicy: IfNotPresent
+    pullSecrets:
+    - myregistry-pull-secret
+  volumes:
+  - name: cluster-storage
+    persistentVolumeClaim:
+      claimName: miles-shared-nvme
+    mounts:
+    - mountPath: /cluster-storage
+    - mountPath: /root/miles
+      subPath: myuser/miles
+    - mountPath: /root/Megatron-LM
+      subPath: myuser/Megatron-LM
+  - name: models
+    hostPath:
+      path: /gpfs/models
+      type: Directory
+    mounts:
+    - mountPath: /models
+      readOnly: true
+  - name: scratch
+    hostPath:
+      path: /mnt/local-nvme/miles-staging
+      type: DirectoryOrCreate
+    mounts:
+    - mountPath: /scratch
+  paths:
+    runsRoot: /cluster-storage/myteam/miles_data
+  scheduling:
+    nodeSelector:
+      nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3
+    tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  env:
+    NCCL_SOCKET_IFNAME: bond0
+    NCCL_IB_HCA: mlx5_0,mlx5_1
+    HF_ENDPOINT: https://hf-mirror.example

@@ -1,0 +1,209 @@
+import re
+from collections import defaultdict
+
+from miles.utils.hf_utils.weight_mapping import HfWeightMapping
+from miles.utils.lora.hf_lora_targets import GDN_IN_PROJ_COMPONENTS_BY_MODULE
+from miles.utils.lora.utils import matches_lora_target
+
+_CANONICAL_PROJECTIONS = {
+    "q_proj": ("linear_q",),
+    "k_proj": ("linear_k",),
+    "v_proj": ("linear_v",),
+    "gate_proj": ("linear_fc1_gate",),
+    "up_proj": ("linear_fc1_up",),
+    **GDN_IN_PROJ_COMPONENTS_BY_MODULE,
+}
+
+
+def _hf_leaf(checkpoint_parameter):
+    return checkpoint_parameter.removesuffix(".weight").rsplit(".", 1)[-1]
+
+
+def _splits_canonically(megatron_module, checkpoint_parameters):
+    """CanonicalLoRA gives each component of a fused qkv / fc1, or of Qwen3.5's GDN in_proj, its own adapter."""
+    if ".experts." in megatron_module or len(checkpoint_parameters) < 2:
+        return False
+    leaf = megatron_module.rsplit(".", 1)[-1]
+    # Qwen3-Next's in_proj_qkvz / in_proj_ba stay one fused adapter
+    return leaf in ("linear_qkv", "linear_fc1") or (
+        leaf == "in_proj" and all(_hf_leaf(name) in GDN_IN_PROJ_COMPONENTS_BY_MODULE for name in checkpoint_parameters)
+    )
+
+
+def _canonical_adapter_modules(module, checkpoint_parameter):
+    leaf = _hf_leaf(checkpoint_parameter)
+    assert leaf in _CANONICAL_PROJECTIONS, f"CanonicalLoRA has no split adapter for {checkpoint_parameter!r}"
+    return [f"{module.rsplit('.', 1)[0]}.{component}" for component in _CANONICAL_PROJECTIONS[leaf]]
+
+
+def _checkpoint_parameters(mapping):
+    return {mapping.hf_param} if isinstance(mapping.hf_param, str) else set(mapping.hf_param.values())
+
+
+def _select_checkpoint_parameters(checkpoint_parameters, targets, *, hf_mapping, megatron_module, exclude_modules):
+    hf_parameters = {name: hf_mapping.model_parameter(name) for name in checkpoint_parameters}
+    # Bridge can expose auxiliary layers, such as MTP, absent from the HF model.
+    selected = {
+        checkpoint_parameter
+        for checkpoint_parameter, hf_parameter in hf_parameters.items()
+        if (not hf_mapping.parameter_names or hf_parameter in hf_mapping.parameter_names)
+        and any(matches_lora_target(hf_parameter.removesuffix(".weight"), target) for target in targets)
+    }
+    return {
+        checkpoint_parameter
+        for checkpoint_parameter in selected
+        if not any(
+            matches_lora_target(hf_parameters[checkpoint_parameter].removesuffix(".weight"), target)
+            or matches_lora_target(megatron_module, target)
+            for target in exclude_modules
+        )
+    }
+
+
+def _resolve_adapter_targets(megatron_module, checkpoint_parameters, selected, *, canonical):
+    if canonical and _splits_canonically(megatron_module, checkpoint_parameters):
+        return list(
+            dict.fromkeys(module for name in selected for module in _canonical_adapter_modules(megatron_module, name))
+        )
+    assert (
+        selected == checkpoint_parameters
+    ), f"LoRA on fused module {megatron_module!r} requires all HF targets with this adapter"
+    if canonical and ".experts." in megatron_module and megatron_module.endswith(".linear_fc1"):
+        # canonical expert gate/up are independent even when HF packs gate_up_proj
+        return [f"{megatron_module}_gate", f"{megatron_module}_up"]
+    return [megatron_module]
+
+
+def resolve_megatron_lora_targets(targets, mappings, *, parameter_names, hf_mapping, canonical, exclude_modules=()):
+    adapter_targets = {}
+    matched_megatron_parameters = set()
+    for mapping in mappings:
+        megatron_module, weight = mapping.megatron_param.rsplit(".", 1)
+        if weight not in ("weight", "weight*"):
+            continue
+        regex = re.compile(re.escape(mapping.megatron_param).replace(r"\*", "(.*)"))
+        selections = []
+        for megatron_parameter in sorted(parameter_names - matched_megatron_parameters):
+            match = regex.fullmatch(megatron_parameter)
+            if match is None:
+                continue
+            matched_megatron_parameters.add(megatron_parameter)
+            checkpoint_parameters = _checkpoint_parameters(mapping.resolve(match.groups()))
+            selected = _select_checkpoint_parameters(
+                checkpoint_parameters,
+                targets,
+                hf_mapping=hf_mapping,
+                megatron_module=megatron_module,
+                exclude_modules=exclude_modules,
+            )
+            selections.append((checkpoint_parameters, selected))
+        if not any(selected for _, selected in selections):
+            continue
+        # Template injection must select the same projections for every layer/expert it matches.
+        assert all(
+            selected for _, selected in selections
+        ), f"LoRA cannot select a subset of parameters in {mapping.megatron_param!r}"
+        adapter_selections = set()
+        for checkpoint_parameters, selected in selections:
+            selected_adapters = _resolve_adapter_targets(
+                megatron_module, checkpoint_parameters, selected, canonical=canonical
+            )
+            adapter_selections.add(frozenset(selected_adapters))
+            adapter_targets.update(dict.fromkeys(selected_adapters))
+        assert (
+            len(adapter_selections) == 1
+        ), f"LoRA cannot select different projections across parameters in {mapping.megatron_param!r}"
+    assert adapter_targets, "LoRA targets have no Megatron modules"
+    return list(adapter_targets)
+
+
+def check_fused_lora_selection(hf_checkpoint, hf_targets, *, canonical):
+    """Refuse a target set that adapts only some of the HF projections Bridge fuses into one module.
+
+    A fused module shares one lora_A across its projections, so it is adapted for all of them or none;
+    under canonical_lora a fused qkv / fc1 / Qwen3.5 GDN in_proj gives each projection its own adapter instead.
+    """
+    from miles.utils.megatron_bridge_utils import load_auto_bridge
+
+    bridge = load_auto_bridge(hf_checkpoint)
+    hf_mapping = HfWeightMapping.from_config(bridge.hf_pretrained.config)
+    modules = sorted(name.removesuffix(".weight") for name in hf_mapping.parameter_names)
+    model_bridge = bridge._model_bridge
+    model_bridge.hf_pretrained = bridge.hf_pretrained
+    for mapping in model_bridge.mapping_registry().get_all_mappings():
+        megatron_module, weight = mapping.megatron_param.rsplit(".", 1)
+        checkpoint_parameters = _checkpoint_parameters(mapping)
+        if weight not in ("weight", "weight*") or len(checkpoint_parameters) < 2:
+            continue
+        splittable = _splits_canonically(megatron_module, checkpoint_parameters)
+        if canonical and splittable:
+            continue
+        # one fused module per wildcard capture (layer, expert)
+        fused = defaultdict(list)
+        for parameter in sorted(checkpoint_parameters):
+            pattern = re.compile(
+                re.escape(hf_mapping.model_parameter(parameter).removesuffix(".weight")).replace(r"\*", "(.*)")
+            )
+            for module in modules:
+                match = pattern.fullmatch(module)
+                if match is not None:
+                    fused[match.groups()].append(module)
+        for names in fused.values():
+            selected = [name for name in names if any(matches_lora_target(name, target) for target in hf_targets)]
+            missing = [name for name in names if name not in selected]
+            # a template adapts every layer alike, so the remedy names leaves, not this layer's modules
+            missing_leaves = sorted({name.rpartition(".")[2] for name in missing})
+            assert not (selected and missing), (
+                f"Bridge fuses {names} into {megatron_module}, which shares one lora_A across them, so it cannot "
+                f"adapt only {selected}: add {missing_leaves} to --target-modules"
+                + (" or pass --lora-type canonical_lora" if splittable else "")
+            )
+
+
+def normalize_lora_targets_to_hf(hf_checkpoint, target_modules, *, canonical, exclude_modules, explicit_targets=()):
+    # Only legacy Megatron selectors need Bridge before trainer creation.
+    from miles.utils.megatron_bridge_utils import load_auto_bridge
+
+    bridge = load_auto_bridge(hf_checkpoint)
+    hf_mapping = HfWeightMapping.from_config(bridge.hf_pretrained.config)
+    model_bridge = bridge._model_bridge
+    model_bridge.hf_pretrained = bridge.hf_pretrained
+    selected_hf_modules, matched_targets = set(), set()
+    for mapping in model_bridge.mapping_registry().get_all_mappings():
+        megatron_module, weight = mapping.megatron_param.rsplit(".", 1)
+        if weight not in ("weight", "weight*"):
+            continue
+        for checkpoint_parameter in _checkpoint_parameters(mapping):
+            hf_module = hf_mapping.model_parameter(checkpoint_parameter).removesuffix(".weight")
+            if hf_mapping.parameter_names and not any(
+                matches_lora_target(name.removesuffix(".weight"), hf_module) for name in hf_mapping.parameter_names
+            ):
+                continue
+            for target in target_modules:
+                matches = matches_lora_target(hf_module, target) or matches_lora_target(megatron_module, target)
+                if canonical and _splits_canonically(megatron_module, _checkpoint_parameters(mapping)):
+                    # a component selector reaches the HF module only whole: in_proj_q alone would widen to q/k/v
+                    matches |= all(
+                        matches_lora_target(module, target)
+                        for module in _canonical_adapter_modules(megatron_module, checkpoint_parameter)
+                    )
+                if matches:
+                    matched_targets.add(target)
+                    excluded = any(
+                        matches_lora_target(hf_module, exclude) or matches_lora_target(megatron_module, exclude)
+                        for exclude in exclude_modules
+                    )
+                    assert not (
+                        excluded and target in explicit_targets
+                    ), f"Explicit LoRA target {target!r} overlaps --exclude-modules at {hf_module!r}"
+                    if not excluded:
+                        selected_hf_modules.add(hf_module)
+    unmatched = sorted(set(target_modules) - matched_targets)
+    assert not unmatched, f"LoRA targets have no Bridge mapping: {unmatched}" + (
+        "; a GDN q/k/v selector must cover in_proj_qkv whole (in_proj_qkv or in_proj_[qkv])"
+        if canonical
+        and any(target.rsplit(".", 1)[-1] in ("in_proj_q", "in_proj_k", "in_proj_v") for target in unmatched)
+        else ""
+    )
+    assert selected_hf_modules, "No LoRA targets remain after applying --exclude-modules"
+    return sorted(selected_hf_modules)

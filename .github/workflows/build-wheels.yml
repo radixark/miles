@@ -1,0 +1,556 @@
+# doc-dev: docs/developer/ci/06-build-wheels.md
+name: Build Wheels
+
+# Rebuilds the radixark/miles-wheels assets that follow a moving source and
+# syncs them into the releases docker/Dockerfile installs; docker-build.yml's
+# wheels fingerprint then rebuilds the image. Every set carries a
+# <dist>-source.json manifest, so a set is rebuilt only when its source moved.
+#
+#   sgl-router  radixark/sgl-router-for-miles main     x86_64 + aarch64, GitHub-hosted
+#   int4_qat    radixark/miles main (kernel directory) x86_64, docker-build runner
+#   te          radixark/TransformerEngine miles-main  x86_64, docker-build runner
+#   sglang      sgl-project/sglang sglang-miles        x86_64 + aarch64, GitHub-hosted
+#
+# sglang goes to its own weekly sglang-miles-<week>-<arch> releases, outside the rolling set the
+# image installs. A wheel is built once per commit and Python version and never replaced, since
+# Miles wheels pin it; that, not a manifest, decides what to build.
+#
+# There is no self-hosted ARM64 runner, so aarch64 int4_qat and te are rebuilt
+# by hand with the miles-wheels README commands.
+
+on:
+  schedule:
+    # Hourly, off the top of the hour, where GitHub delays or drops scheduled runs.
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      wheels:
+        description: 'Wheel sets to consider'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - sgl-router
+          - int4_qat
+          - te
+          - sglang
+      force:
+        description: 'Rebuild even when a release already holds the source commit'
+        required: false
+        default: false
+        type: boolean
+      te_ref:
+        description: 'radixark/TransformerEngine branch or commit'
+        required: false
+        default: 'miles-main'
+        type: string
+      sglang_ref:
+        description: 'sgl-project/sglang branch or commit'
+        required: false
+        default: 'sglang-miles'
+        type: string
+      keep_superseded:
+        description: 'Keep other-version wheels'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+# One sync at a time: two would race to replace the same release assets.
+concurrency:
+  group: build-wheels
+  cancel-in-progress: false
+
+env:
+  WHEELS_REPO: radixark/miles-wheels
+  ROUTER_REPO: radixark/sgl-router-for-miles
+  ROUTER_REF: main
+  INT4_QAT_PATH: miles/kernels/quant/int4_fake
+  TE_REPO: radixark/TransformerEngine
+  SGLANG_REPO: sgl-project/sglang
+  # one history release per ISO week (sglang-miles-2026w43-<arch>): GitHub caps a release at 1000 assets
+  SGLANG_HISTORY_RELEASE: sglang-miles
+  # the Python versions Miles installs on (setup.py python_requires; no 3.13 until
+  # nvidia-resiliency-ext ships it); the wheel is per interpreter (Rust extensions)
+  SGLANG_PYTHONS: '["3.11", "3.12"]'
+
+jobs:
+  check:
+    # Publishes into the public miles-wheels releases; a fork or mirror must never sync them.
+    if: github.repository == 'radixark/miles'
+    runs-on: ubuntu-latest
+    outputs:
+      router_matrix: ${{ steps.check.outputs.router_matrix }}
+      sglang_matrix: ${{ steps.check.outputs.sglang_matrix }}
+      sglang_build_matrix: ${{ steps.check.outputs.sglang_build_matrix }}
+      publish_matrix: ${{ steps.check.outputs.publish_matrix }}
+      int4_x86: ${{ steps.check.outputs.int4_x86 }}
+      te_x86: ${{ steps.check.outputs.te_x86 }}
+      router_sha: ${{ steps.check.outputs.router_sha }}
+      int4_sha: ${{ steps.check.outputs.int4_sha }}
+      te_sha: ${{ steps.check.outputs.te_sha }}
+      sglang_sha: ${{ steps.check.outputs.sglang_sha }}
+      sglang_release: ${{ steps.check.outputs.sglang_release }}
+      cuda: ${{ steps.check.outputs.cuda }}
+      torch: ${{ steps.check.outputs.torch }}
+      sglang_image: ${{ steps.check.outputs.sglang_image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            docker/Dockerfile
+            .github/workflows/scripts/gh_api.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Compare each source with the commit its release records
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WHEELS_INPUT: ${{ inputs.wheels || 'all' }}
+          FORCE: ${{ inputs.force || false }}
+          TE_REF: ${{ inputs.te_ref || 'miles-main' }}
+          SGLANG_REF: ${{ inputs.sglang_ref || 'sglang-miles' }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          dockerfile_arg() { sed -n "s/^ARG $1=//p" docker/Dockerfile; }
+
+          # The releases and base image the Dockerfile installs decide every target.
+          [ "$(dockerfile_arg WHEELS_REPO)" = "$WHEELS_REPO" ] \
+            || fail "docker/Dockerfile installs from $(dockerfile_arg WHEELS_REPO), not ${WHEELS_REPO}"
+          TAG_X86=$(dockerfile_arg WHEELS_TAG_X86)
+          TAG_ARM64=$(dockerfile_arg WHEELS_TAG_ARM64)
+          [[ "$TAG_X86" =~ ^cu([0-9]+)-torch([0-9]+)-x86_64$ ]] || fail "unexpected WHEELS_TAG_X86 '${TAG_X86}'"
+          CUDA=${BASH_REMATCH[1]}
+          TORCH=${BASH_REMATCH[2]}
+          [ "$TAG_ARM64" = "cu${CUDA}-torch${TORCH}-aarch64" ] || fail "unexpected WHEELS_TAG_ARM64 '${TAG_ARM64}'"
+          SGLANG_IMAGE="lmsysorg/sglang:$(dockerfile_arg SGLANG_IMAGE_TAG)"
+
+          is_sha() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
+          source .github/workflows/scripts/gh_api.sh
+
+          # Sets BUILT to the commit release $1's manifest $2 records, empty when the
+          # release holds none yet. A failed lookup fails the job instead of reading
+          # as "never built".
+          read_built() {
+            local url
+            url=$(gh_api "repos/${WHEELS_REPO}/releases/tags/$1" \
+              --jq ".assets[] | select(.name == \"$2\") | .url") || fail "cannot read release $1"
+            BUILT=""
+            if [ -n "$url" ]; then
+              BUILT=$(gh_api -H 'Accept: application/octet-stream' "$url" | jq -r .commit) \
+                || fail "cannot read $2 from release $1"
+            fi
+          }
+          # stale <source sha> <release tag> <manifest>
+          stale() {
+            [ "$FORCE" = true ] && return 0
+            read_built "$2" "$3"
+            [ "$1" != "$BUILT" ]
+          }
+          wanted() { [ "$WHEELS_INPUT" = all ] || [ "$WHEELS_INPUT" = "$1" ]; }
+
+          ROUTER_X86=false; ROUTER_ARM64=false; INT4_X86=false; TE_X86=false
+          ROUTER_SHA=""; INT4_SHA=""; TE_SHA=""; SGLANG_SHA=""
+          if wanted sgl-router; then
+            ROUTER_SHA=$(gh_api "repos/${ROUTER_REPO}/commits/${ROUTER_REF}" --jq .sha)
+            is_sha "$ROUTER_SHA" || fail "cannot resolve ${ROUTER_REPO}@${ROUTER_REF}"
+            if stale "$ROUTER_SHA" "$TAG_X86" sglang_router-source.json; then ROUTER_X86=true; fi
+            if stale "$ROUTER_SHA" "$TAG_ARM64" sglang_router-source.json; then ROUTER_ARM64=true; fi
+          fi
+          if wanted int4_qat; then
+            # int4_qat follows the kernel directory, not every miles main commit.
+            INT4_SHA=$(gh_api "repos/${GITHUB_REPOSITORY}/commits?sha=main&path=${INT4_QAT_PATH}&per_page=1" --jq '.[0].sha')
+            is_sha "$INT4_SHA" || fail "cannot resolve ${INT4_QAT_PATH} on main"
+            if stale "$INT4_SHA" "$TAG_X86" fake_int4_quant_cuda-source.json; then INT4_X86=true; fi
+          fi
+          if wanted te; then
+            TE_SHA=$(gh_api "repos/${TE_REPO}/commits/${TE_REF}" --jq .sha)
+            is_sha "$TE_SHA" || fail "cannot resolve ${TE_REPO}@${TE_REF}"
+            if stale "$TE_SHA" "$TAG_X86" transformer_engine-source.json; then TE_X86=true; fi
+          fi
+          SGLANG_BUILT=""
+          if wanted sglang; then
+            # with wheels=all an sglang lookup failure must not stop the image's wheel sets
+            if ! SGLANG_SHA=$(gh_api "repos/${SGLANG_REPO}/commits/${SGLANG_REF}" --jq .sha) || ! is_sha "$SGLANG_SHA"; then
+              [ "$WHEELS_INPUT" = sglang ] && fail "cannot resolve ${SGLANG_REPO}@${SGLANG_REF}"
+              echo "::warning::cannot resolve ${SGLANG_REPO}@${SGLANG_REF}; skipping sglang"
+              SGLANG_SHA=""
+            fi
+          fi
+          if [ -n "$SGLANG_SHA" ]; then
+            # picked once here, so a run that crosses midnight Sunday publishes where it checked
+            SGLANG_RELEASE="${SGLANG_HISTORY_RELEASE}-$(date -u +%Gw%V)"
+            # this commit's wheels in any week's release: a published wheel is never rebuilt, and a
+            # Python version that failed is retried
+            SGLANG_BUILT=$(gh_api --paginate "repos/${WHEELS_REPO}/releases?per_page=100" \
+              --jq ".[] | select(.tag_name | startswith(\"${SGLANG_HISTORY_RELEASE}-\")) | .assets[].name
+                | select(contains(\"+miles.g${SGLANG_SHA:0:10}-\"))") \
+              || fail "cannot list the ${SGLANG_HISTORY_RELEASE} releases"
+          fi
+
+          ROUTER_MATRIX=$(jq -cn --argjson x "$ROUTER_X86" --argjson a "$ROUTER_ARM64" '[
+            (if $x then {arch: "x86_64", build_arch: "x86", runner: "ubuntu-24.04"} else empty end),
+            (if $a then {arch: "aarch64", build_arch: "aarch64", runner: "ubuntu-24.04-arm"} else empty end)]')
+          # glibc 2.35: the wheel installs on Ubuntu 22.04 and newer
+          SGLANG_BUILD_MATRIX=$(jq -cn --arg sha "$SGLANG_SHA" --arg built "$SGLANG_BUILT" --argjson p "$SGLANG_PYTHONS" '[
+            if $sha == "" then empty else
+              ($built | split("\n")) as $names
+              | [{arch: "x86_64", build_arch: "x86", runner: "ubuntu-22.04"},
+                 {arch: "aarch64", build_arch: "aarch64", runner: "ubuntu-22.04-arm"}][] as $arch
+              | $p[] as $python
+              | ("-cp" + ($python | gsub("\\."; "")) + "-") as $cp
+              | select(any($names[]; contains($cp) and endswith("_" + $arch.arch + ".whl")) | not)
+              | $arch + {python: $python}
+            end]')
+          SGLANG_MATRIX=$(jq -c '[group_by(.arch)[] | .[0] | del(.python)]' <<<"$SGLANG_BUILD_MATRIX")
+          sglang_missing() { jq -r --arg a "$1" '[.[] | select(.arch == $a) | .python] | join(" ") | if . == "" then "-" else . end' <<<"$SGLANG_BUILD_MATRIX"; }
+          X86_ANY=false
+          if [ "$ROUTER_X86" = true ] || [ "$INT4_X86" = true ] || [ "$TE_X86" = true ]; then X86_ANY=true; fi
+          PUBLISH_MATRIX=$(jq -cn --argjson x "$X86_ANY" --argjson a "$ROUTER_ARM64" '[
+            (if $x then {arch: "x86_64", build_arch: "x86"} else empty end),
+            (if $a then {arch: "aarch64", build_arch: "aarch64"} else empty end)]')
+
+          {
+            echo "| wheel set | source | x86_64 | aarch64 |"
+            echo "| --- | --- | --- | --- |"
+            echo "| sgl-router | \`${ROUTER_SHA:0:12}\` | ${ROUTER_X86} | ${ROUTER_ARM64} |"
+            echo "| int4_qat | \`${INT4_SHA:0:12}\` | ${INT4_X86} | by hand |"
+            echo "| te | \`${TE_SHA:0:12}\` | ${TE_X86} | by hand |"
+            echo "| sglang | \`${SGLANG_SHA:0:12}\` | $(sglang_missing x86_64) | $(sglang_missing aarch64) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "router_matrix=${ROUTER_MATRIX}"
+            echo "sglang_matrix=${SGLANG_MATRIX}"
+            echo "sglang_build_matrix=${SGLANG_BUILD_MATRIX}"
+            echo "publish_matrix=${PUBLISH_MATRIX}"
+            echo "int4_x86=${INT4_X86}"
+            echo "te_x86=${TE_X86}"
+            echo "router_sha=${ROUTER_SHA}"
+            echo "int4_sha=${INT4_SHA}"
+            echo "te_sha=${TE_SHA}"
+            echo "sglang_sha=${SGLANG_SHA}"
+            echo "sglang_release=${SGLANG_RELEASE:-}"
+            echo "cuda=${CUDA}"
+            echo "torch=${TORCH}"
+            echo "sglang_image=${SGLANG_IMAGE}"
+          } >> "$GITHUB_OUTPUT"
+
+  build-router:
+    needs: check
+    if: needs.check.outputs.router_matrix != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.check.outputs.router_matrix) }}
+    # The Rust build needs no CUDA or torch; Ubuntu 24.04 gives the manylinux_2_39
+    # tag the releases already carry.
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    env:
+      CUDA: ${{ needs.check.outputs.cuda }}
+      ROUTER_SHA: ${{ needs.check.outputs.router_sha }}
+      CARGO_BUILD_JOBS: '4'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.WHEELS_REPO }}
+          path: miles-wheels
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build dependencies
+        run: |
+          echo "WHEEL_DIR=${RUNNER_TEMP}/wheels" >> "$GITHUB_ENV"
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libprotobuf-dev pkg-config libssl-dev cmake clang libclang-dev
+          python -m pip install maturin==1.14.0 aiohttp packaging
+
+      - name: Build the router wheel and binary
+        run: |
+          python miles-wheels/build_wheels.py build --cuda "$CUDA" --arch ${{ matrix.build_arch }} \
+            --only sgl-router --router-ref "$ROUTER_SHA"
+
+      - name: Check that the wheel and binary forward requests
+        run: |
+          python -m pip install "$WHEEL_DIR"/sglang_router-*.whl
+          mkdir -p "${RUNNER_TEMP}/router-bin"
+          tar xzf "$WHEEL_DIR"/sgl-model-gateway-linux-*.tar.gz -C "${RUNNER_TEMP}/router-bin"
+          python miles-wheels/check_router_forwarding.py --log-dir "${RUNNER_TEMP}/router-logs"
+          python miles-wheels/check_router_forwarding.py --log-dir "${RUNNER_TEMP}/router-logs" \
+            --router-bin "${RUNNER_TEMP}/router-bin/sgl-model-gateway"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.arch }}-sgl-router
+          path: |
+            ${{ runner.temp }}/wheels/*.whl
+            ${{ runner.temp }}/wheels/*.tar.gz
+            ${{ runner.temp }}/wheels/*-source.json
+          if-no-files-found: error
+          retention-days: 7
+
+  build-int4-x86:
+    needs: check
+    if: needs.check.outputs.int4_x86 == 'true'
+    runs-on: ["docker-build"]
+    timeout-minutes: 120
+    env:
+      CUDA: ${{ needs.check.outputs.cuda }}
+      INT4_SHA: ${{ needs.check.outputs.int4_sha }}
+      SGLANG_IMAGE: ${{ needs.check.outputs.sglang_image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.WHEELS_REPO }}
+          path: miles-wheels
+
+      - name: Build fake_int4_quant_cuda in the SGLang base image
+        run: |
+          echo "WHEEL_DIR=${RUNNER_TEMP}/wheels" >> "$GITHUB_ENV"
+          rm -rf "${RUNNER_TEMP}/wheels"
+          mkdir -p "${RUNNER_TEMP}/wheels"
+          docker run --rm --network host \
+            -v "${RUNNER_TEMP}/wheels:${RUNNER_TEMP}/wheels" \
+            -v "${PWD}/miles-wheels:/miles-wheels:ro" \
+            -e WHEEL_DIR="${RUNNER_TEMP}/wheels" \
+            "$SGLANG_IMAGE" \
+            python3 /miles-wheels/build_wheels.py build --cuda "$CUDA" --arch x86 \
+              --only int4_qat --int4-qat-ref "$INT4_SHA"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-x86_64-int4_qat
+          path: |
+            ${{ runner.temp }}/wheels/*.whl
+            ${{ runner.temp }}/wheels/*-source.json
+          if-no-files-found: error
+          retention-days: 7
+
+  build-te-x86:
+    needs: check
+    if: needs.check.outputs.te_x86 == 'true'
+    runs-on: ["docker-build"]
+    # The manylinux recipe compiles every TE CUDA kernel from scratch.
+    timeout-minutes: 720
+    env:
+      CUDA: ${{ needs.check.outputs.cuda }}
+      TE_SHA: ${{ needs.check.outputs.te_sha }}
+      SGLANG_IMAGE: ${{ needs.check.outputs.sglang_image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.WHEELS_REPO }}
+          path: miles-wheels
+
+      - name: Prepare the wheel directory
+        run: |
+          echo "WHEEL_DIR=${RUNNER_TEMP}/wheels" >> "$GITHUB_ENV"
+          rm -rf "${RUNNER_TEMP}/wheels"
+          PIP_BSP=""
+          pip3 install --help 2>/dev/null | grep -q -- --break-system-packages && PIP_BSP="--break-system-packages"
+          pip3 install $PIP_BSP packaging
+
+      - name: Build metapackage, core and torch sdist (manylinux recipe)
+        run: |
+          python3 miles-wheels/build_wheels.py build --cuda "$CUDA" --arch x86 \
+            --only te --te-ref "$TE_SHA" --te-phase sources
+
+      - name: Build transformer_engine_torch in the SGLang base image
+        run: |
+          docker run --rm --network host \
+            -v "${WHEEL_DIR}:${WHEEL_DIR}" \
+            -v "${PWD}/miles-wheels:/miles-wheels:ro" \
+            -e WHEEL_DIR \
+            "$SGLANG_IMAGE" \
+            python3 /miles-wheels/build_wheels.py build --cuda "$CUDA" --arch x86 \
+              --only te --te-phase torch
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-x86_64-te
+          path: |
+            ${{ runner.temp }}/wheels/*.whl
+            ${{ runner.temp }}/wheels/*-source.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  build-sglang:
+    needs: check
+    if: needs.check.outputs.sglang_matrix != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.check.outputs.sglang_build_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    env:
+      CUDA: ${{ needs.check.outputs.cuda }}
+      SGLANG_SHA: ${{ needs.check.outputs.sglang_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.WHEELS_REPO }}
+          path: miles-wheels
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Build the sglang wheel
+        run: |
+          python -m pip install packaging
+          WHEEL_DIR="${RUNNER_TEMP}/wheels" python miles-wheels/build_wheels.py build --cuda "$CUDA" \
+            --arch ${{ matrix.build_arch }} --only sglang --sglang-ref "$SGLANG_SHA"
+
+      # not wheels-<arch>-*, which the rolling-release publish job downloads
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sglang-${{ matrix.arch }}-py${{ matrix.python }}
+          path: |
+            ${{ runner.temp }}/wheels/*.whl
+            ${{ runner.temp }}/wheels/*-source.json
+          if-no-files-found: error
+          retention-days: 7
+
+  # each arch publishes alone, every Python version that built; a failed build has no artifact
+  publish-sglang:
+    needs: [check, build-sglang]
+    if: always() && contains(fromJSON('["success", "failure"]'), needs.build-sglang.result)
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.check.outputs.sglang_matrix) }}
+    runs-on: ubuntu-latest
+    env:
+      CUDA: ${{ needs.check.outputs.cuda }}
+      SGLANG_RELEASE: ${{ needs.check.outputs.sglang_release }}
+    steps:
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        id: token
+        with:
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: radixark
+          repositories: miles-wheels
+          permission-contents: write
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.WHEELS_REPO }}
+          path: miles-wheels
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sglang-${{ matrix.arch }}-py*
+          merge-multiple: true
+          path: ${{ runner.temp }}/wheels
+
+      - name: Sync into the sglang-miles history release
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          BUILD_ARCH: ${{ matrix.build_arch }}
+        run: |
+          if ! compgen -G "${RUNNER_TEMP}/wheels/*.whl" > /dev/null; then
+            echo "no sglang wheel built for ${BUILD_ARCH}"
+            exit 0
+          fi
+          pip install packaging
+          WHEEL_DIR="${RUNNER_TEMP}/wheels" python miles-wheels/build_wheels.py upload \
+            --cuda "$CUDA" --arch "$BUILD_ARCH" --history-release "$SGLANG_RELEASE"
+
+  # Publishes from a GitHub-hosted runner, so the miles-wheels write token never
+  # reaches the shared self-hosted build hosts. Nothing is published when any
+  # selected build failed. The CI App token is scoped to miles-wheels.
+  publish:
+    needs: [check, build-router, build-int4-x86, build-te-x86]
+    if: >-
+      always() && needs.check.result == 'success' && needs.check.outputs.publish_matrix != '[]'
+      && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.check.outputs.publish_matrix) }}
+    runs-on: ubuntu-latest
+    env:
+      CUDA: ${{ needs.check.outputs.cuda }}
+      TORCH: ${{ needs.check.outputs.torch }}
+    steps:
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        id: token
+        with:
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: radixark
+          repositories: miles-wheels
+          permission-contents: write
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.WHEELS_REPO }}
+          path: miles-wheels
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-${{ matrix.arch }}-*
+          merge-multiple: false
+          path: ${{ runner.temp }}/wheels
+
+      - name: Sync into the miles-wheels release
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          KEEP_SUPERSEDED: ${{ inputs.keep_superseded && '--keep-superseded' || '' }}
+          ARCH: ${{ matrix.arch }}
+          BUILD_ARCH: ${{ matrix.build_arch }}
+        run: |
+          pip install packaging
+          for wheel_dir in "${RUNNER_TEMP}/wheels/wheels-${ARCH}-"*; do
+            WHEEL_DIR="$wheel_dir" python miles-wheels/build_wheels.py upload \
+              --cuda "$CUDA" --arch "$BUILD_ARCH" --torch "$TORCH" $KEEP_SUPERSEDED
+          done
+
+  notify-build-failure:
+    needs: [check, build-router, build-int4-x86, build-te-x86, publish, build-sglang, publish-sglang]
+    if: >-
+      always() && github.repository == 'radixark/miles' &&
+      contains(needs.*.result, 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out the notifier
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/workflows/scripts/lark_notify.py
+            .github/workflows/scripts/ci_failure_analysis.py
+          sparse-checkout-cone-mode: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+
+      - name: Post the build failure card
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
+          RUN_ID: ${{ github.run_id }}
+        run: python .github/workflows/scripts/lark_notify.py wheels-build-failure --run-id "$RUN_ID"

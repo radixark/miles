@@ -8,8 +8,10 @@ Live site: https://miles.radixark.com/docs
 docs/
 ├── docs.json        # Mintlify config: navigation, theme, redirects
 ├── index.md         # Homepage
-├── getting-started/ models/ user-guide/ advanced/
-├── examples/ developer/ ci/ blog/
+├── getting-started/ hardware-platforms/ models/ user-guide/ advanced/
+├── examples/ blog/
+├── developer/
+│   └── ci/
 └── assets/          # Images and stylesheets
 ```
 
@@ -24,6 +26,8 @@ mint dev
 Then open http://localhost:3000.
 
 ## Adding or editing a page
+
+Follow the repository-wide [Single Source of Truth (SSOT) rule](../.claude/rules/single-source-of-truth.md).
 
 1. Add or edit a `.md` file (e.g. `models/qwen/qwen4.md`). Every page needs frontmatter
    with a `title` and a `description` — the description becomes the meta description and

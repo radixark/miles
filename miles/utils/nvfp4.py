@@ -20,27 +20,16 @@ def nvfp4_global_encode_scale_te(
     global_amax: torch.Tensor,
     nvfp4_e4m3_max: int = int(FP8_E4M3_MAX),
 ) -> torch.Tensor:
-    fp4_max = torch.tensor(FP4_E2M1_MAX, device=global_amax.device, dtype=torch.float32)
-    fp8_max = torch.tensor(float(nvfp4_e4m3_max), device=global_amax.device, dtype=torch.float32)
-    global_encode_scale = torch.div(fp8_max * fp4_max, global_amax.to(torch.float32))
-    global_encode_scale = torch.min(
-        global_encode_scale,
-        torch.tensor(
-            torch.finfo(torch.float32).max,
-            device=global_encode_scale.device,
-            dtype=torch.float32,
-        ),
+    # Python scalar operands are passed to device kernels without allocating
+    # and copying scalar tensors. Both supported numerators (1536 and 2688)
+    # are exactly representable in FP32.
+    global_encode_scale = torch.div(float(nvfp4_e4m3_max) * FP4_E2M1_MAX, global_amax.to(torch.float32)).clamp_max(
+        torch.finfo(torch.float32).max
     )
-    if global_encode_scale.numel() == 1:
-        if global_encode_scale == torch.tensor(0.0, device=global_amax.device, dtype=torch.float32):
-            global_encode_scale = torch.tensor(1.0, device=global_amax.device, dtype=torch.float32)
-    else:
-        global_encode_scale = torch.where(
-            global_encode_scale == 0.0,
-            torch.ones_like(global_encode_scale),
-            global_encode_scale,
-        )
-    return global_encode_scale
+    # A Python conditional on a CUDA scalar synchronizes once per expert
+    # quantization during weight publication. Keep the TE zero-scale rule on
+    # device for scalar and batched amax alike.
+    return torch.where(global_encode_scale == 0.0, 1.0, global_encode_scale)
 
 
 def nvfp4_global_decode_scale_te(
@@ -54,6 +43,13 @@ def _nvfp4_4over6_enabled() -> bool:
     return os.getenv("NVTE_NVFP4_4OVER6", "").strip().lower() in ("weights", "all")
 
 
+def _clear_negative_zero(qweight: torch.Tensor) -> torch.Tensor:
+    # E2M1 has +0 (0x0) and -0 (0x8), and TE gives a value that rounds to zero that value's sign: a weight
+    # near zero would flip between them with no change in value.
+    low, high = qweight & 0x0F, qweight & 0xF0
+    return torch.where(high == 0x80, 0, high) | torch.where(low == 0x08, 0, low)
+
+
 def _pad_rows_for_te_quantizer(weight: torch.Tensor) -> torch.Tensor:
     pad_rows = (-weight.shape[0]) % TE_NVFP4_ROW_ALIGNMENT
     if pad_rows == 0:
@@ -64,6 +60,8 @@ def _pad_rows_for_te_quantizer(weight: torch.Tensor) -> torch.Tensor:
 
 def nvfp4_quantize_1d(
     weight: torch.Tensor,
+    *,
+    clear_negative_zero: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     from transformer_engine.pytorch.tensor.nvfp4_tensor import NVFP4Quantizer
 
@@ -87,7 +85,10 @@ def nvfp4_quantize_1d(
     )
 
     quantized = quantizer.quantize(_pad_rows_for_te_quantizer(weight))
-    qweight = quantized._rowwise_data[:num_rows, : num_cols // 2].contiguous()
+    qweight = quantized._rowwise_data[:num_rows, : num_cols // 2]
+    if clear_negative_zero:
+        qweight = _clear_negative_zero(qweight)
+    qweight = qweight.contiguous()
     block_scale = quantized._rowwise_scale_inv[:num_rows, : num_cols // NVFP4_GROUP_SIZE].contiguous()
     amax = quantized._amax_rowwise.reshape(-1)[0]
     return qweight, block_scale.view(torch.float8_e4m3fn), nvfp4_global_decode_scale_te(amax, nvfp4_e4m3_max)
@@ -96,6 +97,8 @@ def nvfp4_quantize_1d(
 def nvfp4_quantize_1d_pair(
     first: torch.Tensor,
     second: torch.Tensor,
+    *,
+    clear_negative_zero: bool = True,
 ) -> tuple[
     tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     tuple[torch.Tensor, torch.Tensor, torch.Tensor],
@@ -111,7 +114,9 @@ def nvfp4_quantize_1d_pair(
     combined = _contiguous_pair_view(first, second)
     if combined is None:
         combined = torch.cat((first.contiguous(), second.contiguous()), dim=0)
-    combined_qweight, combined_block_scale, global_scale = nvfp4_quantize_1d(combined)
+    combined_qweight, combined_block_scale, global_scale = nvfp4_quantize_1d(
+        combined, clear_negative_zero=clear_negative_zero
+    )
     first_result = (
         combined_qweight[:first_rows].contiguous(),
         combined_block_scale[:first_rows].contiguous(),

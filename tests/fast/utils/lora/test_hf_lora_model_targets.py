@@ -1,0 +1,350 @@
+import argparse
+import importlib
+import shlex
+from fnmatch import fnmatchcase
+from types import SimpleNamespace
+
+import pytest
+import torch
+from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForImageTextToText, PretrainedConfig
+
+from miles.utils.hf_utils.weight_mapping import HfWeightMapping
+from miles.utils.lora.hf_lora_targets import (
+    _HF_LORA_MODELS,
+    exclude_hf_lora_targets,
+    gdn_in_proj_served_targets,
+    get_hf_lora_targets,
+    parse_lora_targets,
+    resolve_hf_lora_targets,
+)
+
+_NATIVE_MODELS = (
+    "llama",
+    "qwen2",
+    "qwen3",
+    "qwen3_moe",
+    "qwen3_next",
+    "qwen3_5_text",
+    "qwen3_5_moe_text",
+    "qwen3_5",
+    "qwen3_5_moe",
+    "gpt_oss",
+    "deepseek_v2",
+    "deepseek_v3",
+    "glm4",
+    "glm4_moe",
+    "glm4_moe_lite",
+    "glm_moe_dsa",
+    "glm5_next",
+)
+_MULTIMODAL_MODELS = {"qwen3_5", "qwen3_5_moe", "glm5_next"}
+
+
+def _small_config(model_type, overrides):
+    text = dict(
+        vocab_size=64,
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=8,
+        max_position_embeddings=64,
+    )
+    if model_type in {"qwen3_moe", "qwen3_next", "qwen3_5_moe_text", "qwen3_5_moe"}:
+        text.update(num_experts=2, num_experts_per_tok=1, moe_intermediate_size=16)
+    if model_type in {"qwen3_moe", "qwen3_next"}:
+        text.update(decoder_sparse_step=2, mlp_only_layers=[])
+    if model_type in {"qwen3_next", "qwen3_5_moe_text", "qwen3_5_moe"}:
+        text.update(shared_expert_intermediate_size=16)
+    if model_type == "qwen3_next" or model_type.startswith("qwen3_5"):
+        text.update(
+            layer_types=["linear_attention", "full_attention"],
+            linear_key_head_dim=8,
+            linear_value_head_dim=8,
+            linear_num_key_heads=2,
+            linear_num_value_heads=4,
+        )
+    if model_type == "gpt_oss":
+        text.update(num_local_experts=2, num_experts_per_tok=1)
+    if model_type in {"deepseek_v2", "deepseek_v3", "glm4_moe", "glm4_moe_lite", "glm_moe_dsa", "glm5_next"}:
+        text.update(
+            first_k_dense_replace=1,
+            n_routed_experts=2,
+            n_shared_experts=1,
+            num_experts_per_tok=1,
+            moe_intermediate_size=16,
+            n_group=1,
+            topk_group=1,
+        )
+    if model_type in {"deepseek_v2", "deepseek_v3", "glm4_moe_lite", "glm_moe_dsa", "glm5_next"}:
+        text.update(q_lora_rank=8, kv_lora_rank=8, qk_nope_head_dim=4, qk_rope_head_dim=4, v_head_dim=8)
+    if model_type == "glm4":
+        text.update(pad_token_id=0)
+    if model_type == "glm4_moe_lite":
+        text.update(mlp_layer_types=["dense", "sparse"])
+    if model_type in {"glm_moe_dsa", "glm5_next"}:
+        text.update(mlp_layer_types=["dense", "sparse"], index_n_heads=2, index_head_dim=8, index_topk=4)
+    if model_type == "glm5_next":
+        text.update(
+            num_key_value_heads=4,
+            qk_rope_head_dim=0,
+            index_kpool=2,
+            layer_types=["linear_attention", "indexed_attention"],
+            linear_num_heads=2,
+            linear_head_dim=8,
+            pad_token_id=0,
+        )
+    text.update(overrides)
+    if model_type in _MULTIMODAL_MODELS:
+        return AutoConfig.for_model(
+            model_type,
+            text_config=text,
+            vision_config=dict(
+                depth=1,
+                hidden_size=32,
+                intermediate_size=64,
+                num_heads=4,
+                out_hidden_size=32,
+                num_position_embeddings=16,
+                patch_size=2,
+                temporal_patch_size=1,
+                spatial_merge_size=1,
+            ),
+        )
+    return AutoConfig.for_model(model_type, **text)
+
+
+def test_native_model_coverage():
+    # These entries use custom code, a Miles alias, or a version newer than the pinned Transformers.
+    non_native = {
+        "deepseek_v32",
+        "deepseek_v41",
+        "kimi_k2",
+        "kimi_k25",
+        "kimi_k3",
+        "mimo",
+        "mimo_v2",
+        "joyai_llm_flash",
+        "inkling_model",
+        "inkling_mm_model",
+        "inkling_text",
+    }
+    assert set(_NATIVE_MODELS) == set(_HF_LORA_MODELS) - non_native
+
+
+@pytest.mark.parametrize(
+    "model_type,overrides",
+    [pytest.param(name, {}, id=name) for name in _NATIVE_MODELS]
+    + [
+        pytest.param(name, {"q_lora_rank": None}, id=f"{name}-uncompressed-query")
+        for name in ("deepseek_v2", "deepseek_v3", "glm4_moe_lite")
+    ]
+    + [
+        pytest.param(name, {"first_k_dense_replace": count}, id=f"{name}-{kind}")
+        for name in ("deepseek_v2", "deepseek_v3", "glm4_moe")
+        for kind, count in (("dense", 2), ("moe", 0))
+    ]
+    + [
+        pytest.param(name, {"decoder_sparse_step": 1, "mlp_only_layers": layers}, id=f"{name}-{kind}")
+        for name in ("qwen3_moe", "qwen3_next")
+        for kind, layers in (("dense", [0, 1]), ("moe", []))
+    ]
+    + [
+        pytest.param(name, {"layer_types": [kind, kind]}, id=f"{name}-{kind}")
+        for name in ("qwen3_next", "qwen3_5_text", "qwen3_5_moe_text")
+        for kind in ("full_attention", "linear_attention")
+    ]
+    + [
+        pytest.param(name, {"mlp_layer_types": [kind, kind]}, id=f"{name}-{kind}")
+        for name in ("glm_moe_dsa", "glm4_moe_lite")
+        for kind in ("dense", "sparse")
+    ]
+    + [
+        pytest.param("glm5_next", {"layer_types": [kind, kind]}, id=f"glm5-next-{kind}")
+        for kind in ("linear_attention", "indexed_attention")
+    ],
+)
+def test_targets_match_native_hf_model(model_type, overrides):
+    config = _small_config(model_type, overrides)
+    model_cls = AutoModelForImageTextToText if model_type in _MULTIMODAL_MODELS else AutoModelForCausalLM
+    with torch.device("meta"):
+        model = model_cls.from_config(config, attn_implementation="eager")
+
+    # Keep tied output heads; packed expert projections are parameters without a .weight suffix.
+    projections = {
+        name.removesuffix(".weight"): param
+        for name, param in model.named_parameters(remove_duplicate=False)
+        if param.ndim in (2, 3)
+    }
+    assert projections
+    assert all(param.is_meta for param in model.parameters())
+    hf_mapping = HfWeightMapping.from_config(config)
+    assert hf_mapping.parameter_names == {
+        name for name, param in model.named_parameters(remove_duplicate=False) if param.ndim in (2, 3)
+    }
+    layout = get_hf_lora_targets(config.to_dict())
+    for group in (layout.attention, layout.mlp, layout.unembed):
+        assert group
+        for target in group:
+            matches = [name for name in projections if fnmatchcase(name, target)]
+            assert matches, f"{model_type}: HF model has no projection matching {target!r}"
+            assert all(projections[name].numel() > 0 for name in matches)
+            assert all(".indexer." not in name for name in matches)
+
+    defaults = resolve_hf_lora_targets(config.to_dict())
+    assert set(defaults) == set(layout.attention + layout.mlp)
+    all_groups = resolve_hf_lora_targets(config.to_dict(), target_modules=["attn", "mlp", "unembed"])
+    assert set(all_groups) == set(layout.attention + layout.mlp + layout.unembed)
+
+
+@pytest.mark.parametrize("launcher", ["run_glm5_1_744b_a40b_lora", "run_glm5_2_744b_a40b_lora"])
+def test_glm_launcher_ablation_selects_only_attention(monkeypatch: pytest.MonkeyPatch, launcher: str) -> None:
+    """Disabling expert LoRA selects only attention targets in both GLM launchers."""
+    module = importlib.import_module(f"scripts.{launcher}")
+    train_commands = []
+    monkeypatch.setenv("KEEP_MOE_LORA", "0")
+    monkeypatch.delenv("MOE_LORA_LAYERS", raising=False)
+    script_args = module.ScriptArgs(enable_wandb=False)
+    backend = SimpleNamespace(execute_train=lambda **kwargs: train_commands.append(kwargs["train_args"]))
+    monkeypatch.setattr(script_args, "create_backend", lambda: backend)
+    module._train(script_args)
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--target-modules")
+    parser.add_argument("--exclude-modules")
+    assert len(train_commands) == 1
+    args, _ = parser.parse_known_args(shlex.split(train_commands[0]))
+    config = _small_config("glm_moe_dsa", {})
+    selected = exclude_hf_lora_targets(
+        resolve_hf_lora_targets(config.to_dict(), target_modules=parse_lora_targets(args.target_modules)),
+        parse_lora_targets(args.exclude_modules) or [],
+    )
+    assert set(selected) == set(get_hf_lora_targets(config.to_dict()).attention)
+    selected_parameters = {
+        name
+        for name in HfWeightMapping.from_config(config).parameter_names
+        if any(fnmatchcase(name.removesuffix(".weight"), target) for target in selected)
+    }
+    assert selected_parameters
+    assert all(".self_attn." in name and ".indexer." not in name for name in selected_parameters)
+
+
+def test_remote_config_with_native_class_name():
+    config = _small_config("deepseek_v2", {})
+    remote_config_class = type("DeepseekV2Config", (PretrainedConfig,), {"model_type": "deepseek_v2"})
+    remote_fields = config.to_dict()
+    remote_fields.pop("head_dim")
+    remote_config = remote_config_class(**remote_fields)
+
+    assert (
+        HfWeightMapping.from_config(remote_config).parameter_names
+        == HfWeightMapping.from_config(config).parameter_names
+    )
+
+
+# module leaves of the official Tinker exports in design doc §6.9 (unembed_tokens is HF's lm_head)
+_TINKER_QWEN3_5_4B = {
+    "self_attn.q_proj",
+    "self_attn.k_proj",
+    "self_attn.v_proj",
+    "self_attn.o_proj",
+    "linear_attn.in_proj_q",
+    "linear_attn.in_proj_k",
+    "linear_attn.in_proj_v",
+    "linear_attn.in_proj_z",
+    "linear_attn.out_proj",
+    "mlp.gate_proj",
+    "mlp.up_proj",
+    "mlp.down_proj",
+    "lm_head",
+}
+
+
+_GDN_HEADS = {
+    "linear_num_key_heads": 2,
+    "linear_key_head_dim": 2,
+    "linear_num_value_heads": 4,
+    "linear_value_head_dim": 2,
+}
+
+
+@pytest.mark.parametrize("model_type", ["qwen3_5", "qwen3_5_moe"])
+def test_qwen3_5_attn_group_is_official_tinkers(model_type):
+    """Official Qwen3.5 / 3.6 adapters train in_proj_q/k/v/z and out_proj on the GDN layers, never in_proj_b/a."""
+    text = {"layer_types": ["linear_attention", "full_attention"], "shared_expert_intermediate_size": 16, **_GDN_HEADS}
+    targets = resolve_hf_lora_targets({"model_type": model_type, "text_config": text}, target_modules=["attn"])
+    served = gdn_in_proj_served_targets(targets, targets)
+    gdn = {target.split(".layers.*.")[1] for target in served if ".linear_attn." in target}
+    assert gdn == {f"linear_attn.{leaf}" for leaf in ("in_proj_q", "in_proj_k", "in_proj_v", "in_proj_z", "out_proj")}
+
+
+def test_qwen3_5_dense_default_groups_match_the_official_export():
+    config = {
+        "model_type": "qwen3_5",
+        "text_config": {"layer_types": ["linear_attention", "full_attention"], **_GDN_HEADS},
+    }
+    targets = resolve_hf_lora_targets(config, target_modules=["attn", "mlp", "unembed"])
+    served = gdn_in_proj_served_targets(targets, targets)
+    assert {target.split(".layers.*.")[-1] for target in served} == _TINKER_QWEN3_5_4B
+
+
+@pytest.mark.parametrize(
+    "model_type,group,overrides",
+    [("glm4", "mlp", {}), ("glm4_moe_lite", "attention", {"mlp_layer_types": ["dense", "dense"]})],
+)
+def test_layouts_name_the_native_specs_projections(model_type, group, overrides):
+    """The adapter checkpoint keys native's export by these HF modules; a name native does not adapt has no data."""
+    from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS
+
+    layout = get_hf_lora_targets(_small_config(model_type, overrides).to_dict())
+    native_spec = getattr(MODEL_SPECS[model_type], group)
+    native_leaves = {binding.projection.hf_leaf for binding in native_spec.layout.singles}
+    assert {target.rsplit(".", 1)[1] for target in getattr(layout, group)} == native_leaves
+
+
+def test_glm5_default_targets_leave_kv_b_proj_frozen():
+    """SGLang's DSA prefill rejects a kv_b_proj adapter; GLM-4.7-Flash shares the layout builder but not that limit."""
+    glm5 = get_hf_lora_targets(_small_config("glm_moe_dsa", {}).to_dict())
+    glm47_flash = get_hf_lora_targets(_small_config("glm4_moe_lite", {}).to_dict())
+    assert set(glm47_flash.attention) - set(glm5.attention) == {"model.layers.*.self_attn.kv_b_proj"}
+
+
+# remote-code families: config fields and checkpoint projection names of XiaomiMiMo/MiMo-7B-RL and
+# jdopensource/JoyAI-LLM-Flash (config.json, model.safetensors.index.json); layer indices folded to *
+_MIMO_7B = {"model_type": "mimo", "num_hidden_layers": 36, "num_nextn_predict_layers": 1}
+_JOYAI_LLM_FLASH = {
+    "model_type": "joyai_llm_flash",
+    "num_hidden_layers": 40,
+    "n_routed_experts": 256,
+    "n_shared_experts": 1,
+    "first_k_dense_replace": 1,
+    "moe_layer_freq": 1,
+    "q_lora_rank": 1536,
+}
+_REMOTE_CHECKPOINT_PROJECTIONS = {
+    "mimo": {
+        *(f"model.layers.*.self_attn.{leaf}" for leaf in ("q_proj", "k_proj", "v_proj", "o_proj")),
+        *(f"model.layers.*.mlp.{leaf}" for leaf in ("gate_proj", "up_proj", "down_proj")),
+        "lm_head",
+    },
+    "joyai_llm_flash": {
+        *(
+            f"model.layers.*.self_attn.{leaf}"
+            for leaf in ("q_a_proj", "q_b_proj", "kv_a_proj_with_mqa", "kv_b_proj", "o_proj")
+        ),
+        *(
+            f"model.layers.*.mlp.{block}{leaf}"
+            for block in ("", "experts.*.", "shared_experts.")
+            for leaf in ("gate_proj", "up_proj", "down_proj")
+        ),
+        "lm_head",
+    },
+}
+
+
+@pytest.mark.parametrize("config", [_MIMO_7B, _JOYAI_LLM_FLASH], ids=lambda config: config["model_type"])
+def test_remote_code_native_families_name_their_checkpoints_projections(config):
+    """Native trains these families; their adapter checkpoint and export need the HF layout."""
+    layout = get_hf_lora_targets(config)
+    assert set(layout.attention + layout.mlp + layout.unembed) == _REMOTE_CHECKPOINT_PROJECTIONS[config["model_type"]]

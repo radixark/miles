@@ -1,4 +1,4 @@
-# doc-dev: docs/ci/03-metric-history-gate.md
+# doc-dev: docs/developer/ci/03-metric-history-gate.md
 """Storage contract for the CI metric-history regression gate.
 
 * The gate compares a candidate run's metrics against a baseline assembled
@@ -10,7 +10,8 @@
   `trusted` flag.
 * `metric_values` -- one row per comparison-coordinate value a run produced:
   `(metric_key, steps_key, constraint_key, step, value)`, keyed back to `runs`
-  by `run_id`.
+  by `run_id`. The coordinate is `(metric_key, step)`; `steps_key` /
+  `constraint_key` record the declaration that judged the value.
 * `trusted` lives on the run, not on the metric: a run is trusted as a
   whole or not at all, so revoking trust drops every metric the run
   contributed in one operation.
@@ -30,13 +31,14 @@ from dataclasses import dataclass
 class MetricSample:
     """One comparison-coordinate value a run contributed.
 
-    The coordinate is the declaring gate's literal content plus the point:
-    `steps_key` / `constraint_key` are canonical JSON of the declaration's raw
-    `steps` / `constraint` literals (serialization pinned by
-    `register._canonical_key`); `step` is the point the value came from -- step `k`, or `-1`
-    for a whole-series reduction (e.g. `steps="last"`), which must key on
-    a constant rather than the step it happened to land on, or its history
-    would fragment across runs of different lengths.
+    The coordinate is `(metric_key, step)`: `step` is the point the value came
+    from -- step `k`, or `-1` for a whole-series reduction (e.g.
+    `steps="last"`), which must key on a constant rather than the step it
+    happened to land on, or its history would fragment across runs of
+    different lengths. `steps_key` / `constraint_key` are canonical JSON of the
+    declaration's raw `steps` / `constraint` literals (serialization pinned by
+    `register._canonical_key`), stored as provenance of the rule that judged
+    the value; they do not select history.
     """
 
     metric_key: str
@@ -90,6 +92,10 @@ class MetricHistoryStore(abc.ABC):
     baseline query. The query and write surface are deliberately narrow: the
     gate logic depends only on this interface, so swapping the SQLite test
     backend for a hosted Postgres backend changes no caller.
+
+    A store is bound to one `repository` at construction: it writes that
+    repository into every run and reads and revokes only that repository's
+    runs, so repositories sharing one database never share a baseline.
     """
 
     @abc.abstractmethod
@@ -120,17 +126,16 @@ class MetricHistoryStore(abc.ABC):
         backend: str,
         suite: str,
         metric_key: str,
-        steps_key: str,
-        constraint_key: str,
         step: int,
         limit: int,
     ) -> list[float]:
         """Return up to `limit` baseline values, newest run first.
 
-        Only trusted runs matching the exact identity tuple and the exact
-        value coordinate `(metric_key, steps_key, constraint_key, step)`
-        contribute. Every coordinate column is NOT NULL, so matching is plain
-        equality -- no NULL-equality semantics anywhere in the query.
+        Only trusted runs matching the exact identity tuple and the value
+        coordinate `(metric_key, step)` contribute, whatever declaration
+        literals judged them, so editing a declaration keeps its history.
+        Every coordinate column is NOT NULL, so matching is plain equality --
+        no NULL-equality semantics anywhere in the query.
         """
 
     @abc.abstractmethod

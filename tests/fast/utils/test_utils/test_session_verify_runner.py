@@ -1,14 +1,45 @@
 import argparse
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from scripts.tools.verify_session_tito_tokenizer import (
+    _parse_session_verify_args,
+    _print_rollout_table,
+    _with_session_verify_defaults,
+)
 from tests.e2e.sglang.test_session_server_multi_role import _common
 
+from miles.utils.arguments import parse_args_train_backend
+from miles.utils.test_utils import session_verify_runner
+from miles.utils.test_utils.session_verify_agent import (
+    CONTINUE_CUT_STEP,
+    SESSION_VERIFY_CUT_KIND_KEY,
+    SESSION_VERIFY_KIND_KEY,
+    SessionVerifyKind,
+)
 from miles.utils.test_utils.session_verify_runner import (
     SESSION_VERIFY_INVARIANT_ARGS,
     assert_session_verify_metrics,
     namespace_to_train_args,
+    session_verify_kinds,
 )
+
+_NORMAL = (SessionVerifyKind.NORMAL,)
+_SPEC_THEN_NORMAL = (SessionVerifyKind.SPEC, SessionVerifyKind.NORMAL)
+_TRUNCATE_THEN_NORMAL = (SessionVerifyKind.TRUNCATE, SessionVerifyKind.NORMAL)
+from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
+
+
+def test_session_verify_defaults_select_fsdp_during_backend_preparse(monkeypatch):
+    argv = _with_session_verify_defaults(["--rollout-batch-size", "1"])
+    monkeypatch.setattr(sys, "argv", ["verify_session_tito_tokenizer.py", *argv])
+
+    assert parse_args_train_backend() == "fsdp"
 
 
 def _build_args(**overrides) -> str:
@@ -21,11 +52,15 @@ def _build_args(**overrides) -> str:
         "actor_num_gpus_per_node": 8,
         "n_samples_per_prompt": 4,
         "session_verify_cycles": 3,
-        "tool_call_failure_mode": "rollback",
+        "session_verify_spec_trajectory": True,
         "sglang_reasoning_parser": "qwen3",
         "sglang_tool_call_parser": "qwen25",
         "sglang_context_length": None,
+        "sglang_kv_cache_dtype": None,
+        "sglang_mamba_full_memory_ratio": None,
         "sglang_cuda_graph_backend_prefill": None,
+        "anthropic_intermediate_system_expectation": None,
+        "ci_tito_special_token_count_threshold": 0.0,
     }
     values.update(overrides)
     return namespace_to_train_args(argparse.Namespace(**values))
@@ -43,11 +78,76 @@ def test_namespace_to_train_args_allows_model_specific_rollout_max_response_len(
     assert "--rollout-max-response-len 16384" in train_args
 
 
+@pytest.mark.parametrize(("spec_trajectory", "num_rollout"), [(True, 3), (False, 1)])
+def test_namespace_to_train_args_runs_one_rollout_step_per_kind_in_file_order(spec_trajectory, num_rollout):
+    train_args = _build_args(session_verify_spec_trajectory=spec_trajectory)
+
+    assert f"--num-rollout {num_rollout}" in train_args
+    assert "--no-rollout-shuffle" in train_args
+    assert "spec-trajectory" not in train_args
+
+
+def test_spec_and_truncate_rollouts_run_before_the_normal_rollout_the_history_gate_judges():
+    assert session_verify_kinds(True) == (
+        SessionVerifyKind.SPEC,
+        SessionVerifyKind.TRUNCATE,
+        SessionVerifyKind.NORMAL,
+    )
+    assert session_verify_kinds(False) == _NORMAL
+
+
+def test_prompt_data_spreads_truncate_samples_over_the_cut_kinds(monkeypatch, tmp_path):
+    monkeypatch.setattr(session_verify_runner.tempfile, "tempdir", str(tmp_path))
+
+    path = Path(session_verify_runner._ensure_prompt_data(_TRUNCATE_THEN_NORMAL, rollout_batch_size=4))
+
+    metadata = [json.loads(line)["metadata"] for line in path.read_text().splitlines()]
+    assert [m.get(SESSION_VERIFY_CUT_KIND_KEY) for m in metadata] == [
+        "reasoning",
+        "tool_call",
+        "answer",
+        "reasoning",
+        None,
+        None,
+        None,
+        None,
+    ]
+
+
+def test_prompt_data_lays_out_one_rollout_step_per_kind(monkeypatch, tmp_path):
+    monkeypatch.setattr(session_verify_runner.tempfile, "tempdir", str(tmp_path))
+
+    path = Path(session_verify_runner._ensure_prompt_data(_SPEC_THEN_NORMAL, rollout_batch_size=2))
+
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    assert [record["metadata"][SESSION_VERIFY_KIND_KEY] for record in records] == ["spec", "spec", "normal", "normal"]
+    assert all(record["messages"][-1]["role"] == "user" for record in records)
+
+
+def test_prompt_data_is_a_file_of_its_own_per_run(monkeypatch, tmp_path):
+    """Runners of one CI host share /root/datasets; a fixed path let a concurrent run replace the prompts."""
+    monkeypatch.setattr(session_verify_runner.tempfile, "tempdir", str(tmp_path))
+
+    spec_then_normal = Path(session_verify_runner._ensure_prompt_data(_SPEC_THEN_NORMAL, rollout_batch_size=1))
+    normal_only = Path(session_verify_runner._ensure_prompt_data(_NORMAL, rollout_batch_size=1))
+
+    assert spec_then_normal != normal_only
+    assert len(spec_then_normal.read_text().splitlines()) == 2
+    assert len(normal_only.read_text().splitlines()) == 1
+
+
 def test_namespace_to_train_args_keeps_ci_test_enabled_for_fsdp_debug_rollout():
     train_args = _build_args()
 
     assert "--train-backend fsdp" in train_args
     assert "--ci-test" in train_args
+    assert "--no-enable-sample-ownership-checker" in train_args
+
+
+def test_namespace_to_train_args_preserves_resolved_rollout_gpu_count():
+    train_args = _build_args(rollout_num_gpus=8, colocate=False)
+
+    assert "--rollout-num-gpus 8" in train_args
 
 
 def test_namespace_to_train_args_defaults_to_session_server_v2():
@@ -60,6 +160,24 @@ def test_namespace_to_train_args_allows_session_server_v1():
     train_args = _build_args(use_session_server="v1")
 
     assert "--use-session-server v1" in train_args
+
+
+def test_namespace_to_train_args_emits_session_message_matcher():
+    assert "--session-message-matcher strict" in _build_args()
+    assert "--session-message-matcher loose_tool_call" in _build_args(session_message_matcher="loose_tool_call")
+
+
+def test_namespace_to_train_args_emits_anthropic_intermediate_system_expectation():
+    assert "--anthropic-intermediate-system-expectation" not in _build_args()
+    assert "--anthropic-intermediate-system-expectation required" in _build_args(
+        anthropic_intermediate_system_expectation="required"
+    )
+
+
+def test_namespace_to_train_args_emits_special_token_count_threshold():
+    assert "--ci-tito-special-token-count-threshold" not in _build_args()
+    assert "--ci-tito-special-token-count-threshold" not in _build_args(ci_tito_special_token_count_threshold=0.0)
+    assert "--ci-tito-special-token-count-threshold 0.05" in _build_args(ci_tito_special_token_count_threshold=0.05)
 
 
 def test_namespace_to_train_args_has_no_append_role_policy_flag():
@@ -80,6 +198,48 @@ def test_namespace_to_train_args_emits_model_context_length():
     assert "--sglang-context-length 32768" in train_args
 
 
+def test_namespace_to_train_args_omits_model_mamba_cache_config_by_default():
+    train_args = _build_args()
+
+    assert "--sglang-kv-cache-dtype" not in train_args
+    assert "--sglang-mamba-full-memory-ratio" not in train_args
+
+
+def test_namespace_to_train_args_emits_model_mamba_cache_config():
+    train_args = _build_args(sglang_kv_cache_dtype="fp8_e4m3", sglang_mamba_full_memory_ratio=4.59)
+
+    assert "--sglang-kv-cache-dtype fp8_e4m3" in train_args
+    assert "--sglang-mamba-full-memory-ratio 4.59" in train_args
+
+
+@pytest.mark.parametrize(
+    ("allowed", "flag"),
+    [(True, "--allow-truncated-continuation"), (False, "--no-allow-truncated-continuation")],
+)
+def test_namespace_to_train_args_forwards_truncated_continuation(allowed, flag):
+    assert f" {flag} " in " " + _build_args(allow_truncated_continuation=allowed)
+    assert "truncated-continuation" not in _build_args()
+
+
+def test_namespace_to_train_args_emits_cuda_graph_max_batch_size():
+    train_args = _build_args(sglang_cuda_graph_max_bs_decode=8)
+
+    assert "--sglang-cuda-graph-max-bs-decode 8" in train_args
+
+
+def test_rollout_table_lists_the_spec_probes(capsys):
+    _print_rollout_table("deepseekv4", spec_trajectory=True, allow_truncated_continuation=True)
+
+    output = capsys.readouterr().out
+    assert "0. spec" in output and "1. truncate" in output and "2. normal" in output
+    assert "Truncate probe (200: the run continues truncated turns):" in output
+    assert f"  - {CONTINUE_CUT_STEP}" in output
+    assert "Roles after a tool call:     ['tool']" in output
+    assert "  - user after tool call" in output
+    assert "  - tool after no tool call" in output
+    assert "system after tool call" not in output
+
+
 def test_namespace_to_train_args_omits_prefill_cuda_graph_backend_by_default():
     train_args = _build_args()
 
@@ -97,7 +257,11 @@ def test_run_one_aligns_global_batch_size_with_sample_count(
     monkeypatch, n_samples_per_prompt, expected_global_batch_size
 ):
     captured = {}
-    monkeypatch.setattr(_common, "run_session_verify", lambda args: captured.setdefault("args", args))
+    monkeypatch.setattr(
+        _common,
+        "run_session_verify",
+        lambda args, *, wire_format: captured.update(args=args, wire_format=wire_format),
+    )
     config = _common.ModelConfig(
         model_name="test-model",
         reasoning_parser="qwen3",
@@ -105,6 +269,8 @@ def test_run_one_aligns_global_batch_size_with_sample_count(
         tito_model="qwen3",
         n_samples_per_prompt=n_samples_per_prompt,
         rollout_max_response_len=4096,
+        kv_cache_dtype="fp8_e4m3",
+        mamba_full_memory_ratio=4.59,
         cuda_graph_backend_prefill="disabled",
     )
 
@@ -113,13 +279,37 @@ def test_run_one_aligns_global_batch_size_with_sample_count(
     assert captured["args"].global_batch_size == expected_global_batch_size
     assert captured["args"].rollout_batch_size == 16
     assert captured["args"].rollout_max_response_len == 4096
+    assert captured["args"].sglang_kv_cache_dtype == "fp8_e4m3"
+    assert captured["args"].sglang_mamba_full_memory_ratio == 4.59
     assert captured["args"].sglang_cuda_graph_backend_prefill == "disabled"
+    assert captured["args"].session_verify_spec_trajectory is True
+    assert captured["wire_format"] == "openai"
+
+
+def test_run_one_without_spec_trajectory_runs_the_normal_rollout_only(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(_common, "run_session_verify", lambda args, *, wire_format: captured.update(args=args))
+    config = _common.ModelConfig(
+        model_name="test-model",
+        reasoning_parser="glm45",
+        tool_call_parser="glm47",
+        tito_model="glm47",
+        spec_trajectory=False,
+    )
+
+    _common.run_one(config)
+
+    assert captured["args"].session_verify_spec_trajectory is False
 
 
 @pytest.mark.parametrize("version", ["v1", "v2"])
 def test_run_one_uses_requested_session_server_version(monkeypatch, version):
     captured = {}
-    monkeypatch.setattr(_common, "run_session_verify", lambda args: captured.setdefault("args", args))
+    monkeypatch.setattr(
+        _common,
+        "run_session_verify",
+        lambda args, *, wire_format: captured.update(args=args, wire_format=wire_format),
+    )
     config = _common.ModelConfig(
         model_name="test-model",
         reasoning_parser="qwen3",
@@ -130,25 +320,110 @@ def test_run_one_uses_requested_session_server_version(monkeypatch, version):
     _common.run_one(config, session_server_version=version)
 
     assert captured["args"].use_session_server == version
+    assert captured["wire_format"] == "openai"
+
+
+def test_run_one_rejects_anthropic_on_v1():
+    config = _common.ModelConfig(
+        model_name="test-model",
+        reasoning_parser="qwen3",
+        tool_call_parser="qwen25",
+        tito_model="qwen3",
+    )
+
+    with pytest.raises(ValueError, match="requires session server v2"):
+        _common.run_one(config, session_server_version="v1", endpoint="anthropic")
+
+
+def test_run_one_requires_explicit_anthropic_intermediate_system_expectation():
+    config = _common.ModelConfig(
+        model_name="test-model",
+        reasoning_parser="qwen3",
+        tool_call_parser="qwen25",
+        tito_model="qwen3",
+    )
+
+    with pytest.raises(ValueError, match="requires an intermediate-system expectation"):
+        _common.run_one(config, endpoint="anthropic")
 
 
 @pytest.mark.parametrize(("n_samples_per_prompt", "expected_global_batch_size"), [(1, 8), (4, 32)])
-def test_run_both_versions_splits_rollout_batch(monkeypatch, n_samples_per_prompt, expected_global_batch_size):
+@pytest.mark.parametrize(
+    ("threshold_overrides", "expected_thresholds"),
+    [
+        ({"assistant_text_threshold": 0.25}, [0.25, 0.25, 0.25]),
+        (
+            {"assistant_text_threshold": 0.25, "anthropic_assistant_text_threshold": 1.0},
+            [0.25, 0.25, 1.0],
+        ),
+    ],
+)
+def test_run_both_versions_adds_v2_anthropic_pass(
+    monkeypatch,
+    n_samples_per_prompt,
+    expected_global_batch_size,
+    threshold_overrides,
+    expected_thresholds,
+):
     captured = []
-    monkeypatch.setattr(_common, "run_session_verify", lambda args: captured.append(args))
+    monkeypatch.setattr(
+        _common,
+        "run_session_verify",
+        lambda args, *, wire_format: captured.append((args, wire_format)),
+    )
     config = _common.ModelConfig(
         model_name="test-model",
         reasoning_parser="qwen3",
         tool_call_parser="qwen25",
         tito_model="qwen3",
         n_samples_per_prompt=n_samples_per_prompt,
+        anthropic_intermediate_system_expectation="required",
+        **threshold_overrides,
     )
 
     _common.run_both_versions(config)
 
-    assert [args.use_session_server for args in captured] == ["v1", "v2"]
-    assert [args.rollout_batch_size for args in captured] == [8, 8]
-    assert [args.global_batch_size for args in captured] == [expected_global_batch_size] * 2
+    args = [item[0] for item in captured]
+    assert [item[1] for item in captured] == ["openai", "openai", "anthropic"]
+    assert [item.use_session_server for item in args] == ["v1", "v2", "v2"]
+    assert [item.rollout_batch_size for item in args] == [8, 8, 8]
+    assert [item.global_batch_size for item in args] == [expected_global_batch_size] * 3
+    assert [item.assistant_text_threshold for item in args] == expected_thresholds
+    assert [item.ci_tito_special_token_count_threshold for item in args] == [0.0, 0.0, 0.0]
+    assert [item.session_message_matcher for item in args] == ["strict", "strict", "loose_tool_call"]
+    assert [item.anthropic_intermediate_system_expectation for item in args] == [None, None, "required"]
+    assert [item.session_verify_spec_trajectory for item in args] == [True, True, False]
+    assert [item.custom_generate_function_path for item in args] == [
+        SESSION_VERIFY_INVARIANT_ARGS["custom_generate_function_path"],
+        SESSION_VERIFY_INVARIANT_ARGS["custom_generate_function_path"],
+        _common._ANTHROPIC_GENERATE,
+    ]
+    assert [item.custom_agent_function_path for item in args] == [
+        SESSION_VERIFY_INVARIANT_ARGS["custom_agent_function_path"],
+        SESSION_VERIFY_INVARIANT_ARGS["custom_agent_function_path"],
+        _common._ANTHROPIC_AGENT,
+    ]
+
+
+def test_run_both_versions_can_disable_anthropic(monkeypatch):
+    captured = []
+    monkeypatch.setattr(
+        _common,
+        "run_session_verify",
+        lambda args, *, wire_format: captured.append((args, wire_format)),
+    )
+    config = _common.ModelConfig(
+        model_name="test-model",
+        reasoning_parser="minimax-append-think",
+        tool_call_parser="minimax-m2",
+        tito_model="minimax_m27",
+        verify_anthropic=False,
+    )
+
+    _common.run_both_versions(config)
+
+    assert [wire_format for _, wire_format in captured] == ["openai", "openai"]
+    assert [args.use_session_server for args, _ in captured] == ["v1", "v2"]
 
 
 def test_namespace_to_train_args_omits_expert_parallel_for_single_expert():
@@ -182,22 +457,363 @@ def _write_metrics(path, entries: list[dict]) -> None:
     path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
 
 
+def _normal(**entry) -> dict:
+    return {"kind": "normal", "had_assistant_mismatch": False, **entry}
+
+
+def _spec(*expectations, **entry) -> dict:
+    return {"kind": "spec", "driver_events": ["append_tool"], "expectations": list(expectations), **entry}
+
+
 def test_session_verify_metrics_accepts_cross_sample_append_tool(tmp_path):
     metrics_path = tmp_path / "metrics.jsonl"
     _write_metrics(
         metrics_path,
         [
-            {"driver_events": ["initial", "append_user"], "had_assistant_mismatch": False},
-            {"driver_events": ["initial", "append_tool"], "had_assistant_mismatch": False},
+            _normal(driver_events=["initial", "append_user"]),
+            _normal(driver_events=["initial", "append_tool"]),
         ],
     )
 
-    assert_session_verify_metrics(str(metrics_path), assistant_text_threshold=0.1)
+    assert_session_verify_metrics(str(metrics_path), kinds=_NORMAL, assistant_text_threshold=0.1)
 
 
 def test_session_verify_metrics_requires_at_least_one_append_tool(tmp_path):
     metrics_path = tmp_path / "metrics.jsonl"
-    _write_metrics(metrics_path, [{"driver_events": ["initial", "append_user"], "had_assistant_mismatch": False}])
+    _write_metrics(metrics_path, [_normal(driver_events=["initial", "append_user"])])
 
-    with pytest.raises(AssertionError, match="no sample produced an append_tool action"):
-        assert_session_verify_metrics(str(metrics_path), assistant_text_threshold=0.1)
+    with pytest.raises(AssertionError, match="no normal sample produced an append_tool action"):
+        assert_session_verify_metrics(str(metrics_path), kinds=_NORMAL, assistant_text_threshold=0.1)
+
+
+def test_session_verify_metrics_can_skip_multi_role_append_tool_gate(tmp_path):
+    metrics_path = tmp_path / "metrics.jsonl"
+    _write_metrics(metrics_path, [_normal(driver_events=["anthropic_tool_use"])])
+
+    assert_session_verify_metrics(
+        str(metrics_path), kinds=_NORMAL, assistant_text_threshold=0.1, require_append_tool=False
+    )
+
+
+def test_session_verify_metrics_hard_mismatch_precedes_soft_threshold(tmp_path):
+    metrics_path = tmp_path / "metrics.jsonl"
+    _write_metrics(
+        metrics_path,
+        [
+            _normal(
+                driver_events=[],
+                had_assistant_mismatch=True,
+                hard_mismatch_count=1,
+                hard_mismatch_types=["special_token_count"],
+                hard_mismatch_example={"type": "special_token_count"},
+            )
+        ],
+    )
+
+    with pytest.raises(AssertionError, match="hard TITO mismatches.*normal samples.*special_token_count"):
+        assert_session_verify_metrics(str(metrics_path), kinds=_NORMAL, assistant_text_threshold=0.0)
+
+
+@pytest.mark.parametrize(
+    ("hard_types", "threshold", "raises"),
+    [
+        (["special_token_count"], 0.5, False),
+        (["special_token_count"], 0.25, True),
+        (["special_token_count", "special_token_type"], 0.5, True),
+        (["non_assistant_text"], 0.5, True),
+    ],
+)
+def test_session_verify_metrics_special_token_count_threshold(tmp_path, hard_types, threshold, raises):
+    metrics_path = tmp_path / "metrics.jsonl"
+    _write_metrics(
+        metrics_path,
+        [
+            _normal(
+                driver_events=["append_tool"],
+                hard_mismatch_count=len(hard_types),
+                hard_mismatch_types=hard_types,
+                hard_mismatch_example={"type": hard_types[0]},
+            ),
+            _normal(driver_events=["append_tool"]),
+        ],
+    )
+
+    def check():
+        assert_session_verify_metrics(
+            str(metrics_path),
+            kinds=_NORMAL,
+            assistant_text_threshold=1.0,
+            special_token_count_threshold=threshold,
+        )
+
+    if raises:
+        with pytest.raises(AssertionError, match="hard TITO mismatches"):
+            check()
+    else:
+        check()
+
+
+@pytest.mark.parametrize(
+    ("include_clean_sample", "stage", "message", "completed_samples"),
+    [
+        (True, "anthropic_session_verify_agent.generate", "expected six requests", 1),
+        (False, "session_verify_agent.run_agent", "missing rollback", 0),
+    ],
+)
+def test_session_verify_metrics_rejects_verifier_error(
+    tmp_path, include_clean_sample, stage, message, completed_samples
+):
+    metrics_path = tmp_path / "metrics.jsonl"
+    entries = [{"verification_error": {"stage": stage, "type": "AssertionError", "message": message}}]
+    if include_clean_sample:
+        entries.append(_normal(driver_events=["append_tool"]))
+    _write_metrics(metrics_path, entries)
+
+    with pytest.raises(AssertionError, match=f"completed_samples={completed_samples}.*{message}"):
+        assert_session_verify_metrics(str(metrics_path), kinds=_NORMAL, assistant_text_threshold=1.0)
+
+
+def test_session_verify_metrics_keeps_assistant_text_soft(tmp_path):
+    metrics_path = tmp_path / "metrics.jsonl"
+    example = {"segment_index": 4, "expected_text": "</think>\n\n\n<DSML>", "actual_text": "</think>\n<DSML>"}
+    _write_metrics(
+        metrics_path,
+        [_normal(driver_events=["append_tool"], had_assistant_mismatch=True, assistant_mismatch_example=example)],
+    )
+
+    assert_session_verify_metrics(str(metrics_path), kinds=_NORMAL, assistant_text_threshold=1.0)
+    with pytest.raises(AssertionError, match="assistant_text mismatch ratio") as excinfo:
+        assert_session_verify_metrics(str(metrics_path), kinds=_NORMAL, assistant_text_threshold=0.0)
+    assert repr(example) in str(excinfo.value)
+
+
+_MET = {"step": "user after tool call", "expected_status": 400, "actual_status": 400}
+_UNMET = {"step": "tool after no tool call", "expected_status": 400, "actual_status": 200}
+
+
+def _truncate(*cut_kinds, expected_status=200, actual_status=None, problems=(), **entry) -> dict:
+    status = expected_status if actual_status is None else actual_status
+    return {
+        "kind": "truncate",
+        # Planned as cut; a sample that names no cut was refused before any cut was continued.
+        "cut_kind": cut_kinds[0] if cut_kinds else "reasoning",
+        "expectations": [{"step": CONTINUE_CUT_STEP, "expected_status": expected_status, "actual_status": status}],
+        "cuts": [{"kind": kind, "problems": list(problems)} for kind in cut_kinds],
+        **entry,
+    }
+
+
+def _assert_truncate_metrics(tmp_path, *entries) -> None:
+    metrics_path = tmp_path / "metrics.jsonl"
+    _write_metrics(metrics_path, [*entries, _normal(driver_events=["append_tool"])])
+    assert_session_verify_metrics(str(metrics_path), kinds=_TRUNCATE_THEN_NORMAL, assistant_text_threshold=1.0)
+
+
+def test_session_verify_metrics_accepts_a_truncate_rollout_that_continued_every_cut_kind(tmp_path):
+    _assert_truncate_metrics(tmp_path, _truncate("reasoning"), _truncate("tool_call"), _truncate("answer"))
+
+
+def test_session_verify_metrics_rejects_a_planned_cut_kind_no_sample_continued(tmp_path):
+    # The sample planned a tool_call cut, but its regeneration drifted into reasoning.
+    drifted = _truncate("reasoning", cut_kind="tool_call")
+    with pytest.raises(AssertionError, match=r"no truncate sample continued a turn cut in \['tool_call'\]"):
+        _assert_truncate_metrics(tmp_path, _truncate("reasoning"), drifted, _truncate("answer"))
+
+
+def test_session_verify_metrics_asks_only_for_the_cut_kinds_a_small_batch_planned(tmp_path):
+    _assert_truncate_metrics(tmp_path, _truncate("reasoning"), _truncate("tool_call"))
+
+
+def test_session_verify_metrics_rejects_a_cut_turn_the_closer_did_not_close(tmp_path):
+    bad = _truncate("tool_call", problems=["truncation_closer: expected '\\n</tool_call>', got ''"])
+    with pytest.raises(AssertionError, match="1 continued cut turns were not closed.*truncation_closer"):
+        _assert_truncate_metrics(tmp_path, _truncate("reasoning"), bad, _truncate("answer"))
+
+
+def test_session_verify_metrics_rejects_a_continuation_with_another_status_than_expected(tmp_path):
+    with pytest.raises(AssertionError, match="truncate probes got another status"):
+        _assert_truncate_metrics(tmp_path, _truncate(expected_status=200, actual_status=409))
+
+
+def test_session_verify_metrics_needs_no_cut_kind_from_a_run_that_refuses_truncated_turns(tmp_path):
+    _assert_truncate_metrics(tmp_path, _truncate(expected_status=409))
+
+
+def test_session_verify_metrics_gates_each_rollout_on_its_own_samples(tmp_path):
+    """Spec samples neither count toward nor fail the normal rollout's assistant_text ratio."""
+    metrics_path = tmp_path / "metrics.jsonl"
+    _write_metrics(
+        metrics_path,
+        [_spec(_MET, had_assistant_mismatch=True), _normal(driver_events=["append_tool"])],
+    )
+
+    assert_session_verify_metrics(str(metrics_path), kinds=_SPEC_THEN_NORMAL, assistant_text_threshold=0.0)
+
+
+def test_session_verify_metrics_rejects_an_unmet_spec_expectation(tmp_path):
+    metrics_path = tmp_path / "metrics.jsonl"
+    _write_metrics(metrics_path, [_spec(_MET, _UNMET), _normal(driver_events=["append_tool"])])
+
+    with pytest.raises(AssertionError, match="spec probes got another status.*tool after no tool call"):
+        assert_session_verify_metrics(str(metrics_path), kinds=_SPEC_THEN_NORMAL, assistant_text_threshold=1.0)
+
+
+@pytest.mark.parametrize(("unfinished", "raises"), [(2, False), (3, True)], ids=["at-threshold", "above-threshold"])
+def test_session_verify_metrics_gates_the_share_of_unfinished_spec_samples(tmp_path, unfinished, raises):
+    """Of 10 spec samples, 2 may stop early (ratio 0.2); the probes they did send are still checked."""
+    metrics_path = tmp_path / "metrics.jsonl"
+    stopped = [_spec(_MET, unfinished="the model still calls a tool after 3 answered rounds")] * unfinished
+    finished = [_spec(_MET, unfinished=None)] * (10 - unfinished)
+    _write_metrics(metrics_path, [*stopped, *finished, _normal(driver_events=["append_tool"])])
+
+    if not raises:
+        assert_session_verify_metrics(str(metrics_path), kinds=_SPEC_THEN_NORMAL, assistant_text_threshold=1.0)
+        return
+    with pytest.raises(AssertionError, match="3/10 spec samples stopped before their last step.*still calls a tool"):
+        assert_session_verify_metrics(str(metrics_path), kinds=_SPEC_THEN_NORMAL, assistant_text_threshold=1.0)
+
+
+def test_session_verify_metrics_rejects_an_unmet_expectation_of_an_unfinished_spec_sample(tmp_path):
+    metrics_path = tmp_path / "metrics.jsonl"
+    entries = [_spec(_UNMET, unfinished="stopped"), *[_spec(_MET)] * 9, _normal(driver_events=["append_tool"])]
+    _write_metrics(metrics_path, entries)
+
+    with pytest.raises(AssertionError, match="spec probes got another status"):
+        assert_session_verify_metrics(str(metrics_path), kinds=_SPEC_THEN_NORMAL, assistant_text_threshold=1.0)
+
+
+def test_session_verify_metrics_gates_hard_mismatches_in_the_spec_rollout(tmp_path):
+    metrics_path = tmp_path / "metrics.jsonl"
+    hard = {"hard_mismatch_count": 1, "hard_mismatch_types": ["special_token_type"]}
+    _write_metrics(metrics_path, [_spec(_MET, **hard), _normal(driver_events=["append_tool"])])
+
+    with pytest.raises(AssertionError, match="hard TITO mismatches found in 1/1 attempted spec samples"):
+        assert_session_verify_metrics(str(metrics_path), kinds=_SPEC_THEN_NORMAL, assistant_text_threshold=1.0)
+
+
+@pytest.mark.parametrize("entries", [[_normal(driver_events=["append_tool"])], [_spec(_MET)]])
+def test_session_verify_metrics_requires_samples_of_every_rollout(tmp_path, entries):
+    metrics_path = tmp_path / "metrics.jsonl"
+    _write_metrics(metrics_path, entries)
+
+    with pytest.raises(AssertionError, match="no per-sample metrics for the (spec|normal) rollout"):
+        assert_session_verify_metrics(str(metrics_path), kinds=_SPEC_THEN_NORMAL, assistant_text_threshold=1.0)
+
+
+def test_session_verify_metrics_rejects_a_rollout_the_run_did_not_ask_for(tmp_path):
+    metrics_path = tmp_path / "metrics.jsonl"
+    _write_metrics(metrics_path, [_spec(_MET), _normal(driver_events=["append_tool"])])
+
+    with pytest.raises(AssertionError, match=r"samples of kinds \['spec'\]"):
+        assert_session_verify_metrics(str(metrics_path), kinds=_NORMAL, assistant_text_threshold=1.0)
+
+
+@pytest.mark.parametrize("failure_phase", ["execute_train", "post_gate"])
+def test_run_session_verify_preserves_sidecar_on_failure(monkeypatch, tmp_path, failure_phase):
+    """A failed session verification preserves metrics beside the temporary sidecar."""
+    metrics_path = tmp_path / "metrics.jsonl"
+    metrics_fd = os.open(metrics_path, os.O_CREAT | os.O_RDWR)
+    monkeypatch.setattr(session_verify_runner.tempfile, "mkstemp", lambda **kwargs: (metrics_fd, str(metrics_path)))
+    monkeypatch.setattr(
+        session_verify_runner,
+        "resolve_reasoning_and_tool_call_parser",
+        lambda tito_model, reasoning_parser, tool_call_parser: (reasoning_parser, tool_call_parser),
+    )
+    prompt_path = str(tmp_path / "prompts.jsonl")
+    monkeypatch.setattr(session_verify_runner, "_ensure_prompt_data", lambda kinds, *, rollout_batch_size: prompt_path)
+    monkeypatch.setattr(session_verify_runner, "_clear_proxy_env", lambda: None)
+    monkeypatch.setattr(session_verify_runner, "_ensure_model_downloaded", lambda checkpoint, *, backend: checkpoint)
+    monkeypatch.setattr(session_verify_runner, "namespace_to_train_args", lambda args: "train args")
+
+    def fake_execute_train(**kwargs):
+        sidecar = kwargs["extra_env_vars"]["MILES_SESSION_VERIFY_METRICS_PATH"]
+        with open(sidecar, "w") as f:
+            f.write('{"kind": "normal", "hard_mismatch_count": 1}\n')
+        if failure_phase == "execute_train":
+            raise subprocess.CalledProcessError(1, "ray job submit")
+
+    backend = SimpleNamespace(execute_train=fake_execute_train)
+    monkeypatch.setattr(
+        session_verify_runner.command_utils,
+        "default_config",
+        lambda: SimpleNamespace(create_backend=lambda: backend),
+    )
+    args = argparse.Namespace(
+        tito_model="qwen3",
+        sglang_reasoning_parser="qwen3",
+        sglang_tool_call_parser="qwen25",
+        hf_checkpoint="/models/test",
+        actor_num_gpus_per_node=8,
+        rollout_batch_size=16,
+        session_verify_spec_trajectory=False,
+        assistant_text_threshold=0.2,
+        ci_tito_special_token_count_threshold=0.0,
+    )
+
+    expected_error = subprocess.CalledProcessError if failure_phase == "execute_train" else AssertionError
+    with pytest.raises(expected_error):
+        session_verify_runner.run_session_verify(args)
+
+    assert not metrics_path.exists()
+    assert (tmp_path / "metrics.jsonl.failed").read_text() == '{"kind": "normal", "hard_mismatch_count": 1}\n'
+
+
+@pytest.mark.parametrize(("wire_format", "disables_history"), [("openai", False), ("anthropic", True)])
+def test_session_verify_env_isolates_anthropic_from_openai_history(wire_format, disables_history):
+    args = argparse.Namespace(tito_model="qwen3")
+
+    env = session_verify_runner._session_verify_env(args, "/tmp/metrics.jsonl", wire_format=wire_format)
+
+    assert env["MILES_TITO_MODEL"] == "qwen3"
+    assert env["MILES_SESSION_VERIFY_METRICS_PATH"] == "/tmp/metrics.jsonl"
+    assert (RECORD_DIR_ENV in env) is disables_history
+    if disables_history:
+        assert env[RECORD_DIR_ENV] == ""
+
+
+@pytest.mark.parametrize("threshold", [0.2, 0.75])
+def test_cli_parser_adapts_typed_config_to_mutable_runner_namespace(
+    monkeypatch: pytest.MonkeyPatch, threshold: float
+) -> None:
+    """Verifier-only settings stay local while typed engine and custom-hook settings reach the runner."""
+    argv = _with_session_verify_defaults(
+        [
+            "--tito-model",
+            "qwen3",
+            "--actor-num-gpus-per-node",
+            "1",
+            "--rollout-num-gpus-per-engine",
+            "1",
+            "--rollout-batch-size",
+            "2",
+            "--session-verify-cycles",
+            "2",
+            "--no-session-verify-spec-trajectory",
+            "--no-enable-sample-ownership-checker",
+            "--assistant-text-threshold",
+            str(threshold),
+            "--sglang-reasoning-parser",
+            "qwen3",
+            "--sglang-tool-call-parser",
+            "qwen25",
+        ]
+    )
+    monkeypatch.setattr(sys, "argv", ["verify_session_tito_tokenizer.py", *argv])
+    args = _parse_session_verify_args()
+
+    assert args.assistant_text_threshold == threshold
+    assert args.enable_sample_ownership_checker is False
+    assert args.rollout_batch_size == 2
+    assert args.session_verify_cycles == 2
+    assert args.session_verify_spec_trajectory is False
+    args.hf_checkpoint = "/root/models/local"
+    args.sglang_reasoning_parser = "qwen3"
+    train_args = namespace_to_train_args(args)
+    assert "--hf-checkpoint /root/models/local" in train_args
+    assert "--session-verify-cycles 2" in train_args
+    assert "--num-rollout 1" in train_args
+    assert "spec-trajectory" not in train_args
+    assert "--sglang-reasoning-parser qwen3" in train_args
+    assert "--no-enable-sample-ownership-checker" in train_args
+    assert "assistant-text-threshold" not in train_args
+    assert "enable-spec" not in train_args

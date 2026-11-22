@@ -1,4 +1,4 @@
-# doc-dev: docs/ci/00-stage.md
+# doc-dev: docs/developer/ci/00-stage.md
 name: PR Test (ROCm)
 
 # ROCm counterpart to pr-test.yml. Same structure, different GPU stage:
@@ -10,33 +10,53 @@ name: PR Test (ROCm)
 # runs and the full scope for weekly or explicitly called release runs; manual
 # dispatch keeps the full regular MI350 suite.
 #
-# The MI350 host is split into two 4-GPU runners, so this stage is 4-GPU.
-# CUDA tests that need 8 GPUs get a standalone test_amd_<name>.py with its
-# own 4-GPU CaseConfig rather than an IS_HIP branch in the original.
+# The stages run on AMD's MI355X cluster: two Spur login-node runners each
+# submit one cluster job per shard (see _run-ci-rocm.yml) that asks for the
+# stage's GPU count, so stage-c-{2,4,8}-gpu-mi350 take 2, 4 or 8 GPUs.
 #
 # PR jobs use the same low-trust `pull_request` model as pr-test.yml: checkout
 # tests the merge commit, and GitHub withholds repository secrets from forks.
+# As in pr-test.yml, selected ROCm tests or the `rebuild-ci-image` label build or
+# reuse a PR image when its inputs change, on the same docker-build builders.
 #
-# SGLang / Megatron-LM versions are baked into the ROCm image
-# (_run-ci-rocm.yml defaults skip_dependency_install to true), so unlike
-# pr-test.yml there are no ci_megatron_pr / ci_sglang_pr inputs here.
+# Dependency refs use the CUDA resolver. Each nonempty shard checks the
+# requested refs or release lock, then tracks sglang-miles / miles-main.
+# The cluster job installs the resolved refs over the image's baked copies.
 
 on:
+  # No cron for now: SGLang's ROCm nightly runs the nightly scope on its own
+  # runners, so Spur's two runners stay with PRs.
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, labeled]
-  schedule:
-    # Same UTC nightly/weekly split as pr-test.yml; ci_policy.py maps each exact cron.
-    - cron: '0 15 * * 0-5'
-    - cron: '0 15 * * 6'
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, closed]
   workflow_dispatch:
     inputs:
-      ci_image_tag:
-        description: 'ROCm Docker image tag (default: miles-rocm720-mi35x, the undated tag each nightly image build overwrites)'
+      ci_megatron_pr:
+        description: 'Megatron-LM branch/commit to install (empty: use the release lock or default branch)'
         required: false
         type: string
-        default: 'miles-rocm720-mi35x'
+        default: ''
+      ci_megatron_bridge_pr:
+        description: 'Megatron Bridge PR (#N), branch, tag, or commit (empty: keep the existing installation).'
+        required: false
+        type: string
+        default: ''
+      ci_sglang_pr:
+        description: 'SGLang branch/commit to install (empty: use the release lock or default branch)'
+        required: false
+        type: string
+        default: ''
+      ci_image_tag:
+        description: 'ROCm Docker image tag (default: miles-rocm10-mi35x, the undated tag each nightly image build overwrites)'
+        required: false
+        type: string
+        default: ''
   workflow_call:
     inputs:
+      image_tag:
+        description: 'ROCm Docker image tag to run suites in (e.g. a dated miles-rocm10-mi35x-<YYYYMMDD> tag).'
+        required: false
+        type: string
+        default: ''
       ref:
         description: 'Git ref (branch, tag, or SHA) to test, e.g. release/v0.3.0.'
         required: true
@@ -54,17 +74,26 @@ concurrency:
   # Literal prefix, not github.workflow — see pr-test.yml's concurrency
   # comment: the caller-resolved name would collide this group with the CUDA
   # one under a single release-branch-cut run.
-  group: pr-test-rocm-${{ github.event.pull_request.number || github.event.schedule || inputs.ref || github.run_id }}
+  group: pr-test-rocm-${{ github.event.number || github.event.schedule || inputs.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   resolve-ci-policy:
+    # The MI350 runners serve radixark/miles only.
+    if: github.repository == 'radixark/miles' && github.event.action != 'closed'
     runs-on: ubuntu-latest
     outputs:
       cadence: ${{ steps.resolve.outputs.cadence }}
       raw_labels: ${{ steps.resolve.outputs.raw_labels }}
       bypass_fastfail: ${{ steps.resolve.outputs.bypass_fastfail }}
       skipped_stages: ${{ steps.resolve.outputs.skipped_stages }}
+      rocm_file_jobs: ${{ steps.rocm-files.outputs.rocm_file_jobs }}
+      # A selected ROCm stage or changed-file job; both use the resolved image.
+      needs_rocm_image: >-
+        ${{ !(contains(fromJSON(steps.resolve.outputs.skipped_stages || '[]'), 'stage-c-2-gpu-mi350') &&
+        contains(fromJSON(steps.resolve.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350') &&
+        contains(fromJSON(steps.resolve.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-mi350')) ||
+        (steps.rocm-files.outputs.rocm_file_jobs || '[]') != '[]' }}
     steps:
       - name: Checkout repository
         # Deliberately not inputs.ref: this job executes ci_policy.py, so it
@@ -81,7 +110,7 @@ jobs:
         run: |
           if ! git diff --name-status -z -M HEAD^1 HEAD > "$RUNNER_TEMP/changed-files.z"; then
             rm -f "$RUNNER_TEMP/changed-files.z"
-            echo "::warning::Unable to compute PR diff; all GPU stages remain eligible."
+            echo "::warning::Unable to compute PR diff; all selected GPU stages are treated as affected."
           fi
       - name: Resolve CI policy inputs
         id: resolve
@@ -94,26 +123,87 @@ jobs:
           CADENCE_OVERRIDE: ${{ inputs.cadence || '' }}
           CHANGED_FILES_PATH: ${{ runner.temp }}/changed-files.z
         run: python -m tests.ci.ci_policy
+      - name: Plan changed ROCm tests
+        id: rocm-files
+        if: github.event_name == 'pull_request' && !inputs.cadence
+        env:
+          CHANGED_FILES_PATH: ${{ runner.temp }}/changed-files.z
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          RAW_LABELS: ${{ steps.resolve.outputs.raw_labels }}
+          CADENCE: ${{ steps.resolve.outputs.cadence }}
+          SKIPPED_STAGES: ${{ steps.resolve.outputs.skipped_stages }}
+        run: python -S -m tests.ci.rocm_file_plan
+
+  # The `rebuild-ci-image` label build-tests the image on a PR that selects no ROCm tests.
+  docker-build-rocm10-mi35x:
+    needs: [resolve-ci-policy]
+    if: |
+      github.event.action != 'closed' &&
+      (needs.resolve-ci-policy.outputs.needs_rocm_image == 'true' ||
+         contains(github.event.pull_request.labels.*.name, 'rebuild-ci-image'))
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    uses: ./.github/workflows/_build-pr-ci-image.yml
+    with:
+      arch: rocm10-mi35x
+    secrets: inherit
 
   resolve-ci-image:
+    needs: [resolve-ci-policy, docker-build-rocm10-mi35x]
+    if: |
+      always() && !cancelled() &&
+      needs.docker-build-rocm10-mi35x.result == 'success' &&
+      needs.resolve-ci-policy.outputs.needs_rocm_image == 'true'
     runs-on: ubuntu-latest
     outputs:
       container_image: ${{ steps.resolve.outputs.container_image }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Resolve CI image
         id: resolve
-        shell: bash
         env:
-          INPUT_CI_IMAGE_TAG: ${{ github.event.inputs.ci_image_tag || '' }}
-        run: |
-          CI_IMAGE_TAG="${INPUT_CI_IMAGE_TAG}"
-          [ -z "$CI_IMAGE_TAG" ] && CI_IMAGE_TAG="miles-rocm720-mi35x"
-          if [[ ! "$CI_IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
-            echo "::error::ci-image-tag must be a Docker tag, not a full image name: $CI_IMAGE_TAG"
-            exit 1
-          fi
-          echo "container_image=rocm/sgl-dev:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
-          echo "Resolved CI image: rocm/sgl-dev:${CI_IMAGE_TAG}"
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          # workflow_call image_tag (e.g. a frozen release-CI tag) outranks the
+          # dispatch input, which only exists on manual runs anyway.
+          INPUT_CI_IMAGE_TAG: ${{ inputs.image_tag || github.event.inputs.ci_image_tag || '' }}
+          PR_IMAGE_AVAILABLE: ${{ needs.docker-build-rocm10-mi35x.outputs.tag_available }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+        run: python3 -S -m tests.ci.rocm
+
+  stage-c-2-gpu-mi350:
+    needs: [resolve-ci-policy, resolve-ci-image]
+    if: |
+      always() && !cancelled() &&
+      needs.resolve-ci-policy.result == 'success' &&
+      needs.resolve-ci-image.result == 'success' &&
+      !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-2-gpu-mi350')
+    # Each shard asks Spur for two GPUs, so up to four share a node.
+    # run_suite.py balances the shards by est_time. fail-fast: false so one
+    # shard's failure does not cancel the others mid-run.
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1]' || '[0,1,2,3]') }}
+    uses: ./.github/workflows/_run-ci-rocm.yml
+    with:
+      runs_on: '["linux-miles-mi35x-spur"]'
+      num_gpus: 2
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      ref: ${{ inputs.ref || '' }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw rocm --suite stage-c-2-gpu-mi350
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size ${{ strategy.job-total }}
+        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
+        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+        ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
+        --enable-retry --max-attempts 2
+    secrets:
+      AMD_WANDB_API_KEY: ${{ secrets.AMD_WANDB_API_KEY }}
+      AMD_NEON_DATABASE_URL: ${{ secrets.AMD_NEON_DATABASE_URL }}
 
   stage-c-4-gpu-mi350:
     needs: [resolve-ci-policy, resolve-ci-image]
@@ -122,25 +212,86 @@ jobs:
       needs.resolve-ci-policy.result == 'success' &&
       needs.resolve-ci-image.result == 'success' &&
       !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350')
-    # One shard per 4-GPU runner, so the pair works the suite in parallel.
+    # Four shards on regular runs; nightly, weekly and release runs split the
+    # larger selection into six.
     # run_suite.py balances the shards by est_time. fail-fast: false so one
-    # shard's failure does not cancel the other mid-run.
+    # shard's failure does not cancel the others mid-run.
     strategy:
       fail-fast: false
-      max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' && 1 || 2 }}
       matrix:
-        partition_id: [0, 1]
+        partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1,2,3]' || '[0,1,2,3,4,5]') }}
     uses: ./.github/workflows/_run-ci-rocm.yml
     with:
-      runs_on: '["self-hosted", "amd", "mi350", "4gpu"]'
+      runs_on: '["linux-miles-mi35x-spur"]'
+      num_gpus: 4
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw rocm --suite stage-c-4-gpu-mi350
-        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size ${{ strategy.job-total }}
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
         ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
         --enable-retry --max-attempts 2
     secrets:
-      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      AMD_WANDB_API_KEY: ${{ secrets.AMD_WANDB_API_KEY }}
+      AMD_NEON_DATABASE_URL: ${{ secrets.AMD_NEON_DATABASE_URL }}
+
+  stage-c-8-gpu-mi350:
+    needs: [resolve-ci-policy, resolve-ci-image]
+    if: |
+      always() && !cancelled() &&
+      needs.resolve-ci-policy.result == 'success' &&
+      needs.resolve-ci-image.result == 'success' &&
+      !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-mi350')
+    # Each shard holds a whole node (launch.sh submits 8-GPU jobs --exclusive).
+    # run_suite.py balances the shards by est_time. fail-fast: false so one
+    # shard's failure does not cancel the others mid-run.
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: [0, 1, 2, 3]
+    uses: ./.github/workflows/_run-ci-rocm.yml
+    with:
+      runs_on: '["linux-miles-mi35x-spur"]'
+      num_gpus: 8
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      ref: ${{ inputs.ref || '' }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw rocm --suite stage-c-8-gpu-mi350
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size ${{ strategy.job-total }}
+        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
+        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+        ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
+        --enable-retry --max-attempts 2
+    secrets:
+      AMD_WANDB_API_KEY: ${{ secrets.AMD_WANDB_API_KEY }}
+      AMD_NEON_DATABASE_URL: ${{ secrets.AMD_NEON_DATABASE_URL }}
+
+  changed-rocm-file:
+    needs: [resolve-ci-policy, resolve-ci-image]
+    if: >-
+      always() && !cancelled() && github.event_name == 'pull_request' &&
+      needs.resolve-ci-image.result == 'success' &&
+      (needs.resolve-ci-policy.outputs.rocm_file_jobs || '[]') != '[]'
+    name: ROCm ${{ matrix.test_file }}
+    concurrency:
+      group: rocm-file-run
+      cancel-in-progress: false
+      queue: max
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.resolve-ci-policy.outputs.rocm_file_jobs || '[]') }}
+    uses: ./.github/workflows/_run-ci-rocm.yml
+    with:
+      ref: ${{ github.sha }}
+      plan_already_resolved: true
+      runs_on: ${{ matrix.runs_on }}
+      num_gpus: ${{ fromJSON(matrix.num_gpus) }}
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      withhold_runner_secrets: ${{ github.event.pull_request.head.repo.id != github.event.pull_request.base.repo.id }}
+      execute_command: ${{ matrix.execute_command }}
+    secrets:
+      AMD_WANDB_API_KEY: ${{ secrets.AMD_WANDB_API_KEY }}
+      AMD_NEON_DATABASE_URL: ${{ secrets.AMD_NEON_DATABASE_URL }}

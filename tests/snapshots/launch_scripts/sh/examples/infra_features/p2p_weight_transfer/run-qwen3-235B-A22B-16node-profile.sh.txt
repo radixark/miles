@@ -226,7 +226,7 @@
 "32"
 "--sglang-dp-size"
 "1"
-"--sglang-cuda-graph-bs"
+"--sglang-cuda-graph-bs-decode"
 "1"
 "2"
 "4"

@@ -10,6 +10,7 @@ import torch.distributed as dist
 from torch._C._distributed_c10d import AllgatherOptions
 from torch.distributed.distributed_c10d import _get_object_coll_device, _object_to_tensor, _tensor_to_object
 
+from miles.platforms import current_platform
 from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, det_all_reduce
 
 
@@ -74,7 +75,9 @@ class GeneralPGUtil:
 
     @staticmethod
     def create(group: dist.ProcessGroup) -> "GeneralPGUtil":
-        if not hasattr(group, "_replica_id"):
+        if not hasattr(
+            group, "_replica_id"
+        ):  # config-access-exempt: replica metadata exists only on independent-DP groups
             return _NativePGUtil()
         return _RawPGUtil()
 
@@ -124,6 +127,10 @@ class _NativePGUtil(GeneralPGUtil):
         dist.all_reduce(tensor, op=op, group=group)
 
     def reduce(self, tensor: torch.Tensor, group: dist.ProcessGroup, op: dist.ReduceOp) -> None:
+        if not current_platform.rooted_reduce:
+            # all_reduce leaves the same value on the root
+            dist.all_reduce(tensor, op=op, group=group)
+            return
         dist.reduce(tensor, dst=dist.get_global_rank(group, 0), op=op, group=group)
 
     def broadcast(self, tensor: torch.Tensor, group: dist.ProcessGroup) -> None:

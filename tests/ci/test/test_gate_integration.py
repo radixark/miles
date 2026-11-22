@@ -9,21 +9,33 @@ Covered:
 
 * passing-attempt selection: only the PASSED attempt's record feeds the gate.
 * baseline write: a policy-selected writer makes the hook persist a baseline row
-  whose `trusted` flag comes from the verdict; specs sharing a coordinate
-  collapse to one `metric_values` row; a no-spec file writes nothing.
+  whose `trusted` flag comes from the verdict; each value records its
+  declaration literals; a duplicate metric declaration or a no-spec file
+  writes nothing.
 * PR no-write: a `pull_request` event writes no row and emits a shadow
   verdict string.
-* never-blocks: a not-trusted verdict, and a gate that raises, both leave the
-  test's pass/fail untouched.
+* enforcement: coordinates block numerical regressions by default after ten
+  trusted baselines; metric and infrastructure errors fail closed.
+* harness: a gate failure reaches the final summary without rerunning the child.
 """
 
 from __future__ import annotations
 
+import io
 import json
+import os
+import re
+import shlex
+import subprocess
+import sys
 import textwrap
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import yaml
+from tests.ci import ci_utils, run_suite
 from tests.ci.ci_register import HWBackend, register_cpu_ci, ut_parse_one_file
 from tests.ci.ci_utils import build_store_from_env, gate_provenance_from_env, run_gate_hook
 from tests.ci.metric_history import MetricSample, RunIdentity, RunProvenance, SQLiteMetricHistoryStore
@@ -43,11 +55,14 @@ _GITHUB_ENV_VARS = (
     "GITHUB_REF",
     "GITHUB_STEP_SUMMARY",
     "NEON_DATABASE_URL",
+    "AMD_NEON_DATABASE_URL",
+    "GITHUB_ACTIONS",
+    ci_utils.CI_GATE_RECORD_DIR_ENV,
 )
 
 
 @pytest.fixture(autouse=True)
-def _clear_github_env(monkeypatch):
+def _clear_github_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each test starts from a clean GitHub environment so leftovers from the
     real CI runner (or a prior test) cannot leak in."""
     for var in _GITHUB_ENV_VARS:
@@ -56,7 +71,7 @@ def _clear_github_env(monkeypatch):
 
 @pytest.fixture
 def store():
-    s = SQLiteMetricHistoryStore(":memory:")
+    s = SQLiteMetricHistoryStore(":memory:", repository="radixark/miles")
     yield s
     s.close()
 
@@ -67,7 +82,7 @@ def _write_test_file(tmp_path: Path, gate_lines: str, *, name: str = "test_e2e_g
     body = (
         "from tests.ci.ci_register import register_cuda_ci\n"
         "from tests.ci.metric_history import register_ci_gate\n"
-        'register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["megatron"])\n'
+        'register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["megatron"], hardware=["hopper"])\n'
         + textwrap.dedent(gate_lines).strip()
         + "\n"
     )
@@ -141,42 +156,47 @@ class TestGateProvenanceFromEnv:
 
 
 class TestBuildStoreFromEnv:
-    def test_no_neon_url_returns_none(self):
+    def test_no_neon_url_with_unwritable_summary_still_skips(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path))
         assert build_store_from_env() is None
+
+    def test_no_neon_url_returns_none(self, caplog):
+        with caplog.at_level("INFO"):
+            assert build_store_from_env() is None
+        assert "skipped: NEON_DATABASE_URL is not set" in caplog.text
 
     def test_neon_url_routes_to_neon_store(self, monkeypatch):
         # With the env var set the factory must construct the Neon backend
-        # rather than return None. The real NeonMetricHistoryStore.__init__
-        # eagerly opens a psycopg connection, so we patch the symbol *as imported
-        # by ci_utils* with a non-connecting fake that records its construction.
+        # rather than return None. Patch the symbol imported by ci_utils with a
+        # fake that records construction without accessing the hosted backend.
         # This pins the factory's only job -- routing to NeonMetricHistoryStore --
         # without depending on psycopg or a reachable DSN.
         constructed = []
 
         class _FakeNeonStore:
-            def __init__(self, dsn=None):
-                constructed.append(dsn)
+            def __init__(self, dsn=None, repository=None):
+                constructed.append((dsn, repository))
 
         monkeypatch.setattr("tests.ci.ci_utils.NeonMetricHistoryStore", _FakeNeonStore)
         monkeypatch.setenv("NEON_DATABASE_URL", "postgres://example/db")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "radixark/miles")
 
         store = build_store_from_env()
         assert isinstance(store, _FakeNeonStore), "NEON_DATABASE_URL must route to NeonMetricHistoryStore"
-        assert constructed == [None], "the factory constructs the store with no explicit DSN"
+        assert constructed == [("postgres://example/db", "radixark/miles")]
 
-    def test_store_construction_failure_degrades_to_none(self, monkeypatch):
-        # NeonMetricHistoryStore.__init__ connects eagerly, so a bad DSN / DB
-        # outage raises here -- OUTSIDE the gate hook's try/except. The factory
-        # must swallow it and return None: the gate may never fail a CI job
-        # (CUDA or ROCm) before a single test has run.
+    def test_store_construction_failure_propagates(self, monkeypatch):
+        # A configured store must not silently disable enforcement on failure.
         class _ExplodingStore:
-            def __init__(self, dsn=None):
+            def __init__(self, dsn=None, repository=None):
                 raise RuntimeError("connection refused")
 
         monkeypatch.setattr("tests.ci.ci_utils.NeonMetricHistoryStore", _ExplodingStore)
         monkeypatch.setenv("NEON_DATABASE_URL", "postgres://unreachable/db")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "radixark/miles")
 
-        assert build_store_from_env() is None
+        with pytest.raises(RuntimeError, match="connection refused"):
+            build_store_from_env()
 
 
 # --- passing-attempt selection ----------------------------------------------
@@ -209,6 +229,7 @@ class TestPassingAttemptSelection:
             good_record,
             store=store,
             registry=registry,
+            executing_suite="stage-c-8-gpu-h100",
             write_baseline=True,
             provenance=PROVENANCE,
         )
@@ -239,6 +260,7 @@ class TestBaselineWrite:
             record,
             store=store,
             registry=registry,
+            executing_suite="stage-c-8-gpu-h100",
             write_baseline=True,
             provenance=PROVENANCE,
             now_iso="2026-06-29T00:00:00+00:00",
@@ -262,14 +284,7 @@ class TestBaselineWrite:
 
         # The persisted value feeds future baselines.
         vals = store.recent_trusted_values(
-            registry.filename,
-            "cuda",
-            "stage-c-8-gpu-h100",
-            "rollout/raw_reward",
-            LAST_KEY,
-            REL20_KEY,
-            -1,
-            20,
+            registry.filename, "cuda", "stage-c-8-gpu-h100", "rollout/raw_reward", -1, 20
         )
         assert vals == [0.81]
 
@@ -301,6 +316,7 @@ class TestBaselineWrite:
             record,
             store=store,
             registry=registry,
+            executing_suite="stage-c-8-gpu-h100",
             write_baseline=True,
             provenance=PROVENANCE,
             now_iso="2026-06-29T00:00:00+00:00",
@@ -310,14 +326,7 @@ class TestBaselineWrite:
         # Untrusted rows are invisible to the baseline query: only the seeded
         # trusted baseline comes back, never the hook's 0.90 row.
         vals = store.recent_trusted_values(
-            registry.filename,
-            "cuda",
-            "stage-c-8-gpu-h100",
-            "rollout/raw_reward",
-            LAST_KEY,
-            REL20_KEY,
-            -1,
-            20,
+            registry.filename, "cuda", "stage-c-8-gpu-h100", "rollout/raw_reward", -1, 20
         )
         assert vals == [0.30]
 
@@ -338,6 +347,7 @@ class TestBaselineWrite:
             record,
             store=store,
             registry=registry,
+            executing_suite="stage-c-8-gpu-h100",
             write_baseline=True,
             provenance=PROVENANCE,
         )
@@ -363,17 +373,28 @@ class TestBaselineWrite:
             record,
             store=store,
             registry=registry,
+            executing_suite="stage-c-8-gpu-h100",
             write_baseline=True,
             provenance=PROVENANCE,
         )
         assert _count_runs(store) == 0
 
-    def test_nightly_dedupes_values_by_coordinate(self, tmp_path, store, monkeypatch):
-        # Two specs with identical steps + constraint literals share one
-        # coordinate even though their policy metadata differs; the selected
-        # value is identical, so writing one row per spec would double-weight
-        # this run in the baseline mean.
+    def test_nightly_records_declaration_literals_beside_each_value(self, tmp_path, store, monkeypatch):
+        # Readers that still key on the literal columns must keep finding new rows.
         monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
+        test_file = _write_test_file(
+            tmp_path,
+            'register_ci_gate(metric_key="rollout/raw_reward", steps="last", '
+            'constraint={"rel_up": 0.20, "rel_down": 0.20})',
+        )
+        record = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.81]]}, name="m.jsonl")
+        assert _run_hook(test_file, record, store, write_baseline=True) is True
+        rows = store._conn.execute(
+            "SELECT metric_key, steps_key, constraint_key, step, value FROM metric_values"
+        ).fetchall()
+        assert rows == [("rollout/raw_reward", LAST_KEY, REL20_KEY, -1, 0.81)]
+
+    def test_duplicate_metric_declaration_fails_without_writing(self, tmp_path, store):
         test_file = _write_test_file(
             tmp_path,
             """
@@ -381,10 +402,35 @@ class TestBaselineWrite:
                              steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
             register_ci_gate(metric_key="rollout/raw_reward",
                              steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20},
-                             enforce=True)
+                             enforce=False)
+            """,
+        )
+        record = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.81]]}, name="m.jsonl")
+        assert _run_hook(test_file, record, store, write_baseline=True) is False
+        assert _count_runs(store) == 0
+
+
+# --- PR no-write + shadow verdict -------------------------------------------
+
+
+class TestExecutingSuiteIdentity:
+    """A run's numbers belong to the stage that produced them.
+
+    Once a test can be dispatched to a second GPU generation, keying the
+    baseline on `register_*_ci(suite=...)` would merge two hardware populations
+    into one series and make the regression gate compare across generations.
+    """
+
+    def test_row_is_keyed_on_the_executing_stage_not_the_declared_one(self, tmp_path, store):
+        test_file = _write_test_file(
+            tmp_path,
+            """
+            register_ci_gate(metric_key="rollout/raw_reward",
+                             steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
             """,
         )
         registry = _registry(test_file)
+        assert registry.suite == "stage-c-8-gpu-h100"
         record = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.81]]}, name="m.jsonl")
 
         run_gate_hook(
@@ -392,17 +438,39 @@ class TestBaselineWrite:
             record,
             store=store,
             registry=registry,
+            executing_suite="stage-c-8-gpu-b200",
             write_baseline=True,
             provenance=PROVENANCE,
         )
-        assert _count_runs(store) == 1
-        rows = store._conn.execute(
-            "SELECT metric_key, steps_key, constraint_key, step, value FROM metric_values"
-        ).fetchall()
-        assert rows == [("rollout/raw_reward", LAST_KEY, REL20_KEY, -1, 0.81)]
 
+        assert store._conn.execute("SELECT suite FROM runs").fetchone()[0] == "stage-c-8-gpu-b200"
 
-# --- PR no-write + shadow verdict -------------------------------------------
+    def test_the_two_stages_keep_independent_series(self, tmp_path, store):
+        test_file = _write_test_file(
+            tmp_path,
+            """
+            register_ci_gate(metric_key="rollout/raw_reward",
+                             steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
+            """,
+        )
+        registry = _registry(test_file)
+        for suite, value in (("stage-c-8-gpu-h100", 0.81), ("stage-c-8-gpu-b200", 0.42)):
+            run_gate_hook(
+                test_file,
+                _write_record(tmp_path, {"rollout/raw_reward": [[0, value]]}, name=f"{suite}.jsonl"),
+                store=store,
+                registry=registry,
+                executing_suite=suite,
+                write_baseline=True,
+                provenance=PROVENANCE,
+            )
+
+        coordinate = ("rollout/raw_reward", -1)
+        hopper = store.recent_trusted_values(registry.filename, "cuda", "stage-c-8-gpu-h100", *coordinate, 20)
+        blackwell = store.recent_trusted_values(registry.filename, "cuda", "stage-c-8-gpu-b200", *coordinate, 20)
+        # 0.42 against a 0.81 baseline would be a hard fail if the two shared a series.
+        assert hopper == [0.81]
+        assert blackwell == [0.42]
 
 
 class TestPrShadow:
@@ -415,7 +483,7 @@ class TestPrShadow:
             tmp_path,
             """
             register_ci_gate(metric_key="rollout/raw_reward",
-                             steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
+                             steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20}, enforce=False)
             """,
         )
         registry = _registry(test_file)
@@ -427,6 +495,7 @@ class TestPrShadow:
                 record,
                 store=store,
                 registry=registry,
+                executing_suite="stage-c-8-gpu-h100",
                 write_baseline=False,
                 provenance=PROVENANCE,
             )
@@ -442,20 +511,19 @@ class TestPrShadow:
         assert "rollout/raw_reward" in summary_text
 
 
-# --- never-blocks -----------------------------------------------------------
+# --- shadow declarations never block ---------------------------------------
 
 
-class TestNeverBlocks:
+class TestShadowNeverBlocks:
     def test_not_trusted_verdict_does_not_raise_in_pr(self, tmp_path, store, monkeypatch):
         # A clearly-not-trusted PR run still completes the hook normally (no
-        # exception, no new row). The caller's file_passed is computed
-        # independently of run_gate_hook, which returns None either way.
+        # exception, no new row); the hook allows the child's success to stand.
         monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
         test_file = _write_test_file(
             tmp_path,
             """
             register_ci_gate(metric_key="rollout/raw_reward",
-                             steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
+                             steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20}, enforce=False)
             """,
         )
         registry = _registry(test_file)
@@ -474,22 +542,23 @@ class TestNeverBlocks:
             record,
             store=store,
             registry=registry,
+            executing_suite="stage-c-8-gpu-h100",
             write_baseline=False,
             provenance=PROVENANCE,
         )
-        assert result is None
+        assert result is True
         # Only the seeded baseline row: the PR run wrote nothing.
         assert _count_runs(store) == 1
 
     def test_gate_error_is_swallowed(self, tmp_path, store, monkeypatch, caplog):
         # A missing record path makes evaluate_gate raise; the hook must catch,
-        # log, and return None rather than propagate -- CI stays green.
+        # log, and return True rather than propagate for a shadow declaration.
         monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
         test_file = _write_test_file(
             tmp_path,
             """
             register_ci_gate(metric_key="rollout/raw_reward",
-                             steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
+                             steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20}, enforce=False)
             """,
         )
         registry = _registry(test_file)
@@ -501,10 +570,11 @@ class TestNeverBlocks:
                 missing_record,
                 store=store,
                 registry=registry,
+                executing_suite="stage-c-8-gpu-h100",
                 write_baseline=True,
                 provenance=PROVENANCE,
             )
-        assert result is None
+        assert result is True
         assert _count_runs(store) == 0
         assert "[CI Gate] hook failed" in caplog.text
 
@@ -517,7 +587,7 @@ class TestNeverBlocks:
             tmp_path,
             """
             register_ci_gate(metric_key="rollout/raw_reward",
-                             steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
+                             steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20}, enforce=False)
             """,
         )
         registry = _registry(test_file)
@@ -527,17 +597,18 @@ class TestNeverBlocks:
             def write_run(self, *a, **k):
                 raise RuntimeError("DB down")
 
-        store = _ExplodingStore(":memory:")
+        store = _ExplodingStore(":memory:", repository="radixark/miles")
         try:
             result = run_gate_hook(
                 test_file,
                 record,
                 store=store,
                 registry=registry,
+                executing_suite="stage-c-8-gpu-h100",
                 write_baseline=True,
                 provenance=PROVENANCE,
             )
-            assert result is None
+            assert result is True
         finally:
             store.close()
 
@@ -567,6 +638,7 @@ def test_hook_signature_matches_metric_sample_contract(tmp_path, store, monkeypa
         record,
         store=store,
         registry=registry,
+        executing_suite="stage-c-8-gpu-h100",
         write_baseline=True,
         provenance=PROVENANCE,
     )
@@ -577,3 +649,543 @@ def test_hook_signature_matches_metric_sample_contract(tmp_path, store, monkeypa
     assert MetricSample("k", LAST_KEY, REL20_KEY, -1, 1.0).value == 1.0
     assert HWBackend.CUDA is not None
     assert RunIdentity("p", "cuda", "s").backend == "cuda"
+
+
+# --- default enforcement --------------------------------------------------
+
+
+def _seed_history(store, registry, n, *, values=None, backend="cuda"):
+    for index in range(n):
+        store.write_run(
+            RunIdentity(registry.filename, backend, registry.suite),
+            PROVENANCE,
+            created_at=f"2026-06-{index + 1:02d}T00:00:00+00:00",
+            trusted=True,
+            values=values or [MetricSample("rollout/raw_reward", LAST_KEY, REL20_KEY, -1, 0.30)],
+        )
+
+
+def _run_hook(test_file, record, store, *, write_baseline=False):
+    registry = _registry(test_file)
+    return run_gate_hook(
+        test_file,
+        record,
+        store=store,
+        registry=registry,
+        executing_suite=registry.suite,
+        write_baseline=write_baseline,
+        provenance=PROVENANCE,
+        now_iso="2026-06-29T00:00:00+00:00",
+    )
+
+
+class TestEnforcement:
+    @pytest.mark.parametrize(
+        "baseline,current,allowed",
+        [(0.040625, 0.09375, True), (0.6, 0.47, False)],
+    )
+    @pytest.mark.parametrize("write_baseline", [False, True], ids=["pr", "nightly"])
+    def test_default_reward_has_no_upper_gate(self, tmp_path, store, baseline, current, allowed, write_baseline):
+        test_file = _write_test_file(tmp_path, 'register_ci_gate(metric_key="rollout/raw_reward")')
+        registry = _registry(test_file)
+        samples = [MetricSample("rollout/raw_reward", '"all"', REL20_KEY, 0, baseline)]
+        _seed_history(store, registry, 10, values=samples)
+        record = _write_record(tmp_path, {"rollout/raw_reward": [[0, current]]}, name="m.jsonl")
+
+        assert _run_hook(test_file, record, store, write_baseline=write_baseline) is allowed
+        assert _count_runs(store) == 10 + int(write_baseline)
+        history = store.recent_trusted_values(registry.filename, "cuda", registry.suite, "rollout/raw_reward", 0, 20)
+        assert len(history) == 10 + int(write_baseline and allowed)
+
+    @pytest.mark.parametrize("enforce", [False, True])
+    def test_summary_error_does_not_change_gate_verdict(self, tmp_path, store, monkeypatch, enforce):
+        test_file = _write_test_file(
+            tmp_path,
+            'register_ci_gate(metric_key="rollout/raw_reward", steps="last", '
+            'constraint={"rel_up": 0.20, "rel_down": 0.20}' + ("" if enforce else ", enforce=False") + ")",
+        )
+        _seed_history(store, _registry(test_file), 10)
+        record = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.90]]}, name="m.jsonl")
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path))
+        assert _run_hook(test_file, record, store) is not enforce
+
+    @pytest.mark.parametrize("enforce", [False, True])
+    @pytest.mark.parametrize("write_baseline", [False, True], ids=["pr", "nightly"])
+    @pytest.mark.parametrize("n,current", [(0, 0.90), (1, 0.90), (9, 0.90), (10, 0.90), (10, 0.30)])
+    def test_history_threshold_and_baseline_trust(self, tmp_path, store, caplog, enforce, write_baseline, n, current):
+        test_file = _write_test_file(
+            tmp_path,
+            'register_ci_gate(metric_key="rollout/raw_reward", steps="last", '
+            'constraint={"rel_up": 0.20, "rel_down": 0.20}' + ("" if enforce else ", enforce=False") + ")",
+        )
+        registry = _registry(test_file)
+        _seed_history(store, registry, n)
+        record = _write_record(tmp_path, {"rollout/raw_reward": [[0, current]]}, name="m.jsonl")
+
+        with caplog.at_level("INFO"):
+            allowed = _run_hook(test_file, record, store, write_baseline=write_baseline)
+
+        assert allowed is not (enforce and n >= 10 and current == 0.90)
+        assert _count_runs(store) == n + int(write_baseline)
+        if enforce and n < 10:
+            assert f"NOT ENFORCED: insufficient history ({n}/10)" in caplog.text
+        if write_baseline:
+            trusted = store._conn.execute("SELECT trusted FROM runs ORDER BY created_at DESC").fetchone()[0]
+            assert bool(trusted) is (n == 0 or current == 0.30)
+            history = store.recent_trusted_values(
+                registry.filename, "cuda", registry.suite, "rollout/raw_reward", -1, 20
+            )
+            assert len(history) == n + int(bool(trusted))
+            if enforce and n == 9:
+                # The newly persisted untrusted run must not satisfy the threshold.
+                assert _run_hook(test_file, record, store) is True
+
+    @pytest.mark.parametrize("enforce_failing", [False, True])
+    def test_explicit_shadow_override_applies_only_to_its_metric(self, tmp_path, store, enforce_failing):
+        declarations = [
+            'register_ci_gate(metric_key="rollout/raw_reward", steps="last", '
+            'constraint={"rel_up": 0.20, "rel_down": 0.20}' + (", enforce=False" if enforce_failing else "") + ")",
+            'register_ci_gate(metric_key="train/grad_norm", steps="last", '
+            'constraint={"rel_up": 0.20, "rel_down": 0.20}' + ("" if enforce_failing else ", enforce=False") + ")",
+        ]
+        test_file = _write_test_file(tmp_path, "\n".join(declarations))
+        samples = [
+            MetricSample(metric, LAST_KEY, REL20_KEY, -1, 0.30) for metric in ("rollout/raw_reward", "train/grad_norm")
+        ]
+        _seed_history(store, _registry(test_file), 10, values=samples)
+        record = _write_record(
+            tmp_path, {"rollout/raw_reward": [[0, 0.30]], "train/grad_norm": [[0, 0.90]]}, name="m.jsonl"
+        )
+        assert _run_hook(test_file, record, store) is not enforce_failing
+        assert _count_runs(store) == 10
+
+    @pytest.mark.parametrize(
+        "old_steps, new_steps, step",
+        [('"last"', '"last"', -1), ('"all"', "[0]", 0), ("[0]", '"all"', 0)],
+        ids=["constraint", "all-to-list", "list-to-all"],
+    )
+    def test_declaration_literal_edit_keeps_enforced_history(self, tmp_path, store, old_steps, new_steps, step):
+        # History written under other literals still counts toward the threshold and the mean.
+        test_file = _write_test_file(
+            tmp_path,
+            f'register_ci_gate(metric_key="rollout/raw_reward", steps={new_steps}, '
+            'constraint={"rel_up": 0.50, "rel_down": 0.50})',
+        )
+        samples = [MetricSample("rollout/raw_reward", old_steps, REL20_KEY, step, 0.30)]
+        _seed_history(store, _registry(test_file), 10, values=samples)
+        record = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.90]]}, name="m.jsonl")
+        # Only the ten inherited baselines can make this drift an enforced failure.
+        assert _run_hook(test_file, record, store) is False
+
+    def test_history_threshold_is_per_step(self, tmp_path, store, caplog):
+        test_file = _write_test_file(
+            tmp_path,
+            'register_ci_gate(metric_key="rollout/raw_reward", steps="all", '
+            'constraint={"rel_up": 0.20, "rel_down": 0.20})',
+        )
+        registry = _registry(test_file)
+        samples = [MetricSample("rollout/raw_reward", '"all"', REL20_KEY, step, 0.30) for step in (0, 1)]
+        _seed_history(store, registry, 9, values=samples)
+        _seed_history(store, registry, 1, values=samples[:1])
+        record = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.30], [1, 0.90]]}, name="m.jsonl")
+        with caplog.at_level("INFO"):
+            assert _run_hook(test_file, record, store) is True
+        assert "NOT ENFORCED: insufficient history (9/10)" in caplog.text
+        _seed_history(store, registry, 1, values=samples[1:])
+        assert _run_hook(test_file, record, store) is False
+
+    @pytest.mark.parametrize("enforce", [False, True])
+    @pytest.mark.parametrize("series", [None, [], [[0, "NaN"]], [[0, "Infinity"]], [[0, "-Infinity"]]])
+    @pytest.mark.parametrize("write_baseline", [False, True], ids=["pr", "nightly"])
+    def test_bad_selected_metrics_do_not_wait_for_history(self, tmp_path, store, enforce, series, write_baseline):
+        test_file = _write_test_file(
+            tmp_path, 'register_ci_gate(metric_key="rollout/raw_reward"' + ("" if enforce else ", enforce=False") + ")"
+        )
+        record = _write_record(tmp_path, {} if series is None else {"rollout/raw_reward": series}, name="m.jsonl")
+        assert _run_hook(test_file, record, store, write_baseline=write_baseline) is not enforce
+        assert _count_runs(store) == int(write_baseline)
+        if write_baseline:
+            assert store._conn.execute("SELECT trusted FROM runs").fetchone()[0] == 0
+
+    @pytest.mark.parametrize("enforce", [False, True])
+    @pytest.mark.parametrize(
+        "failure", ["record_unavailable", "record_missing", "record_malformed", "read", "write", "evaluate"]
+    )
+    def test_gate_io_failures_obey_enforcement(self, tmp_path, store, monkeypatch, caplog, enforce, failure):
+        test_file = _write_test_file(
+            tmp_path, 'register_ci_gate(metric_key="rollout/raw_reward"' + ("" if enforce else ", enforce=False") + ")"
+        )
+        record = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.30]]}, name="m.jsonl")
+        if failure == "record_unavailable":
+            record = None
+        elif failure == "record_missing":
+            Path(record).unlink()
+        elif failure == "record_malformed":
+            Path(record).write_text("invalid json\n")
+        else:
+
+            def explode(*args, **kwargs):
+                raise RuntimeError("gate infrastructure unavailable")
+
+            if failure == "evaluate":
+                monkeypatch.setattr(ci_utils, "evaluate_gate", explode)
+            else:
+                monkeypatch.setattr(store, "write_run" if failure == "write" else "recent_trusted_values", explode)
+        with caplog.at_level("WARNING"):
+            assert _run_hook(test_file, record, store, write_baseline=True) is not enforce
+        assert "[CI Gate] hook failed" in caplog.text
+        assert _count_runs(store) == 0
+
+    def test_invalid_declaration_fails_closed(self, tmp_path, store):
+        test_file = _write_test_file(tmp_path, 'register_ci_gate(metric_key="rollout/raw_reward", enforce="yes")')
+        record = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.30]]}, name="m.jsonl")
+        assert _run_hook(test_file, record, store) is False
+
+
+class TestHarnessEnforcement:
+    @pytest.mark.parametrize("continue_on_error", [False, True])
+    @pytest.mark.parametrize("failure", ["regression", "record_unavailable", "merge"])
+    def test_gate_failure_reaches_suite_summary_without_child_retry(
+        self, tmp_path, store, monkeypatch, caplog, capsys, continue_on_error, failure
+    ):
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        if failure != "record_unavailable":
+            monkeypatch.setenv(ci_utils.CI_GATE_RECORD_DIR_ENV, str(tmp_path / "records"))
+        files = [
+            _registry(
+                _write_test_file(
+                    tmp_path,
+                    'register_ci_gate(metric_key="rollout/raw_reward", steps="last", '
+                    'constraint={"rel_up": 0.20, "rel_down": 0.20})',
+                    name="test_regression.py",
+                )
+            ),
+            _registry(_write_test_file(tmp_path, "", name="test_next.py")),
+        ]
+        _seed_history(store, files[0], 10)
+        attempted = []
+
+        def run_child(func, args, kwargs, timeout):
+            attempted.append(args[0])
+            record_dir = kwargs["record_dir"]
+            if record_dir:
+                Path(record_dir).mkdir(parents=True)
+                _write_record(Path(record_dir), {"rollout/raw_reward": [[0, 0.90]]}, name="child.jsonl")
+            return 0
+
+        monkeypatch.setattr(ci_utils, "run_with_timeout", run_child)
+        if failure == "merge":
+
+            def broken_merge(*args):
+                raise OSError("record merge unavailable")
+
+            monkeypatch.setattr(ci_utils, "_merge_attempt_records", broken_merge)
+        with caplog.at_level("INFO"):
+            rc = ci_utils.run_unittest_files(
+                files,
+                snapshot_hardware="cpu",
+                timeout_per_file=10,
+                continue_on_error=continue_on_error,
+                enable_retry=True,
+                max_attempts=3,
+                retry_wait_seconds=0,
+                gate_store=store,
+                gate_executing_suite=files[0].suite,
+            )
+
+        assert rc != 0
+        assert attempted == [f.filename for f in files[: 2 if continue_on_error else 1]]
+        output = capsys.readouterr().out
+        assert f"[1/2] {files[0].filename}  FAIL" in output
+        assert f"[1/2] {files[0].filename}  PASS" not in output
+        assert f"Test Summary: {int(continue_on_error)}/2 passed" in caplog.text
+        summary = caplog.text.split("Test Summary:", 1)[1]
+        assert f"{files[0].filename} (metric-history gate failed" in summary
+        if continue_on_error:
+            passed, failed = summary.split("FAILED:")
+            assert files[1].filename in passed
+            assert files[0].filename not in passed
+            assert files[1].filename not in failed
+        else:
+            assert "PASSED:" not in summary
+        assert _count_runs(store) == 10
+
+    @pytest.mark.parametrize("current,allowed", [(0.30, True), (0.90, False)])
+    def test_only_successful_child_attempt_is_gated_after_retry(
+        self, tmp_path, store, monkeypatch, caplog, current, allowed
+    ):
+        monkeypatch.setenv(ci_utils.CI_GATE_RECORD_DIR_ENV, str(tmp_path / "records"))
+        registry = _registry(
+            _write_test_file(
+                tmp_path,
+                'register_ci_gate(metric_key="rollout/raw_reward", steps="last", '
+                'constraint={"rel_up": 0.20, "rel_down": 0.20})',
+            )
+        )
+        _seed_history(store, registry, 10)
+        attempts = []
+
+        def child(*args, env, **kwargs):
+            record_dir = Path(env[ci_utils.CI_GATE_RECORD_DIR_ENV])
+            attempts.append(record_dir)
+            first = len(attempts) == 1
+            _write_record(record_dir, {"rollout/raw_reward": [[0, 9.0 if first else current]]}, name="child.jsonl")
+            return SimpleNamespace(
+                stdout=io.StringIO("accuracy retry\n" if first else ""),
+                returncode=1 if first else 0,
+                wait=lambda: None,
+            )
+
+        monkeypatch.setattr(ci_utils.subprocess, "Popen", child)
+        with caplog.at_level("INFO"):
+            rc = ci_utils.run_unittest_files(
+                [registry],
+                snapshot_hardware="cpu",
+                timeout_per_file=10,
+                enable_retry=True,
+                max_attempts=3,
+                retry_wait_seconds=0,
+                gate_store=store,
+                gate_executing_suite=registry.suite,
+                gate_write_baseline=True,
+            )
+        assert (rc == 0) is allowed
+        assert len(attempts) == 2
+        assert not Path(f"{attempts[0]}.merged.jsonl").exists()
+        assert Path(f"{attempts[1]}.merged.jsonl").exists()
+        assert _count_runs(store) == 11
+        row = store._conn.execute(
+            "SELECT mv.value, r.trusted FROM metric_values mv JOIN runs r USING (run_id) "
+            "ORDER BY r.created_at DESC LIMIT 1"
+        ).fetchone()
+        assert row == (current, int(allowed))
+        assert f"(2 attempts, {'passed' if allowed else 'failed'})" in caplog.text
+        assert f"Test Summary: {int(allowed)}/1 passed" in caplog.text
+
+
+@pytest.mark.parametrize("nightly", [False, True])
+@pytest.mark.parametrize(
+    "baseline_n,current,allowed", [(9, 0.90, True), (10, 0.90, False), (10, 0.30, True), (10, None, False)]
+)
+def test_comment_file_command_runs_gate_without_writing_history(
+    tmp_path, store, monkeypatch, caplog, nightly, baseline_n, current, allowed
+):
+    workflow = yaml.safe_load((Path(__file__).parents[3] / ".github/workflows/run-ci-file.yml").read_text())
+    command = workflow["jobs"]["run-cuda-file"]["with"]["execute_command"]
+    test_file = Path(
+        _write_test_file(
+            tmp_path,
+            'register_ci_gate(metric_key="rollout/raw_reward", steps="last", '
+            'constraint={"rel_up": 0.20, "rel_down": 0.20})',
+        )
+    )
+    test_file.write_text(test_file.read_text().replace('labels=["megatron"]', f'labels=["long"], nightly={nightly}'))
+    other = Path(_write_test_file(tmp_path, "", name="test_not_requested.py"))
+    monkeypatch.chdir(tmp_path)
+    registry = _registry(test_file.name)
+    _seed_history(store, registry, baseline_n)
+    command = command.replace("${{ inputs.test_file }}", test_file.name)
+    command = command.replace("${{ needs.resolve-file-run.outputs.suite }}", registry.suite)
+    command = command.replace("${{ needs.resolve-file-run.outputs.timeout_seconds }}", "2700")
+    argv = shlex.split(command)
+    monkeypatch.setattr(sys, "argv", argv[argv.index("python3") + 1 :])
+    monkeypatch.setattr(run_suite, "discover_ci_files", lambda: [test_file.name, other.name])
+    monkeypatch.setattr(run_suite, "build_store_from_env", lambda **kwargs: store)
+    monkeypatch.setattr(run_suite, "reaping_is_isolated", lambda: False)
+    monkeypatch.setattr(run_suite.tempfile, "mkdtemp", lambda **kwargs: str(tmp_path / "records"))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
+    attempted = []
+
+    def run_child(func, args, kwargs, timeout):
+        attempted.append(args[0])
+        assert timeout == 2700
+        record_dir = Path(kwargs["record_dir"])
+        record_dir.mkdir(parents=True, exist_ok=True)
+        metrics = {"rollout/raw_reward": [[0, current]]} if current is not None else {}
+        _write_record(record_dir, metrics, name="child.jsonl")
+        return 0
+
+    monkeypatch.setattr(ci_utils, "run_with_timeout", run_child)
+    with caplog.at_level("INFO"), pytest.raises(SystemExit) as result:
+        run_suite.main()
+    assert (result.value.code == 0) is allowed
+    assert attempted == [test_file.name]
+    assert _count_runs(store) == baseline_n
+    assert f"[CI Gate][enforce] {test_file.name}: {'PASS' if allowed else 'FAIL'}" in caplog.text
+
+
+class TestRocmNeonCredential:
+    @pytest.mark.parametrize("amd_url", [None, ""])
+    def test_missing_amd_key_never_falls_back_to_cuda(self, monkeypatch, caplog, amd_url):
+        monkeypatch.setenv("NEON_DATABASE_URL", "postgres://cuda/fixture")
+        if amd_url is not None:
+            monkeypatch.setenv("AMD_NEON_DATABASE_URL", amd_url)
+        with caplog.at_level("INFO"):
+            assert build_store_from_env(backend=HWBackend.ROCM) is None
+        assert "skipped: AMD_NEON_DATABASE_URL is not set" in caplog.text
+
+    @pytest.mark.parametrize(
+        "backend,expected",
+        [(HWBackend.CUDA, "postgres://cuda/fixture"), (HWBackend.ROCM, "postgres://amd/fixture")],
+    )
+    def test_each_backend_uses_only_its_credential(self, monkeypatch, backend, expected):
+        constructed = []
+
+        class Store:
+            def __init__(self, dsn=None, repository=None):
+                constructed.append(dsn)
+
+        monkeypatch.setattr(ci_utils, "NeonMetricHistoryStore", Store)
+        monkeypatch.setenv("NEON_DATABASE_URL", "postgres://cuda/fixture")
+        monkeypatch.setenv("AMD_NEON_DATABASE_URL", "postgres://amd/fixture")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "radixark/miles")
+        assert isinstance(build_store_from_env(backend=backend), Store)
+        assert constructed == [expected]
+
+    @pytest.mark.parametrize("amd_url", [None, ""])
+    def test_secretless_rocm_suite_runs_without_history(self, tmp_path, monkeypatch, amd_url):
+        test_file = tmp_path / "test_rocm_fixture.py"
+        test_file.write_text(
+            "from tests.ci.ci_register import register_rocm_ci\n"
+            'register_rocm_ci(est_time=1, suite="stage-c-2-gpu-mi350", labels=["short"])\n'
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("NEON_DATABASE_URL", "postgres://cuda/fixture")
+        if amd_url is not None:
+            monkeypatch.setenv("AMD_NEON_DATABASE_URL", amd_url)
+        monkeypatch.setattr(run_suite, "discover_ci_files", lambda: [test_file.name])
+        monkeypatch.setattr(run_suite, "reaping_is_isolated", lambda: False)
+        observed = []
+
+        def run_files(files, **kwargs):
+            observed.append(kwargs["gate_store"])
+            return 0
+
+        monkeypatch.setattr(run_suite, "run_unittest_files", run_files)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["run_suite.py", "--hw", "rocm", "--suite", "stage-c-2-gpu-mi350", "--cadence", "release"],
+        )
+        with pytest.raises(SystemExit) as result:
+            run_suite.main()
+        assert result.value.code == 0
+        assert observed == [None]
+        assert ci_utils.CI_GATE_RECORD_DIR_ENV not in os.environ
+
+
+class TestRocmHistoryShadow:
+    @pytest.mark.parametrize("write_baseline", [False, True], ids=["pr", "nightly"])
+    def test_harness_records_rocm_regression_without_failing_child(self, tmp_path, store, monkeypatch, write_baseline):
+        monkeypatch.setenv(ci_utils.CI_GATE_RECORD_DIR_ENV, str(tmp_path / "records"))
+        test_file = _write_test_file(
+            tmp_path,
+            'register_ci_gate(metric_key="rollout/raw_reward", steps="last", '
+            'constraint={"rel_up": 0.20, "rel_down": 0.20})',
+        )
+        registry = replace(_registry(test_file), backend=HWBackend.ROCM, suite="stage-c-2-gpu-mi350", hardware=[])
+        _seed_history(store, registry, 10)
+        _seed_history(store, registry, 10, backend="rocm")
+
+        def run_child(func, args, kwargs, timeout):
+            record_dir = Path(kwargs["record_dir"])
+            record_dir.mkdir(parents=True, exist_ok=True)
+            _write_record(record_dir, {"rollout/raw_reward": [[0, 0.90]]}, name="child.jsonl")
+            return 0
+
+        monkeypatch.setattr(ci_utils, "run_with_timeout", run_child)
+        rc = ci_utils.run_unittest_files(
+            [registry],
+            timeout_per_file=10,
+            snapshot_hardware="cpu",
+            gate_store=store,
+            gate_executing_suite=registry.suite,
+            gate_write_baseline=write_baseline,
+            gate_provenance=PROVENANCE,
+        )
+        assert rc == 0
+        assert _count_runs(store) == 20 + int(write_baseline)
+        assert (
+            store.recent_trusted_values(test_file, "cuda", registry.suite, "rollout/raw_reward", -1, 20) == [0.30] * 10
+        )
+        assert (
+            store.recent_trusted_values(test_file, "rocm", registry.suite, "rollout/raw_reward", -1, 20) == [0.30] * 10
+        )
+        if write_baseline:
+            row = store._conn.execute(
+                "SELECT backend, suite, trusted FROM runs ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            assert row == ("rocm", registry.suite, 0)
+
+    @pytest.mark.parametrize("record_exists", [False, True])
+    @pytest.mark.parametrize("enforce", [False, True])
+    def test_store_error_or_missing_record_stays_shadow(self, tmp_path, record_exists, enforce):
+        test_file = _write_test_file(tmp_path, 'register_ci_gate(metric_key="rollout/raw_reward")')
+        registry = replace(_registry(test_file), backend=HWBackend.ROCM, suite="stage-c-2-gpu-mi350", hardware=[])
+        record = _write_record(tmp_path, {}, name="empty.jsonl") if record_exists else None
+
+        class UnreachableStore:
+            def __getattr__(self, name):
+                def fail(*args, **kwargs):
+                    raise RuntimeError("store unreachable")
+
+                return fail
+
+        assert run_gate_hook(
+            test_file,
+            record,
+            store=UnreachableStore(),
+            registry=registry,
+            executing_suite=registry.suite,
+            write_baseline=True,
+            provenance=PROVENANCE,
+            enforce=enforce,
+        ) is (not enforce)
+
+
+class TestRocmNeonWorkflow:
+    def test_only_amd_credential_is_forwarded_for_rocm(self):
+        root = Path(__file__).parents[3]
+        pr_workflow = yaml.safe_load((root / ".github/workflows/pr-test-rocm.yml").read_text())
+        calls = [j for j in pr_workflow["jobs"].values() if j.get("uses") == "./.github/workflows/_run-ci-rocm.yml"]
+        assert len(calls) == 4
+        for job in calls:
+            assert job["secrets"]["AMD_NEON_DATABASE_URL"] == "${{ secrets.AMD_NEON_DATABASE_URL }}"
+            assert "NEON_DATABASE_URL" not in job["secrets"]
+        reusable = yaml.safe_load((root / ".github/workflows/_run-ci-rocm.yml").read_text())
+        triggers = reusable.get("on", reusable.get(True))
+        assert triggers["workflow_call"]["secrets"]["AMD_NEON_DATABASE_URL"]["required"] is False
+        step = next(s for s in reusable["jobs"]["run"]["steps"] if s.get("name") == "Run tests on a cluster node")
+        assert step["env"]["AMD_NEON_DATABASE_URL"] == "${{ secrets.AMD_NEON_DATABASE_URL }}"
+        assert "NEON_DATABASE_URL" not in step["env"]
+        assert step["env"]["PGCONNECT_TIMEOUT"] == "10"
+        manual = yaml.safe_load((root / ".github/workflows/run-ci-file.yml").read_text())
+        rocm = manual["jobs"]["run-rocm-file"]["secrets"]
+        assert rocm["AMD_NEON_DATABASE_URL"] == (
+            "${{ needs.resolve-file-run.outputs.head_is_fork != 'true' && secrets.AMD_NEON_DATABASE_URL || '' }}"
+        )
+        assert "NEON_DATABASE_URL" not in rocm
+        assert "NEON_DATABASE_URL" in manual["jobs"]["run-cuda-file"]["secrets"]
+        job_script = (root / ".github/workflows/scripts/spur/job.sh").read_text()
+        names = re.search(r"CONTAINER_ENV=\((.*?)\)", job_script, re.S).group(1).split()
+        assert "AMD_NEON_DATABASE_URL" in names
+        assert "NEON_DATABASE_URL" not in names
+
+    @pytest.mark.parametrize("fork", [False, True])
+    def test_fork_file_launch_withholds_amd_key(self, tmp_path, fork):
+        root = Path(__file__).parents[3]
+        reusable = yaml.safe_load((root / ".github/workflows/_run-ci-rocm.yml").read_text())
+        step = next(s for s in reusable["jobs"]["run"]["steps"] if s.get("name") == "Run tests on a cluster node")
+        stub = tmp_path / ".github/workflows/scripts/spur/launch.sh"
+        stub.parent.mkdir(parents=True)
+        stub.write_text('printf "%s" "${AMD_NEON_DATABASE_URL-unset}"\n')
+        command = step["run"].replace("${{ inputs.num_gpus }}", "2")
+        result = subprocess.run(
+            ["bash", "-c", command],
+            cwd=tmp_path,
+            env={**os.environ, "WITHHOLD_RUNNER_SECRETS": str(fork).lower(), "AMD_NEON_DATABASE_URL": "amd-fixture"},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert result.stdout == ("unset" if fork else "amd-fixture")

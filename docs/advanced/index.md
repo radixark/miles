@@ -7,7 +7,7 @@ This section covers the Miles features that the Core-features section of the
 homepage points at: low-precision training (FP8 / MXFP8 / NVFP4 / INT4 QAT),
 Rollout Routing Replay for MoE, fast weight updates over P2P RDMA,
 disaggregated RL rollout through an external service, fault tolerance,
-speculative decoding, and LoRA training and serving.
+speculative decoding, sampling-support replay, and LoRA training and serving.
 
 <CardGroup cols={2}>
 
@@ -38,6 +38,13 @@ speculative decoding, and LoRA training and serving.
 
   </Card>
 
+  <Card title="Sampling-Support Replay" icon="filter" href="/advanced/sampling-support-replay">
+
+    Preserve top-p and top-k rollout probabilities when the actor recomputes
+    token log probabilities for training.
+
+  </Card>
+
   <Card title="On-Policy Distillation" icon="graduation-cap" href="/advanced/on-policy-distillation">
 
     Train a student on its own rollouts while matching teacher token
@@ -56,6 +63,13 @@ speculative decoding, and LoRA training and serving.
 
     Train LoRA adapters with SFT or RL and serve them through SGLang from the
     same checkpoint.
+
+  </Card>
+
+  <Card title="Multi-LoRA Training Service" icon="users" href="/advanced/multi-lora">
+
+    Serve many concurrent LoRA fine-tuning clients on one shared base model
+    through the Tinker API.
 
   </Card>
 

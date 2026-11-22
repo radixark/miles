@@ -7,9 +7,13 @@ back, release -- so GPU residency is bounded by one bucket rather than the whole
 state. For runs where the state does not fit the GPU *while the step runs*, which
 sleep-window offload cannot help with.
 
+The streamed params' fp32 gradients follow the same pattern: they have no ``.grad``
+outside ``step()``, which builds one bucket's at a time (clip applied) and drops it
+after that bucket's Adam step; the grad norm reads the DDP grad buffer instead.
+
 ``setup_optimizer_state_streaming`` gives each ``DistributedOptimizer`` in the chain
-a store and routes the five entry points that touch optimizer state at it, so
-Megatron carries no NVMe-specific behaviour. The one piece that stays on Megatron's
+a store and routes the entry points that touch optimizer state or streamed gradients
+at it, so Megatron carries no NVMe-specific behaviour. The one piece that stays on Megatron's
 side is the pair of checkpoint hooks in ``megatron/training/checkpointing.py``, which
 have to be inside ``save_checkpoint`` / ``load_checkpoint`` to cover every call path;
 they reach this class through four methods:
@@ -21,20 +25,35 @@ they reach this class through four methods:
 
 Both directory arguments are checkpoint *bases*; the per-rank layout underneath is
 this file's business, matching the layout of the live scratch directory.
+
+Muon takes a different route. Its state already rides Megatron's
+``ChunkedOptimizerStateOffloader``, whose only tie to host memory is one allocator, so
+``setup_muon_state_on_disk`` swaps that allocator for file-backed tensors and leaves the
+rest alone. Those buffers are unlinked once mapped, so they show up in ``df``, not ``du``.
 """
 
 import atexit
-import errno
 import json
 import logging
 import os
 import shutil
 import time
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from types import MethodType
 from typing import TYPE_CHECKING, NamedTuple
 
 import torch
 from megatron.core.fp8_utils import is_float8tensor
+
+from miles.utils.disk_backed_tensor import (
+    disk_backed_like,
+    flush_mapping,
+    is_disk_backed,
+    optimizer_state_dir_root,
+    purge_rank_dir,
+    reserve_file,
+)
 
 if TYPE_CHECKING:
     from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer
@@ -70,12 +89,7 @@ def _resize(tensor: torch.Tensor, numel: int) -> None:
 
 def _allocate_file(path: str, nbytes: int) -> int:
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
-    try:
-        os.posix_fallocate(fd, 0, nbytes)
-    except OSError as e:
-        if e.errno not in (errno.EOPNOTSUPP, errno.ENOTSUP, errno.EINVAL):
-            raise
-        os.ftruncate(fd, nbytes)
+    reserve_file(fd, nbytes)
     return fd
 
 
@@ -87,6 +101,55 @@ def _rw_full(op, fd: int, offset: int, buf) -> None:
         if n <= 0:
             raise OSError(f"short {op.__name__} ({n}) on optimizer state file at offset {offset + done}")
         done += n
+
+
+def _drop_from_page_cache(fd: int) -> None:
+    """Write the file back and drop it from the host page cache; DONTNEED drops only clean pages."""
+    os.fdatasync(fd)
+    os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+
+
+def _drop_path_from_page_cache(path: str) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        _drop_from_page_cache(fd)
+    finally:
+        os.close(fd)
+
+
+class _PageCacheWindow:
+    """Caps the page cache of the store's files and their checkpoint copies; no flush waits on its own writeback.
+
+    A writer thread drops each released file in release order; both syscalls release the GIL, so a file's
+    writeback overlaps the buckets after it. A release waits only while more than the cap is still waiting to be
+    dropped, and only for the oldest files. The bucket being read for the next step comes on top of the cap.
+    """
+
+    def __init__(self, cap_bytes: int):
+        self._cap_bytes = cap_bytes
+        self._writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nvme-page-cache")
+        self._waiting: deque[tuple[int, Future]] = deque()
+        self._waiting_bytes = 0
+
+    def release(self, file: int | str, nbytes: int) -> None:
+        """Queue a file just written or read, ``nbytes`` of it now in the page cache, to be dropped.
+
+        ``file`` is a store file's fd, or the path of a checkpoint copy, which the writer opens and closes itself.
+        """
+        drop = _drop_path_from_page_cache if isinstance(file, str) else _drop_from_page_cache
+        self._waiting.append((nbytes, self._writer.submit(drop, file)))
+        self._waiting_bytes += nbytes
+        while self._waiting and (self._waiting_bytes > self._cap_bytes or self._waiting[0][1].done()):
+            self._retire_oldest()
+
+    def drain(self) -> None:
+        while self._waiting:
+            self._retire_oldest()
+
+    def _retire_oldest(self) -> None:
+        nbytes, dropped = self._waiting.popleft()
+        self._waiting_bytes -= nbytes
+        dropped.result()  # a failed writeback surfaces here, on the training thread
 
 
 def plan_buckets(entries_by_ddp_bucket: dict, limit: int = BUCKET_NUMEL_LIMIT) -> list[list[_Entry]]:
@@ -157,12 +220,15 @@ class _Bucket:
         self.numel = sum(e.main_param.numel() for e in entries)
 
         self.offsets: dict[str, list[int]] = {}
+        self.segment_nbytes: dict[str, int] = {}  # page-aligned, which is what a segment occupies in the cache
         at = 0
         for segment in SEGMENTS:
             self.offsets[segment] = []
+            start = at
             for entry in entries:
                 self.offsets[segment].append(at)
                 at += _align(entry.main_param.numel() * dtypes[segment].itemsize)
+            self.segment_nbytes[segment] = at - start
         self.nbytes = at
         self.fd = _allocate_file(path, at)
         self.moments_ready = False
@@ -186,8 +252,10 @@ class _Bucket:
     def fetch(self) -> int:
         return self._move(SEGMENTS if self.moments_ready else SEGMENTS[:1], to_disk=False)
 
-    def flush(self, segments=SEGMENTS) -> int:
+    def flush(self, segments=SEGMENTS, *, page_cache: _PageCacheWindow | None) -> int:
         moved = self._move(segments, to_disk=True)
+        if page_cache is not None:
+            page_cache.release(self.fd, nbytes=sum(self.segment_nbytes[segment] for segment in segments))
         self.moments_ready = self.moments_ready or tuple(segments) == SEGMENTS
         return moved
 
@@ -215,9 +283,11 @@ class NVMeOptimizerStateStore:
         chunk_mb: int,
         moment_dtype: str = "fp32",
         allow_fresh_state: bool = False,
+        page_cache: _PageCacheWindow | None = None,
     ):
         self.dist_opt = distrib_optimizer
         self._allow_fresh_state = allow_fresh_state
+        self._page_cache = page_cache
         self.uid = NVMeOptimizerStateStore._next_uid
         NVMeOptimizerStateStore._next_uid += 1
         config = distrib_optimizer.config
@@ -255,12 +325,17 @@ class NVMeOptimizerStateStore:
         os.makedirs(self.dir, exist_ok=True)
         atexit.register(shutil.rmtree, self.dir, ignore_errors=True)
 
+        # Streamed params get their fp32 grads per bucket, so everything that reads main grads
+        # outside step() has to go through grads_for_norm(): no loss scaling, no zero counting,
+        # no separate grad-norm groups.
+        assert distrib_optimizer.grad_scaler is None, "NVMe state store does not support loss scaling."
+        assert not config.log_num_zeros_in_grad, "NVMe state store does not support --log-num-zeros-in-grad."
+        self._grad_norm: torch.Tensor | float | None = None
+
         self._stager = _Stager(chunk_mb * 1024 * 1024)
         self.buckets = self._build_buckets()
         self._fp32_group_indices, self._fp32_adam = self._build_fp32_optimizer()
-
-        for bucket in self.buckets:
-            bucket.flush(segments=("main",))
+        self._assert_no_separate_grad_norm_group()
 
         total_gb = sum(b.nbytes for b in self.buckets) / 1024**3
         logger.info(
@@ -345,19 +420,93 @@ class NVMeOptimizerStateStore:
             param_data = dist_opt.buffers[gbuf_index].buckets[bucket_id].param_data
             param_data.view(-1)[world_range.start : world_range.end].copy_(entry.main_param)
 
+    def _assert_no_separate_grad_norm_group(self) -> None:
+        from megatron.core.optimizer.optimizer import _get_param_grad_norm_group, _is_separate_grad_norm_group
+
+        for bucket in self.buckets:
+            for entry in bucket.entries:
+                group = _get_param_grad_norm_group(entry.main_param)
+                assert not _is_separate_grad_norm_group(group), (
+                    f"NVMe state store does not support separate grad-norm groups ({group!r}): "
+                    "their clipping reads main grads that exist only inside step()"
+                )
+
+    def _model_grad_shard(self, entry: _Entry) -> torch.Tensor:
+        """This rank's slice of the reduced gradient in the DDP grad buffer, in its buffer dtype."""
+        param_range = self.dist_opt._get_model_param_range_map(entry.model_param)["param"]
+        return entry.model_param.main_grad.view(-1)[param_range.start : param_range.end]
+
+    @torch.no_grad()
+    def grads_for_norm(self) -> list[torch.Tensor]:
+        """The local L2 norm of the streamed gradients, as a one-element fp32 tensor.
+
+        Megatron's get_grad_norm_fp32 squares and sums it with the other grads it is given, so
+        the one norm stands in for the shards. Filtered like MegatronOptimizer._filter_grads_for_norm
+        on the main params.
+        """
+        from megatron.core.tensor_parallel import param_is_not_tensor_parallel_duplicate
+        from megatron.core.transformer.module import param_is_not_shared
+
+        dist_opt = self.dist_opt
+        tp_group = getattr(
+            dist_opt, "tp_group", None
+        )  # config-access-exempt: Megatron optimizer versions may omit the tensor parallel group
+        expert_tp_group = getattr(
+            dist_opt, "expert_tp_group", None
+        )  # config-access-exempt: Megatron optimizer versions may omit the expert tensor parallel group
+        sum_sq = torch.zeros((), dtype=torch.float32, device=torch.cuda.current_device())
+        for bucket in self.buckets:
+            for entry in bucket.entries:
+                main = entry.main_param
+                if (
+                    param_is_not_shared(main)
+                    and param_is_not_tensor_parallel_duplicate(
+                        main, tp_group=tp_group, expert_tp_group=expert_tp_group
+                    )
+                    and not getattr(
+                        main, "_is_witness_param", False
+                    )  # config-access-exempt: only witness parameters carry the witness marker
+                ):
+                    sum_sq += torch.linalg.vector_norm(self._model_grad_shard(entry), dtype=torch.float32) ** 2
+        return [sum_sq.sqrt().reshape(1)]
+
+    def record_grad_norm(self, grad_norm) -> None:
+        """The total norm the chain clips with, as Megatron returns it; set before every step."""
+        self._grad_norm = grad_norm
+
+    def _attach_grads(self, entries: list[_Entry]) -> None:
+        for entry in entries:
+            entry.main_param.grad = self._model_grad_shard(entry).float()
+
+    @staticmethod
+    def _detach_grads(entries: list[_Entry]) -> None:
+        for entry in entries:
+            entry.main_param.grad = None
+
     @torch.no_grad()
     def step(self) -> bool:
+        from megatron.core.optimizer.clip_grads import clip_grad_by_total_norm_fp32
+
         started = time.monotonic()
         read = written = 0
+        clip_grad = self.dist_opt.config.clip_grad
+        grad_norm, self._grad_norm = self._grad_norm, None
+        assert clip_grad <= 0.0 or grad_norm is not None, "the chain's grad norm was not recorded before step()"
         for bucket in self.buckets:
             read += bucket.fetch()
             self._sync_lr_wd(bucket.adam, bucket.group_indices)
+            self._attach_grads(bucket.entries)
+            if clip_grad > 0.0:
+                # ChainedOptimizer.step's clip skipped these params: they had no .grad until here.
+                clip_grad_by_total_norm_fp32([e.main_param for e in bucket.entries], clip_grad, grad_norm)
             bucket.adam.step()
+            self._detach_grads(bucket.entries)
             self._copy_main_to_model_params(bucket.entries)
-            written += bucket.flush()
+            written += bucket.flush(page_cache=self._page_cache)
         if self._fp32_adam is not None:
             self._sync_lr_wd(self._fp32_adam, self._fp32_group_indices)
             self._fp32_adam.step()
+        self._drain_page_cache_window()
         logger.info(
             f"NVMe streaming step: {len(self.buckets)} buckets, read {read / 1024**3:.1f} GB, "
             f"wrote {written / 1024**3:.1f} GB in {time.monotonic() - started:.1f}s"
@@ -365,12 +514,38 @@ class NVMeOptimizerStateStore:
         return True
 
     @torch.no_grad()
+    def initialize_main_from_model_params(self) -> int:
+        dist_opt = self.dist_opt
+        written = 0
+        for bucket in self.buckets:
+            bucket.materialize_main()
+            for entry in bucket.entries:
+                param_range = dist_opt._get_model_param_range_map(entry.model_param)["param"]
+                assert param_range.size == entry.main_param.nelement()
+                source_shard = entry.model_param.view(-1)[param_range.start : param_range.end]
+                entry.main_param.copy_(source_shard)
+            written += bucket.flush(segments=("main",), page_cache=self._page_cache)
+            if self._page_cache is None:
+                # Initialization writes the whole main state in one pass, just before the checkpoint load and
+                # the engines' pinned allocations, so even with no cap it leaves none of that cached.
+                _drop_from_page_cache(bucket.fd)
+        self._drain_page_cache_window()
+        return written
+
+    @torch.no_grad()
     def refresh_main_from_model_params(self, copy_fn) -> None:
         for bucket in self.buckets:
             bucket.materialize_main()
         copy_fn()
         for bucket in self.buckets:
-            bucket.flush(segments=("main",))
+            bucket.flush(segments=("main",), page_cache=self._page_cache)
+        self._drain_page_cache_window()
+
+    def _drain_page_cache_window(self) -> None:
+        # Every operation on the store's files drains the window before it returns, so no file stays cached past it
+        # and a failed writeback fails that operation rather than a later one, or none after the last.
+        if self._page_cache is not None:
+            self._page_cache.drain()
 
     @torch.no_grad()
     def save_to(self, base_dir: str) -> None:
@@ -389,7 +564,14 @@ class NVMeOptimizerStateStore:
             ],
         }
         for bucket in self.buckets:
-            shutil.copyfile(bucket.path, os.path.join(dirpath, os.path.basename(bucket.path)))
+            copy = os.path.join(dirpath, os.path.basename(bucket.path))
+            shutil.copyfile(bucket.path, copy)
+            if self._page_cache is not None:
+                # Both ends of the copy are a full bucket in the cache; both go through the window, so one bucket's
+                # writeback overlaps the next bucket's copy.
+                self._page_cache.release(bucket.fd, nbytes=bucket.nbytes)
+                self._page_cache.release(copy, nbytes=bucket.nbytes)
+        self._drain_page_cache_window()
         if self._fp32_adam is not None:
             torch.save(self._fp32_adam.state_dict(), os.path.join(dirpath, "fp32_resident_optimizer.pt"))
         with open(os.path.join(dirpath, "manifest.json"), "w") as f:
@@ -430,11 +612,16 @@ class NVMeOptimizerStateStore:
         for bucket, meta in zip(self.buckets, manifest["buckets"], strict=True):
             assert meta["numel"] == bucket.numel
             assert meta["entry_numels"] == [e.main_param.numel() for e in bucket.entries]
-            shutil.copyfile(os.path.join(dirpath, meta["file"]), bucket.path)
+            source = os.path.join(dirpath, meta["file"])
+            shutil.copyfile(source, bucket.path)
+            if self._page_cache is not None:
+                self._page_cache.release(bucket.fd, nbytes=bucket.nbytes)
+                self._page_cache.release(source, nbytes=bucket.nbytes)
             for group, step in zip(bucket.adam.param_groups, meta["steps"], strict=True):
                 if step:
                     group["step"] = step
             bucket.allocate_moments()
+        self._drain_page_cache_window()
         fp32_state = os.path.join(dirpath, "fp32_resident_optimizer.pt")
         if self._fp32_adam is not None and os.path.isfile(fp32_state):
             self._fp32_adam.load_state_dict(torch.load(fp32_state))
@@ -445,47 +632,107 @@ class NVMeOptimizerStateStore:
 def setup_optimizer_state_streaming(args, optimizer) -> None:
     """Give every DistributedOptimizer in ``optimizer``'s chain a store and route it there.
 
-    Must run before load_checkpoint: the constructor evicts the fp32 main params, and the
-    bindings are what keep the load path from writing into the evicted storage.
+    Must run before load_checkpoint: Megatron constructs stable fp32 main-param handles with
+    deferred storage, this function populates them directly into final bucket files, and the
+    bindings keep the load path from writing into evicted storage.
     """
     from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer
 
-    dir_root = os.path.join(args.offload_train_disk_dir, "optimizer_state")
-    _purge_rank_dir(dir_root)
+    dir_root = optimizer_state_dir_root(args)
+    purge_rank_dir(dir_root)
+    # One window per rank: the chained dense and expert stores share this process's page cache.
+    page_cache = None
+    if args.stream_optimizer_state_page_cache_mb is not None:
+        page_cache = _PageCacheWindow(cap_bytes=args.stream_optimizer_state_page_cache_mb * 1024 * 1024)
+    stores = []
     for dist_opt in optimizer.chained_optimizers:
         assert isinstance(
             dist_opt, DistributedOptimizer
         ), f"--stream-optimizer-state-to-disk requires the distributed optimizer, got {type(dist_opt).__name__}"
         if dist_opt.is_stub_optimizer:
             continue
+        assert dist_opt.config.defer_main_param_initialization, (
+            "--stream-optimizer-state-to-disk must defer distributed-optimizer main "
+            "initialization before constructing the optimizer"
+        )
         store = NVMeOptimizerStateStore(
             dist_opt,
             dir_root,
             args.offload_train_disk_chunk_mb,
             args.stream_optimizer_state_moment_dtype,
-            allow_fresh_state=args.no_load_optim,
+            allow_fresh_state=args.backend.no_load_optim,
+            page_cache=page_cache,
+        )
+        written = store.initialize_main_from_model_params()
+        logger.info(
+            f"NVMe optimizer main-param initialization: wrote {written / 1024**3:.1f} GB " f"directly to {store.dir}"
         )
         _bind(dist_opt, store)
+        stores.append(store)
+    _record_grad_norm_into(optimizer, stores)
 
 
-def _purge_rank_dir(dir_root: str) -> None:
-    """Drop everything this rank left behind, before any store claims its own path.
+def setup_muon_state_on_disk(args) -> None:
+    """Back the chunked offloader's host buffers with files, for Muon's optimizer state.
 
-    A store only removes the exact path it is about to use, so state written under a
-    different layout -- another parallelism, a renamed directory scheme -- survives
-    forever, and a run killed by the scheduler never reaches its atexit cleanup either.
-    On a 744B DP1 model that is hundreds of GB per rank per stale run, and node-local
-    NVMe fills up until allocation fails. The rank subtree is exclusively this rank's,
-    so clearing it whole is safe, and it must happen before the chained dense and
-    expert stores are constructed, since they share it.
+    Must run before the optimizer is built, which is when the offloader is constructed.
     """
-    rank_dir = os.path.join(dir_root, f"rank{torch.distributed.get_rank():05d}")
-    shutil.rmtree(rank_dir, ignore_errors=True)
-    os.makedirs(rank_dir, exist_ok=True)
+    from megatron.core.optimizer import optimizer as consuming_module
+    from megatron.core.optimizer.cpu_offloading import chunked_optimizer_state_offload as defining_module
+
+    base = defining_module.ChunkedOptimizerStateOffloader
+    if base.__name__ == "DiskOptimizerStateOffloader":
+        return
+    rank_dir = purge_rank_dir(optimizer_state_dir_root(args))
+
+    class DiskOptimizerStateOffloader(base):
+        state_dir = rank_dir
+        _disk_bytes = 0
+
+        def _new_cpu_buffer(self, tensor: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
+            # adopt_cpu_optimizer_state reallocates every non-pinned CPU tensor it finds in
+            # optimizer.state, and ours never report pinned, so each checkpoint would otherwise
+            # copy the whole state into fresh mappings.
+            if is_disk_backed(tensor):
+                return tensor
+            buffer = disk_backed_like(tensor, self.state_dir)
+            self._disk_bytes += buffer.numel() * buffer.element_size()
+            return buffer
+
+        def step(self) -> None:  # type: ignore[override]
+            super().step()
+            logger.info(f"Muon disk state step: {self._disk_bytes / 1024**3:.2f} GB file-backed")
+
+        def synchronize_for_checkpoint(self) -> None:  # type: ignore[override]
+            # After super(), because it offloads the master weights and so can add mappings.
+            super().synchronize_for_checkpoint()
+            flushed = 0
+            for state in self._cpu_state.values():
+                flushed += sum(flush_mapping(t) for t in state.values() if is_disk_backed(t))
+            flushed += sum(flush_mapping(t) for t in self._cpu_master.values() if is_disk_backed(t))
+            logger.info(f"Muon disk state flushed before checkpoint: {flushed / 1024**3:.2f} GB")
+
+    # optimizer.py imported the name directly, so rebinding only the defining module is a no-op.
+    defining_module.ChunkedOptimizerStateOffloader = DiskOptimizerStateOffloader
+    consuming_module.ChunkedOptimizerStateOffloader = DiskOptimizerStateOffloader
+    logger.info(f"Muon optimizer state on disk: buffers backed by files under {rank_dir}")
+
+
+def _record_grad_norm_into(optimizer, stores: list[NVMeOptimizerStateStore]) -> None:
+    """Hand the norm the chain clips with to every store, which applies the clip itself."""
+    chain_get_grad_norm = optimizer.get_grad_norm
+
+    def get_grad_norm(self):
+        grad_norm = chain_get_grad_norm()
+        for store in stores:
+            store.record_grad_norm(grad_norm)
+        return grad_norm
+
+    optimizer.get_grad_norm = MethodType(get_grad_norm, optimizer)
 
 
 def _bind(dist_opt: "DistributedOptimizer", store: NVMeOptimizerStateStore) -> None:
-    """Point the five DistributedOptimizer entry points that touch optimizer state at ``store``."""
+    """Point the DistributedOptimizer entry points that touch optimizer state or streamed grads at ``store``."""
     from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer
 
     # The all-gather tail is copied from DistributedOptimizer.step_with_ready_grads and has
@@ -499,9 +746,12 @@ def _bind(dist_opt: "DistributedOptimizer", store: NVMeOptimizerStateStore) -> N
         return update_successful
 
     def reload_model_params(self, state_dict=None) -> None:
-        store.refresh_main_from_model_params(
-            lambda: DistributedOptimizer.reload_model_params(self, state_dict=state_dict)
-        )
+        if state_dict is None:
+            store.initialize_main_from_model_params()
+        else:
+            store.refresh_main_from_model_params(
+                lambda: DistributedOptimizer.reload_model_params(self, state_dict=state_dict)
+            )
 
     # save_to()/load_from() carry the real state; returning empties here rather than forcing
     # --no-save-optim keeps opt_param_scheduler, saved under the same guard, working.
@@ -514,6 +764,23 @@ def _bind(dist_opt: "DistributedOptimizer", store: NVMeOptimizerStateStore) -> N
     def sharded_state_dict(self, model_sharded_state_dict, is_loading=False, sharding_type=None, metadata=None):
         return {}
 
+    # The gradient overrides below follow DistributedOptimizer._copy_model_grads_to_main_grads at
+    # radixark/Megatron-LM miles-main fd15ee20a4f0, whose clip skips a child with no .grad at all
+    # (radixark/Megatron-LM#106); recheck them when bumping Megatron.
+    def _copy_model_grads_to_main_grads(self) -> None:
+        # Only the GPU-resident native-fp32 params get their fp32 grads here; store.step()
+        # converts the streamed ones bucket by bucket.
+        for model_group, shard_group in zip(self.model_fp32_groups, self.shard_fp32_groups, strict=True):
+            for model_param, shard_main_param in zip(model_group, shard_group, strict=True):
+                param_range = self._get_model_param_range_map(model_param)["param"]
+                shard_main_param.grad = model_param.main_grad.view(-1)[param_range.start : param_range.end].float()
+
+    def get_grads_for_grad_norm(self, grad_norm_group=None):
+        grads = DistributedOptimizer.get_grads_for_grad_norm(self, grad_norm_group)
+        return grads + store.grads_for_norm() if grad_norm_group is None else grads
+
+    dist_opt._copy_model_grads_to_main_grads = MethodType(_copy_model_grads_to_main_grads, dist_opt)
+    dist_opt.get_grads_for_grad_norm = MethodType(get_grads_for_grad_norm, dist_opt)
     dist_opt.step_with_ready_grads = MethodType(step_with_ready_grads, dist_opt)
     dist_opt.reload_model_params = MethodType(reload_model_params, dist_opt)
     dist_opt.state_dict = MethodType(state_dict, dist_opt)

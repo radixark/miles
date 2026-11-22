@@ -8,13 +8,19 @@ End-to-end training workflows — the place to start.
 
 - **[geo3k_vlm](./geo3k_vlm)**: Training VLMs with FSDP using GRPO on the GEO3K dataset.
   - **[multi_turn](./geo3k_vlm/multi_turn)**: The same dataset over multiple turns, with the model cropping images through an interactive environment.
+- **[timelens_video](./timelens_video)**: Video temporal-grounding RL for Qwen3.5 with token-space media and a frozen vision tower.
+- **[avqa_audio](./avqa_audio)**: AVQA audio RL for Inkling-Small with token-space audio and a LoRA on one node.
 - **[lora](./lora)**: LoRA fine-tuning with the Megatron backend.
-- **[multi_lora](./multi_lora)**: Fully-async multi-adapter LoRA training with a slot-keyed adapter page table.
+- **[multi_lora](./multi_lora)**: Serve concurrent LoRA fine-tuning clients on one shared base model through the Tinker protocol.
+  - **[harbor_tinker](./multi_lora/harbor_tinker)**: Terminal-Bench 2 training with Harbor sandboxes and the official Tinker cookbook RL loop.
+  - **[tinker_agent](./multi_lora/tinker_agent)**: Agentic training with your own sandbox or harness through the official Tinker cookbook capture recipe.
+- **[multi_policy](./multi_policy)**: Two policies in one run — a solver answering gsm8k, and a verifier scored on ruling correctly about the solver's answers.
 - **[on_policy_distillation](./on_policy_distillation)**: Teacher–student distillation on the student's own rollouts, run inside the on-policy training loop.
   - **[qwen3_5_35b_selfdistill](./on_policy_distillation/qwen3_5_35b_selfdistill)**: Two-phase self-distillation of Qwen3.5-35B-A3B on one 8xH200 node, with an in-process Megatron teacher.
 - **[ppo](./ppo)**: Actor-critic PPO with GAE advantages, where the critic shares the actor's train GPUs.
 - **[retool_v2](./retool_v2)**: Tool-enabled language model generation with sandboxed Python code execution interleaved with thinking.
 - **[swe-agent-harbor-docker](./swe-agent-harbor-docker)**: Trains coding and terminal agents with Harbor-managed local Docker sandboxes and verifier rewards.
+- **[text_to_sql](./text_to_sql)**: Multi-turn text-to-SQL RL on BIRD-Platinum with a read-only SQLite tool, following River's recipe on Qwen3.6-35B-A3B.
 
 ## [Infra Features](./infra_features)
 
@@ -22,9 +28,12 @@ Runtime and infrastructure plumbing rather than training recipes — how miles m
 data and weights around.
 
 - **[fully_async](./infra_features/fully_async)**: Demonstrates fully asynchronous rollout generation for higher efficiency.
+- **[hot_restart](./infra_features/hot_restart)**: Replaces the orchestration script and rollout executor of a live run, keeping trainers and engines up.
 - **[low_precision](./infra_features/low_precision)**: Examples of FP8 training and inference, plus INT4 QAT, for improved throughput and stability.
 - **[p2p_weight_transfer](./infra_features/p2p_weight_transfer)**: Point-to-point weight transfer between training and rollout engines.
 - **[random_async](./infra_features/random_async)**: Dataset-free stress test of the async rollout ↔ trainer loop.
+- **[score_centering](./infra_features/score_centering)**: Center off-policy policy gradients using the sampler's top-k probabilities, with optional TIS or MIS weights.
+- **[split_deployment](./infra_features/split_deployment)**: Installs one run as several helm releases — trainer, engines and orchestration script apart.
 - **[train_infer_mismatch_helper](./infra_features/train_infer_mismatch_helper)**: Algorithmic methods for rollout correction (e.g., TIS, MIS).
 - **[true_on_policy](./infra_features/true_on_policy)**: Ensures strictly equal log probabilities between inference (SGLang) and training engines.
 

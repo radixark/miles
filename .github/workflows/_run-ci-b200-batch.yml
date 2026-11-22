@@ -1,0 +1,54 @@
+# doc-dev: docs/developer/ci/00-stage.md
+name: B200 CI batch
+
+on:
+  workflow_call:
+    inputs:
+      matrix:
+        type: string
+        required: true
+      container_image:
+        type: string
+        required: true
+      ref:
+        type: string
+        required: true
+      cadence:
+        type: string
+        required: true
+      raw_labels:
+        type: string
+        required: true
+      match_all_labels:
+        type: boolean
+        required: true
+    secrets:
+      WANDB_API_KEY:
+        required: false
+      NEON_DATABASE_URL:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.num_gpus }} GPU / ${{ matrix.file }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.matrix) }}
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: ${{ matrix.runs_on }}
+      num_gpus: ${{ matrix.num_gpus }}
+      timeout_minutes: ${{ matrix.timeout_minutes }}
+      container_image: ${{ inputs.container_image }}
+      ref: ${{ inputs.ref }}
+      plan_already_resolved: true
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite ${{ matrix.suite }}
+        --test-file ${{ matrix.shell_file }}
+        --cadence ${{ inputs.cadence }}
+        --labels ${{ inputs.raw_labels }}
+        ${{ inputs.match_all_labels && '--match-all-labels' || '' }}
+    secrets: inherit

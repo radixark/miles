@@ -4,9 +4,20 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_qwen3_30B_A3B._common import CaseConfig, execute, prepare
 
-register_cuda_ci(est_time=1500, suite="stage-c-8-gpu-h100", labels=["megatron", "weight-update", "fully-async"])
+register_cuda_ci(
+    est_time=1500,
+    suite="stage-c-4-gpu-h200",
+    labels=["megatron", "weight-update", "fully-async"],
+    hardware=["hopper", "blackwell"],
+    disabled="Outdated and simple.",
+    num_gpus=4,
+)
 register_rocm_ci(
-    est_time=800, suite="nightly-stage-c-8-gpu-mi350", labels=["megatron", "weight-update", "fully-async"]
+    est_time=800,
+    suite="stage-c-4-gpu-mi350",
+    labels=["megatron", "weight-update", "fully-async"],
+    nightly=True,
+    disabled="Outdated and simple.",
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -14,6 +25,7 @@ register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 # Fully-async rollout on the disaggregated topology (it cannot colocate). Three
 # rollouts exercise the states that only exist with a persistent worker: a cold
@@ -25,17 +37,23 @@ CASE = CaseConfig(
     use_int4_rollout=False,
     use_bridge=False,
     use_r3=False,
-    num_gpus_per_node=6,
-    cp_size=2,
+    # 3 train + 1 rollout with an uneven PP3 split (17/17/14): layer offsets 0/17/34 differ
+    # from the even split on both non-first stages.
+    num_gpus_per_node=3,
+    cp_size=1,
     pp_size=3,
     tp_size=1,
-    ep_size=2,
+    ep_size=1,
     colocate=False,
-    rollout_num_gpus=2,
-    rollout_num_gpus_per_engine=2,
+    rollout_num_gpus=1,
+    rollout_num_gpus_per_engine=1,
     update_weight_transfer_mode="broadcast",
     num_rollout=3,
     fully_async=True,
+    extra_args=(
+        "--decoder-first-pipeline-num-layers 17 --decoder-last-pipeline-num-layers 14 "
+        "--sample-ownership-grace-steps 4"
+    ),
 )
 
 

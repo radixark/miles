@@ -177,6 +177,7 @@ settings.json
 .pypirc
 
 wandb/
+!/tests/snapshots/runtime_config/variants/*/wandb/
 outputs/
 local/
 **/rollout_data/
@@ -193,3 +194,5 @@ _examples_synced/
 .DS_Store
 
 .humanize/
+
+charts/*/charts/

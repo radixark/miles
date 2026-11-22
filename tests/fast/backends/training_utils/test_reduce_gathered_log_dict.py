@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from miles.backends.training_utils.log_utils import reduce_gathered_log_dict
+from miles.backends.training_utils.metrics.log_utils import reduce_gathered_log_dict
 
 
 def test_scalar_values_keep_legacy_mean():

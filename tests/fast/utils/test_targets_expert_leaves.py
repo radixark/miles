@@ -1,7 +1,7 @@
 """targets_expert_leaves gates the MoE-specific multi-LoRA handling (permute-fusion
 off, expert validations); a false negative silently skips those."""
 
-from miles.utils.multi_lora import targets_expert_leaves
+from miles.utils.lora.utils import targets_expert_leaves
 
 
 def test_mlp_leaf_names_target_experts():

@@ -1,0 +1,1083 @@
+import argparse
+import re
+import sys
+from argparse import Namespace
+from pathlib import Path
+from types import SimpleNamespace
+
+import pydantic
+import pytest
+import yaml
+from tests.fast.fixtures.args_fixtures import ConfigNamespace, parser_defaults
+from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
+
+from miles.backends.megatron_utils import megatron_config as megatron_config_module
+from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
+from miles.backends.megatron_utils.megatron_config import (
+    MODEL_DEFINITION_ARGS,
+    PER_POLICY_ARGS,
+    _resolve_overrides,
+    compute_trainer_args,
+    compute_trainer_checkpoint_dir,
+    get_megatron_arg_parser,
+    has_megatron_checkpoint,
+    resolve_args_checkpoint_load,
+    resolve_megatron_config,
+)
+from miles.utils.args.trainer_utils import compute_trainer_ckpt_load_config
+from miles.utils.external_utils.model_args_utils import load_model_args
+from miles.utils.workers.naming import TRAINER_ID_MAX_LENGTH
+
+
+def _write_yaml(data: dict, tmp_path) -> str:
+    path = tmp_path / "megatron.yaml"
+    path.write_text(yaml.dump(data))
+    return str(path)
+
+
+def _model_args(args: Namespace, *, model_id: str) -> Namespace:
+    return compute_trainer_args(args, resolve_megatron_config(args, base_args={}).get(model_id))
+
+
+def _model_ckpt_load_config(args: Namespace, *, model_id: str) -> MegatronCkptLoadConfig:
+    config = resolve_megatron_config(args, base_args={})
+    inputs = ConfigNamespace(**(vars(args) | {"raw_megatron": config}))
+    return compute_trainer_ckpt_load_config(inputs, config.get(model_id))
+
+
+def _make_args(megatron_config: str | None = None, **overrides) -> Namespace:
+    defaults = dict(
+        megatron_config=megatron_config,
+        lr=1e-6,
+        tensor_model_parallel_size=1,
+        sequence_parallel=False,
+        hf_checkpoint="/models/base",
+        global_batch_size=None,
+        eps_clip_high=None,
+        save=None,
+        load=None,
+        advantage_estimator="grpo",
+        use_critic=False,
+        num_steps_per_rollout=None,
+        rollout_batch_size=8,
+        n_samples_per_prompt=4,
+        megatron_to_hf_mode="core",
+        ref_load=None,
+        no_load_optim=False,
+        no_load_rng=False,
+        finetune=False,
+        ref_ckpt_step=None,
+        ckpt_step=None,
+        start_rollout_id=None,
+        optimizer="adam",
+        use_distributed_optimizer=True,
+        world_size=8,
+        debug_disable_optimizer=False,
+        pipeline_model_parallel_size=1,
+        context_parallel_size=1,
+        kl_coef=0.1,
+        use_opd=True,
+        disable_param_buffers_cpu_backup=True,
+        lr_warmup_iters=10,
+        critic_load=None,
+        critic_save=None,
+        critic_lr=None,
+        critic_lr_warmup_iters=None,
+        critic_num_nodes=1,
+        critic_num_gpus_per_node=8,
+        fp16=False,
+        seq_length=4096,
+        vocab_size=None,
+        padded_vocab_size=None,
+        tokenizer_model="/models/base",
+        tokenizer_type="HuggingFaceTokenizer",
+        multi_lora_n_adapters=0,
+    )
+    defaults.update(overrides)
+    return Namespace(**{**parser_defaults(), **defaults})
+
+
+class TestResolveMegatronConfig:
+    def test_a_run_without_the_flag_synthesizes_a_plain_actor_trainer(self):
+        """Legacy single policy runs must keep working, with no model id anywhere downstream."""
+        config = resolve_megatron_config(_make_args(), base_args={})
+
+        assert [(t.trainer_id, t.role, t.model_id, t.overrides) for t in config.trainers] == [
+            ("actor", "actor", None, {})
+        ]
+        assert config.model_ids == []
+        assert not config.is_multi_policy
+
+    def test_the_legacy_megatron_key_is_still_accepted(self, tmp_path):
+        """Configs written against the first name of the field must keep resolving."""
+        path = _write_yaml({"megatron": [{"model_id": "a"}, {"model_id": "b"}]}, tmp_path)
+
+        assert resolve_megatron_config(_make_args(path), base_args={}).model_ids == ["a", "b"]
+
+    def test_the_yaml_model_ids_become_the_trainer_model_ids(self, tmp_path):
+        """The `model_id` field is the source of truth for trainer_model_id and spec names."""
+        path = _write_yaml({"trainers": [{"model_id": "a", "overrides": {"lr": 1e-5}}, {"model_id": "b"}]}, tmp_path)
+
+        config = resolve_megatron_config(_make_args(path), base_args={})
+
+        assert config.model_ids == ["a", "b"]
+        assert config.leader_model_id == "a"
+        assert config.is_multi_policy
+
+    def test_the_eval_model_id_is_refused(self, tmp_path):
+        """A policy named eval would overwrite the shared evaluation rollout artifacts."""
+        path = _write_yaml({"trainers": [{"model_id": "eval"}]}, tmp_path)
+
+        with pytest.raises(pydantic.ValidationError, match="shared eval rollouts"):
+            resolve_megatron_config(_make_args(path), base_args={})
+
+    def test_the_first_model_is_the_leader_policy(self, tmp_path):
+        """The leader owns the global checkpoint index, so its identity must be positional and stable."""
+        path = _write_yaml({"trainers": [{"model_id": "second"}, {"model_id": "first"}]}, tmp_path)
+
+        assert resolve_megatron_config(_make_args(path), base_args={}).leader_model_id == "second"
+
+    def test_an_inline_base64_payload_is_accepted(self, tmp_path):
+        """Launchers that cannot ship a file still need to pass the config."""
+        config = resolve_megatron_config(_make_args(encode_megatron_config("solo")), base_args={})
+
+        assert config.model_ids == ["solo"]
+
+    def test_duplicate_trainer_ids_are_refused(self, tmp_path):
+        """Two entries sharing a trainer id would land in one controller and one engine pool."""
+        path = _write_yaml({"trainers": [{"model_id": "a"}, {"model_id": "a"}]}, tmp_path)
+
+        with pytest.raises(pydantic.ValidationError, match="trainer ids must be unique"):
+            resolve_megatron_config(_make_args(path), base_args={})
+
+    def test_a_trainer_id_defaults_to_the_model_id_and_the_role(self, tmp_path):
+        """The trainer id addresses a pool, so its default must stay the name every deployment already uses."""
+        path = _write_yaml({"trainers": [{"model_id": "a"}, {"model_id": "b"}]}, tmp_path)
+
+        config = resolve_megatron_config(_make_args(path), base_args={})
+
+        assert [trainer.trainer_id for trainer in config.trainers] == ["a-actor", "b-actor"]
+        assert [trainer.role for trainer in config.trainers] == ["actor", "actor"]
+
+    def test_an_explicit_trainer_id_wins_over_the_derived_one(self, tmp_path):
+        """A deployment that already named its pools must be able to keep those names."""
+        path = _write_yaml({"trainers": [{"model_id": "a", "trainer_id": "legacy-actor"}]}, tmp_path)
+
+        assert resolve_megatron_config(_make_args(path), base_args={}).trainers[0].trainer_id == "legacy-actor"
+
+    def test_an_explicit_trainer_id_colliding_with_a_derived_one_is_refused(self, tmp_path):
+        """Uniqueness has to hold across both spellings, or two trainers would share one engine pool."""
+        path = _write_yaml({"trainers": [{"model_id": "a"}, {"model_id": "b", "trainer_id": "a-actor"}]}, tmp_path)
+
+        with pytest.raises(pydantic.ValidationError, match="trainer ids must be unique"):
+            resolve_megatron_config(_make_args(path), base_args={})
+
+    def test_a_trainer_id_that_is_not_a_dns_label_is_refused(self, tmp_path):
+        """A trainer id is embedded in Kubernetes pool names, which must be lowercase DNS labels."""
+        path = _write_yaml({"trainers": [{"model_id": "a", "trainer_id": "Legacy_Actor"}]}, tmp_path)
+
+        with pytest.raises(pydantic.ValidationError, match="trainer ids"):
+            resolve_megatron_config(_make_args(path), base_args={})
+
+    def test_a_trainer_id_too_long_for_its_controller_pool_is_refused(self, tmp_path):
+        """A trainer id must leave room for the controller suffix in its Kubernetes pool name."""
+        path = _write_yaml(
+            {"trainers": [{"model_id": "a", "trainer_id": "a" * (TRAINER_ID_MAX_LENGTH + 1)}]}, tmp_path
+        )
+
+        with pytest.raises(pydantic.ValidationError, match="longer than"):
+            resolve_megatron_config(_make_args(path), base_args={})
+
+    def test_several_entries_of_one_model_id_are_not_a_multi_policy_run(self, tmp_path):
+        """An actor and a critic of one policy share its id, and one policy is not several policies."""
+        path = _write_yaml({"trainers": [{"model_id": "a"}]}, tmp_path)
+
+        config = resolve_megatron_config(_make_args(path, use_critic=True), base_args={})
+
+        assert [trainer.trainer_id for trainer in config.trainers] == ["a-actor", "a-critic"]
+        assert config.model_ids == ["a"]
+        assert config.leader_model_id == "a"
+        assert not config.is_multi_policy
+
+    def test_an_unknown_yaml_key_is_refused(self, tmp_path):
+        """A strict model turns a typo into a startup error instead of a silently ignored setting."""
+        path = _write_yaml({"trainers": [{"model_id": "a", "override": {"lr": 1e-5}}]}, tmp_path)
+
+        with pytest.raises(Exception, match="override"):
+            resolve_megatron_config(_make_args(path), base_args={})
+
+    def test_getting_an_unknown_model_id_fails_loudly(self, tmp_path):
+        """Callers routing by model id must not silently fall back to another policy."""
+        path = _write_yaml({"trainers": [{"model_id": "a"}]}, tmp_path)
+
+        with pytest.raises(KeyError, match="Unknown trainer model id"):
+            resolve_megatron_config(_make_args(path), base_args={}).get("b")
+
+    def test_a_config_declaring_no_trainer_is_refused(self, tmp_path):
+        """An empty list would resolve to a run with nothing to train, and fail much later and less clearly."""
+        path = _write_yaml({"trainers": []}, tmp_path)
+
+        with pytest.raises(AssertionError, match="must declare at least one trainer"):
+            resolve_megatron_config(_make_args(path), base_args={})
+
+    def test_getting_a_model_id_answers_its_first_trainer(self, tmp_path):
+        """Callers ask by model id and expect the actor: the critic of that policy is addressed by role."""
+        path = _write_yaml({"trainers": [{"model_id": "a"}]}, tmp_path)
+
+        config = resolve_megatron_config(_make_args(path, use_critic=True), base_args={})
+
+        assert [trainer.role for trainer in config.trainers] == ["actor", "critic"]
+        assert config.get("a").role == "actor"
+
+    def test_a_run_without_the_flag_has_no_leader_model_id(self):
+        """A single policy run has no leader to index the trainers by, and must answer None rather than invent one."""
+        assert resolve_megatron_config(_make_args(), base_args={}).leader_model_id is None
+
+
+class TestDerivedPerPolicyArgs:
+    def test_a_model_id_that_escapes_its_checkpoint_directory_is_refused(self, tmp_path):
+        """A model id is pasted into --save and --load, so it must stay one path component."""
+        path = _write_yaml({"trainers": [{"model_id": "../evil"}, {"model_id": "b"}]}, tmp_path)
+
+        with pytest.raises(pydantic.ValidationError, match="not usable as Kubernetes pool names"):
+            resolve_megatron_config(_make_args(path), base_args={})
+
+    @pytest.mark.parametrize("model_id", ["policy_a", "PolicyA", "-policy", "policy-", "policy.a"])
+    def test_a_model_id_that_is_not_a_dns_label_is_refused(self, tmp_path, model_id):
+        """A model id is embedded in Kubernetes pool names, which must be lowercase DNS labels."""
+        path = _write_yaml({"trainers": [{"model_id": model_id}, {"model_id": "b"}]}, tmp_path)
+
+        with pytest.raises(pydantic.ValidationError, match="not usable as Kubernetes pool names"):
+            resolve_megatron_config(_make_args(path), base_args={})
+
+    @pytest.mark.parametrize("model_id", ["default", "policy-a", "a1", "a-b-c"])
+    def test_lowercase_dns_labels_are_accepted(self, tmp_path, model_id):
+        """The ids the docs and examples use must survive validation."""
+        path = _write_yaml({"trainers": [{"model_id": model_id}, {"model_id": "other"}]}, tmp_path)
+
+        assert resolve_megatron_config(_make_args(path), base_args={}).model_ids == [model_id, "other"]
+
+
+class TestOverrideCoercion:
+    def test_a_value_is_typed_by_the_declared_argument_not_by_the_yaml_scalar(self, tmp_path):
+        """YAML reads `5e-7` as a string, so an untyped overlay would train against a string learning rate."""
+        path = _write_yaml(
+            {"trainers": [{"model_id": "a", "overrides": {"lr": "5e-7", "global_batch_size": "128"}}]}, tmp_path
+        )
+
+        overrides = resolve_megatron_config(_make_args(path), base_args={}).get("a").overrides
+
+        assert overrides == {"lr": 5e-7, "global_batch_size": 128}
+
+    def test_a_boolean_argument_given_a_non_boolean_is_refused(self, tmp_path):
+        """`sequence_parallel: yes-please` would otherwise become a truthy string."""
+        path = _write_yaml(
+            {"trainers": [{"model_id": "a", "overrides": {"sequence_parallel": "yes-please"}}]}, tmp_path
+        )
+
+        with pytest.raises(AssertionError, match="not a boolean"):
+            resolve_megatron_config(_make_args(path), base_args={})
+
+    def test_an_override_without_a_value_is_refused(self, tmp_path):
+        """A key written with an empty YAML value reads as None, which no argument can be set to."""
+        path = _write_yaml({"trainers": [{"model_id": "a", "overrides": {"eps_clip_high": None}}]}, tmp_path)
+
+        with pytest.raises(AssertionError, match="no value"):
+            resolve_megatron_config(_make_args(path), base_args={})
+
+    def test_an_argument_outside_the_per_policy_whitelist_is_refused(self, tmp_path):
+        """Rhythm arguments are read from the base command line, so accepting them here would do nothing."""
+        path = _write_yaml({"trainers": [{"model_id": "a", "overrides": {"num_rollout": 3}}]}, tmp_path)
+
+        with pytest.raises(AssertionError, match="num_rollout"):
+            resolve_megatron_config(_make_args(path), base_args={})
+
+
+class TestModelDefinitionOverrides:
+    @staticmethod
+    def _parser() -> argparse.ArgumentParser:
+        parser = argparse.ArgumentParser(add_help=False)
+        parser.add_argument("--lr", type=float)
+        parser.add_argument("--num-layers", type=int)
+        parser.add_argument("--num-experts", type=int)
+        parser.add_argument("--moe-router-topk", type=int)
+        parser.add_argument("--untie-embeddings-and-output-weights", action="store_true")
+        parser.add_argument("--spec", nargs="*")
+        parser.add_argument("--num-rollout", type=int)
+        return parser
+
+    @pytest.fixture(autouse=True)
+    def _parser_of_run(self, monkeypatch):
+        monkeypatch.setattr(megatron_config_module, "get_megatron_arg_parser", self._parser)
+
+    def test_a_model_definition_argument_this_run_declares_is_accepted_and_typed(self):
+        """A policy carries the shape of its own model, of which PER_POLICY_ARGS lists only a part."""
+        overrides = _resolve_overrides({"num_experts": "8", "moe_router_topk": "4"}, model_id="a")
+
+        assert overrides == {"num_experts": 8, "moe_router_topk": 4}
+
+    def test_a_model_definition_flag_stays_a_boolean(self):
+        """store_true arguments carry no value on a command line, so the overlay must keep the boolean."""
+        overrides = _resolve_overrides({"untie_embeddings_and_output_weights": True}, model_id="a")
+
+        assert overrides == {"untie_embeddings_and_output_weights": True}
+
+    def test_a_model_definition_argument_this_run_does_not_declare_is_refused(self):
+        """The set is intersected with the parser, so a name this run cannot type admits nothing."""
+        with pytest.raises(AssertionError, match="may not override"):
+            _resolve_overrides({"kv_lora_rank": 512}, model_id="a")
+
+    def test_an_argument_in_neither_whitelist_is_refused(self):
+        """The parser declares --num-rollout, yet the rhythm of a run is read from the base command line."""
+        with pytest.raises(AssertionError, match="num_rollout"):
+            _resolve_overrides({"num_rollout": 3}, model_id="a")
+
+    def test_a_list_reaches_an_argument_that_takes_several_values(self):
+        """--spec names a module and a function, which is how such an argument arrives from yaml."""
+        overrides = _resolve_overrides({"spec": ["miles_plugins.models.glm5.glm5", "get_glm5_spec"]}, model_id="a")
+
+        assert overrides == {"spec": ["miles_plugins.models.glm5.glm5", "get_glm5_spec"]}
+
+    def test_a_list_written_where_a_single_value_is_declared_is_refused(self):
+        """One integer argument cannot be given two, and the overlay is the only place that can say so."""
+        with pytest.raises(AssertionError, match="takes a single value"):
+            _resolve_overrides({"num_experts": [8, 4]}, model_id="a")
+
+    def test_a_training_knob_is_still_accepted_beside_a_model_definition_argument(self):
+        """The model definition arguments are admitted on top of PER_POLICY_ARGS, not instead of it."""
+        overrides = _resolve_overrides({"lr": "5e-7", "num_layers": "12"}, model_id="a")
+
+        assert overrides == {"lr": 5e-7, "num_layers": 12}
+
+    def test_the_deprecated_parser_epsilon_destination_is_whitelisted(self) -> None:
+        """The deprecated parser stores its epsilon option under norm_epsilon, which policies may override."""
+        assert "norm_epsilon" in MODEL_DEFINITION_ARGS
+
+
+class TestResolveOverrides:
+    def test_an_empty_override_map_never_builds_the_parser(self, monkeypatch):
+        """Building the parser imports and runs megatron's whole argument stack, per trainer that overrides nothing."""
+        monkeypatch.setattr(
+            megatron_config_module,
+            "get_megatron_arg_parser",
+            lambda: pytest.fail("the parser was built for a trainer that overrides nothing"),
+        )
+
+        assert _resolve_overrides({}, model_id="a") == {}
+
+
+class TestGetMegatronArgParser:
+    @pytest.fixture(autouse=True)
+    def _fresh_parser_cache(self):
+        """A stub-built parser must not leak to other tests through the cache."""
+        megatron_config_module._build_megatron_arg_parser.cache_clear()
+        yield
+        megatron_config_module._build_megatron_arg_parser.cache_clear()
+
+    def test_a_parser_that_never_reaches_the_provider_fails_loudly(self, monkeypatch):
+        """Silently answering an empty parser would type every override as a string."""
+        monkeypatch.setitem(
+            sys.modules,
+            "miles.backends.megatron_utils.arguments",
+            SimpleNamespace(parse_args=lambda extra_args_provider: Namespace()),
+        )
+
+        with pytest.raises(AssertionError, match="returned without calling the extra args provider"):
+            get_megatron_arg_parser()
+
+    def test_the_parser_is_built_once_per_command_line(self, monkeypatch):
+        """A rebuild per call stalls rollout, which resolves the megatron config once per sample."""
+        builds = []
+
+        def parse_args(extra_args_provider):
+            builds.append(sys.argv)
+            extra_args_provider(argparse.ArgumentParser())
+
+        monkeypatch.setitem(
+            sys.modules, "miles.backends.megatron_utils.arguments", SimpleNamespace(parse_args=parse_args)
+        )
+        monkeypatch.setattr(sys, "argv", ["train.py"])
+
+        parser = get_megatron_arg_parser()
+        assert get_megatron_arg_parser() is parser
+        assert len(builds) == 1
+
+        monkeypatch.setattr(sys, "argv", ["train.py", "--num-rollout", "3"])
+        assert get_megatron_arg_parser() is not parser
+        assert len(builds) == 2
+
+
+def _make_checkpoint_args(tmp_path, **overrides) -> Namespace:
+    defaults = dict(
+        megatron_to_hf_mode="core",
+        load=str(tmp_path / "save"),
+        ref_load=str(tmp_path / "ref"),
+        hf_checkpoint=str(tmp_path / "hf"),
+        ref_ckpt_step=None,
+        ckpt_step=None,
+        no_load_optim=False,
+        no_load_rng=False,
+        finetune=False,
+        start_rollout_id=None,
+    )
+    defaults.update(overrides)
+    return Namespace(**{**parser_defaults(), **defaults})
+
+
+def _write_megatron_checkpoint(tmp_path) -> str:
+    """A directory megatron recognizes: it exists and carries the iteration tracker file."""
+    path = tmp_path / "save"
+    path.mkdir()
+    (path / "latest_checkpointed_iteration.txt").write_text("10")
+    return str(path)
+
+
+class TestResolveArgsCheckpointLoad:
+    def test_a_fresh_bridge_run_falls_back_to_the_reference_weights(self, tmp_path):
+        """--load points at a directory the first run has not written yet, which load_checkpoint asserts on."""
+        args = _make_checkpoint_args(tmp_path, megatron_to_hf_mode="bridge")
+
+        resolve_args_checkpoint_load(args, role="actor")
+
+        assert args.load == str(tmp_path / "ref")
+        assert args.start_rollout_id == 0
+
+    def test_a_bridge_run_without_reference_weights_falls_back_to_the_hf_checkpoint(self, tmp_path):
+        """Without --ref-load the HF weights are the only thing the bridge can start from."""
+        args = _make_checkpoint_args(tmp_path, megatron_to_hf_mode="bridge", ref_load=None)
+
+        resolve_args_checkpoint_load(args, role="actor")
+
+        assert args.load == str(tmp_path / "hf")
+
+    def test_a_bridge_run_with_a_real_checkpoint_resumes_from_it(self, tmp_path):
+        """A bridge resume keeps --load, and start_rollout_id staying None is what says 'resume'."""
+        load = _write_megatron_checkpoint(tmp_path)
+        args = _make_checkpoint_args(tmp_path, megatron_to_hf_mode="bridge", load=load)
+
+        resolve_args_checkpoint_load(args, role="actor")
+
+        assert args.load == load
+        assert args.start_rollout_id is None
+
+    def test_a_fresh_core_run_finetunes_from_the_reference_weights(self, tmp_path):
+        """Loading an optimizer state and rng that were never written aborts the very first step."""
+        args = _make_checkpoint_args(tmp_path)
+
+        resolve_args_checkpoint_load(args, role="actor")
+
+        assert (args.no_load_optim, args.no_load_rng, args.finetune) == (True, True, True)
+        assert args.load == str(tmp_path / "ref")
+        assert args.start_rollout_id == 0
+
+    def test_a_fresh_core_run_takes_the_step_of_the_reference_checkpoint(self, tmp_path):
+        """--ref-ckpt-step names which iteration of the reference weights to read."""
+        args = _make_checkpoint_args(tmp_path, ref_ckpt_step=7)
+
+        resolve_args_checkpoint_load(args, role="actor")
+
+        assert args.ckpt_step == 7
+
+    def test_a_core_run_with_a_real_checkpoint_is_left_untouched(self, tmp_path):
+        """A resume must keep its optimizer state, and start_rollout_id staying None is what says 'resume'."""
+        load = _write_megatron_checkpoint(tmp_path)
+        args = _make_checkpoint_args(tmp_path, load=load, ref_ckpt_step=7)
+
+        resolve_args_checkpoint_load(args, role="actor")
+
+        assert args.load == load
+        assert (args.no_load_optim, args.no_load_rng, args.finetune) == (False, False, False)
+        assert (args.ckpt_step, args.start_rollout_id) == (None, None)
+
+    @pytest.mark.parametrize(
+        "selector",
+        [{"ckpt_step": 0}, {"ckpt_step": 7}, {"exit_on_missing_checkpoint": True}],
+        ids=["checkpoint-zero", "checkpoint-step", "exit-on-missing"],
+    )
+    @pytest.mark.parametrize("mode", ["core", "bridge"])
+    def test_an_explicit_checkpoint_selection_does_not_fall_back(self, tmp_path, selector, mode):
+        load = str(tmp_path / "missing")
+        args = _make_checkpoint_args(tmp_path, load=load, megatron_to_hf_mode=mode, **selector)
+
+        resolve_args_checkpoint_load(args, role="actor")
+
+        assert args.load == load
+        assert args.requested_load == load
+        for name, value in selector.items():
+            assert getattr(args, name) == value
+        assert args.start_rollout_id is None
+        assert (args.no_load_optim, args.no_load_rng, args.finetune) == (False, False, False)
+
+    @pytest.mark.parametrize(
+        "selector",
+        [{"ckpt_step": 7}, {"exit_on_missing_checkpoint": True}],
+        ids=["checkpoint-step", "exit-on-missing"],
+    )
+    def test_an_explicit_checkpoint_selection_requires_a_load_path(self, tmp_path, selector):
+        args = _make_checkpoint_args(tmp_path, load=None, **selector)
+
+        with pytest.raises(ValueError, match="requires --load"):
+            resolve_args_checkpoint_load(args, role="actor")
+
+
+class TestHasMegatronCheckpoint:
+    def test_a_directory_holding_the_tracker_file_is_a_checkpoint(self, tmp_path):
+        """This is the one shape both branches treat as a resume."""
+        assert has_megatron_checkpoint(_write_megatron_checkpoint(tmp_path)) is True
+
+    def test_a_directory_without_the_tracker_file_is_not_a_checkpoint(self, tmp_path):
+        """A --save directory exists from the moment the run starts, long before it holds a checkpoint."""
+        (tmp_path / "save").mkdir()
+
+        assert has_megatron_checkpoint(str(tmp_path / "save")) is False
+
+    def test_a_missing_directory_is_not_a_checkpoint(self, tmp_path):
+        """The first run of a job passes a --load path nothing has created yet."""
+        assert has_megatron_checkpoint(str(tmp_path / "nope")) is False
+
+    def test_no_load_directory_at_all_is_not_a_checkpoint(self):
+        """--load is optional, and None must not reach os.path.exists."""
+        assert has_megatron_checkpoint(None) is False
+
+
+class TestComputeTrainerArgs:
+    def test_each_policy_overlays_its_own_args_on_the_base_arguments(self, tmp_path):
+        """Per-policy megatron args are the whole point of the flag; the base args stay untouched."""
+        path = _write_yaml(
+            {
+                "megatron": [
+                    {"model_id": "a", "overrides": {"lr": 5e-7, "tensor_model_parallel_size": 2}},
+                    {"model_id": "b"},
+                ]
+            },
+            tmp_path,
+        )
+        args = _make_args(path)
+
+        model_a = _model_args(args, model_id="a")
+        model_b = _model_args(args, model_id="b")
+
+        assert (model_a.lr, model_a.tensor_model_parallel_size) == (5e-7, 2)
+        assert (model_b.lr, model_b.tensor_model_parallel_size) == (1e-6, 1)
+        assert (args.lr, args.tensor_model_parallel_size) == (1e-6, 1)
+
+    def test_a_boolean_override_is_kept_as_a_boolean(self, tmp_path):
+        """store_true arguments are booleans in the overlay, not the strings a command line would carry."""
+        path = _write_yaml(
+            {"trainers": [{"model_id": "a", "overrides": {"sequence_parallel": True}}, {"model_id": "b"}]},
+            tmp_path,
+        )
+
+        assert _model_args(_make_args(path), model_id="a").sequence_parallel is True
+
+    def test_an_unknown_argument_is_refused(self, tmp_path):
+        """A per-policy typo would otherwise be dropped and the policy would train with base settings."""
+        path = _write_yaml({"trainers": [{"model_id": "a", "overrides": {"no_such_flag": 3}}]}, tmp_path)
+
+        with pytest.raises(AssertionError, match="no_such_flag"):
+            resolve_megatron_config(_make_args(path), base_args={})
+
+    def test_a_whitelisted_argument_this_run_does_not_declare_is_refused(self, tmp_path):
+        """A whitelist entry is not a promise that every backend's parser declares it."""
+        path = _write_yaml(
+            {"trainers": [{"model_id": "a", "overrides": {"min_lr": 1e-8}}, {"model_id": "b"}]}, tmp_path
+        )
+
+        with pytest.raises(AssertionError, match="does not know"):
+            _model_args(_make_args(path), model_id="a")
+
+    def test_a_policy_that_overrides_a_shared_rollout_argument_is_refused(self, tmp_path):
+        """The rollout side converts, trims and splits every policy's data under the run's own arguments."""
+        path = _write_yaml(
+            {"trainers": [{"model_id": "a", "overrides": {"advantage_estimator": "ppo"}}, {"model_id": "b"}]}, tmp_path
+        )
+
+        with pytest.raises(AssertionError, match="rollout arguments"):
+            _model_args(_make_args(path), model_id="a")
+
+    def test_a_policy_that_overrides_the_global_batch_size_is_refused(self, tmp_path):
+        """Every policy trains at the run's global batch size, so an override cannot be honored."""
+        path = _write_yaml({"trainers": [{"model_id": "a", "overrides": {"global_batch_size": 128}}]}, tmp_path)
+
+        with pytest.raises(AssertionError, match="global_batch_size"):
+            _model_args(_make_args(path), model_id="a")
+
+
+class TestTrainerCheckpointDirs:
+    @pytest.mark.parametrize("backend", ["fsdp", "torchtitan"])
+    def test_other_backends_keep_their_scoped_load_path(self, backend):
+        args = _make_args(encode_megatron_config("a"), train_backend=backend, load="/checkpoints")
+        del args.ckpt_step, args.exit_on_missing_checkpoint
+
+        model = _model_args(args, model_id="a")
+
+        assert model.load == "/checkpoints/trainers/a-actor"
+        assert model.start_rollout_id is None
+        assert not model.no_load_optim and not model.no_load_rng
+
+    def test_a_multi_policy_run_gives_every_trainer_its_own_checkpoint_dir(self, tmp_path):
+        """A shared --save makes two policies write the same iter_* directory and overwrite each other."""
+        old = tmp_path / "old"
+        for trainer_id in ("a-actor", "b-actor"):
+            trainer_dir = old / "trainers" / trainer_id
+            trainer_dir.mkdir(parents=True)
+            (trainer_dir / "latest_checkpointed_iteration.txt").write_text("7")
+        path = _write_yaml({"trainers": [{"model_id": "a"}, {"model_id": "b"}]}, tmp_path)
+        args = _make_args(path, save="/ckpt/run", load=str(old))
+
+        model_a = _model_args(args, model_id="a")
+        model_b = _model_args(args, model_id="b")
+
+        assert (model_a.save, model_a.load) == ("/ckpt/run/trainers/a-actor", str(old / "trainers" / "a-actor"))
+        assert (model_b.save, model_b.load) == ("/ckpt/run/trainers/b-actor", str(old / "trainers" / "b-actor"))
+
+    def test_a_checkpoint_dir_is_keyed_by_the_trainer_id_and_not_by_the_model_id(self, tmp_path):
+        """A trainer id is unique where a model id is not, so keying the directory by the model would collide."""
+        path = _write_yaml({"trainers": [{"model_id": "a", "trainer_id": "a-second"}, {"model_id": "b"}]}, tmp_path)
+        args = _make_args(path, save="/ckpt/run")
+
+        saves = [
+            compute_trainer_args(args, trainer).save
+            for trainer in resolve_megatron_config(args, base_args={}).trainers
+        ]
+
+        assert saves == ["/ckpt/run/trainers/a-second", "/ckpt/run/trainers/b-actor"]
+
+    def test_an_explicitly_named_policy_gets_its_own_checkpoint_dir(self, tmp_path):
+        """A split trainer must not share its checkpoint paths with another policy's release."""
+        old = tmp_path / "old"
+        trainer_dir = old / "trainers" / "a-actor"
+        trainer_dir.mkdir(parents=True)
+        (trainer_dir / "latest_checkpointed_iteration.txt").write_text("7")
+        path = _write_yaml({"trainers": [{"model_id": "a"}]}, tmp_path)
+        args = _make_args(path, save="/ckpt/run", load=str(old), save_hf="/ckpt/hf")
+
+        model = _model_args(args, model_id="a")
+
+        assert (model.save, model.load, model.save_hf) == (
+            "/ckpt/run/trainers/a-actor",
+            str(trainer_dir),
+            "/ckpt/hf/trainers/a-actor",
+        )
+
+    def test_a_named_critic_derives_its_dir_from_the_critic_checkpoint(self, tmp_path):
+        """A named critic must namespace its own checkpoint base rather than the policy's base."""
+        old = tmp_path / "critic-old"
+        trainer_dir = old / "trainers" / "alpha-critic"
+        trainer_dir.mkdir(parents=True)
+        (trainer_dir / "latest_checkpointed_iteration.txt").write_text("7")
+        path = _write_yaml({"trainers": [{"model_id": "alpha"}]}, tmp_path)
+        args = _make_args(
+            path,
+            use_critic=True,
+            save="/ckpt/actor",
+            load="/old/actor",
+            critic_save="/ckpt/critic",
+            critic_load=str(old),
+        )
+        [_, critic] = resolve_megatron_config(args, base_args={}).trainers
+
+        model = compute_trainer_args(args, critic)
+
+        assert (model.save, model.load) == ("/ckpt/critic/trainers/alpha-critic", str(trainer_dir))
+
+    def test_an_unset_checkpoint_dir_stays_unset(self, tmp_path):
+        """A run without --save must not grow a derived path out of None."""
+        path = _write_yaml({"trainers": [{"model_id": "a"}, {"model_id": "b"}]}, tmp_path)
+
+        assert _model_args(_make_args(path), model_id="a").save is None
+
+    def test_the_derived_dir_is_the_trainer_id_under_a_trainers_directory(self):
+        """The layout is a user visible contract: it is where a resume looks for a trainer's checkpoints."""
+        assert (
+            compute_trainer_checkpoint_dir(base_dir="/ckpt/run", trainer_id="policy-b-actor")
+            == "/ckpt/run/trainers/policy-b-actor"
+        )
+
+    def test_a_policy_cannot_name_its_own_checkpoint_directory(self, tmp_path):
+        """The per trainer directory is derived from the base --load after the overlay, which would drop an override."""
+        path = _write_yaml(
+            {"trainers": [{"model_id": "a", "overrides": {"load": "/ckpt/a"}}, {"model_id": "b"}]}, tmp_path
+        )
+
+        with pytest.raises(AssertionError, match="sets 'load', which it may not override"):
+            resolve_megatron_config(_make_args(path), base_args={})
+
+
+class TestPerPolicyCheckpointResolution:
+    def test_a_fresh_policy_falls_back_to_the_reference_weights_without_the_policy_subdirectory(self, tmp_path):
+        """The --ref-load fallback holds shared reference weights, not a per policy checkpoint tree."""
+        path = _write_yaml({"trainers": [{"model_id": "a"}, {"model_id": "b"}]}, tmp_path)
+        args = _make_args(path, save="/ckpt/run", load="/ckpt/run", ref_load="/models/ref")
+
+        model_args = _model_args(args, model_id="a")
+
+        assert model_args.save == "/ckpt/run/trainers/a-actor"
+        request = _model_ckpt_load_config(args, model_id="a")
+        assert model_args.load == "/ckpt/run/trainers/a-actor"
+        assert request.load == "/models/ref"
+        assert (request.finetune, request.resume_from_ckpt) == (True, False)
+
+    def test_a_policy_with_its_own_tracker_resumes_from_its_own_directory(self, tmp_path):
+        """The tracker of a policy lives under its own subdirectory, so the root never looks resumable."""
+        root = tmp_path / "run"
+        trainer_dir = root / "trainers" / "a-actor"
+        trainer_dir.mkdir(parents=True)
+        (trainer_dir / "latest_checkpointed_iteration.txt").write_text("7")
+        path = _write_yaml({"trainers": [{"model_id": "a"}, {"model_id": "b"}]}, tmp_path)
+        args = _make_args(path, save=str(root), load=str(root), ref_load="/models/ref")
+
+        model_args = _model_args(args, model_id="a")
+
+        assert model_args.load == str(trainer_dir)
+        assert (model_args.finetune, model_args.start_rollout_id) == (False, None)
+
+    def test_a_fresh_bridge_policy_falls_back_to_its_own_hf_checkpoint(self, tmp_path):
+        """In bridge mode a policy starts from its own hugging face checkpoint, not from another policy's."""
+        path = _write_yaml(
+            {
+                "trainers": [
+                    {"model_id": "a", "overrides": {"hf_checkpoint": "/models/a"}},
+                    {"model_id": "b", "overrides": {"hf_checkpoint": "/models/b"}},
+                ]
+            },
+            tmp_path,
+        )
+        args = _make_args(path, megatron_to_hf_mode="bridge", save="/ckpt/run", load="/ckpt/run")
+
+        assert _model_ckpt_load_config(args, model_id="a").load == "/models/a"
+        assert _model_ckpt_load_config(args, model_id="b").load == "/models/b"
+
+
+class TestPerPolicyDerivedDefaults:
+    def test_a_policy_checkpoint_override_repoints_the_tokenizer(self, tmp_path):
+        """The tokenizer latched onto the base checkpoint at parse time, so a policy of its own needs its own."""
+        path = _write_yaml(
+            {"trainers": [{"model_id": "a", "overrides": {"hf_checkpoint": "/models/a"}}, {"model_id": "b"}]},
+            tmp_path,
+        )
+        args = _make_args(path)
+
+        assert _model_args(args, model_id="a").tokenizer_model == "/models/a"
+        assert _model_args(args, model_id="b").tokenizer_model == "/models/base"
+
+    def test_a_tokenizer_named_on_the_command_line_is_left_alone(self, tmp_path):
+        """That tokenizer was chosen rather than derived, so no policy may re-point it at its own checkpoint."""
+        path = _write_yaml(
+            {"trainers": [{"model_id": "a", "overrides": {"hf_checkpoint": "/models/a"}}, {"model_id": "b"}]},
+            tmp_path,
+        )
+        args = _make_args(path, tokenizer_model="/models/shared")
+
+        assert _model_args(args, model_id="a").tokenizer_model == "/models/shared"
+
+    @pytest.mark.parametrize(("enable_mtp_training", "expected_layers"), [(False, None), (True, 1)])
+    def test_a_policy_builds_its_own_mtp_layers_only_when_the_run_trains_mtp(
+        self, tmp_path, enable_mtp_training, expected_layers
+    ):
+        """The override lands after validation, yet Megatron would still train every MTP layer it builds."""
+        path = _write_yaml({"trainers": [{"model_id": "a", "overrides": {"mtp_num_layers": 1}}]}, tmp_path)
+        args = _make_args(path, enable_mtp_training=enable_mtp_training, mtp_num_layers=expected_layers)
+
+        assert _model_args(args, model_id="a").mtp_num_layers == expected_layers
+
+    def test_a_policy_cannot_drop_the_mtp_layers_the_run_trains(self, tmp_path):
+        """--enable-mtp-training is run-wide, so every policy has to build the MTP layers it trains."""
+        path = _write_yaml({"trainers": [{"model_id": "a", "overrides": {"mtp_num_layers": 0}}]}, tmp_path)
+
+        with pytest.raises(AssertionError, match="needs --mtp-num-layers > 0"):
+            _model_args(_make_args(path, enable_mtp_training=True, mtp_num_layers=1), model_id="a")
+
+
+class TestMultiPolicyIds:
+    def test_an_explicitly_named_policy_keeps_its_trainer_model_id(self, tmp_path):
+        """A split trainer keeps its policy identity even when its release carries no neighbouring policy."""
+        path = _write_yaml({"trainers": [{"model_id": "a"}]}, tmp_path)
+
+        assert _model_args(_make_args(path), model_id="a").trainer_model_id == "a"
+
+    def test_a_run_without_a_megatron_config_carries_no_trainer_model_id(self):
+        """The unnamed legacy actor keeps using the unnamespaced single-policy key."""
+        args = _make_args()
+        [trainer] = resolve_megatron_config(args, base_args={}).trainers
+
+        assert compute_trainer_args(args, trainer).trainer_model_id is None
+
+    def test_each_policy_of_a_multi_policy_run_carries_its_own_id(self, tmp_path):
+        """Metrics, routers and checkpoints are all namespaced by this value."""
+        path = _write_yaml({"trainers": [{"model_id": "a"}, {"model_id": "b"}]}, tmp_path)
+
+        assert _model_args(_make_args(path), model_id="b").trainer_model_id == "b"
+
+    def test_each_trainer_carries_its_trainer_id_into_the_worker(self, tmp_path):
+        """The worker must derive its cell id from the trainer-specific pool that launched it."""
+        path = _write_yaml({"trainers": [{"model_id": "a", "trainer_id": "alpha-actor"}]}, tmp_path)
+
+        assert _model_args(_make_args(path), model_id="a").trainer_id == "alpha-actor"
+
+
+class TestSynthesizedCriticTrainer:
+    def test_a_run_without_the_flag_synthesizes_the_critic_beside_the_actor(self):
+        """The critic used to be assembled in specs and in the worker; the config is now the only source."""
+        config = resolve_megatron_config(_make_args(use_critic=True), base_args={})
+
+        assert [(t.trainer_id, t.role, t.model_id) for t in config.trainers] == [
+            ("actor", "actor", None),
+            ("critic", "critic", None),
+        ]
+
+    def test_training_several_policies_with_a_critic_is_refused(self, tmp_path):
+        """A critic is synthesized beside one policy, so several policies plus a critic has no defined meaning."""
+        path = _write_yaml({"trainers": [{"model_id": "a"}, {"model_id": "b"}]}, tmp_path)
+
+        with pytest.raises(AssertionError, match="does not support --use-critic"):
+            resolve_megatron_config(_make_args(path, use_critic=True), base_args={})
+
+    def test_a_config_that_declares_its_own_critic_is_refused(self, tmp_path):
+        """The critic checkpoint, learning rate and neutralized knobs only reach the synthesized critic, so a
+        declared one would run as a plain trainer under a critic's name."""
+        path = _write_yaml(
+            {
+                "trainers": [
+                    {"model_id": "a"},
+                    {"model_id": "a", "role": "critic", "overrides": {"lr": 5e-7}},
+                ]
+            },
+            tmp_path,
+        )
+
+        with pytest.raises(AssertionError, match="declares a critic for"):
+            resolve_megatron_config(_make_args(path, use_critic=True), base_args={})
+
+    def test_the_critic_of_a_named_policy_inherits_its_id_and_its_overlay(self, tmp_path):
+        """The critic trains the same policy, so it must be addressed by that policy and see its settings."""
+        path = _write_yaml({"trainers": [{"model_id": "alpha", "overrides": {"eps_clip": 0.3}}]}, tmp_path)
+
+        [_, critic] = resolve_megatron_config(_make_args(path, use_critic=True), base_args={}).trainers
+
+        assert (critic.trainer_id, critic.model_id, critic.role) == ("alpha-critic", "alpha", "critic")
+        assert critic.overrides["eps_clip"] == 0.3
+
+    def test_the_synthesized_critic_reproduces_the_legacy_worker_swap(self):
+        """The worker no longer remaps critic_* onto the standard fields, so the overlay must do it."""
+        args = _make_args(
+            use_critic=True,
+            save="/ckpt/run",
+            load="/ckpt/run",
+            critic_load="/ckpt/critic",
+            critic_save="/ckpt/run_critic",
+            critic_lr=2e-6,
+            critic_lr_warmup_iters=3,
+        )
+
+        critic_args = compute_trainer_args(args, resolve_megatron_config(args, base_args={}).trainers[1])
+
+        assert (critic_args.kl_coef, critic_args.use_opd, critic_args.disable_param_buffers_cpu_backup) == (
+            0,
+            False,
+            False,
+        )
+        assert (critic_args.load, critic_args.save, critic_args.lr, critic_args.lr_warmup_iters) == (
+            "/ckpt/critic",
+            "/ckpt/run_critic",
+            2e-6,
+            3,
+        )
+
+    @pytest.mark.parametrize("critic_load", [None, "/ckpt/critic"])
+    def test_critic_checkpoint_inputs_are_defined_when_building_the_trainer(self, critic_load: str | None) -> None:
+        """Unspecified critic sources inherit defaults while explicit sources also define fresh initialization."""
+        args = _make_args(use_critic=True, load="/ckpt/actor", ref_load="/weights/actor", critic_load=critic_load)
+        [actor, critic] = resolve_megatron_config(args, base_args={}).trainers
+
+        assert "load" not in actor.overrides
+        assert "ref_load" not in actor.overrides
+        if critic_load is None:
+            assert "load" not in critic.overrides
+            assert "ref_load" not in critic.overrides
+        else:
+            assert critic.overrides["load"] == critic_load
+            assert critic.overrides["ref_load"] == critic_load
+        critic_args = compute_trainer_args(args, critic)
+        assert critic_args.load == (critic_load if critic_load is not None else "/ckpt/actor")
+        assert critic_args.ref_load == (critic_load if critic_load is not None else "/weights/actor")
+
+    def test_the_actor_of_a_critic_run_keeps_its_own_checkpoint_and_schedule(self):
+        """The two trainers share one command line, so a leaked critic override would retrain the actor."""
+        args = _make_args(use_critic=True, save="/ckpt/run", load="/ckpt/run", critic_load="/ckpt/critic")
+
+        actor_args = compute_trainer_args(args, resolve_megatron_config(args, base_args={}).trainers[0])
+
+        assert (actor_args.load, actor_args.save, actor_args.lr, actor_args.kl_coef) == (
+            "/ckpt/run",
+            "/ckpt/run",
+            1e-6,
+            0.1,
+        )
+
+    @pytest.mark.parametrize("native", [False, True])
+    def test_critic_initialization_uses_the_step_only_for_native_checkpoints(self, tmp_path, native):
+        """Runtime loading clears an actor-only step when the critic initializes from HF weights."""
+        critic_load = tmp_path / "critic"
+        critic_load.mkdir()
+        (critic_load / "config.json").write_text("{}")
+        if native:
+            (critic_load / "iter_0000007").mkdir()
+        args = _make_args(
+            use_critic=True,
+            load="/ckpt/actor",
+            critic_load=str(critic_load),
+            ckpt_step=7,
+            finetune=True,
+        )
+
+        actor, critic = [
+            compute_trainer_args(args, trainer) for trainer in resolve_megatron_config(args, base_args={}).trainers
+        ]
+
+        resolve_args_checkpoint_load(critic, role="critic")
+
+        assert actor.ckpt_step == args.ckpt_step == 7
+        assert critic.load == str(critic_load)
+        assert critic.ckpt_step == (7 if native else None)
+
+    def test_an_internally_synthesized_override_bypasses_the_user_whitelist(self):
+        """kl_coef and load are not per-policy yaml arguments, yet the critic must still be able to set them."""
+        args = _make_args(use_critic=True, critic_load="/ckpt/critic")
+
+        overrides = set(resolve_megatron_config(args, base_args={}).trainers[1].overrides)
+
+        assert {"kl_coef", "load"} <= overrides
+        assert not {"kl_coef", "load"} & set(PER_POLICY_ARGS)
+
+    def test_a_critic_without_its_own_schedule_inherits_the_unset_values(self, tmp_path):
+        """--critic-lr is unset by default, and the critic takes it as it is: the policy's own lr does not apply."""
+        path = _write_yaml({"trainers": [{"model_id": "alpha", "overrides": {"lr": 5e-7}}]}, tmp_path)
+        args = _make_args(path, use_critic=True)
+
+        critic_args = compute_trainer_args(args, resolve_megatron_config(args, base_args={}).trainers[1])
+
+        assert (critic_args.lr, critic_args.lr_warmup_iters) == (None, None)
+
+    def test_the_critic_overlay_names_exactly_the_fields_the_worker_used_to_swap(self):
+        """A new critic_* argument that nobody wires in here would be read from the command line and ignored."""
+        overrides = resolve_megatron_config(_make_args(use_critic=True), base_args={}).trainers[1].overrides
+
+        assert set(overrides) == {
+            "kl_coef",
+            "use_opd",
+            "disable_param_buffers_cpu_backup",
+            "save",
+            "lr",
+            "lr_warmup_iters",
+        }
+
+    def test_a_policy_override_of_a_critic_neutralized_field_loses_to_the_neutralization(self, tmp_path):
+        """The overlay order is what neutralizes the critic, so a policy override of the same field must not win."""
+        path = _write_yaml({"trainers": [{"model_id": "alpha", "overrides": {"lr": 5e-7, "eps_clip": 0.3}}]}, tmp_path)
+
+        overrides = (
+            resolve_megatron_config(_make_args(path, use_critic=True, critic_lr=2e-6), base_args={})
+            .trainers[1]
+            .overrides
+        )
+
+        assert (overrides["lr"], overrides["eps_clip"]) == (2e-6, 0.3)
+
+
+class TestBaseArgumentsAreNotMutated:
+    def test_the_base_arguments_are_never_mutated_by_an_overlay(self, tmp_path):
+        """A shallow copy would let one trainer's overlay reach every other trainer through a shared dict."""
+        path = _write_yaml({"trainers": [{"model_id": "a", "overrides": {"lr": 5e-7}}, {"model_id": "b"}]}, tmp_path)
+        args = _make_args(path, train_env_vars={"NCCL_DEBUG": "WARN"})
+
+        model = _model_args(args, model_id="a")
+        model.train_env_vars["NCCL_DEBUG"] = "INFO"
+
+        assert args.train_env_vars == {"NCCL_DEBUG": "WARN"}
+
+
+class TestPerPolicyArgsCoverage:
+    @pytest.mark.parametrize("model_type", ["qwen2.5-0.5B", "qwen3-0.6B"])
+    def test_the_whitelist_admits_every_argument_of_a_model_script(self, model_type):
+        """A policy that cannot override one of its own architecture arguments would train another model's shape."""
+        options = get_megatron_arg_parser()._option_string_actions
+        flags = [token for token in load_model_args(model_type).split() if token.startswith("--")]
+        unknown = [flag for flag in flags if flag not in options]
+        assert not unknown, f"{model_type} passes {unknown}, which the megatron parser does not declare"
+
+        assert {options[flag].dest for flag in flags} <= PER_POLICY_ARGS | MODEL_DEFINITION_ARGS
+
+    @pytest.mark.parametrize("model_type", ["qwen2.5-0.5B", "qwen3-0.6B"])
+    def test_a_model_script_names_only_model_definition_arguments(self, model_type):
+        """PER_POLICY_ARGS holds the training knobs, so nothing describing a model shape may hide in it."""
+        options = get_megatron_arg_parser()._option_string_actions
+        flags = [token for token in load_model_args(model_type).split() if token.startswith("--")]
+
+        assert {options[flag].dest for flag in flags} <= MODEL_DEFINITION_ARGS
+
+    def test_the_whitelist_names_arguments_the_parser_actually_produces(self):
+        """The override keys are compared against this set and then looked up by the same name in the
+        parser, so a flag spelled the way it appears on a command line admits nothing at all: a config
+        carrying the argument's real name is refused, and the name in the set can never be reached."""
+        parsed = {action.dest for action in get_megatron_arg_parser()._actions}
+
+        assert PER_POLICY_ARGS <= parsed
+
+
+class TestOverrideWhitelistShape:
+    def test_the_two_whitelists_are_disjoint(self):
+        """A name in both no longer says whether it is a training knob or part of a model definition."""
+        assert not PER_POLICY_ARGS & MODEL_DEFINITION_ARGS
+
+    def test_every_whitelisted_name_is_spelled_the_way_a_destination_is(self):
+        """Both sets are matched against argparse destinations, so a command line spelling admits nothing."""
+        misspelled = [
+            name
+            for name in sorted(PER_POLICY_ARGS | MODEL_DEFINITION_ARGS)
+            if re.fullmatch(r"[a-z][a-z0-9_]*", name) is None
+        ]
+
+        assert misspelled == []
+
+
+class TestTrainerNormalizationBoundary:
+    @pytest.mark.parametrize("role", ["actor", "critic"])
+    @pytest.mark.parametrize("deterministic", [False, True])
+    def test_role_and_collective_settings_are_resolved_without_mutating_run_args(
+        self, role: str, deterministic: bool
+    ) -> None:
+        """Actor initialization receives normalized private values while the launcher retains its inputs."""
+        args = _make_args(
+            use_critic=True,
+            loss_type="policy_loss",
+            debug_deterministic_collective=deterministic,
+            distributed_backend="nccl",
+        )
+        trainer = next(item for item in resolve_megatron_config(args, base_args={}).trainers if item.role == role)
+
+        resolved = compute_trainer_args(args, trainer)
+
+        assert resolved.loss_type == ("value_loss" if role == "critic" else "policy_loss")
+        assert resolved.distributed_backend == ("det_nccl" if deterministic else "nccl")
+        assert args.loss_type == "policy_loss"
+        assert args.distributed_backend == "nccl"
+        assert resolved is not args
+
+
+class TestTrainerActorIndices:
+    @pytest.mark.parametrize("use_critic", [False, True])
+    def test_actor_indices_are_contiguous_and_critics_do_not_consume_indices(
+        self, tmp_path: Path, use_critic: bool
+    ) -> None:
+        """Critics inherit policy identity without consuming an actor placement index."""
+        policies = [{"model_id": "a"}] if use_critic else [{"model_id": "a"}, {"model_id": "b"}]
+        path = _write_yaml({"trainers": policies}, tmp_path)
+        args = _make_args(path, use_critic=use_critic)
+        config = resolve_megatron_config(args, base_args={})
+        expected = [("a", "actor", 0), ("a", "critic", None)] if use_critic else [("a", "actor", 0), ("b", "actor", 1)]
+
+        assert [(trainer.model_id, trainer.role, trainer.actor_index) for trainer in config.trainers] == expected
+        for trainer in config.trainers:
+            resolved = compute_trainer_args(args, trainer)
+            assert resolved.trainer_actor_index == trainer.actor_index

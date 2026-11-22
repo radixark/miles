@@ -24,8 +24,8 @@ stateless `/generate` interface.
 ## Configure the wrapper
 
 Select `agentic_tool_call.generate` as the custom generate function. The wrapper
-registers `--custom-agent-function-path` and `--max-seq-len`, creates a TITO
-session for each rollout, invokes your agent, and collects the resulting samples.
+creates a TITO session for each rollout, invokes the function named by
+`--custom-agent-function-path`, and collects the resulting samples.
 
 ```bash
 AGENTIC_ARGS=(
@@ -87,6 +87,51 @@ For structured parsing, the payload may use SGLang's
 `ChatCompletionRequest`-compatible fields, which extend the OpenAI format.
 
 
+### Where the agent runs
+
+By default (`--custom-agent-function-mode subproc`) every agent call runs in a
+child process of its own, started by the rollout process. One episode that blocks
+on a slow step, or crashes, then affects only itself; on the rollout's single
+event loop it would stall every other episode, long enough under many episodes
+for their sandbox requests to time out. The contract changes in three ways:
+
+- The arguments and the return value cross a process boundary, so both must be
+  picklable.
+- Module-level state lasts one call. A module-level semaphore no longer limits
+  anything; use `rollout_semaphore` or `rollout_lock` from
+  `miles.rollout.agentic.rollout_limits`, which hold across the rollout's agent
+  processes. The number of concurrent calls is already bounded by the rollout's
+  batch settings.
+- Cleanup the agent leaves in a thread must be a non-daemon thread. The call
+  returns without waiting for it, and the process waits up to ten minutes for it
+  before exiting.
+
+Cancelling a call cancels the agent inside its process, so cleanup such as closing
+a sandbox still runs; an agent still running two minutes later is stopped.
+
+`--custom-agent-function-mode inline` runs the agent on the rollout's event loop,
+as before; use it for debugging and for agents that keep state across calls.
+
+### Optional startup check
+
+The module named by `--custom-agent-function-path` may expose a `preflight`
+function alongside the agent entry point:
+
+```python
+async def preflight(args) -> None:
+    ...  # raise if this host cannot run the agent at all
+```
+
+Miles calls it once in the rollout process at startup, before waiting for the
+inference engines, with the same `args` as `abort` below, and an exception there
+fails the run. During the run, an exception from the agent function aborts only
+its own sample, so check here what every sample needs, such as a tool on `PATH`
+or a readable credential; otherwise a broken setup shows up only as every sample
+aborting. The hook is optional.
+
+See [`harbor_agent_function.preflight`](https://github.com/radixark/miles/blob/main/examples/experimental/harbor/harbor_agent_function.py)
+for an implementation.
+
 ### Optional teardown hook
 
 The module named by `--custom-agent-function-path` may expose an `abort` function
@@ -97,10 +142,12 @@ async def abort(args) -> None:
     ...  # cancel this agent's in-flight external work
 ```
 
-Miles calls this hook during oversampling abort after it stops in-flight SGLang
-generation. Use it when the agent drives an external sandbox or agent server that
-would otherwise keep issuing completion requests until its own length limit or
-timeout. The hook is optional; modules without it continue to work.
+Miles calls this hook in the rollout process during oversampling abort after it
+stops in-flight SGLang generation, so under `subproc` it cannot reach the agent
+calls' module state; tell the external backend to stop, as below. Use it when the
+agent drives an external sandbox or agent server that would otherwise keep issuing
+completion requests until its own length limit or timeout. The hook is optional;
+modules without it continue to work.
 
 See [`swe_agent_function.abort`](https://github.com/radixark/miles/blob/main/examples/swe-agent-harbor-docker/swe_agent_function.py)
 for an implementation that flushes the Harbor agent server.
@@ -121,14 +168,27 @@ sequence, trims model-specific boundary tokens, and builds the training sample.
 
 <Warning>
 
-**Do not set TITO control fields.** The session server replaces client
-`input_ids` and forces `logprobs=True`, `return_meta_info=True`, and the response
-metadata needed for TITO. Do not set `logprob_start_len=0`; scoring the entire
-prompt defeats prefix caching and hurts performance.
+**Do not set TITO control fields.** Leave `input_ids`, `routed_experts_start_len`, and `logprob_start_len` unset. The server selects `lora_path` and rejects conflicting control values with HTTP 400. It forces `logprobs=True`, `return_meta_info=True`, and the response metadata needed for TITO.
+
+**Do not send server-only message keys.** The server keeps extra keys on the assistant turns it stores (Inkling `content_blocks`, Muse Spark `truncated_turn`, DeepSeek-V4 `content_leading_whitespace`) and restores them when a request replays those turns. A message the request adds must not carry them; such a request gets HTTP 400 and leaves the session unchanged.
 
 </Warning>
 
+Chat responses from both session-server versions omit `choices[*].meta_info`. Ordinary JSON replies retain the message and `usage`, and carry standard `logprobs` only when the request set `logprobs`. On training sessions that record score-centering candidates, their `top_logprobs` lists are empty: the candidates travel as arrays in `meta_info`. The server keeps the full metadata and logprobs in session records for training sample collection and inspection through `GET /sessions/{id}`. Streaming chunks omit both.
+
+### Choose template options per session
+
+- Ordinary `chat_template_kwargs` use request > continued turn > launch defaults. Fields required to preserve the reused prompt retain their recorded values; fixed model settings override conflicts. Qwen3.8 selects `reasoning_effort` on a new root and preserves its value or absence on continuation. When the field is absent, the template defaults to `xhigh`.
+- Omitted `tools` inherit on continuation; incompatible changes return HTTP 400 by default. Sampling parameters remain per-request. New roots resolve without turn history.
+- Each successful turn records the full resolved request as `turn_args`. Exported session, tree-node and sample metadata omit `input_ids` and `messages` from this snapshot; the stored history remains complete.
+
 ### Choose the session behavior
+
+Use `{"evaluation": true}` in `POST /sessions` for evaluation; omitting it defaults to training. The agentic generator sets this automatically, and the purpose stays fixed across turns, retries, and branches.
+
+`temperature`, `top_p`, and `top_k` in `POST /sessions` provide defaults for omitted or `null` chat fields. Training requests must match the registered temperature or receive HTTP 400; eval temperature and `top_p`/`top_k` remain overridable. The agentic generator registers the sample's resolved values automatically.
+
+Evaluation forces `return_sampling_mask`, `return_routed_experts`, and `return_indexer_topk` off and ignores `routed_experts_start_len`. TITO, logprobs, and sample collection still apply; engine-internal capture may remain enabled.
 
 History handling depends on the selected server version:
 
@@ -138,19 +198,39 @@ History handling depends on the selected server version:
   rollback is rejected.
 - **v2 (Experimental) is an append-only tree.** A request attaches to the deepest checkpoint
   whose complete message path prefixes the request. Any unmatched suffix creates
-  a branch, and existing branches are never deleted. A path whose last generation
-  ended with `finish_reason=length` cannot be extended.
+  a branch, and existing branches are never deleted. By default, a leaf becomes
+  no sample when a later request re-sent its exact prompt tokens; a later request
+  that differs is a separate branch and its own sample
+  (`--session-sample-picker-path`).
+
+Both versions can extend a turn that ended with `finish_reason=length`. The
+server first appends tokens that close what the turn left open (reasoning, a
+tool-call block, or for Inkling and Muse Spark an unfinished message) and end
+the turn; they train with loss mask 0, and partial tool-call arguments stay as
+sampled. A family that declares no closer (`default`) returns HTTP 409 instead,
+as does any run started with
+`--no-allow-truncated-continuation`.
 
 Whether a replayed message counts as "the same" as the stored one is decided by
 `--session-message-matcher` (default `strict`); see
 [Choose replay matching](#choose-replay-matching).
 
 The v1 wrapper returns one `Sample`. The v2 wrapper returns a `list[Sample]`, one
-for each selected tree leaf. Both versions reject `--pause-generation-mode=abort`
-and `--partial-rollout`, and use in-place weight update as instead to avoid harness pause.
+for each selected tree leaf. Both versions reject `--partial-rollout`. With R3
+replay, every pause mode except `retract` requests only additional R3 rows.
+`retract` returns full R3 data on every turn and emits a warning because the
+payloads can become very large.
 
-Set `--max-seq-len` to cap the context length. Miles also includes this value in the
-metadata passed to your agent so an external environment can stop early.
+The session server leaves the harness's control flow alone. It never lowers a turn's
+`max_tokens`, refuses a turn for its length, or cuts a turn short: how long an episode runs
+is the harness's decision. A request the session cannot serve, such as one that sets
+`input_ids`, fails loud with an HTTP error.
+
+`--max-seq-len` follows this rule. Miles passes it to your agent as
+`metadata["max_seq_len"]` and truncates each collected trajectory to it after the episode,
+so samples fit training memory. It does not stop the agent: a harness that reads the value
+can end the episode there, and one that does not runs on past it. The agentic generator
+logs a warning once when the limit is set.
 
 ### Pick your `--tito-model`
 
@@ -168,23 +248,50 @@ but treat it as best-effort until it passes the checks below.
 |---|---|
 | Qwen3 | `qwen3` |
 | Qwen3.5 | `qwen35` |
+| Qwen3.6 | `qwen36` |
+| Qwen3.8-27B | `qwen38small` |
+| Qwen3.8-Flash-Next | `qwen4exp` |
 | Qwen3-Thinking-2507 / Qwen3-Next | `qwennext` |
-| GLM-4.7 / 5 / 5.1 / 5.2 | `glm47` |
+| GLM-4.7 / 5 / 5.2 | `glm47` |
+| GLM-5.3 / GLM-5.3-Flash (text sessions) | `glm53` |
 | NVIDIA Nemotron 3 Nano / Super / Ultra | `nemotron3` |
 | Kimi K2.5 / K2.6 | `kimi25` / `kimi26` |
 | MiniMax M2.5 / M2.7 | `minimax_m25` / `minimax_m27` |
-| DeepSeek-V3.2 / V4 | `deepseekv32` / `deepseekv4` |
+| DeepSeek-V3.2 / V4 / V4.1 | `deepseekv32` / `deepseekv4` / `deepseekv41` |
 | Inkling / Inkling-Small | `inkling` |
 | Unregistered model or custom template (best-effort) | `default` |
 
 More model families and verification history live in
 [issue #712](https://github.com/radixark/miles/issues/712).
 
+### Know which turn may follow an assistant
+
+Each family's `FIXED_TEMPLATE` states which role may directly follow an
+assistant message: `roles_after_tool_call` after one with `tool_calls`,
+`roles_after_no_tool_call` after one without. Both default to the family's
+append surface, `allowed_append_roles`. When a request appends messages to a
+stored history, the session server refuses any other continuation with HTTP
+400 before rendering and leaves the session unchanged, so the agent can send a
+different turn. DeepSeek-V4, for example, accepts only `tool` messages after a
+tool call and no `tool` message after a reply without one.
+
+A request rendered from scratch (a session's first request or a retry of it,
+or a v2 request that extends no stored node) is not checked this way: only the
+renderer decides its history, because a family can render a turn from scratch
+that it cannot append.
+
+These sets state what the runtime accepts, which can be wider than what the
+model was trained on: GLM accepts a `user` turn after a tool call because TITO
+replaces the sampled `<|observation|>` stop token with `<|user|>`.
+
 ### Verify a new model TITO
 
 To add a named family, register its `TITOTokenizer` and `FIXED_TEMPLATE` in
-[`tito_tokenizer.py`](https://github.com/radixark/miles/blob/main/miles/utils/chat_template_utils/tito_tokenizer.py),
-then run both checks. Either failure blocks support.
+[`tito_tokenizer/`](https://github.com/radixark/miles/tree/main/miles/utils/chat_template_utils/tito_tokenizer),
+add a checkpoint for it to
+`tests/fast/utils/chat_template_utils/test_continuation_roles.py`, which fails
+until the continuation roles match what the renderer accepts, then run both
+checks. Either failure blocks support.
 
 ```bash
 # CPU / fast: rendered token sequences remain append-only
@@ -197,6 +304,32 @@ python scripts/tools/verify_session_tito_tokenizer.py \
     --sglang-reasoning-parser <rp> --sglang-tool-call-parser <tcp> \
     --rollout-num-gpus-per-engine 1
 ```
+
+The GPU check runs three rollout steps:
+
+- **Spec rollout.** After a tool call, it appends each role the family can
+  append; after a reply to a prompt that asks for no tool (sent with
+  `tool_choice: "none"` as a guard), it appends a `tool` message. Each gets the
+  status the continuation roles decide, 200 or 400. It also rolls back twice,
+  appends a `system` message and injects `assistant` messages where the family
+  accepts them. Accepted turns must show no special-token or non-assistant
+  mismatch; assistant text is not checked. Some steps need the model to call
+  the tool or to stop calling it; a sample whose model does not stops there,
+  and the run fails when too many spec samples stop early
+  (`UNFINISHED_RATIO_THRESHOLD`).
+- **Truncate rollout.** It generates one reply in full, regenerates it with
+  `max_tokens` so that it stops inside its reasoning, a tool call or its
+  answer, and continues the cut turn. In a run that continues truncated turns
+  the continuation must succeed, the next prompt must close the cut turn with
+  the family's closer, and every one of the three places must be covered;
+  otherwise the continuation must get HTTP 409. A sample whose reply has
+  nothing to cut there stops early and counts toward the same ratio.
+- **Normal rollout.** It answers a tool call with `tool` messages and an answer
+  with the next `user` question, the two continuations agents send most. Its
+  mismatch rates are the ones CI tracks across runs.
+
+Pass `--no-session-verify-spec-trajectory` to run the normal rollout alone,
+without the spec and truncate rollouts.
 
 ### Choose replay matching
 

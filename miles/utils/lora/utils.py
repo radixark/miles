@@ -1,0 +1,129 @@
+import json
+import os
+from argparse import Namespace
+from dataclasses import dataclass
+from fnmatch import fnmatchcase
+from pathlib import Path
+from typing import Any
+
+LORA_ADAPTER_NAME = "miles_lora"
+
+
+def matches_lora_target(module: str, target: str) -> bool:
+    return fnmatchcase(module if "." in target else module.rsplit(".", 1)[-1], target)
+
+
+def is_lora_weight_name(name: str) -> bool:
+    """Check if an HF weight name corresponds to a LoRA adapter weight."""
+    return ".lora_A." in name or ".lora_B." in name
+
+
+def is_lora_enabled(args: Namespace) -> bool:
+    """Check if LoRA is enabled based on arguments."""
+    return args.lora_rank > 0 or args.lora_adapter_path is not None
+
+
+def exports_hf_snapshots(args: Namespace) -> bool:
+    """The trainer writes HF snapshots: --save-hf and eval snapshots."""
+    return args.save_hf is not None or (args.eval_uses_snapshots and args.eval_hf_dir is not None)
+
+
+def reads_adapter_slots(args: Namespace, save: str | None) -> bool:
+    """HF exports, multi-LoRA sampler exports or a single-LoRA adapter dir (save, --lora-adapter-path) read slots."""
+    return (
+        exports_hf_snapshots(args)
+        or is_multi_lora_enabled(args)
+        or (is_lora_enabled(args) and (save is not None or args.lora_adapter_path is not None))
+    )
+
+
+def lora_rollout_enabled(args: Namespace) -> bool:
+    """LoRA enabled AND the rollout side participates; false under --lora-train-only.
+
+    Gates everything rollout-facing: SGLang's ``enable_lora``, the per-request
+    ``lora_path``, and the adapter weight sync. Training-side LoRA is unaffected.
+    """
+    return is_lora_enabled(args) and not args.lora_train_only
+
+
+def engine_loads_adapter_from_disk(args: Namespace) -> bool:
+    """Only when no trainer will push the adapter; otherwise the first weight sync carries it."""
+    return args.lora_adapter_path is not None and (args.debug_rollout_only or args.debug_skip_weight_update)
+
+
+def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
+    """LoRA + --colocate + --lora-base-cpu-backup all set."""
+    return is_lora_enabled(args) and args.colocate and args.lora_base_cpu_backup
+
+
+def lora_colocated_engine_keeps_base(args: Namespace) -> bool:
+    """The colocated engines hold the frozen LoRA base across pauses: a host backup, or
+    weights that are never released."""
+    return lora_base_cpu_backup_enabled(args) or (args.colocate and not args.offload_rollout)
+
+
+def lora_sync_sends_base(args: Namespace) -> bool:
+    """A colocated LoRA weight sync re-sends the frozen base unless the engines keep it; the
+    weight checker always rewrites every tensor, and --lora-train-only syncs as full weights."""
+    return (
+        not lora_rollout_enabled(args) or args.check_weight_update_equal or not lora_colocated_engine_keeps_base(args)
+    )
+
+
+def save_adapter_to_disk(out_dir, config: dict, tensors: dict) -> None:
+    """Write a LoRA adapter dir (adapter_config.json + adapter_model.safetensors)."""
+    import safetensors.torch  # lazy: this module is imported on paths that never touch weights
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "adapter_config.json").write_text(json.dumps(config, indent=2))
+    # engines may read the dir while it is written (an RL --save exports into its committed dir): never a partial file
+    partial = out / "adapter_model.safetensors.partial"
+    safetensors.torch.save_file(tensors, str(partial))
+    os.replace(partial, out / "adapter_model.safetensors")
+
+
+def build_lora_config(args, *, target_modules):
+    return {
+        "peft_type": "LORA",
+        "r": args.lora_rank,
+        "lora_alpha": args.lora_alpha,
+        "target_modules": target_modules if isinstance(target_modules, str) else list(target_modules),
+        "lora_dropout": args.lora_dropout,
+        "bias": "none",
+        "task_type": "CAUSAL_LM",
+    }
+
+
+def get_adapter_target_modules(weight_names):
+    return sorted({name.removeprefix("base_model.model.").rsplit(".lora_", 1)[0] for name in weight_names})
+
+
+@dataclass(frozen=True)
+class AdapterSpec:
+    """The slot and scaling needed to export one adapter."""
+
+    slot: int
+    rank: int
+    alpha: float
+
+
+def is_multi_lora_enabled(args: Any) -> bool:
+    return args.multi_lora
+
+
+# Leaf module names that can live inside MoE experts (they also name the dense MLP
+# projections); the bulk aliases expand to them during target-module resolution.
+_EXPERT_LEAF_NAMES = frozenset({"linear_fc1", "linear_fc2", "gate_proj", "up_proj", "gate_up_proj", "down_proj"})
+_ALL_MODULE_ALIASES = frozenset({"all", "all-linear", "all_linear"})
+
+
+def targets_expert_leaves(target_modules: Any) -> bool:
+    """Whether ``target_modules`` can put adapters on MoE expert linears."""
+    if isinstance(target_modules, str):
+        target_modules = [target_modules]
+    entries = [str(tm).strip().lower() for tm in (target_modules or [])]
+    if any(entry in _ALL_MODULE_ALIASES for entry in entries):
+        return True
+    # Map each entry (possibly a dotted or wildcard path) to its leaf module name.
+    return any(entry.split(".")[-1] in _EXPERT_LEAF_NAMES for entry in entries)

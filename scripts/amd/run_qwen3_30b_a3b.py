@@ -3,17 +3,17 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     model_name: str = "Qwen3-30B-A3B"
     megatron_model_type: str = "qwen3-30B-A3B"
     num_gpus_per_node: int | None = None
-    hardware: Literal["MI350X", "MI355X"] = "MI355X"
+    hardware: Literal["auto", "MI300X", "MI325X", "MI350X", "MI355X"] = "auto"
     enable_eval: bool = True
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -27,10 +27,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
     tis_use_rs: bool = True
 
     def __post_init__(self):
-        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
+        self.hardware = command_utils.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or command_utils.NUM_GPUS_OF_HARDWARE[self.hardware]
 
 
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     U.exec_command_cpu(f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
@@ -55,6 +57,7 @@ def prepare(args: ScriptArgs):
 
 # TODO improve layering: split algorithm vs infra
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     ref_load_path = (
         f"{args.model_dir}/{args.model_name}/"
         if args.enable_megatron_bridge
@@ -142,7 +145,6 @@ def execute(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
-        "--use-fault-tolerance "
         f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
     )
     misc_env_vars = {}
@@ -167,7 +169,7 @@ def execute(args: ScriptArgs):
         misc_args += "--megatron-to-hf-mode bridge "
 
     match (args.hardware, args.num_nodes):
-        case ("MI350X" | "MI355X", 1 | 2):
+        case ("MI300X" | "MI325X" | "MI350X" | "MI355X", 1 | 2):
             perf_args += (
                 "--tensor-model-parallel-size 1 "
                 "--sequence-parallel "
@@ -189,21 +191,16 @@ def execute(args: ScriptArgs):
             raise NotImplementedError
 
     if args.enable_mis:
-        config_text = f"""
-use_tis: true
-use_rs: {"true" if args.tis_use_rs else "false"}
-tis_level: "token"
-rs_level: "token"
-tis_mode: "truncate"
-tis_lower_bound: 0.5
-tis_upper_bound: 2.0
-rs_lower_bound: null
-rs_upper_bound: null
-rs_veto_threshold: 1.0e-4
-tis_batch_normalize: true
-""".strip()
         misc_args += (
-            f"--custom-config-path {U.encode_pseudo_file(config_text)} "
+            "--use-tis "
+            f"{'--use-rs ' if args.tis_use_rs else ''}"
+            "--tis-level token "
+            "--rs-level token "
+            "--tis-mode truncate "
+            "--tis-lower-bound 0.5 "
+            "--tis-upper-bound 2.0 "
+            "--rs-veto-threshold 1.0e-4 "
+            "--tis-batch-normalize "
             "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 
@@ -212,7 +209,7 @@ tis_batch_normalize: true
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
@@ -222,7 +219,6 @@ tis_batch_normalize: true
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={**misc_env_vars},
@@ -230,7 +226,7 @@ tis_batch_normalize: true
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     prepare(args)
     execute(args)

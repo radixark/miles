@@ -3,7 +3,7 @@ from collections import defaultdict
 from collections.abc import Callable, Hashable, Iterator, Sequence
 from typing import Protocol, TypeVar
 
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.backends.training_utils.types import TrainStepOutcome
 from miles.utils.audit_utils.event_logger.models import (
     Event,
     TrainAdvantageComputationEvent,
@@ -11,6 +11,7 @@ from miles.utils.audit_utils.event_logger.models import (
     WitnessAllocateIdEvent,
     WitnessSnapshotParamEvent,
 )
+from miles.utils.audit_utils.witness.utils import exclude_id_ranges
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,7 @@ def check(events: list[Event]) -> list[WitnessIssue]:
     * WitnessAllocateIdEvent: when allocating `witness_id` to `sample_index`
     * WitnessSnapshotParamEvent: near the end of each train() step in MegatronTrainRayActor
         * If a witness_id appears in the weight, it means the corresponding data is consumed at least once.
-    * TrainGroupStepEndEvent: after each train() step in RayTrainGroup
+    * TrainGroupStepEndEvent: after each train() step in TrainerController
 
     Check:
     1. For each (rollout_id, cell_index),
@@ -49,7 +50,7 @@ def check(events: list[Event]) -> list[WitnessIssue]:
     Remarks:
     * To correlate witness_id vs sample_index utilize WitnessAllocateIdEvent.
     * Witness' ring buffer will remove old data, thus we need to ignore the appearance/disappearance of
-      all values in `WitnessSnapshotParamEvent.stale_ids`
+      all values in `WitnessSnapshotParamEvent.stale_id_ranges`
     """
 
     allocated_witness_ids_by_rollout = _compute_allocated_witness_ids_by_rollout(
@@ -230,9 +231,8 @@ def _compare_snapshot(
     cell_index: int,
     zero_adv_excused_ids: set[int],
 ) -> WitnessDataMismatchIssue | None:
-    stale_set = set(event.stale_ids)
-    filtered_expected = expected - stale_set - zero_adv_excused_ids
-    filtered_actual = set(event.nonzero_witness_ids) - stale_set
+    filtered_expected = exclude_id_ranges(expected - zero_adv_excused_ids, event.stale_id_ranges)
+    filtered_actual = exclude_id_ranges(event.nonzero_witness_ids, event.stale_id_ranges)
 
     if filtered_expected == filtered_actual:
         return None

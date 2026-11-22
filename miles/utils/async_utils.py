@@ -1,14 +1,31 @@
 import asyncio
+import concurrent.futures
+import inspect
 import logging
 import threading
-from collections.abc import Coroutine
-from typing import TypeVar
+import traceback
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Sequence
+from contextlib import AsyncExitStack
+from types import TracebackType
+from typing import Any, TypeVar
 
+from typing_extensions import Self
 
 logger = logging.getLogger(__name__)
 
 
-__all__ = ["get_async_loop", "run", "eager_create_task"]
+__all__ = [
+    "get_async_loop",
+    "run",
+    "submit",
+    "wait_futures",
+    "wait_cancelling_pending_on_first_completion",
+    "eager_create_task",
+    "gather_and_raise_first",
+    "maybe_await",
+    "with_disposer",
+    "Disposer",
+]
 
 _T = TypeVar("_T")
 
@@ -24,25 +41,96 @@ class AsyncLoopThread:
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
 
-    def run(self, coro):
+    def submit(self, coro: Coroutine[Any, Any, _T]) -> concurrent.futures.Future[_T]:
+        assert (
+            threading.current_thread() is not self._thread
+        ), "submitting from the loop thread and then blocking on the result would deadlock the loop"
+        return asyncio.run_coroutine_threadsafe(coro, self.loop)
+
+    def run(self, coro: Coroutine[Any, Any, _T]) -> _T:
         # Schedule a coroutine onto the loop and block until it's done
-        return asyncio.run_coroutine_threadsafe(coro, self.loop).result()
+        return self.submit(coro).result()
 
 
 # Create one global instance
 async_loop = None
+_async_loop_init_lock = threading.Lock()
 
 
 def get_async_loop():
     global async_loop
     if async_loop is None:
-        async_loop = AsyncLoopThread()
+        with _async_loop_init_lock:
+            if async_loop is None:
+                async_loop = AsyncLoopThread()
     return async_loop
 
 
-def run(coro):
+# TODO: rename these functions and classes
+def run(coro: Coroutine[Any, Any, _T]) -> _T:
     """Run a coroutine in the background event loop."""
     return get_async_loop().run(coro)
+
+
+def submit(coro: Coroutine[Any, Any, _T]) -> concurrent.futures.Future[_T]:
+    """Fire a coroutine on the background event loop and return its future."""
+    return get_async_loop().submit(coro)
+
+
+def wait_futures(futures: Sequence[concurrent.futures.Future]) -> list[Any]:
+    """Collect a fan-out, raising the first error once every future has settled."""
+    results: list[Any] = []
+    errors: list[Exception] = []
+    for index, future in enumerate(futures):
+        try:
+            results.append(future.result())
+        except Exception as e:
+            logger.warning(f"wait_futures index={index} failed", exc_info=e)
+            results.append(None)
+            errors.append(e)
+
+    if errors:
+        raise errors[0]
+    return results
+
+
+async def wait_cancelling_pending_on_first_completion(
+    tasks: Sequence[asyncio.Task], *, on_first_completion: Callable[[], None] | None = None
+) -> None:
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+
+    if on_first_completion is not None:
+        on_first_completion()
+
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    task_errors = [(task, error) for task in tasks if (error := _compute_task_error(task)) is not None]
+    for _, error in task_errors:
+        logger.error("task failed", exc_info=error)
+    if task_errors:
+        primary_index = next((index for index, (task, _) in enumerate(task_errors) if task in done), 0)
+        primary_error = task_errors[primary_index][1]
+        for index, (_, error) in enumerate(task_errors):
+            if index != primary_index:
+                note = "Additional task failure while cancelling peers:\n" + "".join(traceback.format_exception(error))
+                _exception_add_note_or_log(primary_error, note)
+        raise primary_error
+
+
+def _exception_add_note_or_log(e: BaseException, msg: str) -> None:
+    if hasattr(e, "add_note"):  # config-access-exempt: exception notes are unavailable on older Python versions
+        e.add_note(msg)
+    else:
+        logger.error(msg)
+
+
+def _compute_task_error(task: asyncio.Task) -> BaseException | None:
+    if task.cancelled():
+        return None
+    return task.exception()
 
 
 async def eager_create_task(coro: Coroutine[object, object, _T]) -> asyncio.Task[_T]:
@@ -62,7 +150,121 @@ class AsyncioGatherUtils:
         return any(isinstance(output, BaseException) for output in outputs)
 
     @staticmethod
-    def log_error(outputs, debug_name: str):
+    def log_error(
+        outputs,
+        debug_name: str = "",
+        *,
+        describe_failure: Callable[[int], str] | None = None,
+        log: Callable[..., None] = logger.warning,
+    ) -> None:
         for i, output in enumerate(outputs):
             if isinstance(output, BaseException):
-                logger.warning(f"{debug_name} error index={i}", exc_info=output)
+                message = f"{debug_name} error index={i}" if describe_failure is None else describe_failure(i)
+                log(message, exc_info=output)
+
+
+async def gather_and_raise_first(
+    awaitables: Sequence[Awaitable[_T]], *, describe_failure: Callable[[int], str] | None = None
+) -> list[_T]:
+    results = await asyncio.gather(*awaitables, return_exceptions=True)
+
+    if describe_failure is not None:
+        AsyncioGatherUtils.log_error(results, describe_failure=describe_failure, log=logger.error)
+
+    failures = [result for result in results if isinstance(result, BaseException)]
+    if failures:
+        raise failures[0]
+    return results
+
+
+class CancellableTasks:
+    def __init__(self) -> None:
+        self._pending: set[asyncio.Future[Any]] = set()
+
+    def cancel(self) -> None:
+        for task in self._pending:
+            task.cancel()
+
+    async def gather(self, awaitables: Iterable[Awaitable[_T]], *, timeout: float | None) -> list[_T]:
+        tasks: list[asyncio.Future[_T]] = []
+        try:
+            for awaitable in awaitables:
+                tasks.append(asyncio.ensure_future(awaitable))
+            self._pending.update(tasks)
+            return await asyncio.wait_for(asyncio.gather(*tasks), timeout=timeout)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self._pending.difference_update(tasks)
+
+
+async def maybe_await(value: Awaitable[_T] | _T) -> _T:
+    return await value if inspect.isawaitable(value) else value
+
+
+async def with_disposer(fn: Callable[..., Awaitable[_T]], *args: Any, **kwargs: Any) -> _T:
+    async with Disposer() as disposer:
+        return await fn(*args, disposer=disposer, **kwargs)
+
+
+class Disposer:
+    def __init__(self) -> None:
+        self._stack = AsyncExitStack()
+
+    async def __aenter__(self) -> "Disposer":
+        await self._stack.__aenter__()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        exc_traceback: TracebackType | None,
+    ) -> bool:
+        return await self._stack.__aexit__(exc_type, exc, exc_traceback)
+
+    def add(self, *items: Any) -> None:
+        for item in items:
+            if item is None:
+                continue
+            teardown = (
+                item.dispose if hasattr(item, "dispose") else item
+            )  # config-access-exempt: cleanup accepts either disposable objects or callbacks
+            assert callable(teardown), teardown
+            if inspect.iscoroutinefunction(teardown):
+                self._stack.push_async_callback(teardown)
+            else:
+                self._stack.callback(teardown)
+
+    def add_exit(self, teardown: Callable[[bool], Any]) -> None:
+        """Like ``add``, for a teardown that needs to know whether the body succeeded."""
+
+        def on_exit(exc_type, exc, exc_traceback) -> None:
+            teardown(exc_type is None)
+
+        self._stack.push(on_exit)
+
+
+class DynamicLimitSemaphore:
+    def __init__(self, limit: Callable[[], int]) -> None:
+        self._limit = limit
+        self._condition = asyncio.Condition()
+        self._active = 0
+
+    async def __aenter__(self) -> Self:
+        async with self._condition:
+            await self._condition.wait_for(lambda: self._active < self._limit())
+            self._active += 1
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        async with self._condition:
+            self._active -= 1
+            assert self._active >= 0, f"{self._active=}"
+            self._condition.notify_all()

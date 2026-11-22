@@ -1,9 +1,13 @@
 import argparse
 import dataclasses
 import difflib
+import logging
+import typing
 from dataclasses import dataclass
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -29,20 +33,30 @@ class FSDPArgs:
 
     attn_implementation: str = "flash_attention_2"
 
+    # Compute kernels. "hub" resolves the module-level kernels in plugins/hf_kernels/presets.py
+    # from the Hugging Face Hub instead of the image's wheels; see plugins/hf_kernels/loader.py.
+    kernel_backend: str = "native"  # {"native", "hub"}
+    kernel_mapping_path: str = ""  # dotted path to a (args) -> dict[str, HubKernelSpec] provider
+    kernel_strict: bool = False  # raise instead of falling back to the native kernel
+
     # Logging
     wandb_project: str = "miles-fsdp"
     wandb_run_name: str | None = None
 
     # Precision
-    gradient_checkpointing: bool = False
+    bf16: bool = True
     fp16: bool = False
+    # Activation recompute: --recompute-granularity full is Megatron's spelling of the same switch
+    gradient_checkpointing: bool = False
+    recompute_granularity: str | None = None
     keep_fp32_master: bool = True
 
     # FSDP configuration
     fsdp_state_dict_cpu_offload: bool = True  # If True, offload full state dict to CPU during collection.
-    fsdp_cpu_offload: bool = (
-        False  # If True, offload parameters, gradients, and optimizer states to CPU (optimizer runs on CPU)
-    )
+    # Megatron's name for the same switch: the fp32 master params (FSDP's sharded params), their grads and the
+    # optimizer state live on the host, and the optimizer steps on the CPU
+    optimizer_cpu_offload: bool = False
+    fsdp_cpu_offload: bool = False  # deprecated spelling of --optimizer-cpu-offload
     fsdp_cpu_backend: str | None = (
         "gloo"  # CPU backend for FSDP CPU offload (e.g., "gloo"). Set to None to disable hybrid backend.
     )
@@ -60,21 +74,38 @@ class FSDPArgs:
     use_pytorch_profiler: bool = False
     profile_step_start: int = 10
     profile_step_end: int = 12
+    # Names and defaults match Megatron's profiling flags, which miles/utils/profile_utils.py reads.
+    pytorch_profiler_collect_shapes: bool = False
+    pytorch_profiler_collect_callstack: bool = False
+    profile_ranks: list[int] = dataclasses.field(default_factory=list)
     tensorboard_dir: str | None = None
 
     # YAML bookkeeping
     config: str | None = None
 
 
-def build_fsdp_parser(extra_args_provider=None) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser("FSDP SFT Training (miles)")
+def build_dataclass_parser(
+    args_cls: type,
+    prog: str,
+    extra_args_provider=None,
+) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog)
     parser.add_argument("--config", type=str, default=None, help="YAML config path")
-    for f in dataclasses.fields(FSDPArgs):
+    for f in dataclasses.fields(args_cls):
         if f.name == "config":
             continue
 
+        if typing.get_origin(f.type) is list:
+            (item_type,) = typing.get_args(f.type)
+            parser.add_argument(
+                f"--{f.name.replace('_', '-')}", type=item_type, nargs="+", default=f.default_factory()
+            )
+            continue
+
         # Handle union types like int | None, str | None, etc.
-        if hasattr(f.type, "__args__"):  # Check if it's a Union type
+        if hasattr(
+            f.type, "__args__"
+        ):  # Check if it's a Union type  # config-access-exempt: inspect union type arguments when deriving dataclass CLI types
             # For T | None, use T as the type
             non_none_types = [t for t in f.type.__args__ if t is not type(None)]
             arg_type = non_none_types[0] if non_none_types else str
@@ -93,6 +124,10 @@ def build_fsdp_parser(extra_args_provider=None) -> argparse.ArgumentParser:
     return parser
 
 
+def build_fsdp_parser(extra_args_provider=None) -> argparse.ArgumentParser:
+    return build_dataclass_parser(FSDPArgs, "FSDP SFT Training (miles)", extra_args_provider)
+
+
 def parse_fsdp_cli(extra_args_provider=None):
     return build_fsdp_parser(extra_args_provider).parse_args()
 
@@ -109,8 +144,7 @@ def reject_unknown_config_keys(data: dict, known: set[str]) -> None:
     raise ValueError(f"unknown key(s) in the YAML config: {', '.join(described)}")
 
 
-def load_fsdp_args(extra_args_provider=None):
-    parser = build_fsdp_parser(extra_args_provider)
+def load_args_from_parser(parser: argparse.ArgumentParser):
     args = parser.parse_args()
     if args.config:
         with open(args.config) as f:
@@ -119,7 +153,41 @@ def load_fsdp_args(extra_args_provider=None):
         parser.set_defaults(**data)
         args = parser.parse_args()
     args.bf16 = not args.fp16
+    if args.recompute_granularity is not None:
+        if args.recompute_granularity != "full":
+            raise ValueError(
+                f"--recompute-granularity {args.recompute_granularity!r}: this backend recomputes whole layers only; use full"
+            )
+        args.gradient_checkpointing = True
+    if args.fsdp_cpu_offload:
+        logger.warning("--fsdp-cpu-offload is deprecated; use --optimizer-cpu-offload, its name on every backend")
+        args.optimizer_cpu_offload = True
+    del args.fsdp_cpu_offload
     return args
+
+
+def load_fsdp_args(extra_args_provider=None):
+    return load_args_from_parser(build_fsdp_parser(extra_args_provider))
+
+
+def validate_kernel_backend_args(args) -> None:
+    """Validate --kernel-backend and keep hub kernels out of the bit-exact run modes.
+
+    --true-on-policy-mode requires the training-side kernel to match SGLang's build exactly;
+    until that equivalence is established per hub kernel, the two stay mutually exclusive.
+    """
+    if args.kernel_backend not in ("native", "hub"):
+        raise ValueError(f"--kernel-backend must be one of ('native', 'hub'), got {args.kernel_backend!r}")
+
+    if args.kernel_backend != "hub":
+        if args.kernel_strict:
+            raise ValueError("--kernel-strict only applies with --kernel-backend hub")
+        if args.kernel_mapping_path:
+            raise ValueError("--kernel-mapping-path only applies with --kernel-backend hub")
+        return
+
+    if args.true_on_policy_mode or args.deterministic_mode:
+        raise ValueError("--kernel-backend hub is incompatible with --true-on-policy-mode / --deterministic-mode")
 
 
 def validate_hybrid_shard_args(args) -> None:

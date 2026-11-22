@@ -9,6 +9,7 @@ except ImportError:
     from backports.strenum import StrEnum
 
 
+from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.ft_utils.process_group_utils import GroupInfo, GroupsInfo
 
 _parallel_state: "ParallelState | None" = None
@@ -43,6 +44,9 @@ class ParallelState:
     ep: GroupInfo
     etp: GroupInfo
     indep_dp: GroupInfo
+    # Megatron expert replicas, including context-parallel replication.
+    edp: GroupInfo | None = None
+    tp_dp_cp: GroupInfo | None = None
     meshes: dict[str, DeviceMesh] = field(default_factory=dict)
     cp_comm_type: str | list[str] | tuple[str, ...] | None = None
     is_pp_last_stage: bool = True
@@ -67,6 +71,20 @@ class ParallelState:
             _DPMode.INTRA: GroupsInfo.from_single(self.intra_dp_cp),
             _DPMode.INDEP: GroupsInfo.from_pair(inner=self.intra_dp_cp, outer=self.indep_dp),
         }[self._dp_mode]
+
+    def train_parallel_config(self, *, supports_precomputed_schedule: bool) -> TrainParallelConfig:
+        return TrainParallelConfig(
+            dp_size=self.effective_dp.size,
+            cp_size=self.cp.size,
+            vpp_size=self.vpp_size,
+            microbatch_group_size_per_vp_stage=self.microbatch_group_size_per_vp_stage,
+            independent_dp=self._dp_mode is _DPMode.INDEP,
+            supports_precomputed_schedule=supports_precomputed_schedule,
+        )
+
+    @property
+    def is_metrics_rank(self) -> bool:
+        return self.effective_dp_cp.rank == 0 and self.tp.rank == 0 and self.is_pp_last_stage
 
     @property
     def is_ulysses_cp(self) -> bool:

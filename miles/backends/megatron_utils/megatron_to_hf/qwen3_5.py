@@ -2,8 +2,13 @@ import re
 
 import torch
 
+from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import gdn_heads_of, qkv_group_major_to_flat
+from miles.utils.args.runtime import TrainerConfig
 
-def _convert_mtp_layer(args, name, param, layer_idx):
+
+def _convert_mtp_layer(
+    args: TrainerConfig, name: str, param: torch.Tensor, layer_idx: str
+) -> list[tuple[str, torch.Tensor]] | None:
     """Convert MTP layer parameters from Megatron to HuggingFace format."""
     if "enorm.weight" in name:
         return [("mtp.pre_fc_norm_embedding.weight", param)]
@@ -14,8 +19,9 @@ def _convert_mtp_layer(args, name, param, layer_idx):
     if "eh_proj.weight" in name:
         return [("mtp.fc.weight", param)]
 
-    if "transformer_layer" in name:
-        proxy_name = name.replace(f"mtp.layers.{layer_idx}.transformer_layer", f"decoder.layers.{layer_idx}")
+    _mtp_inner = next((p for p in ("transformer_layer", "mtp_model_layer") if p in name), None)
+    if _mtp_inner is not None:
+        proxy_name = name.replace(f"mtp.layers.{layer_idx}.{_mtp_inner}", f"decoder.layers.{layer_idx}")
         mapped_params = convert_qwen3_5_to_hf(args, proxy_name, param)
 
         final_params = []
@@ -31,7 +37,7 @@ def _convert_mtp_layer(args, name, param, layer_idx):
     return None
 
 
-def convert_qwen3_5_to_hf(args, name, param):
+def convert_qwen3_5_to_hf(args: TrainerConfig, name: str, param: torch.Tensor) -> list[tuple[str, torch.Tensor]]:
     """Convert Qwen3.5 model parameters from Megatron to HuggingFace format.
 
     Qwen3.5 uses model.language_model.layers prefix and has separate
@@ -58,10 +64,14 @@ def convert_qwen3_5_to_hf(args, name, param):
         return [("model.language_model.norm.weight", param)]
 
     try:
-        head_dim = args.kv_channels if args.kv_channels is not None else args.hidden_size // args.num_attention_heads
+        head_dim = (
+            args.backend.kv_channels
+            if args.backend.kv_channels is not None
+            else args.backend.hidden_size // args.backend.num_attention_heads
+        )
     except AttributeError:
-        head_dim = args.hidden_size // args.num_attention_heads
-    value_num_per_group = args.num_attention_heads // args.num_query_groups
+        head_dim = args.backend.hidden_size // args.backend.num_attention_heads
+    value_num_per_group = args.backend.num_attention_heads // args.backend.num_query_groups
 
     decoder_layers_pattern = r"module\.module\.decoder\.layers\.(\d+)\.(.+)"
     match = re.match(decoder_layers_pattern, name)
@@ -112,24 +122,26 @@ def convert_qwen3_5_to_hf(args, name, param):
         if rest == "self_attention.linear_proj.weight":
             return [(f"{prefix}.self_attn.o_proj.weight", param)]
         elif rest == "self_attention.linear_qkv.weight":
-            param = param.view(args.num_query_groups, -1, head_dim, args.hidden_size)
+            param = param.view(args.backend.num_query_groups, -1, head_dim, args.backend.hidden_size)
             q_param, k_param, v_param = torch.split(
                 param, split_size_or_sections=[2 * value_num_per_group, 1, 1], dim=1
             )
             q_param = (
-                q_param.reshape(args.num_query_groups, 2, value_num_per_group, head_dim, args.hidden_size)
+                q_param.reshape(
+                    args.backend.num_query_groups, 2, value_num_per_group, head_dim, args.backend.hidden_size
+                )
                 .transpose(1, 2)
-                .reshape(-1, args.hidden_size)
+                .reshape(-1, args.backend.hidden_size)
             )
-            k_param = k_param.reshape(-1, args.hidden_size)
-            v_param = v_param.reshape(-1, args.hidden_size)
+            k_param = k_param.reshape(-1, args.backend.hidden_size)
+            v_param = v_param.reshape(-1, args.backend.hidden_size)
             return [
                 (f"{prefix}.self_attn.q_proj.weight", q_param),
                 (f"{prefix}.self_attn.k_proj.weight", k_param),
                 (f"{prefix}.self_attn.v_proj.weight", v_param),
             ]
         elif rest == "self_attention.linear_qkv.bias":
-            param = param.view(args.num_query_groups, -1)
+            param = param.view(args.backend.num_query_groups, -1)
             q_bias, k_bias, v_bias = torch.split(
                 param,
                 split_size_or_sections=[value_num_per_group * head_dim, head_dim, head_dim],
@@ -167,15 +179,15 @@ def convert_qwen3_5_to_hf(args, name, param):
             return [(f"{prefix}.self_attn.q_norm.weight", param)]
         elif rest == "self_attention.k_layernorm.weight":
             return [(f"{prefix}.self_attn.k_norm.weight", param)]
+        elif rest in ("self_attention.linear_attn.in_proj_qkv.weight", "self_attention.linear_attn.conv1d.weight"):
+            hf_rest = rest[len("self_attention.") :]
+            return [(f"{prefix}.{hf_rest}", qkv_group_major_to_flat(param, gdn_heads_of(args.hf_checkpoint)))]
         elif rest.startswith("self_attention.") and rest[len("self_attention.") :] in [
             "input_layernorm.weight",
-            # linear attn (Qwen3.5 uses separate in_proj_b/in_proj_a)
             "linear_attn.A_log",
-            "linear_attn.conv1d.weight",
             "linear_attn.dt_bias",
             "linear_attn.in_proj_a.weight",
             "linear_attn.in_proj_b.weight",
-            "linear_attn.in_proj_qkv.weight",
             "linear_attn.in_proj_z.weight",
             "linear_attn.norm.weight",
             "linear_attn.out_proj.weight",

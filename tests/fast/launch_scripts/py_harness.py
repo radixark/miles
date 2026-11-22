@@ -3,6 +3,7 @@ import inspect
 import os
 import re
 import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -13,10 +14,12 @@ from types import ModuleType
 from tests.fast.launch_scripts.sh_harness import REPO_ROOT, sanitize
 from tests.fast.utils.command_recorder import record_commands
 
-import miles.utils.external_utils.command_utils as command_utils
-from miles.utils.external_utils.model_args_utils import import_module_from_path
+from miles.utils.external_utils import command_utils
+from miles.utils.external_utils.command_utils import base_backend, legacy
+from miles.utils.external_utils.model_args_utils import _import_module_from_path
 
 FROZEN_RUN_ID = "260101-000000-000"
+FROZEN_HARDWARE = "H200"
 
 _GPU_COUNT_ANY_WAIT_LOOP_ACCEPTS = "1000000"
 _FROZEN_PID = 1000
@@ -50,6 +53,8 @@ CLEARED_ENV = (
     "RAY_ADDRESS",
     "ROTARY_SCALING_FACTOR",
     "SLURM_JOB_NUM_NODES",
+    "TORCHINDUCTOR_CACHE_DIR",
+    "TRITON_CACHE_DIR",
 )
 
 
@@ -70,8 +75,28 @@ class PyLaunchScript:
 
 
 def iter_py_launch_scripts() -> list[PyLaunchScript]:
-    paths = sorted((REPO_ROOT / "scripts").rglob("run_*.py"))
+    paths = sorted(
+        [
+            *(REPO_ROOT / "scripts").rglob("run_*.py"),
+            REPO_ROOT / "examples/multi_lora/serve_qwen3_30b_a3b_tinker.py",
+            REPO_ROOT / "examples/geo3k_vlm/run_geo3k_qwen3_8_27b.py",
+            REPO_ROOT / "examples/geo3k_vlm/multi_turn/run_geo3k_vlm_multi_turn_token_space.py",
+        ]
+    )
     return [PyLaunchScript(path=path, entrypoints=tuple(_entrypoint_names(path))) for path in paths]
+
+
+def launcher_hardware_literals() -> dict[str, tuple[str, ...]]:
+    """Every value each launcher's `--hardware` accepts, for the launchers that have the flag at all."""
+    literals = {}
+    for script in iter_py_launch_scripts():
+        for node in ast.walk(ast.parse(script.path.read_text())):
+            if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", None) == "hardware":
+                values = node.annotation.slice
+                literals[script.rel] = tuple(
+                    e.value for e in (values.elts if isinstance(values, ast.Tuple) else [values])
+                )
+    return literals
 
 
 def iter_self_executing_launchers() -> list[Path]:
@@ -106,11 +131,12 @@ def install_shell_recorder(monkeypatch, sandbox: Path) -> Recording:
     return recording
 
 
-def freeze_environment(monkeypatch) -> None:
+def freeze_environment(monkeypatch, hardware: str = FROZEN_HARDWARE) -> None:
     for key, value in _FROZEN_ENV.items():
         monkeypatch.setenv(key, value)
     for key in CLEARED_ENV:
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(base_backend, "detect_hardware", lambda: hardware)
 
 
 def install_command_recorder(monkeypatch) -> Recording:
@@ -121,6 +147,8 @@ def install_command_recorder(monkeypatch) -> Recording:
         return f"base64:<frozen-pseudo-file-{len(recording.pseudo_files)}>"
 
     monkeypatch.setattr(command_utils, "create_run_id", lambda: FROZEN_RUN_ID)
+    # A launcher on the legacy API reads the name bound there.
+    monkeypatch.setattr(legacy, "create_run_id", lambda: FROZEN_RUN_ID)
     monkeypatch.setattr(command_utils, "encode_pseudo_file", fake_encode_pseudo_file)
 
     return recording
@@ -128,7 +156,12 @@ def install_command_recorder(monkeypatch) -> Recording:
 
 def import_launch_script(path: Path) -> ModuleType:
     name = "miles_launch_script_" + path.relative_to(REPO_ROOT).with_suffix("").as_posix().replace("/", "_")
-    return import_module_from_path(path, name)
+    # Run as `python scripts/<launcher>.py`, a launcher imports its helpers (scripts/muse_spark) from its own directory.
+    sys.path.insert(0, str(path.parent))
+    try:
+        return _import_module_from_path(path, name)
+    finally:
+        sys.path.remove(str(path.parent))
 
 
 @contextmanager

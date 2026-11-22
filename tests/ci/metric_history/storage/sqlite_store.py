@@ -1,4 +1,4 @@
-# doc-dev: docs/ci/03-metric-history-gate.md
+# doc-dev: docs/developer/ci/03-metric-history-gate.md
 """SQLite-backed :class:`MetricHistoryStore` for offline use and tests.
 
 * No network dependency; the store runs entirely in-process. An in-memory
@@ -7,7 +7,7 @@
   (:class:`NeonMetricHistoryStore` in neon_store.py), so tests exercising this
   implementation validate the contract the gate relies on in production —
   including the authoritative baseline query's plain-equality match on the
-  `(metric_key, steps_key, constraint_key, step)` coordinate.
+  `(metric_key, step)` coordinate.
 * This module owns a small local schema literal for tests; production Postgres
   schema setup is out-of-band (provisioned outside the repo).
 * Schema is applied at construction (`apply_schema`), never on the
@@ -32,6 +32,7 @@ from tests.ci.metric_history.storage.store import (
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS runs (
     run_id              TEXT PRIMARY KEY,
+    repository          TEXT NOT NULL,
     test_path           TEXT NOT NULL,
     backend             TEXT NOT NULL,
     suite               TEXT NOT NULL,
@@ -55,7 +56,7 @@ CREATE TABLE IF NOT EXISTS metric_values (
 );
 
 CREATE INDEX IF NOT EXISTS runs_baseline_idx
-    ON runs (test_path, backend, suite, trusted, created_at DESC);
+    ON runs (repository, test_path, backend, suite, trusted, created_at DESC);
 """
 
 # Mirrors the authoritative baseline query: every coordinate column is
@@ -64,12 +65,11 @@ _BASELINE_SQL = """
 SELECT mv.value
 FROM metric_values mv
 JOIN runs r USING (run_id)
-WHERE r.test_path = ?
+WHERE r.repository = ?
+  AND r.test_path = ?
   AND r.backend = ?
   AND r.suite = ?
   AND mv.metric_key = ?
-  AND mv.steps_key = ?
-  AND mv.constraint_key = ?
   AND mv.step = ?
   AND r.trusted = 1
 ORDER BY r.created_at DESC
@@ -78,7 +78,8 @@ LIMIT ?
 
 
 class SQLiteMetricHistoryStore(MetricHistoryStore):
-    def __init__(self, database: str = ":memory:"):
+    def __init__(self, database: str = ":memory:", *, repository: str):
+        self._repository = repository
         # check_same_thread is left at its default; the store is meant for the
         # single-threaded CI gate process and the test suite.
         self._conn = sqlite3.connect(database)
@@ -109,13 +110,14 @@ class SQLiteMetricHistoryStore(MetricHistoryStore):
             self._conn.execute(
                 """
                 INSERT INTO runs (
-                    run_id, test_path, backend, suite,
+                    run_id, repository, test_path, backend, suite,
                     commit_sha, pr_number, github_run_id, github_run_attempt,
                     event_name, ref, created_at, trusted
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
+                    self._repository,
                     identity.test_path,
                     identity.backend,
                     identity.suite,
@@ -142,14 +144,12 @@ class SQLiteMetricHistoryStore(MetricHistoryStore):
         backend: str,
         suite: str,
         metric_key: str,
-        steps_key: str,
-        constraint_key: str,
         step: int,
         limit: int,
     ) -> list[float]:
         rows = self._conn.execute(
             _BASELINE_SQL,
-            (test_path, backend, suite, metric_key, steps_key, constraint_key, step, limit),
+            (self._repository, test_path, backend, suite, metric_key, step, limit),
         ).fetchall()
         return [row[0] for row in rows]
 
@@ -170,8 +170,8 @@ class SQLiteMetricHistoryStore(MetricHistoryStore):
         column, value = next(iter(provided.items()))
         with self._conn:
             cursor = self._conn.execute(
-                f"UPDATE runs SET trusted = 0 WHERE {column} = ? AND trusted = 1",
-                (value,),
+                f"UPDATE runs SET trusted = 0 WHERE repository = ? AND {column} = ? AND trusted = 1",
+                (self._repository, value),
             )
             return cursor.rowcount
 

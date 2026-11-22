@@ -126,7 +126,7 @@ WANDB_ARGS=(
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 8
    --sglang-mem-fraction-static 0.6
-   --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
+   --sglang-cuda-graph-bs-decode 1 2 4 8 $(seq 16 8 256)
    --sglang-expert-parallel-size 8
    # --use-rollout-routing-replay
 )

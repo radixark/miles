@@ -85,6 +85,7 @@ import socket
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, cast
 
 import ray
@@ -104,7 +105,8 @@ from typing_extensions import override
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from miles.backends.megatron_utils import megatron_to_hf as m2hf
-from miles.utils.hf_config import load_hf_config as _load_hf_config
+from miles.backends.sglang_utils.sglang_config import SglangConfig
+from miles.utils.hf_utils.config import load_hf_config as _load_hf_config
 
 DEFAULT_DIRECT_MOE_GROUP_SIZE = 2 * 1024**3
 
@@ -138,6 +140,9 @@ class Args:
     dry_run_plan: bool
     progress: bool
     progress_interval_seconds: float
+    moe_runner_backend: str | None = None
+    moe_a2a_backend: str | None = None
+    extra_high_precision_layers_megatron: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -976,7 +981,7 @@ def prepare_moe_block_task_tensors(
 def prepare_whole_source_task_tensors(
     task: TaskSpec,
     input_dir: str,
-    megatron_args: Any,
+    conversion_args: argparse.Namespace,
     model_name: str,
     metadata: dist_cp.metadata.Metadata,
 ) -> PreparedTaskTensors:
@@ -985,10 +990,10 @@ def prepare_whole_source_task_tensors(
 
     groups: list[PreparedTensorGroup] = []
     try:
-        for name, param in get_named_params(megatron_args, state_dict):
-            if getattr(megatron_args, "vocab_size", None) is not None:
-                param = m2hf.remove_padding(name, param, megatron_args.vocab_size)
-            converted_named_tensors = m2hf._convert_to_hf_core(megatron_args, model_name, name, param)
+        for name, param in get_named_params(conversion_args.backend, state_dict):
+            if getattr(conversion_args.backend, "vocab_size", None) is not None:
+                param = m2hf.remove_padding(name, param, conversion_args.backend.vocab_size)
+            converted_named_tensors = m2hf._convert_to_hf_core(conversion_args, model_name, name, param)
             groups.append(PreparedTensorGroup(name, tuple(converted_named_tensors)))
         return PreparedTaskTensors(
             tuple(groups),
@@ -1002,7 +1007,7 @@ def write_prepared_tensor_groups(
     staging_dir: str,
     task_id: int,
     groups: tuple[PreparedTensorGroup, ...],
-    megatron_args: Any,
+    conversion_args: argparse.Namespace,
     quantization_config: dict[str, Any] | None,
     max_file_bytes: int,
     cuda_device_id: int | None,
@@ -1020,7 +1025,10 @@ def write_prepared_tensor_groups(
                 torch.cuda.set_device(cuda_device_id)
             converted_named_tensors = tuple(
                 m2hf.quantize_params(
-                    megatron_args, group.source_name, list(converted_named_tensors), quantization_config
+                    conversion_args,
+                    group.source_name,
+                    list(converted_named_tensors),
+                    quantization_config,
                 )
             )
         shard_idx, current_size, added_size = append_to_shards(
@@ -1062,7 +1070,7 @@ class ConversionWorker:
         actor_id: int,
         input_dir: str,
         staging_dir: str,
-        megatron_args: Any,
+        conversion_args: argparse.Namespace,
         model_name: str,
         quantization_config: dict[str, Any] | None,
         max_file_bytes: int,
@@ -1073,7 +1081,7 @@ class ConversionWorker:
         self.cuda_device_id = initialize_worker_cuda_device(actor_id, quantization_config)
         self.input_dir = input_dir
         self.staging_dir = staging_dir
-        self.megatron_args = megatron_args
+        self.conversion_args = conversion_args
         self.model_name = model_name
         self.quantization_config = quantization_config
         self.max_file_bytes = max_file_bytes
@@ -1086,13 +1094,17 @@ class ConversionWorker:
             prepared = prepare_moe_block_task_tensors(task, self.input_dir, self.metadata)
         else:
             prepared = prepare_whole_source_task_tensors(
-                task, self.input_dir, self.megatron_args, self.model_name, self.metadata
+                task,
+                self.input_dir,
+                self.conversion_args,
+                self.model_name,
+                self.metadata,
             )
         shards, total_size = write_prepared_tensor_groups(
             self.staging_dir,
             task.task_id,
             prepared.groups,
-            self.megatron_args,
+            self.conversion_args,
             self.quantization_config,
             self.max_file_bytes,
             self.cuda_device_id,
@@ -1152,7 +1164,7 @@ def collect_ray_results(
     tasks: list[TaskSpec],
     input_dir: str,
     staging_dir: str,
-    megatron_args: Any,
+    conversion_args: argparse.Namespace,
     model_name: str,
     quantization_config: dict[str, Any] | None,
     max_file_bytes: int,
@@ -1176,7 +1188,7 @@ def collect_ray_results(
                 actor_id,
                 input_dir,
                 staging_dir,
-                megatron_args,
+                conversion_args,
                 model_name,
                 quantization_config,
                 max_file_bytes,
@@ -1270,14 +1282,14 @@ def prepare_output_dir(output_dir: str, force: bool) -> str:
 
 
 def load_megatron_args(input_dir: str, model_name_override: str | None, vocab_size: int | None) -> tuple[Any, str]:
-    megatron_args = torch.load(os.path.join(input_dir, "common.pt"), weights_only=False)["args"]
+    megatron_args = argparse.Namespace(
+        **vars(torch.load(os.path.join(input_dir, "common.pt"), weights_only=False)["args"])
+    )
     model_name = model_name_override or getattr(megatron_args, "original_hf_model_name", None)
     if model_name is None:
         raise ValueError("Model name is required when common.pt does not include original_hf_model_name")
     if vocab_size is not None:
         megatron_args.vocab_size = vocab_size
-    if not hasattr(megatron_args, "sglang_enable_ep_moe"):
-        megatron_args.sglang_enable_ep_moe = False
     return megatron_args, model_name
 
 
@@ -1317,11 +1329,12 @@ def convert_torch_dist_to_hf_ray(args: Args) -> str:
     staging_dir = prepare_output_dir(args.output_dir, args.force)
     initialize_ray()
     metadata_ref = ray.put(metadata)
+    conversion_args = _make_conversion_args(args=args, megatron_args=megatron_args)
     task_results = collect_ray_results(
         tasks,
         args.input_dir,
         staging_dir,
-        megatron_args,
+        conversion_args,
         model_name,
         quantization_config,
         args.max_file_bytes,
@@ -1334,12 +1347,41 @@ def convert_torch_dist_to_hf_ray(args: Args) -> str:
     return args.output_dir
 
 
+def _make_conversion_args(*, args: Args, megatron_args: argparse.Namespace) -> argparse.Namespace:
+    hf_checkpoint = getattr(megatron_args, "hf_checkpoint", None)
+    sglang_base_args = {
+        name: value
+        for name in ["moe_runner_backend", "moe_a2a_backend"]
+        if (
+            value := (
+                explicit
+                if (explicit := getattr(args, name)) is not None
+                else getattr(megatron_args, f"sglang_{name}", None)
+            )
+        )
+        is not None
+    }
+    return argparse.Namespace(
+        backend=megatron_args,
+        hf_checkpoint=Path(hf_checkpoint) if hf_checkpoint is not None else None,
+        extra_high_precision_layers_megatron=(
+            x
+            if (x := args.extra_high_precision_layers_megatron) is not None
+            else getattr(megatron_args, "extra_high_precision_layers_megatron", None)
+        ),
+        sglang=SglangConfig(models=[], base_args=sglang_base_args),
+    )
+
+
 def parse_args() -> Args:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-dir", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--origin-hf-dir", default=None)
     parser.add_argument("--model-name", default=None)
+    parser.add_argument("--moe-runner-backend", default=None)
+    parser.add_argument("--moe-a2a-backend", default=None)
+    parser.add_argument("--extra-high-precision-layers-megatron", nargs="*", default=None)
     parser.add_argument("-f", "--force", action="store_true")
     parser.add_argument("--max-file-bytes", type=int, default=20 * 1024**3)
     parser.add_argument("--concurrency", type=int, default=None)
@@ -1355,6 +1397,9 @@ def parse_args() -> Args:
         output_dir=ns.output_dir,
         origin_hf_dir=ns.origin_hf_dir,
         model_name=ns.model_name,
+        moe_runner_backend=ns.moe_runner_backend,
+        moe_a2a_backend=ns.moe_a2a_backend,
+        extra_high_precision_layers_megatron=ns.extra_high_precision_layers_megatron,
         force=ns.force,
         max_file_bytes=ns.max_file_bytes,
         concurrency=ns.concurrency,

@@ -1,0 +1,651 @@
+import asyncio
+import base64
+import ctypes
+import dataclasses
+import functools
+import importlib
+import sys
+import threading
+from argparse import Namespace
+from collections import defaultdict
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, nullcontext
+from types import ModuleType, SimpleNamespace
+from typing import Any
+
+import pytest
+import torch
+
+from miles.backends.sglang_utils.sglang_config import SglangConfig
+from miles.backends.training_utils.weight_update.checksum_utils import hash_tensor_sha256
+from miles.backends.training_utils.weight_update.protocols.transports.remote_shard import (
+    RemoteShard,
+    RemoteWeightLocation,
+)
+from miles.backends.training_utils.weight_update.protocols.utils.loader_probe import HfNameMapping
+from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_rank_assignment import (
+    assign_rollout_engine_ranks_for_data_replica,
+)
+
+_FAILURE_BOUND = 10.0
+_WEIGHT_NUMEL = 4
+_BUCKET_VALUES = {
+    "hf.w": [1.0, 2.0, 3.0, 4.0],
+    "hf.q": [5.0, 6.0],
+    "hf.k": [7.0, 8.0],
+    "hf.mtp": [9.0, 10.0, 11.0, 12.0],
+}
+# the draft shares "w" with the target, as an MTP draft shares embed and head
+_PUBLISHED_PARAM_NAMES_BY_RUNNER_ROLE = {"target": ("w", "qk"), "draft": ("w", "mtp")}
+
+
+@dataclasses.dataclass
+class _FakeServerArgs:
+    moe_runner_backend: str = "auto"
+    moe_a2a_backend: str = "none"
+    model_path: str = "/model"
+    speculative_algorithm: str | None = None
+    speculative_draft_model_path: str | None = None
+    enable_multi_layer_eagle: bool = False
+    speculative_moe_runner_backend: str | None = None
+    speculative_moe_a2a_backend: str | None = None
+    # expert placement, at sglang's defaults
+    ep_num_redundant_experts: int = 0
+    init_expert_location: str = "trivial"
+    enable_eplb: bool = False
+    ep_join_mode: str | None = None
+    elastic_ep_initial_size: int | None = None
+    dwdp_size: int = 1
+    kt_weight_path: str | None = None
+
+    def __getattr__(self, name: str) -> None:
+        # the other server args a replica key reads, all unset
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return None
+
+
+@dataclasses.dataclass
+class _FakeRankParallelismConfig:
+    tp_rank: int
+    global_rank: int
+
+    @classmethod
+    def from_dict(cls, parallelism_info: dict) -> "_FakeRankParallelismConfig":
+        return cls(**parallelism_info)
+
+    def to_dict(self) -> dict:
+        return dataclasses.asdict(self)
+
+
+# what each replica's loader would load every HF name into
+_PARAM_NAME_BY_HF_NAME = {"hf.w": "w", "hf.q": "qk", "hf.k": "qk", "hf.mtp": "mtp"}
+
+
+class _FakeModelReplica:
+    """Loads like the model replica of tp rank `tp_rank`: every HF value plus 100 times the rank."""
+
+    def __init__(
+        self, tp_rank: int, runner_role: str, harness: "_P2PSenderHarness", model_replica_module: ModuleType
+    ) -> None:
+        self.tp_rank = tp_rank
+        self.runner_role = runner_role
+        self._harness = harness
+        self._model_replica_module = model_replica_module
+        param_layout = model_replica_module.TransferBufferParamLayout.from_tensor(torch.empty(_WEIGHT_NUMEL))
+        self.transfer_buffer_param_layouts = {
+            name: param_layout for name in _PUBLISHED_PARAM_NAMES_BY_RUNNER_ROLE[runner_role]
+        }
+
+    def map_hf_names(self, hf_tensor_specs: dict) -> HfNameMapping:
+        hf_names_by_param_name = defaultdict(set)
+        for hf_name in hf_tensor_specs:
+            if _PARAM_NAME_BY_HF_NAME.get(hf_name) in self.transfer_buffer_param_layouts:
+                hf_names_by_param_name[_PARAM_NAME_BY_HF_NAME[hf_name]].add(hf_name)
+        return HfNameMapping.from_hf_names_by_param_name(
+            {param_name: frozenset(hf_names) for param_name, hf_names in hf_names_by_param_name.items()}
+        )
+
+    def load_into(
+        self, buffer: torch.Tensor, param_names: list[str], hf_tensors: list[tuple[str, torch.Tensor]]
+    ) -> dict[str, torch.Tensor]:
+        hf_tensors_by_name = dict(hf_tensors)
+        offset = 100.0 * self.tp_rank
+        values_by_param_name = {}
+        if "hf.w" in hf_tensors_by_name:
+            values_by_param_name["w"] = hf_tensors_by_name["hf.w"] + offset
+        if "hf.q" in hf_tensors_by_name or "hf.k" in hf_tensors_by_name:
+            values_by_param_name["qk"] = torch.cat([hf_tensors_by_name["hf.q"], hf_tensors_by_name["hf.k"]]) + offset
+        if "hf.mtp" in hf_tensors_by_name:
+            values_by_param_name["mtp"] = hf_tensors_by_name["hf.mtp"] + offset
+        assert sorted(values_by_param_name) == sorted(param_names)
+        param_bytes_by_name = self._model_replica_module._slice_buffer_by_param(
+            buffer, param_names, self.transfer_buffer_param_layouts
+        )
+        for name, param_bytes in param_bytes_by_name.items():
+            param_bytes.view(torch.float32).copy_(values_by_param_name[name])
+        self._harness.log.append(("load", self.tp_rank, tuple(hf_tensors_by_name)))
+        self._harness.loaded_event(self.tp_rank).set()
+        return param_bytes_by_name
+
+
+class _WriteHold:
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+
+class _FakeTransferEngine:
+    def __init__(self, log: list[tuple]) -> None:
+        self._log = log
+        self.registered: list[tuple[int, int]] = []
+        self.writes: list[tuple[str, dict[int, list[float]]]] = []
+        self.holds: dict[str, _WriteHold] = {}
+        self.failing_sessions: set[str] = set()
+        self.errors_by_session: dict[str, Exception] = {}
+
+    def hold(self, session_id: str) -> _WriteHold:
+        return self.holds.setdefault(session_id, _WriteHold())
+
+    def release_all(self) -> None:
+        for hold in self.holds.values():
+            hold.release.set()
+
+    def register_memory(self, address: int, size: int) -> int:
+        self.registered.append((address, size))
+        return 0
+
+    def unregister_memory(self, address: int) -> int:
+        self.registered = [(start, size) for start, size in self.registered if start != address]
+        return 0
+
+    def batch_transfer_sync_write(
+        self, session_id: str, source_ptrs: list[int], target_ptrs: list[int], source_lens: list[int]
+    ) -> int:
+        if (hold := self.holds.get(session_id)) is not None:
+            hold.entered.set()
+            if not hold.release.wait(timeout=_FAILURE_BOUND):
+                raise TimeoutError(f"the test never released the write to {session_id}")
+        # the NIC fails a read outside registered memory
+        if not all(map(self._is_registered, source_ptrs, source_lens)):
+            self._log.append(("unregistered read", session_id))
+            return -1
+        payload = {
+            target_ptr: torch.frombuffer(bytearray(ctypes.string_at(source_ptr, length)), dtype=torch.float32).tolist()
+            for source_ptr, target_ptr, length in zip(source_ptrs, target_ptrs, source_lens, strict=True)
+        }
+        self._log.append(("write", session_id))
+        self.writes.append((session_id, payload))
+        if session_id in self.errors_by_session:
+            raise self.errors_by_session[session_id]
+        return -1 if session_id in self.failing_sessions else 0
+
+    def _is_registered(self, address: int, length: int) -> bool:
+        return any(start <= address and address + length <= start + size for start, size in self.registered)
+
+    def written_sessions(self) -> list[str]:
+        return [session_id for session_id, _payload in self.writes]
+
+    def payload_of(self, session_id: str) -> dict[int, list[float]]:
+        (payload,) = [payload for written, payload in self.writes if written == session_id]
+        return payload
+
+
+class _FakeNixlAgent:
+    """Transfers like a NIXL agent through the fake transfer engine, so a NIXL write lands where a Mooncake one would:
+    the remote agent's name is the session the fake rollout engine publishes."""
+
+    def __init__(self, transfer_engine: _FakeTransferEngine) -> None:
+        self._transfer_engine = transfer_engine
+        self.remote_agents: list[str] = []
+        self.remote_gpu_ids_by_remote_agent: dict[str, set[int]] = defaultdict(set)
+        self.stuck_remote_agents: set[str] = set()
+        self.transfer_started = threading.Event()
+
+    def get_plugin_list(self) -> list[str]:
+        return ["UCX"]
+
+    def register_memory(self, tensor: torch.Tensor) -> int:
+        self._transfer_engine.register_memory(tensor.data_ptr(), tensor.nbytes)
+        return tensor.data_ptr()
+
+    def deregister_memory(self, registration: int) -> None:
+        self._transfer_engine.unregister_memory(registration)
+
+    def add_remote_agent(self, agent_metadata: bytes) -> str:
+        remote_agent = agent_metadata.decode()
+        self.remote_agents.append(remote_agent)
+        return remote_agent
+
+    def remove_remote_agent(self, remote_agent: str) -> None:
+        self.remote_agents.remove(remote_agent)
+
+    def get_xfer_descs(self, descs: list, mem_type: str | None = None) -> list[tuple[int, int, int]]:
+        if mem_type is None:
+            return [(tensor.data_ptr(), tensor.nbytes, 0) for tensor in descs]
+        assert mem_type == "VRAM"
+        return descs
+
+    def initialize_xfer(self, operation: str, local_descs: list, remote_descs: list, remote_agent: str) -> tuple:
+        assert operation == "WRITE" and remote_agent in self.remote_agents
+        return local_descs, remote_descs, remote_agent
+
+    def transfer(self, transfer: tuple) -> str:
+        local_descs, remote_descs, remote_agent = transfer
+        self.remote_gpu_ids_by_remote_agent[remote_agent].update(gpu_id for _, _, gpu_id in remote_descs)
+        self.transfer_started.set()
+        if remote_agent in self.stuck_remote_agents:
+            return "PROC"
+        ret = self._transfer_engine.batch_transfer_sync_write(
+            remote_agent,
+            [address for address, _, _ in local_descs],
+            [address for address, _, _ in remote_descs],
+            [nbytes for _, nbytes, _ in local_descs],
+        )
+        return "DONE" if ret == 0 else "ERR"
+
+    def check_xfer_state(self, transfer: tuple) -> str:
+        _, _, remote_agent = transfer
+        # as NIXL fails a transfer whose remote agent was removed
+        if remote_agent not in self.remote_agents:
+            raise RuntimeError("NIXL_ERR_NOT_FOUND")
+        return "PROC"
+
+    def release_xfer_handle(self, transfer: tuple) -> None:
+        pass
+
+
+class _FakeRolloutApi:
+    def __init__(
+        self,
+        cell_id: str,
+        gpu_count: int,
+        generation: int = 1,
+        published_weight_numel: int = _WEIGHT_NUMEL,
+        moe_runner_backend: str = "auto",
+        expert_placement: dict | None = None,
+        speculative_args: dict | None = None,
+        draft_shares_target_weights: bool = True,
+        unreachable: bool = False,
+        transport: str = "mooncake",
+    ) -> None:
+        self.unreachable = unreachable
+        self.request_failures: dict[str, Exception] = {}
+        self.hanging_requests: set[str] = set()
+        self.corrupted_roles: set[str] = set()
+        self.cell_id = cell_id
+        self.transport = transport
+        self.draft_shares_target_weights = draft_shares_target_weights
+        self.gpu_count = gpu_count
+        self.generation = generation
+        self.published_weight_numel = published_weight_numel
+        self.moe_runner_backend = moe_runner_backend
+        self.expert_placement = expert_placement or {}
+        self.speculative_args = speculative_args or {}
+        self.calls: list[str] = []
+        self.check_weights_calls: list[dict[str, Any]] = []
+        self.corrupted_ranks: set[int] = set()
+        self.transfer_engine: _FakeTransferEngine | None = None
+
+    def session_id(self, rank: int, runner_role: str = "target") -> str:
+        suffix = "" if runner_role == "target" else f"-{runner_role}"
+        return f"{self.cell_id}-g{self.generation}-r{rank}{suffix}"
+
+    def target_address(self, rank: int, name: str) -> int:
+        # one address per weight of a rank: a param the draft shares is the target's storage
+        return hash((self.session_id(rank), name)) & 0xFFFFFFFF
+
+    def published_address(self, rank: int, name: str, runner_role: str) -> int:
+        address_role = "target" if self.draft_shares_target_weights else runner_role
+        return hash((self.session_id(rank, address_role), name)) & 0xFFFFFFFF
+
+    async def get_remote_instance_transfer_engine_info(self, rank: int, role: str) -> dict:
+        await self._before_request(f"get_remote_instance_transfer_engine_info {role}")
+        weights = {
+            name: (self.published_address(rank, name, role), self.published_weight_numel, 4)
+            for name in _PUBLISHED_PARAM_NAMES_BY_RUNNER_ROLE[role]
+        }
+        if self.transport == "nixl":
+            return {
+                "transport": "nixl",
+                "agent_name": self.session_id(rank, role),
+                "agent_metadata": base64.b64encode(self.session_id(rank, role).encode()).decode("ascii"),
+                "gpu_id": rank,
+                "weights_info_dict": weights,
+            }
+        return {"transport": "mooncake", "session_id": self.session_id(rank, role), "weights_info_dict": weights}
+
+    async def get_parallelism_info(self, rank: int, role: str) -> dict:
+        await self._before_request(f"get_parallelism_info {role}")
+        return {"tp_rank": rank, "global_rank": 10 * self.generation + rank}
+
+    async def get_server_info(self) -> dict:
+        await self._before_request("get_server_info")
+        return {"moe_runner_backend": self.moe_runner_backend, **self.expert_placement, **self.speculative_args}
+
+    async def check_weights(self, *, action: str, names: list[str], selector: str) -> dict[str, Any]:
+        self.check_weights_calls.append(dict(action=action, names=names, selector=selector))
+        await self._before_request(f"check_weights {selector}")
+        assert self.transfer_engine is not None
+        records = []
+        for rank in range(self.gpu_count):
+            landed: dict[int, list[float]] = {}
+            for session_id, payload in self.transfer_engine.writes:
+                if session_id == self.session_id(rank, selector):
+                    landed.update(payload)
+            if not landed:
+                continue
+            offset = 1.0 if rank in self.corrupted_ranks or selector in self.corrupted_roles else 0.0
+            prefix = "" if selector == "target" else f"{selector}."
+            checksums = {
+                f"{prefix}{name}": hash_tensor_sha256(
+                    torch.tensor(landed[self.published_address(rank, name, selector)]) + offset
+                )
+                for name in names
+            }
+            records.append({"checksums": checksums, "parallelism_info": [{"role": "tp", "rank": rank}]})
+        return {"success": True, "ranks": records}
+
+    async def _before_request(self, name: str) -> None:
+        self.calls.append(name)
+        if self.unreachable:
+            raise ConnectionError("engine unreachable")
+        if name in self.request_failures:
+            raise self.request_failures[name]
+        if name in self.hanging_requests:
+            await asyncio.Event().wait()
+
+
+class _ProtocolCall:
+    def __init__(self, target: Callable[[], None]) -> None:
+        self._target = target
+        self.error: BaseException | None = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            self._target()
+        except BaseException as error:
+            self.error = error
+
+    def join(self) -> None:
+        self._thread.join(timeout=_FAILURE_BOUND)
+        assert not self._thread.is_alive(), "the protocol call is still running"
+        if self.error is not None:
+            raise self.error
+
+
+class _P2PSenderHarness:
+    def __init__(self, p2p_protocol: ModuleType, monkeypatch: pytest.MonkeyPatch, p2p_transport: str) -> None:
+        self._p2p_protocol = p2p_protocol
+        self.p2p_transport = p2p_transport
+        self.log: list[tuple] = []
+        self.transfer_engine = _FakeTransferEngine(self.log)
+        self.nixl_agent = _FakeNixlAgent(self.transfer_engine)
+        self.transfer_engines_created = 0
+        self.replicas_created: list[_FakeModelReplica] = []
+        self._loaded_events: dict[int, threading.Event] = {}
+        self._calls: list[_ProtocolCall] = []
+        self._protocols: list[Any] = []
+        self.assignment_inputs: list[tuple[Any, list[int]]] = []
+        self.first_passes = 0
+        self.data_replica_rank = 0
+        self.data_replica_size = 1
+
+        mooncake_transport = sys.modules[p2p_protocol.MooncakeTransport.__module__]
+        monkeypatch.setattr(mooncake_transport, "_create_transfer_engine", self._create_transfer_engine)
+        monkeypatch.setattr(
+            sys.modules[p2p_protocol.NixlTransport.__module__], "_create_nixl_agent", self._create_nixl_agent
+        )
+        monkeypatch.setattr(p2p_protocol, "assign_rollout_engine_ranks", self._assign_rollout_engine_ranks)
+        monkeypatch.setattr(p2p_protocol, "get_gloo_group", lambda: None)
+        monkeypatch.setattr(p2p_protocol, "dist", SimpleNamespace(get_rank=lambda group=None: 0))
+        self._model_replica_module = sys.modules[p2p_protocol.query_rollout_engine_rank_configs.__module__]
+        monkeypatch.setattr(self._model_replica_module, "RankParallelismConfig", _FakeRankParallelismConfig)
+        monkeypatch.setattr(self._model_replica_module, "ServerArgs", _FakeServerArgs)
+        monkeypatch.setattr(self._model_replica_module, "build_model_replica", self._build_model_replica)
+        # CPU CI has no pinned memory
+        monkeypatch.setattr(
+            sys.modules[p2p_protocol.TransferBuffers.__module__],
+            "_allocate_transfer_buffer",
+            lambda buffer_nbytes, device: torch.empty(buffer_nbytes, dtype=torch.uint8, device=device),
+        )
+
+    def loaded_event(self, tp_rank: int) -> threading.Event:
+        return self._loaded_events.setdefault(tp_rank, threading.Event())
+
+    def make_protocol(
+        self,
+        *,
+        p2p_transfer_timeout: float = _FAILURE_BOUND,
+        update_weight_buffer_size: int = 1024,
+        check_weight_transfer_checksum: bool = False,
+    ) -> Any:
+        args = Namespace(
+            ft_components=["weight_update"],
+            hf_checkpoint="/model",
+            p2p_transfer_timeout=p2p_transfer_timeout,
+            update_weight_engine_request_timeout=_FAILURE_BOUND,
+            update_weight_buffer_size=update_weight_buffer_size,
+            check_weight_transfer_checksum=check_weight_transfer_checksum,
+            sglang=SglangConfig(models=[], base_args={"pp_size": 1}),
+            p2p_transport=self.p2p_transport,
+        )
+        protocol = self._p2p_protocol.UpdateWeightP2P(args)
+        self._protocols.append(protocol)
+        return protocol
+
+    def connect(
+        self, protocol: Any, apis: list[_FakeRolloutApi], placement: Any = None, selector: str = "all"
+    ) -> None:
+        for api in apis:
+            api.transfer_engine = self.transfer_engine
+        protocol.connect(
+            rollout_engines=apis,
+            engine_gpu_counts=[api.gpu_count for api in apis],
+            engine_gpu_offsets=None,
+            engine_cell_ids=[api.cell_id for api in apis],
+            parallel_state=None,
+            placement=placement,
+            selector=selector,
+        )
+
+    def begin_sync(self, protocol: Any, weight_version: int) -> None:
+        """As the updater begins a sync: the iterator it hands over yields every HF tensor the trainer sends."""
+
+        def iter_buckets(materialize: bool):
+            self.first_passes += 1
+            yield [(name, torch.tensor(values)) for name, values in _BUCKET_VALUES.items()]
+
+        protocol.begin_sync(weight_version=weight_version, iter_buckets=iter_buckets)
+
+    def call_in_thread(self, target: Callable[[], None]) -> _ProtocolCall:
+        call = _ProtocolCall(target)
+        self._calls.append(call)
+        return call
+
+    def close(self) -> None:
+        self.transfer_engine.release_all()
+        for call in self._calls:
+            call.join()
+        for protocol in self._protocols:
+            if protocol._transport is not None:
+                for executor in protocol._transport._executors_by_rollout_engine_ind.values():
+                    executor.shutdown(wait=True)
+
+    def _assign_rollout_engine_ranks(
+        self, parallel_state: Any, placement: Any, engine_gpu_counts: list[int]
+    ) -> list[Any]:
+        self.assignment_inputs.append((placement, list(engine_gpu_counts)))
+        return assign_rollout_engine_ranks_for_data_replica(
+            data_replica_rank=self.data_replica_rank,
+            data_replica_size=self.data_replica_size,
+            engine_gpu_counts=engine_gpu_counts,
+        )
+
+    def _create_transfer_engine(self) -> _FakeTransferEngine:
+        self.transfer_engines_created += 1
+        return self.transfer_engine
+
+    def _create_nixl_agent(self) -> _FakeNixlAgent:
+        self.transfer_engines_created += 1
+        return self.nixl_agent
+
+    def _build_model_replica(
+        self, config: Any, model_path: str, *, transfer_buffer_device: torch.device
+    ) -> _FakeModelReplica:
+        model_replica = _FakeModelReplica(
+            config.parallelism.tp_rank, config.runner_role, self, self._model_replica_module
+        )
+        self.replicas_created.append(model_replica)
+        return model_replica
+
+
+_P2P_PROTOCOL_MODULE = "miles.backends.training_utils.weight_update.protocols.p2p"
+
+
+@contextmanager
+def _stubbed_missing_external_sdks(module_attributes: dict[str, dict[str, object]]) -> Iterator[None]:
+    created_modules: list[str] = []
+    created_attributes: list[tuple[ModuleType, str]] = []
+
+    for module_name, attributes in module_attributes.items():
+        parts = module_name.split(".")
+        for depth in range(1, len(parts) + 1):
+            name = ".".join(parts[:depth])
+            if name in sys.modules:
+                continue
+            try:
+                importlib.import_module(name)
+                continue
+            except ImportError:
+                pass
+            module = ModuleType(name)
+            module.__path__ = []
+            sys.modules[name] = module
+            created_modules.append(name)
+            if depth > 1:
+                parent = sys.modules[".".join(parts[: depth - 1])]
+                setattr(parent, parts[depth - 1], module)
+                created_attributes.append((parent, parts[depth - 1]))
+        for attribute, value in attributes.items():
+            module = sys.modules[module_name]
+            if not hasattr(module, attribute):
+                setattr(module, attribute, value)
+                created_attributes.append((module, attribute))
+
+    try:
+        yield
+    finally:
+        for parent, attribute in reversed(created_attributes):
+            delattr(parent, attribute)
+        for name in reversed(created_modules):
+            sys.modules.pop(name, None)
+
+
+@pytest.fixture(scope="module")
+def p2p_protocol() -> ModuleType:
+    with _stubbed_missing_external_sdks(
+        {
+            "mooncake.engine": {"TransferEngine": object},
+            "sglang.srt.server_args": {"ServerArgs": object},
+            "sglang.srt.configs.device_config": {"DeviceConfig": object},
+            "sglang.srt.configs.load_config": {"LoadConfig": object},
+            "sglang.srt.configs.model_config": {"ModelConfig": object},
+            "sglang.srt.distributed.parallel_state": {
+                "ParallelismContext": object,
+                "RankParallelismConfig": object,
+            },
+            "sglang.srt.layers.moe": {"initialize_moe_config": lambda *args, **kwargs: None},
+            "sglang.srt.layers.moe.utils": {
+                "draft_model_build_scope": nullcontext,
+                "speculative_moe_a2a_backend_context": nullcontext,
+                "speculative_moe_backend_context": nullcontext,
+            },
+            "sglang.srt.layers.quantization.base_config": {
+                "QuantizeMethodBase": type(
+                    "QuantizeMethodBase", (), {"restore_weights_before_loading": lambda self, layer: None}
+                )
+            },
+            "sglang.srt.layers.quantization.fp4_utils": {"initialize_fp4_gemm_config": lambda *args, **kwargs: None},
+            "sglang.srt.layers.quantization.fp8_utils": {"initialize_fp8_gemm_config": lambda *args, **kwargs: None},
+            "sglang.srt.model_loader": {"get_model": lambda *args, **kwargs: None},
+            "sglang.srt.model_loader.loader": {"DefaultModelLoader": object},
+            "sglang.srt.runtime_context": {"get_server_args": lambda: None},
+        }
+    ):
+        return importlib.import_module(_P2P_PROTOCOL_MODULE)
+
+
+@pytest.fixture(scope="module")
+def mooncake_module(p2p_protocol: ModuleType) -> ModuleType:
+    return sys.modules[p2p_protocol.MooncakeTransport.__module__]
+
+
+@pytest.fixture(scope="module")
+def model_replica_module(p2p_protocol: ModuleType) -> ModuleType:
+    return sys.modules[p2p_protocol.query_rollout_engine_rank_configs.__module__]
+
+
+@pytest.fixture(params=["mooncake", "nixl"])
+def p2p_transport(request: pytest.FixtureRequest) -> str:
+    return request.param
+
+
+@pytest.fixture
+def p2p_sender(
+    p2p_protocol: ModuleType, monkeypatch: pytest.MonkeyPatch, p2p_transport: str
+) -> Iterator[_P2PSenderHarness]:
+    harness = _P2PSenderHarness(p2p_protocol, monkeypatch, p2p_transport)
+    yield harness
+    harness.close()
+
+
+@pytest.fixture
+def make_rollout_api(p2p_transport: str) -> Callable[..., _FakeRolloutApi]:
+    return functools.partial(_FakeRolloutApi, transport=p2p_transport)
+
+
+@pytest.fixture
+def make_bucket() -> Callable[..., list[tuple[str, torch.Tensor]]]:
+    def _make(*names: str) -> list[tuple[str, torch.Tensor]]:
+        return [(name, torch.tensor(_BUCKET_VALUES[name])) for name in names]
+
+    return _make
+
+
+@pytest.fixture
+def make_cell_updater(p2p_protocol: ModuleType) -> Callable[..., Any]:
+    def make(cell_id: str = "cell-a", api_client: Any = None) -> Any:
+        return p2p_protocol._P2PRolloutCellUpdater(
+            args=Namespace(ft_components=["weight_update"], update_weight_engine_request_timeout=0.05),
+            cell_id=cell_id,
+            api_client=api_client,
+        )
+
+    return make
+
+
+@pytest.fixture
+def make_remote_shard() -> Callable[..., Any]:
+    def make(cell_id: str = "cell-a", rank: int = 0, runner_role: str = "target") -> Any:
+        return RemoteShard(
+            cell_id=cell_id,
+            rollout_engine_ind=0,
+            rollout_engine_rank=rank,
+            runner_role=runner_role,
+            transport_peer=f"{cell_id}-{runner_role}-r{rank}",
+            weight_locations_by_name={"w": RemoteWeightLocation(address=0x1000, numel=4, element_size=4)},
+        )
+
+    return make
+
+
+@pytest.fixture
+def transport(p2p_sender: Any, p2p_protocol: ModuleType, mooncake_module: ModuleType) -> Iterator[Any]:
+    transport = p2p_protocol.P2PTransport(mooncake_module.MooncakeTransport())
+    yield transport
+    p2p_sender.transfer_engine.release_all()
+    for executor in transport._executors_by_rollout_engine_ind.values():
+        executor.shutdown(wait=True)

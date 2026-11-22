@@ -1,0 +1,17 @@
+apiVersion: v2
+name: miles-run
+description: One Miles training run - the orchestration script, the static workers it talks to, and the inference and training pools.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - miles
+  - kubernetes
+  - reinforcement-learning
+home: https://github.com/radixark/miles
+sources:
+  - https://github.com/radixark/miles
+dependencies:
+  - name: miles-common
+    version: 0.1.0
+    repository: file://../miles-common

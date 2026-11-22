@@ -4,13 +4,10 @@ from pathlib import Path
 
 from tests.ci.ci_register import register_cuda_ci
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=3600,
-    suite="stage-c-8-gpu-h100",
-    labels=["model-scripts"],
-    disabled="Requires Blackwell/B200 CI runner for NVFP4.",
+    est_time=1500, suite="stage-c-8-gpu-b200", labels=["megatron", "model-scripts"], hardware=["blackwell"], num_gpus=8
 )
 
 MODEL_ORG = "Pinaster"
@@ -22,17 +19,12 @@ ROLLOUT_NUM_GPUS = 4
 ROLLOUT_GPUS_PER_ENGINE = 2
 NUM_LAYERS_AT_START_IN_BF16 = 1
 NUM_LAYERS_AT_END_IN_BF16 = 1
-RUN_ID = U.create_run_id()
+NVFP4_MODEL_NAME = f"{MODEL_NAME}-NVFP4-bf16-{NUM_LAYERS_AT_START_IN_BF16}-{NUM_LAYERS_AT_END_IN_BF16}"
+RUN_ID = command_utils.create_run_id()
 
 MODEL_DIR = "/root/models"
 DATA_DIR = "/root/datasets"
 MEGATRON_PATH = "/root/TransformerEngine:/root/Megatron-LM"
-
-EXTRA_HIGH_PRECISION_LAYERS_HF = (".shared_experts.",)
-EXTRA_HIGH_PRECISION_LAYERS_MEGATRON = (
-    ".shared_experts.linear_fc1",
-    ".shared_experts.linear_fc2",
-)
 
 NVFP4_ENV = {
     "NVTE_NVFP4_DISABLE_2D_QUANTIZATION": "1",
@@ -82,30 +74,12 @@ matchers:
         enabled: true
         pattern: "*.mlp.experts.linear_fc2"
         config: "nvfp4"
-    shared_experts_fc1_bf16:
-        type: "glob"
-        enabled: true
-        pattern: "*.mlp.shared_experts.linear_fc1"
-        config: "bf16"
-    shared_experts_fc2_bf16:
-        type: "glob"
-        enabled: true
-        pattern: "*.mlp.shared_experts.linear_fc2"
-        config: "bf16"
     default_bf16:
         type: "glob"
         enabled: true
         pattern: "*"
         config: "bf16"
 """.strip()
-
-
-def _extra_high_precision_layers_hf_args() -> str:
-    return "--extra-high-precision-layers-hf " + " ".join(EXTRA_HIGH_PRECISION_LAYERS_HF) + " "
-
-
-def _extra_high_precision_layers_megatron_args() -> str:
-    return "--extra-high-precision-layers-megatron " + " ".join(EXTRA_HIGH_PRECISION_LAYERS_MEGATRON) + " "
 
 
 def _validate_glm_checkpoint():
@@ -131,21 +105,20 @@ def _validate_glm_checkpoint():
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     os.environ.update(NVFP4_ENV)
     U.exec_command_cpu(f"mkdir -p {MODEL_DIR} {DATA_DIR}")
     U.exec_command_cpu(f"hf download {MODEL_ORG}/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=DATA_DIR)
 
     _validate_glm_checkpoint()
-    U.exec_command_cpu(f"rm -rf {MODEL_DIR}/{MODEL_NAME}-NVFP4 {MODEL_DIR}/{MODEL_NAME}_torch_dist")
-
-    U.exec_command_gpu(
+    U.exec_command_gpu_once(
         f"python tools/convert_hf_to_nvfp4.py "
         f"--model-dir {MODEL_DIR}/{MODEL_NAME} "
-        f"--save-dir {MODEL_DIR}/{MODEL_NAME}-NVFP4 "
+        f"--save-dir {MODEL_DIR}/{NVFP4_MODEL_NAME} "
         f"--num-layers-at-start-in-bf16 {NUM_LAYERS_AT_START_IN_BF16} "
-        f"--num-layers-at-end-in-bf16 {NUM_LAYERS_AT_END_IN_BF16} "
-        f"{_extra_high_precision_layers_hf_args()}"
+        f"--num-layers-at-end-in-bf16 {NUM_LAYERS_AT_END_IN_BF16} ",
+        f"{MODEL_DIR}/{NVFP4_MODEL_NAME}",
     )
 
     U.convert_checkpoint(
@@ -165,12 +138,13 @@ def prepare():
 
 
 def execute():
+    U = command_utils.default_config().create_backend()
     os.environ.update(NVFP4_ENV)
     os.environ.update(GLM5_ENV)
     os.environ.setdefault("RAY_TMPDIR", "/tmp/ray")
-    te_precision_config_path = U.encode_pseudo_file(TE_PRECISION_CONFIG)
+    te_precision_config_path = command_utils.encode_pseudo_file(TE_PRECISION_CONFIG)
 
-    ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-NVFP4/ " f"--ref-load {MODEL_DIR}/{MODEL_NAME}_torch_dist "
+    ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{NVFP4_MODEL_NAME}/ " f"--ref-load {MODEL_DIR}/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
         f"--prompt-data {DATA_DIR}/dapo-math-17k/dapo-math-17k.jsonl "
@@ -180,11 +154,11 @@ def execute():
         "--rollout-shuffle "
         "--rm-type deepscaler "
         "--num-rollout 2 "
-        "--rollout-batch-size 8 "
-        "--n-samples-per-prompt 8 "
+        "--rollout-batch-size 4 "
+        "--n-samples-per-prompt 4 "
         "--rollout-max-response-len 100 "
         "--rollout-temperature 1 "
-        "--global-batch-size 64 "
+        "--global-batch-size 16 "
     )
 
     perf_args = (
@@ -233,8 +207,8 @@ def execute():
         "--sglang-mem-fraction-static 0.7 "
         "--sglang-enable-dp-attention "
         "--sglang-attention-backend nsa "
-        "--sglang-nsa-decode-backend flashmla_kv "
-        "--sglang-nsa-prefill-backend flashmla_sparse "
+        "--sglang-dsa-decode-backend flashmla_kv "
+        "--sglang-dsa-prefill-backend flashmla_sparse "
         "--sglang-dsa-topk-backend flashinfer "
         "--sglang-kv-cache-dtype fp8_e4m3 "
         "--sglang-page-size 64 "
@@ -244,13 +218,15 @@ def execute():
         f"--sglang-dp-size {ROLLOUT_GPUS_PER_ENGINE} "
         "--sglang-moe-dense-tp-size 1 "
         "--sglang-enable-dp-lm-head "
-        "--sglang-cuda-graph-max-bs 256 "
+        "--sglang-cuda-graph-max-bs-decode 256 "
         "--sglang-max-running-requests 512 "
         f"--sglang-chunked-prefill-size {2048 * ROLLOUT_GPUS_PER_ENGINE} "
         "--sglang-watchdog-timeout 3600 "
     )
 
-    ci_args = "--ci-test --ci-disable-logprobs-checker --ci-disable-weight-update-checker "
+    ci_args = (
+        "--ci-test " "--ci-disable-kl-checker " "--ci-disable-logprobs-checker " "--ci-disable-weight-update-checker "
+    )
 
     mixed_precision_args = (
         "--transformer-impl transformer_engine "
@@ -260,8 +236,6 @@ def execute():
         "--first-last-layers-bf16 "
         f"--num-layers-at-start-in-bf16 {NUM_LAYERS_AT_START_IN_BF16} "
         f"--num-layers-at-end-in-bf16 {NUM_LAYERS_AT_END_IN_BF16} "
-        f"{_extra_high_precision_layers_hf_args()}"
-        f"{_extra_high_precision_layers_megatron_args()}"
         f"--te-precision-config-file {te_precision_config_path} "
     )
 
@@ -276,12 +250,12 @@ def execute():
         "--attention-backend flash "
         "--allgather-cp "
         "--miles-dsa-topk-backend flashinfer "
+        "--update-weight-transfer-mode broadcast_packed "
         f"--update-weight-buffer-size {2 * 1024 ** 3} "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {ACTOR_NUM_GPUS} "
         f"--num-gpus-per-node {NUM_GPUS} "
         f"--rollout-num-gpus {ROLLOUT_NUM_GPUS} "
-        "--use-fault-tolerance "
         "--moe-enable-deepep "
         "--moe-token-dispatcher-type flex "
         f"--dump-details /root/shared_data/{RUN_ID}/dump_details "
@@ -292,7 +266,7 @@ def execute():
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=RUN_ID)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=RUN_ID)} "
         f"{perf_args} "
         f"{sglang_args} "
         f"{ci_args} "

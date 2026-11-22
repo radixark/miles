@@ -1,63 +1,156 @@
+import uuid
+from collections.abc import Callable
+from copy import deepcopy
+from unittest.mock import patch
+
 import pytest
+import requests
 from tests.session_parity_utils import (
     SESSION_PARITY_SEED,
     V1,
     V2,
+    _serve_session,
+    _training_metadata_projection,
     assert_agentic_retry_trajectory_parity,
     assert_sample_bitwise_equal,
     run_agentic_retry_trajectories,
 )
 
-from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo, with_mock_server
+from miles.utils.test_utils.mock_sglang_server import (
+    MockSGLangServer,
+    ProcessResult,
+    ProcessResultMetaInfo,
+    with_mock_server,
+)
 from miles.utils.test_utils.session_verify_agent import (
     ASSISTANT_INPUT_FOLLOWUP_TEXT,
-    FORCE_FINAL_TEXT,
+    ASSISTANT_INPUT_TEXTS,
+    CUTS_KEY,
+    EXPECTATIONS_KEY,
+    INITIAL_USER_PROMPT,
     MOCK_TOOL_RESULTS,
+    NO_TOOL_CALL_USER_TEXT,
+    SENTINEL_TOOL_RESULT,
     SYSTEM_REMINDER_TEXT,
-    USER_FOLLOWUP_TEXT,
+    UNFINISHED_KEY,
+    USER_FOLLOWUP_TEXTS,
     build_initial_messages,
 )
 from miles.utils.types import Sample
 
 _MODEL = "Qwen/Qwen3-0.6B"
 _BATCH_SIZE = 16
-_REQUESTS_PER_TRAJECTORY = 9
+
+
+def _call(city: str, version: str) -> ProcessResult:
+    return ProcessResult(
+        f'I will check {city}.\n<tool_call>\n{{"name": "get_weather", "arguments": {{"location": "{city}"}}}}\n</tool_call>',
+        meta_info=ProcessResultMetaInfo(weight_version=version),
+    )
+
+
+def _answer(text: str, version: str) -> ProcessResult:
+    return ProcessResult(text, meta_info=ProcessResultMetaInfo(weight_version=version))
+
+
+# The reply to a prompt is keyed on the marker that appears last in it.
 _AGENT_RESPONSES = {
-    "initial": ProcessResult(
-        'I will check Beijing.\n<tool_call>\n{"name": "get_weather", '
-        '"arguments": {"location": "Beijing"}}\n</tool_call>',
-        meta_info=ProcessResultMetaInfo(weight_version="w0"),
-    ),
-    "beijing_result": ProcessResult(
-        "Beijing is 22 degrees Celsius and sunny.",
-        meta_info=ProcessResultMetaInfo(weight_version="w1"),
-    ),
-    "shanghai_call": ProcessResult(
-        'I will check Shanghai.\n<tool_call>\n{"name": "get_weather", '
-        '"arguments": {"location": "Shanghai"}}\n</tool_call>',
-        meta_info=ProcessResultMetaInfo(weight_version="w2"),
-    ),
-    "shanghai_result": ProcessResult(
-        "Shanghai is 15 degrees Celsius and cloudy.",
-        meta_info=ProcessResultMetaInfo(weight_version="w3"),
-    ),
-    "rollback_retry": ProcessResult(
-        "I will answer in one sentence.",
-        meta_info=ProcessResultMetaInfo(weight_version="w4"),
-    ),
-    "force_final": ProcessResult(
-        "<final_answer>Beijing is sunny and Shanghai is cloudy.</final_answer>",
-        meta_info=ProcessResultMetaInfo(weight_version="w7"),
-    ),
-    "assistant_input": ProcessResult(
-        "<final_answer>Beijing was sunny and Shanghai was rainy.</final_answer>",
-        meta_info=ProcessResultMetaInfo(weight_version="w8"),
+    INITIAL_USER_PROMPT: _call("Beijing", "w0"),
+    USER_FOLLOWUP_TEXTS[0]: _call("Shanghai", "w1"),
+    SYSTEM_REMINDER_TEXT: _answer("Understood.", "w2"),
+    ASSISTANT_INPUT_TEXTS[0]: _answer("Noted.", "w3"),
+    USER_FOLLOWUP_TEXTS[1]: _call("Hangzhou", "w4"),
+    USER_FOLLOWUP_TEXTS[2]: _call("London", "w9"),
+    MOCK_TOOL_RESULTS[0]: _answer("London is 22 degrees Celsius and sunny.", "w5"),
+    NO_TOOL_CALL_USER_TEXT: _answer("Beijing is the capital of China.", "w6"),
+    SENTINEL_TOOL_RESULT: _answer("The weather service is unavailable.", "w7"),
+    ASSISTANT_INPUT_FOLLOWUP_TEXT: _answer(
+        "<final_answer>Beijing was sunny and Shanghai was rainy.</final_answer>", "w8"
     ),
 }
-_SELECTED_WEIGHT_VERSIONS = ["w0", "w1", "w2", "w3", "w4", "w7", "w8"]
+# The initial call; the user, system and assistant probes after a call (the system and
+# assistant probes get answers without one, so a question rebuilds the call after each);
+# the tool result; the no-call turn and the tool probe after it; two rollbacks; the
+# system message; the injected assistants.
+_REQUESTS_PER_TRAJECTORY = 13
+_SELECTED_WEIGHT_VERSIONS = ["w0", "w1", "w2", "w4", "w3", "w9", "w5", "w6", "w7", "w2", "w8"]
+_SHARED_PREFIX_VERSION = "p0"
+_EXPECTED_AGENT_METADATA = {
+    "driver_events": [
+        "initial",
+        "probe_user_after_tool_call",
+        "probe_system_after_tool_call",
+        "append_user",
+        "probe_assistant_after_tool_call",
+        "append_user",
+        "append_tool",
+        "append_user",
+        "no_tool_call",
+        "probe_tool_after_no_tool_call",
+        "rollback",
+        "rollback",
+        "append_system",
+        "append_assistant",
+    ],
+    EXPECTATIONS_KEY: [
+        {"step": step, "expected_status": 200, "actual_status": 200}
+        for step in (
+            "user after tool call",
+            "system after tool call",
+            "assistant after tool call",
+            "tool after no tool call",
+        )
+    ],
+    CUTS_KEY: [],
+    UNFINISHED_KEY: None,
+    "rollback_count": 2,
+    "user_count": 5,
+    "system_count": 1,
+    "assistant_input_count": 2,
+    "tool_result_count": 1,
+    "tool_call_count": 4,
+}
 
 
-def test_agentic_v2_drop_retries_matches_v1_training_payload_bitwise():
+@pytest.mark.parametrize("version", [V1, V2])
+def test_aborted_generation_is_not_committed(version):
+    def abort_generation(_prompt: str) -> ProcessResult:
+        return ProcessResult(text="partial response", finish_reason="abort")
+
+    with with_mock_server(model_name=_MODEL, process_fn=abort_generation) as backend:
+        with _serve_session(backend_url=backend.url, hf_checkpoint=_MODEL, version=version) as args:
+            session_url = args.session_server_instances[0].url
+            session_id = requests.post(f"{session_url}/sessions", timeout=5.0).json()["session_id"]
+            response = requests.post(
+                f"{session_url}/sessions/{session_id}/v1/chat/completions",
+                json={"messages": [{"role": "user", "content": "hello"}]},
+                timeout=10.0,
+            )
+
+            assert response.status_code == 503
+            assert response.json() == {"error": "upstream generation aborted before completion"}
+            session = requests.get(f"{session_url}/sessions/{session_id}", timeout=5.0).json()
+            assert session["records"] == []
+
+
+@pytest.mark.parametrize("random_tool_ids", [False, True])
+def test_agentic_v2_same_prompt_retries_match_v1_training_payload_bitwise(
+    random_tool_ids: bool, monkeypatch: pytest.MonkeyPatch, synchronize_mock_requests: Callable[[int], None]
+) -> None:
+    """Concurrent v1 and v2 trajectories preserve identical training payloads and retry history."""
+    synchronize_mock_requests(_BATCH_SIZE)
+    if random_tool_ids:
+        original = MockSGLangServer._compute_chat_completions_response
+
+        def response_with_random_tool_ids(self, payload):
+            response = original(self, payload)
+            for choice in response["choices"]:
+                for call in choice["message"].get("tool_calls") or []:
+                    call["id"] = f"call_{uuid.uuid4().hex}"
+            return response
+
+        monkeypatch.setattr(f"{__name__}._original_chat_completions_response", response_with_random_tool_ids)
+
     v1_runs = _run_scripted_agents(V1)
     v2_runs = _run_scripted_agents(V2)
 
@@ -65,14 +158,82 @@ def test_agentic_v2_drop_retries_matches_v1_training_payload_bitwise():
     for index, (v1, v2) in enumerate(zip(v1_runs, v2_runs, strict=True)):
         assert v1.samples[0].index == v2.samples[0].index == index
         assert v1.samples[0].rollout_id == v2.samples[0].rollout_id == index
-        assert v1.samples[0].weight_versions == _SELECTED_WEIGHT_VERSIONS
-        assert v2.samples[0].weight_versions == _SELECTED_WEIGHT_VERSIONS
+        expected_weight_versions = [[version] for version in _SELECTED_WEIGHT_VERSIONS]
+        assert [[span.version for span in call.spans] for call in v1.samples[0].weight_versions] == (
+            expected_weight_versions
+        )
+        assert [[span.version for span in call.spans] for call in v2.samples[0].weight_versions] == (
+            expected_weight_versions
+        )
+        for run in (v1, v2):
+            _assert_prefill_spans_follow_the_kept_turns(run.samples[0].weight_versions)
         assert_agentic_retry_trajectory_parity(v1, v2)
+        _assert_scripted_spec_rollout(v1, v2)
+
+
+def _assert_scripted_spec_rollout(v1, v2):
+    """The scripted replies give one exact tree: the two rollbacks branch off the no-call turn."""
+    tree = v2.pre_collect["metadata"]["tree"]
+    assert [(node["id"], node["parent"]) for node in tree["nodes"]] == [
+        (0, None),
+        *((i, i - 1) for i in range(1, 9)),
+        (9, 7),
+        (10, 7),
+        (11, 10),
+        (12, 11),
+    ]
+    kept = [0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12]
+    assert [(leaf["node_id"], leaf["path_node_ids"]) for leaf in tree["leaves"]] == [
+        (8, [*range(8), 8]),
+        (9, [*range(8), 9]),
+        (12, kept),
+    ]
+    assert v2.samples[0].metadata["leaf"]["path_node_ids"] == kept
+    assert v2.session_metadata["agent"] == _EXPECTED_AGENT_METADATA
+    for key, value in _EXPECTED_AGENT_METADATA.items():
+        assert v1.samples[0].metadata[key] == value
+
+
+def _assert_prefill_spans_follow_the_kept_turns(calls):
+    """Every kept turn carries its own prompt versions in absolute coordinates, tiled up to its output."""
+    assert [call.output_start for call in calls] == sorted({call.output_start for call in calls})
+    assert [call.spans[0].abs_start for call in calls] == [call.output_start for call in calls]
+    assert [[(span.version, span.abs_start, span.abs_end) for span in call.prefill_spans] for call in calls] == [
+        [(_SHARED_PREFIX_VERSION, 0, 1), (version, 1, call.output_start)]
+        for call, version in zip(calls, _SELECTED_WEIGHT_VERSIONS, strict=True)
+    ]
 
 
 def test_sample_bitwise_comparator_distinguishes_signed_zero():
     with pytest.raises(AssertionError, match="sample.reward is not bitwise equal"):
         assert_sample_bitwise_equal(Sample(reward=0.0), Sample(reward=-0.0))
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("tools", 0, "function", "name"), "get_time"),
+        (("chat_template_kwargs", "enable_thinking"), True),
+        (("temperature",), 1),
+    ],
+)
+def test_turn_args_parity_checks_exported_request_values(path, value):
+    metadata = {
+        "turn_args": {
+            "tools": [{"type": "function", "function": {"name": "get_weather"}}],
+            "chat_template_kwargs": {"enable_thinking": False},
+            "temperature": 0,
+        }
+    }
+    changed = deepcopy(metadata)
+    target = changed["turn_args"]
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    with pytest.raises(AssertionError):
+        assert_sample_bitwise_equal(
+            Sample(metadata=metadata), Sample(metadata=changed), metadata_projection=_training_metadata_projection
+        )
 
 
 def _run_scripted_agents(version: str):
@@ -86,7 +247,10 @@ def _run_scripted_agents(version: str):
         )
         for index in range(_BATCH_SIZE)
     ]
-    with with_mock_server(model_name=_MODEL, process_fn=_process_agent_prompt, latency=0.05) as backend:
+    with (
+        patch.object(MockSGLangServer, "_compute_chat_completions_response", new=_stamp_prompt_versions),
+        with_mock_server(model_name=_MODEL, process_fn=_process_agent_prompt) as backend,
+    ):
         results = run_agentic_retry_trajectories(
             backend_url=backend.url,
             hf_checkpoint=_MODEL,
@@ -99,17 +263,21 @@ def _run_scripted_agents(version: str):
     return results
 
 
+_original_chat_completions_response = MockSGLangServer._compute_chat_completions_response
+
+
+def _stamp_prompt_versions(mock_self: MockSGLangServer, payload: dict) -> dict:
+    response = _original_chat_completions_response(mock_self, payload)
+    meta_info = response["choices"][0]["meta_info"]
+    num_prompt_tokens = len(payload["input_ids"])
+    meta_info["prefill_weight_versions"] = [
+        {"version": _SHARED_PREFIX_VERSION, "start": 0, "end": 1},
+        {"version": meta_info["weight_version"], "start": 1, "end": num_prompt_tokens},
+    ]
+    return response
+
+
 def _process_agent_prompt(prompt: str) -> ProcessResult:
-    if ASSISTANT_INPUT_FOLLOWUP_TEXT in prompt:
-        return _AGENT_RESPONSES["assistant_input"]
-    if FORCE_FINAL_TEXT in prompt:
-        return _AGENT_RESPONSES["force_final"]
-    if SYSTEM_REMINDER_TEXT in prompt:
-        return _AGENT_RESPONSES["rollback_retry"]
-    if MOCK_TOOL_RESULTS[1] in prompt:
-        return _AGENT_RESPONSES["shanghai_result"]
-    if USER_FOLLOWUP_TEXT in prompt:
-        return _AGENT_RESPONSES["shanghai_call"]
-    if MOCK_TOOL_RESULTS[0] in prompt:
-        return _AGENT_RESPONSES["beijing_result"]
-    return _AGENT_RESPONSES["initial"]
+    marker = max(_AGENT_RESPONSES, key=prompt.rfind)
+    assert prompt.rfind(marker) >= 0, prompt[-300:]
+    return _AGENT_RESPONSES[marker]

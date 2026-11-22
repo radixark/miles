@@ -15,7 +15,8 @@ recipe are in the [SD3 model guide](/diffusion/models/sd3/sd3).
 
 ## 1. Start the container
 
-On the **host** (experimental image — see `docker/README.md`):
+On the **host** (experimental image — see
+[`docker/README.md`](https://github.com/radixark/miles_diffusion/blob/main/docker/README.md)):
 
 ```bash
 docker pull radixark/miles_diffusion:latest
@@ -37,8 +38,7 @@ Steps 2–4 below run inside the container (or on any machine with the same deps
 
 <Note>
 Launch recipes live under `scripts/` as **Python modules** (not bash). Each
-script sets recipe-specific env vars (e.g. `PYTHONPATH` for SD3
-`/rollout/generate`) and submits `train_diffusion.py` through Ray via
+script sets recipe-specific env vars (e.g. `PYTORCH_CUDA_ALLOC_CONF`) and submits `train_diffusion.py` through Ray via
 `miles.utils.external_utils.command_utils`.
 </Note>
 
@@ -51,11 +51,11 @@ training:
 export HF_TOKEN=<your_hf_token>
 ```
 
-The launch script pulls the checkpoint from the Hub on first run. To prefetch:
+The launch script loads the checkpoint by its Hub id and downloads it into the Hugging Face cache on
+first run. To prefetch into that cache:
 
 ```bash
-hf download stabilityai/stable-diffusion-3.5-medium \
-  --local-dir /root/models/stable-diffusion-3.5-medium
+hf download stabilityai/stable-diffusion-3.5-medium
 ```
 
 Training prompts come from the **`flowgrpo_ocr`** subset of
@@ -63,19 +63,18 @@ Training prompts come from the **`flowgrpo_ocr`** subset of
 Each prompt embeds the target string in double quotes (e.g. a logo saying
 `"Miles"`) — OCR reward compares PaddleOCR output against that target.
 
-The script downloads the dataset automatically if missing. To prefetch:
+The script downloads the subset under `--data-dir` (default `/root/datasets`) on every launch;
+`hf download` skips files that are already there. To prefetch into the default location:
 
 ```bash
-DATASETS_DIR="${DATASETS_DIR:-/root/datasets/miles-diffusion-datasets}"
-
 hf download --repo-type dataset rockdu/miles-diffusion-datasets \
   --include "flowgrpo_ocr/**" \
-  --local-dir "${DATASETS_DIR}"
+  --local-dir /root/datasets/miles-diffusion-datasets
 ```
 
 | Split | Path |
 |---|---|
-| Train | `${DATASETS_DIR}/flowgrpo_ocr/train.jsonl` |
+| Train | `<data-dir>/miles-diffusion-datasets/flowgrpo_ocr/train.jsonl` |
 
 See [Rewards](/diffusion/user-guide/rewards) for OCR scoring and prompt format.
 
@@ -92,9 +91,9 @@ FSDP actor with LoRA, syncs weights via CUDA IPC (`--lora-ipc-weight-sync`),
 and runs the Flow-GRPO rollout / train loop. With `WANDB_API_KEY` set, images
 and metrics are logged to project `miles-diffusion-grpo`.
 
-Once rollout begins, you should see rollout/train metrics such as
-`rollout/reward/raw_mean`, `train/loss`, and `train/log_prob_mean_abs_diff`
-(stdout and WandB when configured).
+Once rollout begins, stdout prints a `[reward stats] raw mean=…` line per rollout and
+`[train step N]` lines with metrics such as `train/loss` and `train/log_prob_mean_abs_diff`.
+WandB (when configured) also gets the reward as `rollout/reward/raw_mean`.
 
 To finish faster while debugging, override rollout count (default **600**):
 
@@ -140,19 +139,19 @@ Which denoising steps enter the loss is selected by a **step strategy**
 
 | Strategy | Behavior | Typical flags |
 |---|---|---|
-| `sde_window` | Random contiguous window (this recipe) | `--diffusion-num-sde-steps 10`, `--diffusion-sde-window-range 0,10` |
-| `epoch_global_random_choice` | Per-epoch random subset of candidate steps | `--diffusion-sde-candidate-steps …`, `--diffusion-num-sde-steps` |
+| `sde_window` | Random contiguous window inside the range (this recipe sets a 10-step window over all 10 steps, so every step is SDE) | `--diffusion-num-sde-steps 10`, `--diffusion-sde-window-range 0,10` |
+| `epoch_global_random_choice` | Random subset of candidate steps, shared by each block of `--rollout-batch-size` consecutive prompt groups (one rollout, unless a dynamic-sampling filter drops groups) | `--diffusion-sde-candidate-steps …`, `--diffusion-num-sde-steps` |
 
 Train-side dynamics and more on these strategies: [SDE step backend](/diffusion/advanced/sde-backend).
 
-**DiffusionNFT + PickScore** (3 GPUs, ODE, EMA reference) is a separate recipe
+**DiffusionNFT + PickScore** (3 GPUs, ODE rollouts from the EMA policy) is a separate recipe
 covered in the SD3 model guide.
 
 ## Inspecting a run
 
 | Question | Where to look |
 |---|---|
-| Is reward improving? | `rollout/reward/raw_mean` in stdout or WandB |
+| Is reward improving? | `rollout/reward/raw_mean` in WandB (`[reward stats] raw mean` in stdout) |
 | Train/rollout SDE aligned? | `train/log_prob_mean_abs_diff` (should stay small) |
 | Policy loss stable? | `train/loss`, `train/kl_loss` |
 | Rollout or train bottleneck? | `perf/rollout_time`, `perf/train_time` |

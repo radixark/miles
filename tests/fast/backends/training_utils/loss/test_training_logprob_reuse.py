@@ -5,16 +5,20 @@ from unittest.mock import Mock
 import pytest
 import torch
 import torch.distributed as dist
+from tests.ci.ci_register import register_cpu_ci
 
-from miles.backends.training_utils import loss as loss_module
-from miles.backends.training_utils.cp_utils import get_sum_of_sample_mean
-from miles.backends.training_utils.loss import compute_advantages_and_returns
-from miles.backends.training_utils.loss_hub import losses as losses_module
-from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy
-from miles.backends.training_utils.loss_hub.losses import policy_loss_function
+from miles.backends.training_utils.data.context_parallel import get_sum_of_sample_mean
+from miles.backends.training_utils.loss import objective as loss_module
+from miles.backends.training_utils.loss.hub import losses as losses_module
+from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy
+from miles.backends.training_utils.loss.hub.losses import policy_loss_function
+from miles.backends.training_utils.loss.objective import compute_advantages_and_returns
+from miles.utils.args.custom_function import CustomFunctionConfig
 from miles.utils.ft_utils.process_group_utils import GroupInfo
 
 from .loss_test_utils import deep_clone, make_args, make_batch, make_inputs, make_parallel_state, make_rollout_data
+
+register_cpu_ci(est_time=40, suite="stage-b-cpu", labels=["precision"])
 
 
 @pytest.fixture(scope="module")
@@ -39,7 +43,7 @@ def _run_policy_loss(args, batch, inputs, *, skip_actor_forward_only):
         batch["total_lengths"],
         batch["response_lengths"],
         batch["loss_masks"],
-        args.calculate_per_token_loss,
+        args.backend.calculate_per_token_loss,
         args.qkv_format,
         batch.get("max_seq_lens"),
     )
@@ -172,6 +176,36 @@ def test_skip_actor_forward_only_preserves_rollout_log_probs_as_old_policy(proce
     for key in skip_metrics:
         assert torch.equal(skip_metrics[key], baseline_metrics[key]), key
     assert skip_metrics["ppo_kl"].item() > 0
+    assert skip_metrics["train_rollout_logprob_abs_diff"].item() > 0
+    assert skip_metrics["train_rollout_kl"].item() > 0
+
+
+@pytest.mark.parametrize("use_rollout_logprobs", [False, True])
+def test_train_rollout_metrics_use_trainer_scores_independent_of_loss_baseline(process_group, use_rollout_logprobs):
+    make_parallel_state()
+    args = make_args(
+        entropy_coef=0.0,
+        observe_training_entropy=False,
+        true_on_policy_mode=False,
+        use_rollout_logprobs=use_rollout_logprobs,
+    )
+    inputs = make_inputs(seed=23, batch_size=1, prompt_lens=[4], response_lens=[3], vocab_size=16, args=args)
+    batch = make_batch(inputs, "policy_loss")
+    trainer_scores = get_log_probs_and_entropy(
+        deep_clone(inputs["policy_logits"]),
+        args=args,
+        unconcat_tokens=deep_clone(inputs["unconcat_tokens"]),
+        total_lengths=list(inputs["total_lens"]),
+        response_lengths=list(inputs["response_lens"]),
+        with_entropy=False,
+    )["log_probs"]
+    batch["log_probs"] = [scores.detach() for scores in trainer_scores]
+    batch["rollout_log_probs"] = [scores.detach() + 0.25 for scores in trainer_scores]
+
+    _, metrics, _ = _run_policy_loss(args, batch, inputs, skip_actor_forward_only=False)
+
+    assert metrics["train_rollout_logprob_abs_diff"].item() == pytest.approx(0.25)
+    assert metrics["train_rollout_kl"].item() > 0
 
 
 @pytest.mark.parametrize(
@@ -203,7 +237,7 @@ def test_policy_loss_rejects_missing_old_policy_log_probs(
         batch["total_lengths"],
         batch["response_lengths"],
         batch["loss_masks"],
-        args.calculate_per_token_loss,
+        args.backend.calculate_per_token_loss,
         args.qkv_format,
     )
 
@@ -276,7 +310,7 @@ def test_loss_dispatcher_uses_args_without_extra_policy_kwargs(monkeypatch, skip
     batch = make_batch(inputs, "policy_loss")
     logits = deep_clone(inputs["policy_logits"])
     policy_loss = Mock(return_value=(logits.sum(), {"loss": logits.new_zeros(())}))
-    monkeypatch.setattr(loss_module, "get_loss_function", lambda _args: policy_loss)
+    monkeypatch.setattr(loss_module, "get_loss_function", lambda _args, _loss_fn=None: policy_loss)
 
     loss_module.loss_function(
         args,
@@ -296,7 +330,7 @@ def test_loss_dispatcher_does_not_apply_actor_skip_to_value_loss(monkeypatch):
     batch = make_batch(inputs, "value_loss")
     logits = deep_clone(inputs["value_logits"])
     value_loss = Mock(return_value=(logits.sum(), {"loss": logits.new_zeros(())}))
-    monkeypatch.setattr(loss_module, "get_loss_function", lambda _args: value_loss)
+    monkeypatch.setattr(loss_module, "get_loss_function", lambda _args, _loss_fn=None: value_loss)
 
     loss_module.loss_function(args, batch, 1, logits)
 
@@ -309,7 +343,7 @@ def test_mismatch_metrics_keep_actor_log_probs_as_training_source(process_group,
     parallel_state = make_parallel_state()
     parallel_state.tp = GroupInfo(rank=0, size=1, group=dist.group.WORLD)
     args = make_args(
-        custom_tis_function_path="tests.fake_tis",
+        custom_tis_function_path=CustomFunctionConfig(path="tests.fake_tis"),
         entropy_coef=0.0,
         get_mismatch_metrics=True,
         observe_training_entropy=False,

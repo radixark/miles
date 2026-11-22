@@ -1,194 +1,516 @@
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=60, suite="stage-a-cpu")
+register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["eval"])
+
 
 import asyncio
+import inspect
 from types import SimpleNamespace
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args as _make_args
+from tests.fast.ray.rollout.conftest import make_rollout_config
 
 import miles.ray.rollout.eval_fleet as eval_fleet_mod
-from miles.ray.rollout.eval_fleet import EvalFleet
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.ray.rollout.eval_fleet import (
+    EvalFleetInfo,
+    EvalFleetPin,
+    InferenceControllerEvalFleet,
+    RolloutExecutorEvalFleet,
+)
+from miles.ray.rollout.rollout_server import RolloutServer
 from miles.rollout.checkpoint_eval import EvalSkip
+from miles.utils.args.component_rollout import InferenceRuntimeMutState
+from miles.utils.context_lock import ContextLock
+from miles.utils.workers.rpc.client.misc import RpcWorkerCallError, ServerRestartedError
+from miles.utils.workers.worker_handle import WorkerUnreachableError
+from miles.utils.workers.worker_spec import HostAndPort
+
+
+_FLEET_ARGS = dict(
+    eval_num_gpus=1,
+    eval_num_gpus_per_engine=1,
+    sglang_model_routers={"default": ("10.0.0.1", 30000), "eval": ("10.0.0.2", 31000)},
+)
+
+_FLEET_INFO = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), engine_gpu_counts=[1, 1])
 
 
 def make_args(**overrides):
-    defaults = dict(
-        eval_num_gpus=1,
-        eval_num_gpus_per_engine=1,
-        use_fault_tolerance=False,
-        ft_components=[],
-        sglang_model_routers={"default": ("10.0.0.1", 30000), "eval": ("10.0.0.2", 31000)},
-    )
-    defaults.update(overrides)
-    return _make_args(**defaults)
+    return _make_args(**{**_FLEET_ARGS, **overrides})
 
 
-class FakeRemoteMethod:
-    def __init__(self, engine, name):
-        self.engine = engine
-        self.name = name
-
-    def remote(self, *args, **kwargs):
-        self.engine.log.append((self.name, args, kwargs))
-        result = self.engine.responses[self.name](*args, **kwargs)
-        fut = asyncio.get_event_loop().create_future()
-        fut.set_result(result)
-        return fut
+def make_config(**overrides):
+    return make_rollout_config(**{**_FLEET_ARGS, **overrides})
 
 
 class FakeEngine:
+    """Stands in for the api client of one eval cell, with the two methods a pin calls."""
+
     def __init__(self, log):
         self.log = log
         self.weight_version = None
 
-        def load(model_path, weight_version=None):
-            self.weight_version = weight_version
-            return None
+    async def update_weights_from_disk(self, model_path, load_format=None, weight_version=None):
+        self.log.append(("update_weights_from_disk", (model_path,), dict(weight_version=weight_version)))
+        self.weight_version = weight_version
 
-        self.responses = {
-            "update_weights_from_disk": load,
-            "get_weight_version": lambda: self.weight_version,
-        }
-
-    def __getattr__(self, name):
-        if name in ("update_weights_from_disk", "get_weight_version"):
-            return FakeRemoteMethod(self, name)
-        raise AttributeError(name)
-
-
-class FakeServerEngineWrapper:
-    def __init__(self, actor):
-        self._actor = actor
-        self.is_allocated = True
-        self.stopped = False
-
-    @property
-    def actor_handle(self):
-        return self._actor
-
-    def mark_stopped(self):
-        self.stopped = True
-        self.is_allocated = False
+    async def get_weight_version(self):
+        self.log.append(("get_weight_version", (), {}))
+        return self.weight_version
 
 
 class FakeEvalServer:
-    async def probe_and_mark_dead(self):
-        self.probe_calls += 1
-
-    def __init__(self, engines):
+    def __init__(self, engines, *, engine_gpu_counts=()):
         self._engines = engines
-        self.wrappers = [FakeServerEngineWrapper(e) for e in engines]
-        self.recover_calls = 0
-        self.probe_calls = 0
+        self._engine_gpu_counts = list(engine_gpu_counts)
+        self.context_lock = ContextLock("FakeEvalServer")
+        self.router_ip = "10.0.0.2"
+        self.router_port = 31000
 
     @property
-    def server_groups(self):
-        return [SimpleNamespace(all_engines=self.wrappers)]
+    def api_clients(self):
+        assert self.context_lock.held_in_current_context, "api_clients is read under the server's lock"
+        return list(self._engines)
 
     @property
-    def engines(self):
-        return [SimpleNamespace(actor_handle=e) for e in self._engines]
+    def engine_gpu_counts(self):
+        assert self.context_lock.held_in_current_context, "engine_gpu_counts is read under the server's lock"
+        return list(self._engine_gpu_counts)
 
-    async def recover(self):
-        self.recover_calls += 1
 
-    async def wait_all_engines_alive(self):
-        pass
+class FlakyEngine(FakeEngine):
+    def __init__(self, log, *, failures: int):
+        super().__init__(log)
+        self.remaining_failures = failures
+
+    async def update_weights_from_disk(self, model_path, load_format=None, weight_version=None):
+        if self.remaining_failures > 0:
+            self.remaining_failures -= 1
+            raise RuntimeError("transient http failure")
+        await super().update_weights_from_disk(model_path, load_format=load_format, weight_version=weight_version)
+
+
+class HangingEngine(FakeEngine):
+    async def update_weights_from_disk(self, model_path, load_format=None, weight_version=None):
+        self.log.append(("update_weights_from_disk", (model_path,), dict(weight_version=weight_version)))
+        await asyncio.Event().wait()
 
 
 @pytest.fixture
-def fleet_env(monkeypatch):
-    state_builds = []
+def router_probes(monkeypatch):
+    probes: list[SimpleNamespace] = []
 
+    async def record_probe(url, *, json_payload=None, timeout=180.0):
+        probes.append(SimpleNamespace(url=url, json_payload=json_payload, timeout=timeout))
+
+    monkeypatch.setattr(eval_fleet_mod, "wait_http_ok", record_probe)
+    return probes
+
+
+@pytest.fixture
+def router_ready(monkeypatch):
     async def noop_router_ready(self, timeout=180.0):
         return None
 
-    monkeypatch.setattr(eval_fleet_mod.EvalFleet, "_wait_router_ready", noop_router_ready)
-    monkeypatch.setattr(
-        eval_fleet_mod,
-        "GenerateState",
-        lambda args: state_builds.append(args) or "fake-fleet-state",
+    monkeypatch.setattr(eval_fleet_mod.InferenceControllerEvalFleet, "_wait_router_ready", noop_router_ready)
+
+
+def make_fleet(args, engines, *, engine_gpu_counts=()):
+    return InferenceControllerEvalFleet(args, srv=FakeEvalServer(engines, engine_gpu_counts=engine_gpu_counts))
+
+
+class TestEvalFleetInfo:
+    @pytest.mark.asyncio
+    async def test_describes_the_fleet_its_router_serves(self):
+        """The description the executor retargets its eval args to comes from the server, not its own args."""
+        fleet = make_fleet(make_args(eval_num_gpus=4, eval_num_gpus_per_engine=2), [], engine_gpu_counts=[2, 2])
+
+        assert await fleet.info() == EvalFleetInfo(
+            router=HostAndPort(host="10.0.0.2", port=31000), engine_gpu_counts=[2, 2]
+        )
+
+
+def _answers_version(version: str):
+    async def get_weight_version():
+        return version
+
+    return get_weight_version
+
+
+class TestTheFleetIsBuiltOnTheRealServer:
+    def test_everything_the_fake_server_offers_a_real_one_offers_too(self):
+        """A fake with an interface of its own is how the pin path came to call `.engines`, which no server has."""
+        fake = FakeEvalServer([])
+        offered = {name for name in (*vars(fake), *type(fake).__dict__) if not name.startswith("_")}
+
+        assert offered <= set(dir(RolloutServer)) | set(RolloutServer.__annotations__)
+
+
+class TestEvalFleetPinning:
+    @pytest.mark.parametrize(
+        "versions,reason", [(["5", "5"], None), (["5", "4"], "pin_violation"), ([], "pin_violation")]
     )
-    return SimpleNamespace(state_builds=state_builds)
+    async def test_current_version_checks_every_engine_without_loading_weights(self, router_probes, versions, reason):
+        log = []
+        engines = [FakeEngine(log) for _ in versions]
+        for engine, version in zip(engines, versions, strict=True):
+            engine.weight_version = version
+        fleet = make_fleet(make_args(), engines)
+
+        assert await fleet.check_version("5") == EvalFleetPin(skip_reason=reason)
+
+        assert log == [("get_weight_version", (), {})] * len(engines)
+        assert len(router_probes) == (1 if reason is None else 0)
+
+    async def test_current_version_read_is_deadlined(self, monkeypatch, router_probes):
+        monkeypatch.setattr(eval_fleet_mod, "EVAL_WEIGHT_LOAD_TIMEOUT_SECS", 0.01)
+
+        async def never_answers():
+            await asyncio.Event().wait()
+
+        log = []
+        engine = FakeEngine(log)
+        engine.get_weight_version = never_answers
+        fleet = make_fleet(make_args(), [engine])
+
+        assert await fleet.check_version("5") == EvalFleetPin(skip_reason="unhealthy")
+        assert log == []
+        assert router_probes == []
+
+    async def test_pins_every_engine_before_reporting_success(self, router_ready):
+        """Every engine is reloaded from the snapshot before the pin reports no skip."""
+        log = []
+        fleet = make_fleet(make_args(), [FakeEngine(log), FakeEngine(log)])
+
+        pin = await fleet.pin("/snap/step_5", "5")
+
+        load_events = [e for e in log if e[0] == "update_weights_from_disk"]
+        assert len(load_events) == 2
+        assert all(e[2]["weight_version"] == "5" for e in load_events)
+        assert pin == EvalFleetPin(skip_reason=None)
+
+    async def test_requires_all_engines_to_match_and_retries(self, router_ready):
+        """The router load-balances across engines, so one stale engine = mixed
+        versions: the pin must fail even when the other engine matches, retry once,
+        then degrade to an attributable skip."""
+        log = []
+        good, stale = FakeEngine(log), FakeEngine(log)
+        stale.get_weight_version = _answers_version("999")
+        fleet = make_fleet(make_args(), [good, stale])
+
+        pin = await fleet.pin("/snap/step_5", "5")
+
+        assert pin.skip_reason == "pin_violation"
+        assert len([e for e in log if e[0] == "update_weights_from_disk"]) == 4  # 2 engines x 2 attempts
+
+    @pytest.mark.parametrize("already_synced", [False, True])
+    async def test_a_router_that_never_becomes_ready_skips_the_eval(self, monkeypatch, already_synced):
+        """Every other case here neutralises the router wait, so this branch is the only thing that reads it."""
+
+        async def never_ready(self, timeout=180.0):
+            raise TimeoutError("router never came up")
+
+        monkeypatch.setattr(eval_fleet_mod.InferenceControllerEvalFleet, "_wait_router_ready", never_ready)
+        engine = FakeEngine([])
+        engine.weight_version = "5"
+        fleet = make_fleet(make_args(), [engine])
+
+        pin = await fleet.check_version("5") if already_synced else await fleet.pin("/snap/step_5", "5")
+
+        assert pin.skip_reason == "unhealthy"
+
+    async def test_a_cell_that_joined_between_attempts_is_pinned_too(self, router_ready):
+        """Membership is read again per attempt, or a cell that joined mid-pin would serve the old weights."""
+        log = []
+        joined, stale = FakeEngine(log), FakeEngine(log)
+        stale.get_weight_version = _answers_version("999")
+        server = FakeEvalServer([stale])
+        fleet = InferenceControllerEvalFleet(make_args(), srv=server)
+
+        async def join_after_first_attempt(*_args, **_kwargs):
+            server._engines = [joined]
+            stale.get_weight_version = _answers_version("5")
+
+        stale.update_weights_from_disk = join_after_first_attempt
+
+        pin = await fleet.pin("/snap/step_5", "5")
+
+        assert pin == EvalFleetPin(skip_reason=None)
+        assert joined.weight_version == "5"
+
+    async def test_does_not_health_probe_the_server(self, router_ready):
+        """The eval fleet has no fault tolerance: pin goes straight to the weight load."""
+        server = FakeEvalServer([FakeEngine([])])
+        assert not any(hasattr(server, name) for name in ("probe_and_mark_dead", "recover", "wait_all_engines_alive"))
+
+        pin = await InferenceControllerEvalFleet(make_args(), srv=server).pin("/snap/step_5", "5")
+
+        assert pin == EvalFleetPin(skip_reason=None)
 
 
-def make_fleet(args, engines):
-    return EvalFleet(args, srv=FakeEvalServer(engines))
+class TestPinWeightTransport:
+    async def test_pin_sends_the_checkpoint_dir_as_the_http_model_path(self, router_ready):
+        """The snapshot directory reaches every engine as the model path of the weight load, not as any other field."""
+        log = []
+        fleet = make_fleet(make_args(), [FakeEngine(log), FakeEngine(log)])
+
+        await fleet.pin("/snap/step_7", "7")
+
+        assert [e for e in log if e[0] == "update_weights_from_disk"] == [
+            ("update_weights_from_disk", ("/snap/step_7",), dict(weight_version="7")),
+            ("update_weights_from_disk", ("/snap/step_7",), dict(weight_version="7")),
+        ]
+
+    async def test_the_calls_pin_makes_bind_against_the_real_api_client(self):
+        """The fleet talks HTTP now, so the two calls it makes must stay bindable against the real client."""
+        client = SGLangApiClient(server_url="http://10.0.0.2:31000")
+
+        inspect.signature(SGLangApiClient.update_weights_from_disk).bind(
+            client, model_path="/snap/step_7", weight_version="7"
+        )
+        inspect.signature(SGLangApiClient.get_weight_version).bind(client)
+
+        assert inspect.iscoroutinefunction(SGLangApiClient.update_weights_from_disk)
+        assert inspect.iscoroutinefunction(SGLangApiClient.get_weight_version)
 
 
-async def test_fleet_pins_every_engine_before_returning_the_state(fleet_env):
-    log = []
-    fleet = make_fleet(make_args(), [FakeEngine(log), FakeEngine(log)])
+class TestPinFailureModes:
+    async def test_pin_retries_a_transient_load_failure_and_then_succeeds(self, router_ready):
+        """One engine failing its first weight load is retried, and the eval point still runs."""
+        log = []
+        flaky = FlakyEngine(log, failures=1)
+        fleet = make_fleet(make_args(), [FakeEngine(log), flaky])
 
-    state = await fleet.pin("/snap/step_5", "5")
+        pin = await fleet.pin("/snap/step_5", "5")
 
-    load_events = [e for e in log if e[0] == "update_weights_from_disk"]
-    assert len(load_events) == 2
-    assert all(e[2]["weight_version"] == "5" for e in load_events)
-    # The caller cannot generate before the pin: the state only exists as pin's return.
-    assert state == "fake-fleet-state"
-    # Built once at construction, not per eval.
-    assert len(fleet_env.state_builds) == 1
-    await fleet.pin("/snap/step_6", "6")
-    assert len(fleet_env.state_builds) == 1
+        assert pin == EvalFleetPin(skip_reason=None)
+        assert flaky.remaining_failures == 0
 
+    async def test_pin_skips_when_every_attempt_fails(self, router_ready):
+        """A fleet that never loads its weights must degrade to an attributable skip, not a crash."""
+        log = []
+        fleet = make_fleet(make_args(), [FlakyEngine(log, failures=99)])
 
-async def test_fleet_pin_requires_all_match_and_retries(fleet_env):
-    """The router load-balances across engines, so one stale engine = mixed
-    versions: the pin must fail even when the other engine matches, retry once,
-    then degrade to an attributable skip."""
-    log = []
-    good, stale = FakeEngine(log), FakeEngine(log)
-    stale.responses["get_weight_version"] = lambda: "999"
-    fleet = make_fleet(make_args(), [good, stale])
+        pin = await fleet.pin("/snap/step_5", "5")
 
-    with pytest.raises(EvalSkip) as exc:
-        await fleet.pin("/snap/step_5", "5")
+        assert pin.skip_reason == "pin_violation"
+        assert [e for e in log if e[0] == "get_weight_version"] == []
 
-    assert exc.value.reason == "pin_violation"
-    assert len([e for e in log if e[0] == "update_weights_from_disk"]) == 4  # 2 engines x 2 attempts
+    async def test_pin_skips_when_a_weight_load_hangs_past_the_timeout(self, router_ready, monkeypatch):
+        """A wedged engine must not park the controller event loop forever, so the load is deadlined."""
+        monkeypatch.setattr(eval_fleet_mod, "EVAL_WEIGHT_LOAD_TIMEOUT_SECS", 0.01)
+        log = []
+        fleet = make_fleet(make_args(), [HangingEngine(log)])
 
+        pin = await fleet.pin("/snap/step_5", "5")
 
-async def test_fleet_recovers_before_pinning(fleet_env):
-    """A revived engine must be up before the load: pin runs the health sequence first."""
-    fleet = make_fleet(make_args(), [FakeEngine([])])
+        assert pin.skip_reason == "pin_violation"
+        assert len([e for e in log if e[0] == "update_weights_from_disk"]) == 2
 
-    await fleet.pin("/snap/step_5", "5")
+    async def test_pin_skips_when_the_fleet_reads_no_client_at_all(self, router_ready):
+        """An empty membership proves nothing about the served weights, so it must not pass the check vacuously."""
+        fleet = make_fleet(make_args(), [])
 
-    assert (fleet._srv.probe_calls, fleet._srv.recover_calls) == (1, 1)
+        pin = await fleet.pin("/snap/step_5", "5")
 
-
-async def test_fleet_leaves_probing_to_the_health_monitor(fleet_env):
-    """Rollout FT leaves probing to the RolloutHealthMonitor."""
-    fleet = make_fleet(make_args(use_fault_tolerance=True, ft_components=["rollout"]), [FakeEngine([])])
-
-    await fleet.pin("/snap/step_5", "5")
-
-    assert fleet._srv.probe_calls == 0
-    assert fleet._srv.recover_calls == 1
+        assert pin.skip_reason == "pin_violation"
 
 
-async def test_fleet_probes_with_train_only_fault_tolerance(fleet_env):
-    """Train-only FT has no RolloutHealthMonitor, so the fleet must probe itself."""
-    fleet = make_fleet(make_args(use_fault_tolerance=True, ft_components=["train"]), [FakeEngine([])])
+class TestRouterProbe:
+    async def test_pin_probes_the_router_address_of_the_server_it_watches(self, router_probes):
+        """The fleet owns no address of its own, so the probe must use the one its server reports."""
+        server = FakeEvalServer([FakeEngine([])])
+        server.router_ip, server.router_port = "10.9.9.9", 39999
+        fleet = InferenceControllerEvalFleet(make_args(), srv=server)
 
-    await fleet.pin("/snap/step_5", "5")
+        pin = await fleet.pin("/snap/step_5", "5")
 
-    assert fleet._srv.probe_calls == 1
-    assert fleet._srv.recover_calls == 1
+        assert pin == EvalFleetPin(skip_reason=None)
+        assert [probe.url for probe in router_probes] == ["http://10.9.9.9:39999/generate"]
+        assert router_probes[0].json_payload["sampling_params"]["max_new_tokens"] == 1
 
 
-async def test_fleet_skips_when_the_fleet_stays_unhealthy(fleet_env):
-    fleet = make_fleet(make_args(), [FakeEngine([])])
+class FakeInferenceController:
+    def __init__(self, pins: list[EvalFleetPin], *, info: EvalFleetInfo | None = _FLEET_INFO):
+        self.calls: list[dict] = []
+        self._pins = pins
+        self._info = info
 
-    async def never_alive():
-        raise TimeoutError("engines never came up")
+    async def get_eval_fleet_info(self) -> EvalFleetInfo | None:
+        return self._info
 
-    fleet._srv.wait_all_engines_alive = never_alive
+    async def pin_eval_fleet(self, *, checkpoint_dir: str, weight_version: str) -> EvalFleetPin:
+        self.calls.append(dict(checkpoint_dir=checkpoint_dir, weight_version=weight_version))
+        pin = self._pins[len(self.calls) - 1]
+        if isinstance(pin, Exception):
+            raise pin
+        return pin
 
-    with pytest.raises(EvalSkip) as exc:
-        await fleet.pin("/snap/step_5", "5")
+    async def check_eval_fleet_version(self, weight_version: str) -> EvalFleetPin:
+        self.calls.append(dict(weight_version=weight_version))
+        pin = self._pins[len(self.calls) - 1]
+        if isinstance(pin, Exception):
+            raise pin
+        return pin
 
-    assert exc.value.reason == "unhealthy"
+
+class FakeControllerProvider:
+    def __init__(self, controllers):
+        self._controllers = controllers
+        self.lookups = 0
+
+    def get_handle(self, worker_name: str):
+        self.lookups += 1
+        if isinstance(handle := self._controllers[min(self.lookups, len(self._controllers)) - 1], Exception):
+            raise handle
+        return handle
+
+
+@pytest.fixture
+def fleet_states(monkeypatch):
+    built = []
+    monkeypatch.setattr(eval_fleet_mod, "GenerateState", lambda args: built.append(args) or SimpleNamespace(args=args))
+    return built
+
+
+def make_session(controller, *, info=None):
+    return make_session_over(FakeControllerProvider([controller]), info=info)
+
+
+def make_session_over(provider, *, info=None):
+    return RolloutExecutorEvalFleet(
+        make_config(),
+        info=info or _FLEET_INFO,
+        inference_controller_provider=provider,
+    )
+
+
+class TestRolloutExecutorEvalFleet:
+    @pytest.mark.parametrize(
+        "reply,reason",
+        [
+            (EvalFleetPin(None), None),
+            (EvalFleetPin("pin_violation"), "pin_violation"),
+            (TimeoutError(), "controller_unreachable"),
+        ],
+    )
+    async def test_current_version_uses_controller_without_a_checkpoint(self, fleet_states, reply, reason):
+        """Return the fleet state only when the controller confirms the requested version."""
+        controller = FakeInferenceController([reply])
+        session = make_session(controller)
+
+        if reason is None:
+            assert (await session.current("5")).args is fleet_states[0]
+        else:
+            with pytest.raises(EvalSkip) as exc:
+                await session.current("5")
+            assert exc.value.reason == reason
+
+        assert controller.calls == [dict(weight_version="5")]
+        assert len(fleet_states) == 1
+
+    def test_builds_its_state_against_the_fleet_router(self, fleet_states):
+        """The executor generates against the eval router and the fleet's gpu sizing, not the rollout ones."""
+        make_session(FakeInferenceController([]))
+
+        (state_args,) = fleet_states
+        assert (state_args.sglang_router_ip, state_args.sglang_router_port) == ("10.0.0.2", 31000)
+        assert state_args.inference_runtime_mut_state == InferenceRuntimeMutState(engine_count=2, gpu_count=2)
+
+    async def test_pins_over_rpc_and_returns_the_cached_state(self, fleet_states):
+        """Pinning is the controller's call; the state is built once and handed back per point."""
+        controller = FakeInferenceController([EvalFleetPin(skip_reason=None), EvalFleetPin(skip_reason=None)])
+        session = make_session(controller)
+
+        first = await session.pin("/snap/step_5", "5")
+        second = await session.pin("/snap/step_6", "6")
+
+        assert controller.calls == [
+            dict(checkpoint_dir="/snap/step_5", weight_version="5"),
+            dict(checkpoint_dir="/snap/step_6", weight_version="6"),
+        ]
+        assert first is second
+        assert [state.args for state in (first,)] == fleet_states
+        assert first.args.inference_runtime_mut_state == InferenceRuntimeMutState(engine_count=2, gpu_count=2)
+
+    async def test_a_pin_records_the_engine_topology_the_controller_now_reports(self, fleet_states):
+        """The eval fleet may have resized since the state was built, and the state sizes its semaphore off it."""
+        info = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), engine_gpu_counts=[4, 4, 4])
+        session = make_session(FakeInferenceController([EvalFleetPin(skip_reason=None)], info=info))
+
+        state = await session.pin("/snap/step_5", "5")
+
+        assert state.args.inference_runtime_mut_state == InferenceRuntimeMutState(engine_count=3, gpu_count=12)
+
+    async def test_a_controller_without_an_eval_fleet_skips_the_point(self, fleet_states):
+        """A pinned point whose fleet vanished has no engines to generate against, so it is skipped."""
+        session = make_session(FakeInferenceController([EvalFleetPin(skip_reason=None)], info=None))
+
+        with pytest.raises(EvalSkip) as exc:
+            await session.pin("/snap/step_5", "5")
+
+        assert exc.value.reason == "controller_unreachable"
+
+    async def test_a_remote_skip_stays_an_attributable_skip(self, fleet_states):
+        """The reason the controller skipped for must survive the wire as EvalSkip."""
+        session = make_session(FakeInferenceController([EvalFleetPin(skip_reason="pin_violation")]))
+
+        with pytest.raises(EvalSkip) as exc:
+            await session.pin("/snap/step_5", "5")
+
+        assert exc.value.reason == "pin_violation"
+
+    async def test_the_controller_is_resolved_once_and_the_handle_reused(self, fleet_states):
+        """Resolving a fresh handle per point would hand every point a fresh boot-uuid pin, so it is resolved once."""
+        first, second = (
+            FakeInferenceController([EvalFleetPin(skip_reason=None), EvalFleetPin(skip_reason=None)]),
+            FakeInferenceController([EvalFleetPin(skip_reason=None)]),
+        )
+        provider = FakeControllerProvider([first, second])
+        session = make_session_over(provider)
+
+        await session.pin("/snap/step_5", "5")
+        await session.pin("/snap/step_6", "6")
+
+        assert (provider.lookups, len(first.calls), len(second.calls)) == (1, 2, 0)
+
+    async def test_a_controller_that_cannot_be_reached_skips_the_point(self, fleet_states):
+        """Losing the controller must skip one eval point, not raise into the driver's rollout loop."""
+        session = make_session(FakeInferenceController([WorkerUnreachableError("controller is gone")]))
+
+        with pytest.raises(EvalSkip) as exc:
+            await session.pin("/snap/step_5", "5")
+
+        assert exc.value.reason == "controller_unreachable"
+
+    async def test_a_controller_that_answered_with_a_failure_is_not_a_skip(self, fleet_states):
+        """A method that raised inside a reachable controller is our bug, and skipping every point would hide it."""
+        session = make_session(FakeInferenceController([RpcWorkerCallError("assert self._eval_fleet is not None")]))
+
+        with pytest.raises(RpcWorkerCallError):
+            await session.pin("/snap/step_5", "5")
+
+    async def test_a_timed_out_controller_skips_the_point(self, fleet_states):
+        """A controller that never answers is unreachable in every way that matters to one eval point."""
+        session = make_session(FakeInferenceController([TimeoutError("no answer")]))
+
+        with pytest.raises(EvalSkip) as exc:
+            await session.pin("/snap/step_5", "5")
+
+        assert exc.value.reason == "controller_unreachable"
+
+    async def test_the_pin_keeps_reporting_a_restarted_controller_across_points(self, fleet_states):
+        """The kept handle keeps its boot-uuid pin, so a later point still sees the restart instead of a fresh pin."""
+        controller = FakeInferenceController(
+            [ServerRestartedError("boot uuid changed"), ServerRestartedError("boot uuid changed")]
+        )
+        provider = FakeControllerProvider([controller])
+        session = make_session_over(provider)
+
+        for checkpoint_dir, weight_version in (("/snap/step_5", "5"), ("/snap/step_6", "6")):
+            with pytest.raises(EvalSkip):
+                await session.pin(checkpoint_dir, weight_version)
+
+        assert (provider.lookups, len(controller.calls)) == (1, 2)

@@ -26,6 +26,7 @@ PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --kv-channels 128
   --normalization RMSNorm
   --position-embedding-type rope
+  --rope-type rope
   --norm-epsilon 1e-6
   --swiglu
   --untie-embeddings-and-output-weights

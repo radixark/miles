@@ -25,6 +25,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --kv-channels 128
   --normalization RMSNorm
   --position-embedding-type rope
+  --rope-type rope
   --norm-epsilon 1e-6
   --swiglu
   --untie-embeddings-and-output-weights
@@ -110,7 +111,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-mem-fraction-static 0.7
   --sglang-attention-backend trtllm_mla
   --rollout-num-gpus-per-engine 1
-  --sglang-cuda-graph-max-bs 256  
+  --sglang-cuda-graph-max-bs-decode 256  
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --accumulate-allreduce-grads-in-fp32
@@ -119,5 +120,5 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --actor-num-nodes 1
   --actor-num-gpus-per-node 4
   --num-gpus-per-node 8
-  --rollout-num-gpus 4
-  --use-fault-tolerance   
+  --rollout-num-gpus 4   
+  --deploy-component all

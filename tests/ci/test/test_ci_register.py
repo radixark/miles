@@ -1,12 +1,11 @@
 """AST-time validation tests for register_cuda_ci / register_cpu_ci.
 
-Covers the AST-collection behavior of the suite-as-runner-class refactor:
-`labels` is optional (default None ≡ []); a non-empty list of canonical
-domain labels gates the test on the resolved domain scope, while None / [] /
-omitted means always-on within an eligible cadence; `nightly=True` excludes a
-registration from regular cadence while nightly and weekly admit it;
-`num_gpus` is gone; `labels` must be passed by
-keyword (not as a positional third argument).
+CPU estimates above 30 seconds require `stage-b-cpu` and non-empty domain labels;
+only CPU registrations at or below that budget may omit `labels`. Non-empty
+labels gate selection on the resolved domain scope; omitted/None/[] labels
+are always-on within an eligible cadence. `nightly=True` excludes regular
+cadence; `num_gpus` declares the minimum CUDA allocation; `labels` is
+keyword-only.
 """
 
 import ast
@@ -22,6 +21,7 @@ from tests.ci.ci_register import (
     _file_text_mentions_register,
     _is_implicit_fast_cpu_path,
     collect_tests,
+    file_timeout,
     register_cpu_ci,
     ut_parse_one_file,
 )
@@ -57,7 +57,7 @@ class TestRegisterPositive:
         path = _make_fixture(
             """
             from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["megatron"])
+            register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["megatron"], hardware=['hopper'])
             """,
             tmp_path,
         )
@@ -67,7 +67,7 @@ class TestRegisterPositive:
         assert r.backend == HWBackend.CUDA
         assert r.suite == "stage-c-8-gpu-h100"
         assert r.labels == ["megatron"]
-        assert not hasattr(r, "num_gpus")
+        assert r.required_gpus == 8
         assert not hasattr(r, "always_on")
 
     def test_labels_omitted_is_always_run(self, tmp_path):
@@ -92,11 +92,23 @@ class TestRegisterPositive:
                 est_time=600,
                 suite="stage-c-8-gpu-h100",
                 labels=["megatron", "sglang"],
+                hardware=["hopper"],
             )
             """,
             tmp_path,
         )
         assert ut_parse_one_file(path)[0].labels == ["megatron", "sglang"]
+
+    def test_slow_cpu_with_domain_label_uses_stage_b(self, tmp_path):
+        path = _make_fixture('register_cpu_ci(est_time=31, suite="stage-b-cpu", labels=["precision"])', tmp_path)
+        r = ut_parse_one_file(path)[0]
+        assert (r.suite, r.est_time, r.labels) == ("stage-b-cpu", 31, ["precision"])
+
+    def test_perf_label_accompanies_a_domain_label(self, tmp_path):
+        path = _make_fixture(
+            'register_cpu_ci(est_time=400, suite="stage-b-cpu", labels=["rollout", "perf"])', tmp_path
+        )
+        assert ut_parse_one_file(path)[0].labels == ["rollout", "perf"]
 
     def test_disabled_string_passthrough(self, tmp_path):
         path = _make_fixture(
@@ -106,6 +118,7 @@ class TestRegisterPositive:
                 est_time=600,
                 suite="stage-c-8-gpu-h100",
                 labels=["megatron"],
+                hardware=["hopper"],
                 disabled="known regression in megatron 0.12",
             )
             """,
@@ -122,6 +135,7 @@ class TestRegisterPositive:
                 est_time=600,
                 suite="stage-c-8-gpu-h100",
                 labels=["megatron"],
+                hardware=["hopper"],
                 nightly=True,
             )
             """,
@@ -134,8 +148,24 @@ class TestRegisterPositive:
 
 
 class TestRegisterNegative:
+    @pytest.mark.parametrize("est_time", [30.01, 60])
+    @pytest.mark.parametrize("suite", ["stage-a-cpu", "stage-c-cpu"])
+    @pytest.mark.parametrize("extra", ["", ", nightly=True", ', disabled="tracked in #123"'])
+    def test_slow_cpu_requires_stage_b(self, tmp_path, est_time, suite, extra):
+        path = _make_fixture(
+            f'register_cpu_ci(est_time={est_time}, suite="{suite}", labels=["precision"]{extra})', tmp_path
+        )
+        with pytest.raises(ValueError, match="CPU est_time > 30 seconds requires suite='stage-b-cpu'"):
+            ut_parse_one_file(path)
+
+    @pytest.mark.parametrize("labels_arg", ["", ", labels=None", ", labels=[]", ', labels=["perf"]'])
+    def test_slow_cpu_requires_domain_label(self, tmp_path, labels_arg):
+        path = _make_fixture(f'register_cpu_ci(est_time=31, suite="stage-b-cpu"{labels_arg})', tmp_path)
+        with pytest.raises(ValueError, match="labels.*must contain at least one domain label"):
+            ut_parse_one_file(path)
+
     @pytest.mark.parametrize("func_name", ["register_cuda_ci", "register_rocm_ci"])
-    @pytest.mark.parametrize("labels_arg", ["", ", labels=None", ", labels=[]"])
+    @pytest.mark.parametrize("labels_arg", ["", ", labels=None", ", labels=[]", ', labels=["perf"]'])
     def test_gpu_labels_must_be_non_empty(self, tmp_path, func_name, labels_arg):
         path = _make_fixture(
             f"""
@@ -151,24 +181,136 @@ class TestRegisterNegative:
         path = _make_fixture(
             """
             from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["megatorn"])
+            register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["megatorn"], hardware=['hopper'])
             """,
             tmp_path,
         )
         with pytest.raises(ValueError, match=r"unknown labels.*megatorn"):
             ut_parse_one_file(path)
 
-    def test_num_gpus_kwarg_rejected(self, tmp_path):
+    @pytest.mark.parametrize("hardware_arg", ["", ", hardware=None", ", hardware=[]"])
+    def test_cuda_hardware_must_be_non_empty(self, tmp_path, hardware_arg):
         path = _make_fixture(
-            """
+            f"""
             from tests.ci.ci_register import register_cuda_ci
             register_cuda_ci(
-                est_time=600, suite="stage-c-8-gpu-h100", labels=["megatron"], num_gpus=8
+                est_time=60, suite="stage-b-2-gpu-h200", labels=["precision"]{hardware_arg}
             )
             """,
             tmp_path,
         )
-        with pytest.raises(ValueError, match=r"unknown argument 'num_gpus'"):
+        with pytest.raises(ValueError, match=r"hardware.*must list at least one arch"):
+            ut_parse_one_file(path)
+
+    def test_unknown_arch_rejected(self, tmp_path):
+        path = _make_fixture(
+            """
+            from tests.ci.ci_register import register_cuda_ci
+            register_cuda_ci(
+                est_time=60, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["ampere"]
+            )
+            """,
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match=r"unknown arches.*ampere"):
+            ut_parse_one_file(path)
+
+    def test_duplicated_arch_rejected(self, tmp_path):
+        path = _make_fixture(
+            """
+            from tests.ci.ci_register import register_cuda_ci
+            register_cuda_ci(
+                est_time=60,
+                suite="stage-b-2-gpu-h200",
+                labels=["precision"],
+                hardware=["hopper", "hopper"],
+            )
+            """,
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match=r"duplicated arch"):
+            ut_parse_one_file(path)
+
+    def test_unknown_cuda_suite_rejected(self, tmp_path):
+        # A suite with no workflow job used to run zero tests in silence.
+        path = _make_fixture(
+            """
+            from tests.ci.ci_register import register_cuda_ci
+            register_cuda_ci(
+                est_time=60, suite="stage-c-8-gpu-b300", labels=["precision"], hardware=["blackwell"]
+            )
+            """,
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match=r"unknown CUDA suite 'stage-c-8-gpu-b300'"):
+            ut_parse_one_file(path)
+
+    @pytest.mark.parametrize(
+        ("suite", "hardware"),
+        [
+            # Blackwell home, but Hopper is where it would run by default.
+            ("stage-c-8-gpu-b200", '["hopper", "blackwell"]'),
+            ("stage-c-8-gpu-b200", '["hopper"]'),
+            # Hopper home for a test that only runs on Blackwell.
+            ("stage-c-8-gpu-h100", '["blackwell"]'),
+        ],
+    )
+    def test_home_stage_must_match_default_arch(self, tmp_path, suite, hardware):
+        path = _make_fixture(
+            f"""
+            from tests.ci.ci_register import register_cuda_ci
+            register_cuda_ci(
+                est_time=60, suite="{suite}", labels=["precision"], hardware={hardware}
+            )
+            """,
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match=r"home stage must be on its first supported arch"):
+            ut_parse_one_file(path)
+
+    @pytest.mark.parametrize("func_name", ["register_cpu_ci", "register_rocm_ci"])
+    def test_hardware_rejected_outside_cuda(self, tmp_path, func_name):
+        suite = "stage-b-cpu" if func_name == "register_cpu_ci" else "stage-c-4-gpu-mi350"
+        path = _make_fixture(
+            f"""
+            from tests.ci.ci_register import {func_name}
+            {func_name}(
+                est_time=60, suite="{suite}", labels=["precision"], hardware=["hopper"]
+            )
+            """,
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match=r"hardware.*is CUDA-only"):
+            ut_parse_one_file(path)
+
+    @pytest.mark.parametrize("count", [0, 9, True, None, "2"])
+    def test_invalid_gpu_budget_rejected(self, tmp_path, count):
+        path = _make_fixture(
+            f'register_cuda_ci(60, "stage-b-2-gpu-h200", labels=["megatron"], hardware=["hopper"], num_gpus={count!r})',
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="num_gpus must be an integer"):
+            ut_parse_one_file(path)
+
+    def test_negative_gpu_budget_rejected_as_nonconstant_ast(self, tmp_path):
+        path = _make_fixture(
+            'register_cuda_ci(60, "stage-b-2-gpu-h200", labels=["megatron"], hardware=["hopper"], num_gpus=-1)',
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="num_gpus.*must be a literal constant"):
+            ut_parse_one_file(path)
+
+    def test_gpu_budget_cannot_exceed_home_capacity(self, tmp_path):
+        path = _make_fixture(
+            'register_cuda_ci(60, "stage-b-2-gpu-h200", labels=["megatron"], hardware=["hopper"], num_gpus=4)',
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="exceeds the home suite"):
+            ut_parse_one_file(path)
+
+    def test_gpu_budget_is_cuda_only(self, tmp_path):
+        path = _make_fixture('register_cpu_ci(1, "stage-a-cpu", num_gpus=1)', tmp_path)
+        with pytest.raises(ValueError, match="num_gpus is CUDA-only"):
             ut_parse_one_file(path)
 
     def test_always_on_kwarg_rejected(self, tmp_path):
@@ -345,7 +487,7 @@ class TestFileTextMentionsRegister:
     def test_file_with_cuda_call_matches(self, tmp_path):
         p = tmp_path / "f.py"
         p.write_text(
-            "from tests.ci.ci_register import register_cuda_ci\nregister_cuda_ci(est_time=60, suite='stage-b-2-gpu-h200', labels=['precision'])\n"
+            "from tests.ci.ci_register import register_cuda_ci\nregister_cuda_ci(est_time=60, suite='stage-b-2-gpu-h200', labels=['precision'], hardware=['hopper'])\n"
         )
         assert _file_text_mentions_register(str(p))
 
@@ -468,7 +610,7 @@ class TestCollectTestsFastGpuStrict:
             "test_gpu_thing.py",
             """
             from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["precision"])
+            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=['hopper'])
             """,
         )
         registries = collect_tests([path], sanity_check=True)
@@ -484,7 +626,7 @@ class TestCollectTestsFastGpuStrict:
             """
             from tests.ci.ci_register import register_cuda_ci
             register_cuda_ci(
-                est_time=120, suite="stage-c-8-gpu-h100", labels=["megatron"]
+                est_time=120, suite="stage-c-8-gpu-h100", labels=["megatron"], hardware=["hopper"]
             )
             """,
         )
@@ -512,7 +654,7 @@ class TestCollectTestsCudaBanInFast:
             "test_misplaced.py",
             """
             from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["precision"])
+            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=['hopper'])
             """,
         )
         with pytest.raises(ValueError, match=r"register_cuda_ci is forbidden in tests/fast/"):
@@ -525,7 +667,7 @@ class TestCollectTestsCudaBanInFast:
             "test_ok.py",
             """
             from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["precision"])
+            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=['hopper'])
             """,
         )
         registries = collect_tests([path], sanity_check=True)
@@ -736,3 +878,16 @@ class TestNoSemanticDefaultRegisterCpuCi:
         # `None`; the predicate must keep its hands off the call.
         call = self._parse_call('register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=SOME_NAME)')
         assert not _is_semantic_default_register_cpu_ci(call)
+
+
+@pytest.mark.parametrize(
+    ("est_time", "labels", "expected"),
+    [
+        (400, ["rollout"], 1800),
+        (2000, ["megatron"], 2500),
+        (400, ["rollout", "perf"], 500),
+        (2000, ["megatron", "perf"], 2500),
+    ],
+)
+def test_file_timeout_skips_the_default_floor_only_for_perf(est_time, labels, expected):
+    assert file_timeout(est_time, labels, 1800) == expected

@@ -1,22 +1,35 @@
 import importlib
 import sys
 from argparse import Namespace
+from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
-from types import ModuleType
-from unittest.mock import Mock
+from types import ModuleType, SimpleNamespace
+from typing import Any
+from unittest.mock import Mock, call
 
 import pytest
+import ray
 import torch
+from tests.fast.fixtures.args_fixtures import make_trainer_args
+from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
+from miles.backends.training_utils.parallel import GroupInfo, ParallelState
+from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
+from miles.backends.training_utils.weight_update.conn_status import ConnStatusManager
+from miles.ray.train_actor import WeightUpdateOutput
+from miles.utils import object_store
+from miles.utils.dp_schedule import TrainParallelConfig
+from miles.utils.ray_utils import Box
 from miles.utils.replay_base import IndexerReplayManager, RoutingReplayManager
+from miles.utils.tensor_backper import MainCastContext, TensorBackuper
 
 
 @pytest.fixture(scope="module")
 def actor_module():
     actor_module_name = "miles.backends.megatron_utils.actor"
-    p2p_module_name = "miles.backends.megatron_utils.update_weight.update_weight_from_distributed.p2p"
+    p2p_module_name = "miles.backends.training_utils.weight_update.protocols.p2p"
     actor_package = importlib.import_module("miles.backends.megatron_utils")
-    p2p_package = importlib.import_module("miles.backends.megatron_utils.update_weight.update_weight_from_distributed")
+    p2p_package = importlib.import_module("miles.backends.training_utils.weight_update.protocols")
     missing = object()
     saved_actor_module = sys.modules.get(actor_module_name, missing)
     saved_p2p_module = sys.modules.get(p2p_module_name, missing)
@@ -64,7 +77,10 @@ def actor_module():
 
 def _worker(actor_module, role, *, asleep=True):
     worker = object.__new__(actor_module.MegatronTrainRayActor)
-    worker.args = Namespace(offload_train=True, debug_rollout_only=False)
+    worker._config_snapshot_train_recorded = True
+    worker.args = make_trainer_args(
+        offload_train=True, debug_rollout_only=False, enable_sample_ownership_checker=False
+    )
     worker.role = role
     worker._asleep = asleep
     worker._heartbeat = Mock()
@@ -75,9 +91,11 @@ def _worker(actor_module, role, *, asleep=True):
 
 def test_critic_train_wakes_and_leaves_offload_to_driver(actor_module, monkeypatch):
     worker = _worker(actor_module, "critic")
-    worker.train_critic = Mock(return_value={"values": ["cpu-value"]})
+    critic_output = TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=Box("cpu-values-ref"))
+    worker._train_critic = Mock(return_value=critic_output)
+    monkeypatch.setattr(actor_module, "get_rollout_data", lambda **_kwargs: ({"tokens": []}, nullcontext()))
     monkeypatch.setattr(
-        actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
+        actor_module, "get_parallel_state", lambda: SimpleNamespace(train_parallel_config=make_train_parallel_config)
     )
     phases = []
 
@@ -91,34 +109,40 @@ def test_critic_train_wakes_and_leaves_offload_to_driver(actor_module, monkeypat
     result = worker.train(3, object())
 
     worker.wake_up.assert_called_once_with()
-    worker.train_critic.assert_called_once()
+    worker._train_critic.assert_called_once()
     worker.sleep.assert_not_called()
-    assert result == {"values": ["cpu-value"]}
+    assert result == critic_output
+    assert result.values is critic_output.values
+    assert result.outcome is TrainStepOutcome.NORMAL
+    assert result.values.inner == "cpu-values-ref"
     assert phases == ["data_preprocess", "critic_train"]
 
 
 def test_actor_receives_critic_payload_and_leaves_offload_to_driver(actor_module, monkeypatch):
     worker = _worker(actor_module, "actor")
-    worker.train_actor = Mock(return_value=None)
+    actor_output = TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
+    worker._train_actor = Mock(return_value=actor_output)
+    monkeypatch.setattr(actor_module, "get_rollout_data", lambda **_kwargs: ({"tokens": []}, nullcontext()))
     monkeypatch.setattr(
-        actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
+        actor_module, "get_parallel_state", lambda: SimpleNamespace(train_parallel_config=make_train_parallel_config)
     )
-    values = {"values": ["cpu-value"]}
+    values = TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=Box("cpu-values-ref"))
 
     result = worker.train(4, object(), external_data=values)
 
     worker.wake_up.assert_called_once_with()
-    worker.train_actor.assert_called_once()
-    assert worker.train_actor.call_args.kwargs["external_data"] is values
+    worker._train_actor.assert_called_once()
+    assert worker._train_actor.call_args.kwargs["external_data"] is values
     worker.sleep.assert_not_called()
-    assert result is None
+    assert result == actor_output
 
 
 def test_train_keeps_model_resident(actor_module, monkeypatch):
     worker = _worker(actor_module, "actor", asleep=False)
-    worker.train_actor = Mock(return_value=None)
+    worker._train_actor = Mock(return_value=TrainStepOutput(outcome=TrainStepOutcome.NORMAL))
+    monkeypatch.setattr(actor_module, "get_rollout_data", lambda **_kwargs: ({"tokens": []}, nullcontext()))
     monkeypatch.setattr(
-        actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
+        actor_module, "get_parallel_state", lambda: SimpleNamespace(train_parallel_config=make_train_parallel_config)
     )
 
     worker.train(5, object())
@@ -127,9 +151,137 @@ def test_train_keeps_model_resident(actor_module, monkeypatch):
     worker.sleep.assert_not_called()
 
 
+class TestTrainParallelConfigWiring:
+    def test_megatron_train_reads_the_live_three_cell_topology(
+        self, actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Training after a cell loss passes the current DP, CP and VPP layout to the loader, not a cached one."""
+        worker = _worker(actor_module, "actor", asleep=False)
+        worker.args.debug_rollout_only = True
+        trivial = GroupInfo(rank=0, size=1, group=None)
+        state = ParallelState(
+            intra_dp=trivial,
+            intra_dp_cp=trivial,
+            cp=GroupInfo(rank=1, size=2, group=None),
+            tp=trivial,
+            pp=trivial,
+            ep=trivial,
+            etp=trivial,
+            indep_dp=GroupInfo(rank=2, size=4, group=None),
+            vpp_size=2,
+            microbatch_group_size_per_vp_stage=4,
+        )
+        worker.train_parallel_config = state.train_parallel_config(supports_precomputed_schedule=True)
+        state.indep_dp = GroupInfo(rank=2, size=3, group=None)
+        received: list[TrainParallelConfig] = []
+
+        def load_rollout_data(
+            *,
+            args: Namespace,
+            rollout_data_ref: object,
+            witness_info: object,
+            train_parallel_config: TrainParallelConfig,
+            output_store: object,
+            token_space_processor: object,
+        ) -> tuple[dict[str, list], object]:
+            received.append(train_parallel_config)
+            return {"tokens": []}, nullcontext()
+
+        monkeypatch.setattr(actor_module, "get_parallel_state", lambda: state)
+        monkeypatch.setattr(actor_module, "get_rollout_data", load_rollout_data)
+        monkeypatch.setattr(actor_module, "log_rollout_data", lambda *_args: None)
+
+        worker.train(rollout_id=3, rollout_data_ref=object())
+
+        assert len(received) == 1
+        config = received[0]
+        assert (config.dp_size, config.cp_size, config.vpp_size) == (3, 2, 2)
+        assert config.microbatch_group_size_per_vp_stage == 4
+        assert config.independent_dp
+        assert config.supports_precomputed_schedule
+
+    @pytest.mark.parametrize("method_name", ["forward_backward", "forward_only"])
+    def test_multi_lora_entry_uses_the_live_topology(
+        self, actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch, method_name: str
+    ) -> None:
+        """Both MultiLoRA entry points send the post-loss cell topology to data loading, not a cached one."""
+        lora_actor_module = importlib.import_module("miles.backends.megatron_utils.lora.actor")
+        worker = object.__new__(lora_actor_module.MultiLoRATrainRayActor)
+        worker.args = make_trainer_args()
+        worker.model = object()
+        worker.adapter_slots = None
+        worker._heartbeat = Mock()
+        worker.prof = Mock()
+        trivial = GroupInfo(rank=0, size=1, group=None)
+        state = ParallelState(
+            intra_dp=trivial,
+            intra_dp_cp=trivial,
+            cp=GroupInfo(rank=1, size=2, group=None),
+            tp=trivial,
+            pp=trivial,
+            ep=trivial,
+            etp=trivial,
+            indep_dp=GroupInfo(rank=1, size=4, group=None),
+            vpp_size=2,
+            microbatch_group_size_per_vp_stage=4,
+        )
+        worker.train_parallel_config = state.train_parallel_config(supports_precomputed_schedule=True)
+        state.indep_dp = GroupInfo(rank=1, size=3, group=None)
+        received: list[TrainParallelConfig] = []
+
+        def load_rollout_data(
+            *,
+            args: Namespace,
+            rollout_data_ref: object,
+            train_parallel_config: TrainParallelConfig,
+            output_store: object,
+            token_space_processor: object,
+        ) -> tuple[dict[str, list], object]:
+            received.append(train_parallel_config)
+            return {"tokens": []}, nullcontext()
+
+        monkeypatch.setattr(lora_actor_module, "get_parallel_state", lambda: state)
+        monkeypatch.setattr(lora_actor_module, "get_rollout_data", load_rollout_data)
+        monkeypatch.setattr(lora_actor_module.lora_model, "run_forward_backward", lambda *_args, **_kwargs: {})
+
+        method = worker.forward_backward if method_name == "forward_backward" else worker.forward_only
+        method(batch_id=7, rollout_data_ref=object())
+
+        assert len(received) == 1
+        config = received[0]
+        assert (config.dp_size, config.cp_size, config.vpp_size) == (3, 2, 2)
+        assert config.microbatch_group_size_per_vp_stage == 4
+        assert config.independent_dp
+        assert config.supports_precomputed_schedule
+
+
+@pytest.mark.parametrize(
+    ("store_prefix", "expected"),
+    [("", True), ("ref_", False), ("teacher_", False)],
+)
+def test_compute_log_prob_replays_sampling_support_only_for_actor_scores(
+    actor_module, monkeypatch, store_prefix, expected
+):
+    """Policy log-prob forwards preserve the model's logits precision."""
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker._config_snapshot_train_recorded = True
+    worker.args = make_trainer_args(use_sampling_support_replay=True)
+    worker.model = [object()]
+    forward_only = Mock(return_value={"log_probs": []})
+    monkeypatch.setattr(actor_module, "forward_only", forward_only)
+    monkeypatch.setattr(actor_module, "timer", lambda _name: nullcontext())
+
+    result = worker._compute_log_prob([], [], rollout_id=3, store_prefix=store_prefix)
+
+    assert result == {"log_probs": []}
+    assert forward_only.call_args.kwargs["fp32_output"] is False
+    assert forward_only.call_args.kwargs["use_rollout_sampling_mask"] is expected
+
+
 def test_save_model_does_not_manage_lifecycle(actor_module, monkeypatch):
     worker = object.__new__(actor_module.MegatronTrainRayActor)
-    worker.args = Namespace(
+    worker._config_snapshot_train_recorded = True
+    worker.args = make_trainer_args(
         async_save=False,
         custom_megatron_post_save_hook_path=None,
         debug_rollout_only=False,
@@ -140,29 +292,76 @@ def test_save_model_does_not_manage_lifecycle(actor_module, monkeypatch):
     worker.model = object()
     worker.optimizer = object()
     worker.opt_param_scheduler = object()
+    worker.adapter_slots = None
+    worker._schedule_first_rollout = 0
     worker.wake_up = Mock()
     worker.sleep = Mock()
     save = Mock()
     reload_groups = Mock()
     destroy_groups = Mock()
     monkeypatch.setattr(actor_module, "save", save)
-    monkeypatch.setattr(actor_module, "is_multi_lora_enabled", lambda _args: False)
     monkeypatch.setattr(actor_module, "reload_process_groups", reload_groups)
     monkeypatch.setattr(actor_module, "destroy_process_groups", destroy_groups)
 
     worker.save_model(6)
 
-    save.assert_called_once_with(6, worker.model, worker.optimizer, worker.opt_param_scheduler)
+    save.assert_called_once_with(
+        worker.args,
+        6,
+        worker.model,
+        worker.optimizer,
+        worker.opt_param_scheduler,
+        adapter_slots=None,
+        schedule_first_rollout=0,
+    )
     worker.wake_up.assert_not_called()
     worker.sleep.assert_not_called()
     reload_groups.assert_not_called()
     destroy_groups.assert_not_called()
 
 
+def test_force_sync_save_overlaps_hf_export_with_async_checkpoint(actor_module, monkeypatch):
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker._config_snapshot_train_recorded = True
+    worker.args = make_trainer_args(
+        async_save=True,
+        custom_megatron_post_save_hook_path=None,
+        debug_rollout_only=False,
+        save_hf="/checkpoints/hf/{rollout_id}",
+    )
+    worker.role = "actor"
+    worker._heartbeat = Mock()
+    worker.model = object()
+    worker.optimizer = object()
+    worker.opt_param_scheduler = object()
+    worker.snapshot_publisher = object()
+    worker.adapter_slots = None
+    worker._schedule_first_rollout = 0
+    events = []
+
+    monkeypatch.setattr(actor_module, "save", lambda *_args, **_kwargs: events.append("save"))
+
+    monkeypatch.setattr(
+        actor_module,
+        "maybe_finalize_async_save",
+        lambda **_kwargs: events.append("finalize"),
+    )
+    monkeypatch.setattr(actor_module, "save_hf_model", lambda *_args, **_kwargs: events.append("save_hf"))
+
+    worker.save_model(6, force_sync=True)
+
+    assert events == ["finalize", "save", "save_hf", "finalize"]
+
+
 @pytest.mark.parametrize("asleep", [False, True])
 def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_module, monkeypatch, asleep):
+    """Weight update reloads and destroys temporary process groups only when the model is offloaded."""
+    from miles.ray.rollout.inference_controller import UpdatableEngines
+
     worker = object.__new__(actor_module.MegatronTrainRayActor)
-    worker.args = Namespace(
+
+    worker._config_snapshot_train_recorded = True
+    worker.args = make_trainer_args(
         debug_rollout_only=False,
         debug_skip_weight_update=True,
         debug_train_only=False,
@@ -172,13 +371,15 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
     worker._asleep = asleep
     worker._heartbeat = Mock()
     worker.weight_updater = Mock()
-    worker.weight_updater.is_rollout_engines_fresh.return_value = True
-    info = Namespace(
+    worker.weight_updater.receiver_pool.side_effect = lambda _pool: nullcontext()
+    worker.weight_updater.conn_status = Mock(spec=ConnStatusManager)
+    worker.weight_updater.conn_status.needs_reconnect.return_value = False
+    info = UpdatableEngines(
+        rollout_engines=[],
         engine_gpu_counts=[],
         engine_gpu_offsets=[],
-        has_new_engines=False,
-        rollout_engine_lock=None,
-        rollout_engines=[],
+        engine_cell_ids=[],
+        snapshot_cell_id_to_hashes={},
     )
     reload_groups = Mock()
     destroy_groups = Mock()
@@ -186,16 +387,23 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
     monkeypatch.setattr(actor_module, "destroy_process_groups", destroy_groups)
     monkeypatch.setattr(actor_module.dist, "get_rank", lambda: 1)
 
-    worker.update_weights(info)
+    worker.update_weights(info, debug_weight_update_id="update-0", rollout_id=0)
 
     assert reload_groups.call_count == int(asleep)
     assert destroy_groups.call_count == int(asleep)
+    worker.weight_updater.receiver_pool.assert_called_once_with("rollout")
 
 
 def _lifecycle_worker(actor_module, monkeypatch, asleep):
     worker = object.__new__(actor_module.MegatronTrainRayActor)
-    worker.args = Namespace(offload_train=True, rematerialize_param_from_master_weight=False)
+    worker._config_snapshot_train_recorded = True
+    worker.args = make_trainer_args(
+        offload_train=True,
+        rematerialize_param_from_master_weight=False,
+        clear_quantized_weight_workspaces_on_offload=False,
+    )
     worker._asleep = asleep
+    worker._grad_buffer_paused = False
     saver = Mock()
     reload_groups = Mock()
     monkeypatch.setattr(actor_module, "torch_memory_saver", saver)
@@ -240,6 +448,33 @@ def test_wake_up_resumes_offloaded_model_once(actor_module, monkeypatch):
     assert worker._asleep is False
 
 
+def test_lora_sleep_pauses_the_grad_buffers_and_wake_up_resumes_them(actor_module, monkeypatch):
+    """The LoRA grad buffers have no host backup, so a sleep that leaves them out keeps them on the GPU."""
+    worker, saver, _ = _lifecycle_worker(actor_module, monkeypatch, asleep=False)
+    monkeypatch.setattr(actor_module, "lora_rollout_enabled", lambda _args: True)
+
+    worker.sleep()
+    worker.wake_up()
+
+    assert saver.pause.call_args_list == [call(tag="grad_buffer"), call(tag="default")]
+    assert saver.resume.call_args_list == [call(tag="default"), call(tag="grad_buffer")]
+
+
+def test_offload_grad_buffer_frees_them_once_and_sleep_does_not_pause_them_again(actor_module, monkeypatch):
+    """offload_grad_buffer() and sleep() must pause the grad buffers exactly once between them."""
+    worker, saver, _ = _lifecycle_worker(actor_module, monkeypatch, asleep=False)
+    monkeypatch.setattr(actor_module, "lora_rollout_enabled", lambda _args: True)
+
+    worker.offload_grad_buffer()
+    worker.offload_grad_buffer()
+    worker.sleep()
+    worker.wake_up()
+
+    assert saver.pause.call_args_list == [call(tag="grad_buffer"), call(tag="default")]
+    assert saver.resume.call_args_list == [call(tag="default"), call(tag="grad_buffer")]
+    assert worker._grad_buffer_paused is False
+
+
 def _actor_train_args(**overrides):
     defaults = dict(
         compute_advantages_and_returns=True,
@@ -247,12 +482,14 @@ def _actor_train_args(**overrides):
         keep_old_actor=False,
         get_mismatch_metrics=False,
         skip_actor_forward_only=False,
+        enable_sample_ownership_checker=False,
     )
-    return Namespace(**(defaults | overrides))
+    return make_trainer_args(**(defaults | overrides))
 
 
 def _actor_reuse_worker(actor_module, **args_overrides):
     worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker._config_snapshot_train_recorded = True
     worker.args = _actor_train_args(use_critic=False, **args_overrides)
     worker.model = [object()]
     worker.optimizer = object()
@@ -261,10 +498,9 @@ def _actor_reuse_worker(actor_module, **args_overrides):
     worker._active_model_tag = "actor"
     worker._switch_model = Mock()
     worker._set_replay_stage = Mock()
-    worker.compute_log_prob = Mock(return_value={"log_probs": [object()]})
+    worker._compute_log_prob = Mock(return_value={"log_probs": [object()]})
     worker.rollout_data_postprocess = None
     worker.prof = Mock()
-    worker._ft_test_action_executor = None
     worker.weight_updater = Mock()
     worker.weight_updater.pop_metrics.return_value = {}
     worker._heartbeat = Mock()
@@ -286,7 +522,7 @@ def _patch_actor_reuse_dependencies(actor_module, monkeypatch, *, num_microbatch
     monkeypatch.setattr(actor_module, "log_train_advantage_computation_event", Mock())
     monkeypatch.setattr(actor_module, "log_rollout_data", Mock())
     monkeypatch.setattr(actor_module, "log_perf_data", Mock())
-    monkeypatch.setattr(actor_module.train_dump_utils, "save_debug_train_data", Mock())
+    monkeypatch.setattr(actor_module.train_dump, "save_debug_train_data", Mock())
     monkeypatch.setattr(actor_module, "inverse_timer", passthrough_timer)
     monkeypatch.setattr(actor_module, "timer", passthrough_timer)
     monkeypatch.setattr(
@@ -319,31 +555,30 @@ def test_actor_logprob_forward_is_explicit_single_step_opt_in(
         "total_lengths": [1] * sum(num_microbatches),
     }
 
-    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+    worker._train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    assert worker.compute_log_prob.call_count == int(not skip_actor_forward_only and not use_rollout_logprobs)
+    assert worker._compute_log_prob.call_count == int(not skip_actor_forward_only and not use_rollout_logprobs)
     actor_module.compute_advantages_and_returns.assert_called_once_with(worker.args, rollout_data)
     train_call = actor_module.train.call_args
-    assert train_call.args[6] is rollout_data["num_rollouts"]
+    assert train_call.args[7] is rollout_data["num_rollouts"]
     assert train_call.kwargs == {
         "witness_info": None,
         "attempt": 0,
-        "ft_test_action_executor": None,
     }
 
 
 def test_skip_actor_forward_only_preserves_reference_teacher_and_training_forwards(actor_module, monkeypatch):
     worker = _actor_reuse_worker(actor_module, skip_actor_forward_only=True)
     worker.weights_backuper.backup_tags = {"ref", "teacher"}
-    worker.compute_log_prob.side_effect = lambda *_args, store_prefix, **_kwargs: {
+    worker._compute_log_prob.side_effect = lambda *_args, store_prefix, **_kwargs: {
         f"{store_prefix}log_probs": [object()]
     }
     _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=[1])
     rollout_data = {"num_rollouts": [1], "total_lengths": [1]}
 
-    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+    worker._train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    assert [call.kwargs["store_prefix"] for call in worker.compute_log_prob.call_args_list] == ["ref_", "teacher_"]
+    assert [call.kwargs["store_prefix"] for call in worker._compute_log_prob.call_args_list] == ["ref_", "teacher_"]
     actor_module.train.assert_called_once()
 
 
@@ -365,7 +600,7 @@ def test_skip_actor_forward_only_consumes_preloaded_rollout_replay_during_traini
     manager.enabled = True
     manager.enable_check_replay_result = False
     queued_top_indices = []
-    replay = Mock()
+    replay = Mock(stream_idx=0)
     replay.record.side_effect = queued_top_indices.append
     replay.pop_backward.side_effect = lambda: queued_top_indices.pop(0)
     manager.replays = [replay]
@@ -382,13 +617,12 @@ def test_skip_actor_forward_only_consumes_preloaded_rollout_replay_during_traini
 
     expected_top_indices = torch.tensor([[1]], dtype=torch.int64)
 
-    def preload_replay_data(**kwargs):
-        assert kwargs["data_key"] == data_key
-        assert kwargs["replay_list"] is manager.replays
-        kwargs["replay_list"][0].record(kwargs["rollout_data"].pop(data_key)[0])
+    def preload_replay_data(attached_manager, **kwargs):
+        assert attached_manager is manager
+        manager.replays[0].record(kwargs["rollout_data"].pop(data_key)[0])
 
-    fill_replay_data = Mock(side_effect=preload_replay_data)
-    monkeypatch.setattr(actor_module, "fill_replay_data", fill_replay_data)
+    attach_replay_data = Mock(side_effect=preload_replay_data)
+    monkeypatch.setattr(actor_module, "attach_replay_data", attach_replay_data)
 
     def train_with_replay(*_args, **_kwargs):
         topk_fn = manager.get_topk_fn(
@@ -407,10 +641,11 @@ def test_skip_actor_forward_only_consumes_preloaded_rollout_replay_during_traini
         data_key: [expected_top_indices],
     }
 
-    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+    worker._train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    worker.compute_log_prob.assert_not_called()
-    fill_replay_data.assert_called_once()
+    worker._compute_log_prob.assert_not_called()
+    attach_replay_data.assert_called_once()
+    assert attach_replay_data.call_args.kwargs["blocks"] == [(0, 1)]
     replay.pop_backward.assert_called_once()
     assert queued_top_indices == []
 
@@ -421,9 +656,9 @@ def test_skip_actor_forward_only_rejects_multiple_optimizer_steps(actor_module, 
     rollout_data = {"num_rollouts": [1, 1], "total_lengths": [1, 1]}
 
     with pytest.raises(AssertionError, match="requires 1 optimizer step"):
-        worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+        worker._train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    worker.compute_log_prob.assert_not_called()
+    worker._compute_log_prob.assert_not_called()
     actor_module.compute_advantages_and_returns.assert_not_called()
     actor_module.train.assert_not_called()
 
@@ -435,8 +670,612 @@ def test_skip_actor_forward_only_rejects_existing_actor_log_probs(actor_module, 
     rollout_data["log_probs"] = [object()]
 
     with pytest.raises(AssertionError, match="without actor log probs"):
-        worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+        worker._train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    worker.compute_log_prob.assert_not_called()
+    worker._compute_log_prob.assert_not_called()
     actor_module.compute_advantages_and_returns.assert_not_called()
     actor_module.train.assert_not_called()
+
+
+_OBJECT_REF_ID_BYTES = 28
+
+
+class _FakeRay:
+    """A store ref is typed as holding a real ObjectRef, so the stand-in hands out real ones."""
+
+    def __init__(self) -> None:
+        self._objects: dict[bytes, Any] = {}
+
+    def put(self, value: Any) -> ray.ObjectRef:
+        key = len(self._objects).to_bytes(_OBJECT_REF_ID_BYTES, "little")
+        self._objects[key] = value
+        return ray.ObjectRef(key)
+
+    def get(self, ref: ray.ObjectRef) -> Any:
+        return self._objects[ref.binary()]
+
+
+@contextmanager
+def _noop_timer(_name: str) -> Iterator[None]:
+    yield
+
+
+def _patch_shared_train_helpers(actor_module: Any, monkeypatch: pytest.MonkeyPatch, fake_ray: _FakeRay) -> None:
+    monkeypatch.setattr(object_store, "ray", fake_ray)
+    monkeypatch.setattr(object_store, "_INSTANCE", object_store.RayObjectStore(frees_objects=False))
+    monkeypatch.setattr(actor_module, "all_replay_managers", [])
+    monkeypatch.setattr(actor_module, "get_data_iterator", lambda *_args, **_kwargs: (object(), [1]))
+    monkeypatch.setattr(actor_module, "compute_advantages_and_returns", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(actor_module, "train", lambda *_args, **_kwargs: TrainStepOutcome.NORMAL)
+    monkeypatch.setattr(actor_module, "get_parallel_state", lambda: SimpleNamespace(is_pp_last_stage=True))
+    monkeypatch.setattr(actor_module, "timer", _noop_timer)
+
+
+def _critic_worker(actor_module: Any) -> Any:
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker._config_snapshot_train_recorded = True
+    worker.args = make_trainer_args(global_batch_size=1, loss_type="value_loss")
+    worker.role = "critic"
+    worker.model = object()
+    worker.optimizer = object()
+    worker.opt_param_scheduler = object()
+    worker._heartbeat = Mock()
+    return worker
+
+
+def _actor_worker(actor_module: Any) -> Any:
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker._config_snapshot_train_recorded = True
+    worker.args = make_trainer_args(
+        colocate=True,
+        compute_advantages_and_returns=True,
+        get_mismatch_metrics=False,
+        global_batch_size=1,
+        keep_old_actor=False,
+        ref_update_interval=None,
+        skip_actor_forward_only=False,
+        use_critic=True,
+        use_rollout_logprobs=True,
+    )
+    worker.role = "actor"
+    worker.with_ref = False
+    worker.with_opd_teacher = False
+    worker.model = object()
+    worker.optimizer = object()
+    worker.opt_param_scheduler = object()
+    worker.prof = Mock()
+    worker.rollout_data_postprocess = None
+    worker.weight_updater = Mock()
+    worker.weights_backuper = Mock()
+    worker.weights_backuper.backup_tags = ()
+    worker._active_model_tag = "actor"
+    worker._heartbeat = Mock()
+    worker._switch_model = Mock()
+    return worker
+
+
+def test_critic_output_roundtrips_into_actor_external_data(actor_module: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Real _train_critic ships values that real _train_actor reads back through TrainStepOutput.values."""
+    fake_ray = _FakeRay()
+    _patch_shared_train_helpers(actor_module, monkeypatch, fake_ray)
+    monkeypatch.setattr(actor_module, "forward_only", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(actor_module, "inverse_timer", _noop_timer)
+    monkeypatch.setattr(actor_module, "log_rollout_data", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(actor_module, "log_train_advantage_computation_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(actor_module, "log_perf_data", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(actor_module.train_dump, "save_debug_train_data", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(actor_module.torch.cuda, "current_device", lambda: torch.device("cpu"))
+    critic_values = [torch.tensor([1.0, 2.0]), torch.tensor([3.0])]
+
+    critic_output = _critic_worker(actor_module)._train_critic(rollout_id=7, rollout_data={"values": critic_values})
+
+    assert isinstance(critic_output, TrainStepOutput)
+    assert critic_output.outcome is TrainStepOutcome.NORMAL
+    assert critic_output.values is not None
+
+    actor_rollout_data: dict[str, Any] = {"tokens": []}
+    actor_output = _actor_worker(actor_module)._train_actor(
+        8, actor_rollout_data, critic_output, witness_info=None, attempt=0
+    )
+
+    assert isinstance(actor_output, TrainStepOutput)
+    assert actor_output.outcome is TrainStepOutcome.NORMAL
+    assert [value.tolist() for value in actor_rollout_data["values"]] == [[1.0, 2.0], [3.0]]
+
+
+def test_debug_rollout_only_train_answers_with_a_normal_train_step_output(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A debug-rollout-only step skips training yet still answers the driver with a NORMAL output."""
+    worker = _worker(actor_module, "actor", asleep=False)
+    worker.args.debug_rollout_only = True
+    worker._train_actor = Mock()
+    worker._train_critic = Mock()
+    monkeypatch.setattr(actor_module, "get_rollout_data", lambda **_kwargs: ({"tokens": []}, nullcontext()))
+    monkeypatch.setattr(
+        actor_module, "get_parallel_state", lambda: SimpleNamespace(train_parallel_config=make_train_parallel_config)
+    )
+    monkeypatch.setattr(actor_module, "log_rollout_data", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(actor_module, "timer", _noop_timer)
+
+    result = worker.train(9, object())
+
+    assert result == TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
+    worker._train_actor.assert_not_called()
+    worker._train_critic.assert_not_called()
+
+
+@pytest.mark.parametrize("is_pp_last_stage,rollout_data_values", [(False, [torch.tensor([1.0])]), (True, None)])
+def test_critic_without_shippable_values_returns_an_output_carrying_none(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch, is_pp_last_stage: bool, rollout_data_values: Any
+) -> None:
+    """A critic rank that is not pp-last or has no values still returns a TrainStepOutput with values=None."""
+    _patch_shared_train_helpers(actor_module, monkeypatch, _FakeRay())
+    monkeypatch.setattr(actor_module, "forward_only", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(actor_module, "get_parallel_state", lambda: SimpleNamespace(is_pp_last_stage=is_pp_last_stage))
+    rollout_data: dict[str, Any] = {} if rollout_data_values is None else {"values": rollout_data_values}
+
+    output = _critic_worker(actor_module)._train_critic(rollout_id=7, rollout_data=rollout_data)
+
+    assert output == TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=None)
+
+
+def test_actor_last_stage_rejects_a_critic_output_without_values(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pp-last actor using a critic refuses to train on a TrainStepOutput that shipped no values."""
+    _patch_shared_train_helpers(actor_module, monkeypatch, _FakeRay())
+    monkeypatch.setattr(actor_module, "inverse_timer", _noop_timer)
+    empty_critic_output = TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=None)
+
+    with pytest.raises(AssertionError, match="must have shipped 'values'"):
+        _actor_worker(actor_module)._train_actor(8, {"tokens": []}, empty_critic_output, witness_info=None, attempt=0)
+
+
+class _RecordingWeightUpdater:
+    def __init__(self) -> None:
+        self.conn_status = ConnStatusManager()
+        self.connect_calls: list[dict[str, Any]] = []
+        self.update_weights_calls: int = 0
+        self.protocol = SimpleNamespace(cell_updaters_of_cell_id={})
+        self.active_receiver_pool: str | None = None
+        self.receiver_pool_calls: list[str] = []
+        self.mark_trainer_stale_calls = 0
+
+    @contextmanager
+    def receiver_pool(self, pool: str) -> Iterator[None]:
+        assert self.active_receiver_pool is None
+        self.receiver_pool_calls.append(pool)
+        self.active_receiver_pool = pool
+        try:
+            yield
+        finally:
+            self.active_receiver_pool = None
+
+    def mark_trainer_stale(self) -> None:
+        self.mark_trainer_stale_calls += 1
+        self.conn_status.mark_trainer_stale()
+
+    def connect_rollout_engines(
+        self,
+        rollout_engines: list[Any],
+        engine_gpu_counts: list[int] | None = None,
+        engine_gpu_offsets: list[int] | None = None,
+        *,
+        engine_cell_ids: list[str],
+    ) -> None:
+        self.protocol.cell_updaters_of_cell_id = {
+            cell_id: SimpleNamespace(is_errored=False) for cell_id in engine_cell_ids
+        }
+        self.connect_calls.append(
+            dict(
+                rollout_engines=list(rollout_engines),
+                engine_gpu_counts=engine_gpu_counts,
+                engine_gpu_offsets=engine_gpu_offsets,
+                engine_cell_ids=list(engine_cell_ids),
+            )
+        )
+
+    def reconnect_if_needed(self, info: Any) -> bool:
+        if not self.conn_status.needs_reconnect(info.snapshot_cell_id_to_hashes):
+            return False
+        self.reconnect(info)
+        return True
+
+    def reconnect(self, info: Any) -> None:
+        self.connect_rollout_engines(
+            info.rollout_engines,
+            engine_gpu_counts=info.engine_gpu_counts,
+            engine_gpu_offsets=info.engine_gpu_offsets,
+            engine_cell_ids=info.engine_cell_ids,
+        )
+        self.conn_status.mark_reconnected(info.snapshot_cell_id_to_hashes)
+
+    def verify_engine_version(self, rollout_engines: list[Any], *, weight_version: int) -> None:
+        pass
+
+    def update_weights(self, weight_version: int) -> None:
+        assert self.active_receiver_pool is not None
+        self.update_weights_calls += 1
+
+
+def _weight_update_worker(actor_module: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker._config_snapshot_train_recorded = True
+    worker.args = make_trainer_args(
+        ci_test=False,
+        debug_rollout_only=False,
+        debug_skip_weight_update=False,
+        debug_train_only=False,
+        keep_old_actor=False,
+        offload_train=False,
+        rematerialize_param_from_master_weight=False,
+    )
+    worker._asleep = False
+    worker._heartbeat = Mock()
+    worker.args.colocate = False
+    worker._active_model_tag = "actor"
+    from miles.backends.training_utils.model_companion import ModelCompanion
+
+    worker.args.megatron_to_hf_mode = "bridge"
+    worker.model = [torch.nn.Module()]
+    worker.model[0].add_module("model_companion", ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0)))
+    worker.model[0].model_companion.weight_version.fill_(3)
+    worker.weight_updater = _RecordingWeightUpdater()
+    worker.weights_backuper = Mock()
+    worker.weights_backuper.get.return_value = dict(worker.model[0].named_parameters())
+    monkeypatch.setattr(actor_module, "print_memory", Mock())
+    monkeypatch.setattr(actor_module, "get_gloo_group", lambda: None)
+    monkeypatch.setattr(actor_module.dist, "barrier", lambda **_kwargs: None)
+    return worker
+
+
+@pytest.mark.parametrize("asleep", [False, True])
+def test_disaggregated_weight_sync_reads_host_backup_only_when_asleep(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch, asleep: bool
+) -> None:
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    worker.args.colocate = False
+    worker._asleep = asleep
+    worker._active_model_tag = "actor"
+    monkeypatch.setattr(type(worker), "_weight_sync_reads_tms_backup", property(lambda _self: False))
+    host_weights = {"weight": object()}
+    device_weights = {"weight": object()}
+    worker.weights_backuper = Mock()
+    worker.weights_backuper.get.return_value = host_weights
+    worker._named_actor_weights = Mock(return_value=device_weights.items())
+
+    assert worker._get_actor_weights() == (host_weights if asleep else device_weights)
+    assert worker.weights_backuper.get.call_count == int(asleep)
+    assert worker._named_actor_weights.call_count == int(not asleep)
+
+
+@pytest.mark.parametrize("offload_train", [False, True])
+def test_offloading_keeps_weight_backup_without_reference_model(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch, offload_train: bool
+) -> None:
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    worker.args.colocate = False
+    worker.args.offload_train = offload_train
+    worker.with_ref = False
+    worker.with_opd_teacher = False
+    monkeypatch.setattr(type(worker), "_weight_sync_reads_tms_backup", property(lambda _self: False))
+
+    assert worker._enable_weight_backup is offload_train
+
+
+@pytest.mark.parametrize("active_tag", ["actor", "ref", "teacher", "old_actor"])
+def test_switch_model_restores_the_already_active_tag(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch, active_tag: str
+) -> None:
+    """The active tag's live storage may have been discarded by an offload
+    cycle since the last switch (--offload-train disables the param buffers'
+    memory-saver backup), so a same-tag switch must still restore."""
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    monkeypatch.setattr(type(worker), "_enable_weight_backup", property(lambda _self: True))
+    worker._active_model_tag = active_tag
+    worker.weights_backuper = Mock(backup_tags={active_tag})
+
+    worker._switch_model(active_tag)
+
+    worker.weights_backuper.restore.assert_called_once_with(active_tag)
+    assert worker._active_model_tag == active_tag
+
+
+@pytest.mark.parametrize(
+    ("active_tag", "target_tag"),
+    [(None, "actor"), ("ref", "actor"), ("teacher", "actor"), ("old_actor", "actor"), ("actor", "ref")],
+)
+def test_switch_model_restores_on_every_switch(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch, active_tag: str | None, target_tag: str
+) -> None:
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    monkeypatch.setattr(type(worker), "_enable_weight_backup", property(lambda _self: True))
+    worker._active_model_tag = active_tag
+    worker.weights_backuper = Mock(backup_tags={target_tag})
+
+    worker._switch_model(target_tag)
+    worker._switch_model(target_tag)
+
+    # No same-tag skip: the repeated switch restores again, because an offload
+    # cycle between the two calls may have dropped the live storage.
+    assert worker.weights_backuper.restore.call_count == 2
+    worker.weights_backuper.restore.assert_called_with(target_tag)
+    assert worker._active_model_tag == target_tag
+
+
+def test_switch_model_rejects_unknown_tag_even_when_marked_active(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    monkeypatch.setattr(type(worker), "_enable_weight_backup", property(lambda _self: True))
+    worker._active_model_tag = "missing"
+    worker.weights_backuper = Mock(backup_tags={"actor"})
+
+    with pytest.raises(ValueError, match="Cannot switch to unknown model tag: missing"):
+        worker._switch_model("missing")
+
+    worker.weights_backuper.restore.assert_not_called()
+
+
+def _updatable_engines(
+    rollout_engines: list[Any], snapshot: dict[str, str], gpu_count: int, receiver_pool: str = "rollout"
+) -> Any:
+    from miles.ray.rollout.inference_controller import UpdatableEngines
+
+    assert len(snapshot) == len(rollout_engines), "the snapshot describes one worker generation per engine"
+    return UpdatableEngines(
+        rollout_engines=rollout_engines,
+        engine_gpu_counts=[gpu_count] * len(rollout_engines),
+        engine_gpu_offsets=[index * gpu_count for index in range(len(rollout_engines))],
+        engine_cell_ids=list(snapshot),
+        snapshot_cell_id_to_hashes=snapshot,
+        receiver_pool=receiver_pool,
+    )
+
+
+@pytest.mark.parametrize("offload_train", [False, True])
+@pytest.mark.parametrize("connect_fails", [False, True])
+def test_connection_uses_safe_allocations_when_offloading(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch, offload_train: bool, connect_fails: bool
+) -> None:
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    worker.args.offload_train = offload_train
+    worker._asleep = offload_train
+    inside_safe_region = False
+
+    @contextmanager
+    def safe_region() -> Iterator[None]:
+        nonlocal inside_safe_region
+        assert not inside_safe_region
+        inside_safe_region = True
+        try:
+            yield
+        finally:
+            inside_safe_region = False
+
+    def check_connection(*_args: Any, **_kwargs: Any) -> None:
+        assert inside_safe_region == offload_train
+        if connect_fails:
+            raise RuntimeError("connection failed")
+
+    saver = Mock()
+    saver.disable.side_effect = safe_region
+    monkeypatch.setattr(actor_module, "torch_memory_saver", saver)
+    monkeypatch.setattr(actor_module, "reload_process_groups", Mock())
+    monkeypatch.setattr(actor_module, "destroy_process_groups", Mock())
+    worker.weight_updater.connect_rollout_engines = check_connection
+    engines = _updatable_engines([object()], {"cell-0": "hash-a"}, gpu_count=8, receiver_pool="eval")
+
+    if connect_fails:
+        with pytest.raises(RuntimeError, match="connection failed"):
+            worker.update_weights(engines, debug_weight_update_id="update-0", rollout_id=0)
+    else:
+        worker.update_weights(engines, debug_weight_update_id="update-0", rollout_id=0)
+
+    assert not inside_safe_region
+    assert saver.disable.call_count == ((1 if connect_fails else 2) if offload_train else 0)
+    assert worker.weight_updater.update_weights_calls == int(not connect_fails)
+    assert worker.weight_updater.receiver_pool_calls == ["eval"]
+    assert worker.weight_updater.active_receiver_pool is None
+
+
+def test_update_weights_reconnects_once_per_rollout_snapshot(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The actor connects to a rollout snapshot once and reconnects with the new topology only when it changes."""
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    updater = worker.weight_updater
+    first_engines = [object()]
+    replacement_engines = [object(), object()]
+
+    worker.update_weights(
+        _updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4),
+        debug_weight_update_id="update-0",
+        rollout_id=0,
+    )
+    worker.update_weights(
+        _updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4),
+        debug_weight_update_id="update-0",
+        rollout_id=0,
+    )
+    weight_version = worker.update_weights(
+        _updatable_engines(replacement_engines, {"cell-0": "hash-b", "cell-1": "hash-b"}, gpu_count=2),
+        debug_weight_update_id="update-0",
+        rollout_id=0,
+    )
+
+    assert [call["rollout_engines"] for call in updater.connect_calls] == [first_engines, replacement_engines]
+    assert updater.connect_calls[1]["engine_gpu_counts"] == [2, 2]
+    assert updater.connect_calls[1]["engine_gpu_offsets"] == [0, 2]
+    assert updater.update_weights_calls == 3
+    assert weight_version == WeightUpdateOutput(weight_version=3, failed_cell_ids=())
+    assert not updater.conn_status.needs_reconnect({"cell-0": "hash-b", "cell-1": "hash-b"})
+
+
+@pytest.mark.parametrize(
+    "receiver_pool,weight_version,interval,copy_old_actor,backup_tag",
+    [
+        ("rollout", 0, 1, True, "rollout_actor"),
+        ("rollout", 7, 2, False, "old_actor"),
+        ("eval", 0, 1, False, None),
+        ("eval", 7, 2, False, None),
+    ],
+)
+def test_actor_update_preserves_model_version_and_only_advances_rollout_weight_queue(
+    actor_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    receiver_pool: str,
+    weight_version: int,
+    interval: int,
+    copy_old_actor: bool,
+    backup_tag: str | None,
+) -> None:
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    worker.model[0].model_companion.weight_version.fill_(weight_version)
+    worker.args.keep_old_actor = True
+    worker.args.update_weights_interval = interval
+
+    result = worker.update_weights(
+        _updatable_engines([object()], {"cell-0": "hash-a"}, gpu_count=4, receiver_pool=receiver_pool),
+        debug_weight_update_id="update-0",
+        rollout_id=0,
+    )
+
+    assert type(result) is WeightUpdateOutput
+    assert result == WeightUpdateOutput(weight_version=weight_version, failed_cell_ids=())
+    assert worker.weight_updater.receiver_pool_calls == [receiver_pool]
+    assert worker.weight_updater.active_receiver_pool is None
+    assert worker.weights_backuper.copy.call_args_list == (
+        [call(src_tag="rollout_actor", dst_tag="old_actor")] if copy_old_actor else []
+    )
+    assert worker.weights_backuper.backup.call_args_list == ([call(backup_tag)] if backup_tag else [])
+
+
+def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rebuilding the independent-DP groups invalidates the trainer side, so the next update reconnects."""
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    updater = worker.weight_updater
+    monkeypatch.setattr(actor_module, "reconfigure_indep_dp_group", Mock())
+    monkeypatch.setattr(actor_module, "get_parallel_state", lambda: SimpleNamespace())
+    monkeypatch.setattr(actor_module.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(actor_module.dist, "get_world_size", lambda: 2)
+    engines = [object()]
+    snapshot = {"cell-0": "hash-a"}
+
+    worker.update_weights(
+        _updatable_engines(engines, snapshot, gpu_count=4), debug_weight_update_id="update-0", rollout_id=0
+    )
+    worker.reconfigure_indep_dp(object(), "10.0.0.1:1234")
+    worker.update_weights(
+        _updatable_engines(engines, snapshot, gpu_count=4), debug_weight_update_id="update-0", rollout_id=0
+    )
+
+    assert len(updater.connect_calls) == 2
+    assert updater.mark_trainer_stale_calls == 1
+
+
+def test_switch_model_restores_discarded_values_with_the_normal_backuper(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--offload-train disables the param buffers' memory-saver backup: sleep()
+    discards their contents and wake_up() reallocates the storage without
+    values. The same-tag switch after wake must copy the host backup back into
+    the live tensors -- value-level, not merely 'restore was called'."""
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    live = {"w": torch.arange(4, dtype=torch.float32)}
+    backuper = TensorBackuper.create(lambda: iter(live.items()))
+    # The host backup a training step took; unpinned so the test runs on CPU CI.
+    backuper._backups["actor"] = {"w": live["w"].clone()}
+
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    monkeypatch.setattr(type(worker), "_enable_weight_backup", property(lambda _self: True))
+    worker._active_model_tag = "actor"
+    worker.weights_backuper = backuper
+
+    live["w"].zero_()  # the storage an offload cycle discarded and reallocated
+    worker._switch_model("actor")
+
+    assert torch.equal(live["w"], torch.arange(4, dtype=torch.float32))
+
+
+def test_switch_model_rebuilds_the_active_actor_for_main_cast(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--rematerialize-param-from-master-weight: restore('actor') replays the
+    master-weight cast, rebuilding the params update_weights paused -- the
+    per-cycle call must never be skipped for the already-active tag."""
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    cast_main_to_params = Mock()
+    backuper = TensorBackuper.create(
+        lambda: iter(()),
+        MainCastContext(
+            cast_main_to_params=cast_main_to_params,
+            model_chunks=[],
+            extras_getter=lambda: iter(()),
+            rematerializable_ids=set(),
+            check=False,
+        ),
+    )
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    monkeypatch.setattr(type(worker), "_enable_weight_backup", property(lambda _self: True))
+    worker._active_model_tag = "actor"
+    worker.weights_backuper = backuper
+
+    worker._switch_model("actor")
+
+    cast_main_to_params.assert_called_once_with()
+
+
+class TestActorPublicationSource:
+    def test_a_live_reference_model_does_not_supply_the_actor_publication_version(
+        self, actor_module: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The published version and parameters come from the same actor backup."""
+        import torch
+
+        worker = _weight_update_worker(actor_module, monkeypatch)
+        worker._active_model_tag = "ref"
+        actor_weight = torch.tensor([7.0])
+        worker.weights_backuper = Mock()
+        worker.weights_backuper.get.return_value = {
+            "weight": actor_weight,
+            "model_companion.weight_version": torch.tensor(9, dtype=torch.int64),
+        }
+
+        assert worker._get_actor_weight_version() == 9
+        assert worker._get_actor_weights() == {"weight": actor_weight}
+        assert worker.model[0].model_companion.weight_version.item() == 3
+
+    def test_reading_host_backups_still_finds_the_companion_version(
+        self, actor_module: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Colocated LoRA translates live weights to host backups and must tolerate the host-resident companion."""
+        worker = _weight_update_worker(actor_module, monkeypatch)
+        monkeypatch.setattr(type(worker), "_weight_sync_reads_tms_backup", property(lambda _self: True))
+
+        assert worker._get_actor_weight_version() == 3
+
+
+@pytest.mark.parametrize("use_tms_backup", [False, True])
+@pytest.mark.parametrize("include_model_companion", [False, True])
+def test_actor_weight_getter_forwards_companion_selection_to_live_source(
+    actor_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    use_tms_backup: bool,
+    include_model_companion: bool,
+) -> None:
+    """Live and TMS sources honor the same companion inclusion flag."""
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    monkeypatch.setattr(type(worker), "_weight_sync_reads_tms_backup", property(lambda self: use_tms_backup))
+    tensor = torch.tensor([1.0])
+    worker._named_actor_weights = Mock(return_value=[("weight", tensor)])
+
+    assert worker._get_actor_weights(include_model_companion=include_model_companion) == {"weight": tensor}
+
+    expected = {"include_model_companion": include_model_companion}
+    if use_tms_backup:
+        expected["translate_gpu_to_cpu"] = True
+    worker._named_actor_weights.assert_called_once_with(**expected)

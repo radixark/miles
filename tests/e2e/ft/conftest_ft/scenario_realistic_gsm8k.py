@@ -1,187 +1,124 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 
-import os
-import shutil
-from typing import Annotated
+
+import asyncio
+from pathlib import Path
 
 import typer
+from tests.e2e.ft.conftest_ft.cli_options import (
+    FaultTriggersOption,
+    FullyAsyncOption,
+    MetricThresholdOption,
+    NumRolloutOption,
+    RolloutCrashIntervalSecondsOption,
+    SeedOption,
+    TrainerCrashIntervalSecondsOption,
+)
+from tests.utils.soak.core.config import SoakRunnerConfig, SoakTailConfig, SoakTargetConfig
+from tests.utils.soak.ft import fault_triggers
+from tests.utils.soak.ft.actions.factory import compute_mean_interval_seconds_of_kind, create_cell_fault_forms
+from tests.utils.soak.ft.checkers.healing import assert_healing
+from tests.utils.soak.ft.entrypoint import run_cell_soak
+from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE
+from tests.utils.soak.recipes.gsm8k import (
+    CONTEXT_PARALLEL_SIZE,
+    DEFAULT_METRIC_THRESHOLD,
+    DEFAULT_NUM_ROLLOUT,
+    DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS,
+    DEFAULT_SEED,
+    DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS,
+    ROLLOUT_GPUS,
+    ROLLOUT_GPUS_PER_ENGINE,
+    TRAIN_GPUS,
+    execute_gsm8k_session,
+    prepare_gsm8k_run,
+)
 
-from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
-from tests.e2e.ft.conftest_ft.fault_injection import CONTROL_SERVER_PORT, MEAN_INTERVAL_SECONDS, spawn_fault_injector
-
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 app: typer.Typer = typer.Typer()
 
-TEST_NAME: str = "trainer_ft_realistic_gsm8k"
-
-_MODEL_NAME: str = "Qwen2.5-0.5B-Instruct"
-_MODEL_TYPE: str = "qwen2.5-0.5B"
-# Same disaggregated layout as the dp2_cp2_real_rollout mode: 2 cells x CP2 on
-# 4 training GPUs, plus 4 rollout engines x 1 GPU.
-_TRAIN_GPUS: int = 4
-_ROLLOUT_GPUS: int = 4
-# Must stay identical to the threshold asserted by the no-fault baseline
-# tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py: fault recovery must not cost accuracy.
-_DEFAULT_METRIC_THRESHOLD: float = 0.55
+TEST_NAME: str = "realistic_gsm8k"
+FT_COMPONENTS: tuple[str, ...] = ("train", "rollout")
 
 
 @app.command(name="run")
 def run_ci(
-    seed: Annotated[int, typer.Option(help="Random seed for fault injection")] = 42,
-    num_rollout: Annotated[int, typer.Option(help="Number of rollouts")] = 250,
-    crash_probability: Annotated[float, typer.Option(help="Per-step crash probability per cell")] = 0.1,
-    metric_threshold: Annotated[float, typer.Option(help="eval/gsm8k accuracy threshold")] = _DEFAULT_METRIC_THRESHOLD,
+    seed: SeedOption = DEFAULT_SEED,
+    num_rollout: NumRolloutOption = DEFAULT_NUM_ROLLOUT,
+    trainer_crash_interval_seconds: TrainerCrashIntervalSecondsOption = DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS,
+    rollout_crash_interval_seconds: RolloutCrashIntervalSecondsOption = DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS,
+    metric_threshold: MetricThresholdOption = DEFAULT_METRIC_THRESHOLD,
+    fully_async: FullyAsyncOption = False,
+    requested_triggers: FaultTriggersOption = None,
 ) -> None:
-    mean_interval: float = MEAN_INTERVAL_SECONDS / max(crash_probability, 0.01)
-    print(f"Seed: {seed}, Rollouts: {num_rollout}, Mean injection interval: {mean_interval:.1f}s")
+    triggers = fault_triggers.resolve(requested_triggers, has_real_rollout=True, trainer_ft=True)
+    test_name: str = TEST_NAME + fault_triggers.compute_test_name_suffix(triggers)
+    if fully_async:
+        test_name += "_fully_async"
 
-    _prepare_gsm8k()
-    for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
-        os.environ.pop(proxy_var, None)
-
-    dump_dir: str = resolve_dump_dir(TEST_NAME)
-    # Start from a clean dump dir so the event analyzer never reads a previous run's
-    # stale events (run_training does this for the other scenarios; gsm8k bypasses it).
-    if os.path.exists(dump_dir):
-        shutil.rmtree(dump_dir)
-    os.makedirs(dump_dir, exist_ok=True)
-
-    train_args = _get_gsm8k_train_args(seed=seed, num_rollout=num_rollout, metric_threshold=metric_threshold)
-    train_args += f"--save-debug-event-data {dump_dir}/events "
-
-    injector = spawn_fault_injector(seed=seed, mean_interval_seconds=mean_interval)
-
-    try:
-        U.execute_train(
-            train_args=train_args,
-            num_gpus_per_node=_TRAIN_GPUS + _ROLLOUT_GPUS,
-            megatron_model_type=_MODEL_TYPE,
-            extra_env_vars={
-                # --ft-components train depends on cell-based indep_dp, which only
-                # the v2 RayTrainGroup supports.
-                "MILES_EXPERIMENTAL_FT_TRAINER": "1",
-                # Same as run_training: a cell respawned after a crash cold-recompiles
-                # its first forward, which is slow and memory-heavy enough to OOM.
-                "TORCHDYNAMO_DISABLE": "1",
-                "RAY_DEDUP_LOGS": "0",
-                "SGLANG_LOG_MS": "1",
-            },
+    run = prepare_gsm8k_run(
+        config=command_utils.default_config(),
+        test_name=test_name,
+        seed=seed,
+        num_rollout=num_rollout,
+        build_extra_train_args=lambda _dump_dir: fault_triggers.compute_hook_train_args(triggers),
+        metric_threshold=metric_threshold,
+        fully_async=fully_async,
+    )
+    injector = asyncio.run(
+        run_cell_soak(
+            config=run.launch_spec.config,
+            dump_dir=Path(run.dump_dir),
+            sut_run=execute_gsm8k_session(run, accept_replaced=False),
+            runner_config=_build_runner_config(
+                seed=seed,
+                num_rollout=num_rollout,
+                trainer_crash_interval_seconds=trainer_crash_interval_seconds,
+                rollout_crash_interval_seconds=rollout_crash_interval_seconds,
+            ),
+            event_log=run.event_log,
+            evidence_dir=run.evidence_dir,
+            forms=create_cell_fault_forms(run.launch_spec.config, triggers=triggers, weight_update_all_gathers=False),
         )
-    finally:
-        injector.stop_and_join(timeout_seconds=5)
-
-    print(f"Random failure gsm8k accuracy test PASSED (seed={seed}, rollouts={num_rollout})")
-
-
-def _prepare_gsm8k() -> None:
-    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
-    U.exec_command_cpu(f"hf download Qwen/{_MODEL_NAME} --local-dir /root/models/{_MODEL_NAME}")
-    U.convert_checkpoint(
-        model_name=_MODEL_NAME,
-        megatron_model_type=_MODEL_TYPE,
-        num_gpus_per_node=_TRAIN_GPUS,
-        hf_checkpoint=f"/root/models/{_MODEL_NAME}",
-        dir_dst="/root/models",
-        megatron_path=os.environ.get("MILES_SCRIPT_MEGATRON_PATH", "/root/Megatron-LM"),
-    )
-    U.hf_download_dataset("zhuzilin/gsm8k")
-
-
-def _get_gsm8k_train_args(*, seed: int, num_rollout: int, metric_threshold: float) -> str:
-    ckpt_args = f"--hf-checkpoint /root/models/{_MODEL_NAME}/ " f"--ref-load /root/models/{_MODEL_NAME}_torch_dist "
-
-    rollout_args = (
-        "--prompt-data /root/datasets/gsm8k/train.parquet "
-        "--input-key messages "
-        "--label-key label "
-        "--apply-chat-template "
-        "--rollout-shuffle "
-        "--rm-type math "
-        f"--num-rollout {num_rollout} "
-        "--rollout-batch-size 32 "
-        "--n-samples-per-prompt 8 "
-        "--rollout-max-response-len 1024 "
-        "--rollout-temperature 1 "
-        "--over-sampling-batch-size 64 "
-        "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
-        "--global-batch-size 256 "
     )
 
-    eval_args = (
-        "--eval-interval 20 "
-        "--eval-prompt-data gsm8k /root/datasets/gsm8k/test.parquet "
-        "--n-samples-per-eval-prompt 1 "
-        "--eval-max-response-len 1024 "
-        "--eval-top-k 1 "
+    fault_triggers.assert_hook_evidence(forms=injector.forms, events=injector.event_log.events, dump_dir=run.dump_dir)
+    assert_healing(
+        FT_COMPONENTS,
+        events=injector.event_log.events,
+        forms=injector.forms,
+        context=test_name,
     )
 
-    perf_args = (
-        # Parallelism mirrors the dp2_cp2_real_rollout mode (2 cells x CP2), not
-        # the no-fault baseline test.
-        "--context-parallel-size 2 "
-        "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 9216 "
+    print(f"Random failure gsm8k accuracy test PASSED ({test_name}, seed={seed}, rollouts={num_rollout})")
+
+
+def _build_runner_config(
+    *,
+    seed: int,
+    num_rollout: int,
+    trainer_crash_interval_seconds: float,
+    rollout_crash_interval_seconds: float,
+) -> SoakRunnerConfig:
+    expected_counts: dict[str, int] = {
+        ACTOR_CELL_TYPE: TRAIN_GPUS // CONTEXT_PARALLEL_SIZE,
+        ROLLOUT_CELL_TYPE: ROLLOUT_GPUS // ROLLOUT_GPUS_PER_ENGINE,
+    }
+    mean_intervals = compute_mean_interval_seconds_of_kind(
+        FT_COMPONENTS,
+        trainer_crash_interval_seconds=trainer_crash_interval_seconds,
+        rollout_crash_interval_seconds=rollout_crash_interval_seconds,
     )
 
-    grpo_args = "--advantage-estimator grpo " "--entropy-coef 0.00 " "--eps-clip 0.2 " "--eps-clip-high 0.28 "
-
-    optimizer_args = (
-        "--optimizer adam "
-        "--lr 1e-6 "
-        "--lr-decay-style constant "
-        "--weight-decay 0.1 "
-        "--adam-beta1 0.9 "
-        "--adam-beta2 0.98 "
-    )
-
-    sglang_args = (
-        f"--rollout-num-gpus {_ROLLOUT_GPUS} "
-        "--rollout-num-gpus-per-engine 1 "
-        "--sglang-mem-fraction-static 0.7 "
-        "--sglang-enable-metrics "
-    )
-
-    fault_tolerance_args = (
-        "--use-fault-tolerance "
-        "--ft-components train "
-        f"--control-server-port {CONTROL_SERVER_PORT} "
-        "--mini-ft-controller-enable "
-    )
-
-    ci_args = (
-        "--ci-test "
-        "--ci-disable-kl-checker "
-        "--ci-metric-checker-key eval/gsm8k "
-        f"--ci-metric-checker-threshold {metric_threshold} "
-    )
-
-    misc_args = (
-        # default dropout in megatron is 0.1
-        "--attention-dropout 0.0 "
-        "--hidden-dropout 0.0 "
-        # should be good for model performance
-        "--accumulate-allreduce-grads-in-fp32 "
-        "--attention-softmax-in-fp32 "
-        # need to comment this when using model with MLA
-        "--attention-backend flash "
-        "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {_TRAIN_GPUS} "
-    )
-
-    return (
-        f"{ckpt_args} "
-        f"{rollout_args} "
-        f"{optimizer_args} "
-        f"{grpo_args} "
-        f"{U.get_default_wandb_args(f'test_{TEST_NAME}.py', run_name_prefix=f'seed{seed}')} "
-        f"{perf_args} "
-        f"{eval_args} "
-        f"{sglang_args} "
-        f"{fault_tolerance_args} "
-        f"{ci_args} "
-        f"{misc_args} "
+    return SoakRunnerConfig(
+        seed=seed,
+        target_configs={
+            kind: SoakTargetConfig(expected_count=expected_counts[kind], mean_interval_seconds=interval)
+            for kind, interval in mean_intervals.items()
+        },
+        tail=SoakTailConfig.create(num_rollout=num_rollout),
     )
 
 

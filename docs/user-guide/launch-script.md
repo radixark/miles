@@ -23,7 +23,7 @@ as a Ray job. The pieces involved:
 |---|---|---|
 | Launch script | `scripts/run_*.py` | Holds the recipe: per-model values and the flag blocks |
 | Model definition | `scripts/models/<type>.py` | Provides the Megatron architecture flags |
-| Command utilities | `miles/utils/external_utils/command_utils.py` | Starts Ray and submits the job |
+| Command utilities | `miles/utils/external_utils/command_utils/` | Starts Ray and submits the job |
 | Training entrypoint | `train.py` / `train_async.py` | The actual training process, run inside the Ray job |
 
 {/* FIGURE PLACEHOLDER — horizontal flow diagram:
@@ -35,6 +35,18 @@ as a Ray job. The pieces involved:
 
 When the script starts, it prints its resolved options as a table, then every shell
 command it issues with an `EXEC:` prefix — the log is a complete record of what ran.
+
+### Running a v1 launch script
+
+Older Ray launch scripts can keep the free-function API by importing its compatibility module:
+
+```python
+import miles.utils.external_utils.command_utils.legacy as U
+```
+
+It retains `execute_train`, the command and checkpoint helpers, dataset download,
+Mooncake startup, and the original `ExecuteTrainConfig`. New scripts build a backend
+with `config.create_backend()`; the compatibility API does not support Kubernetes.
 
 ## The structure of a launch script
 
@@ -178,7 +190,8 @@ commands you see in the log, in order:
 
 1. Kills leftover `sglang`, `miles`, and `redis` processes and stops any previous Ray
    cluster.
-2. Starts a fresh cluster with `ray start --head`, using `--num-gpus-per-node` GPUs.
+2. Starts a fresh cluster with `ray start --head`, using `--num-gpus-per-node` GPUs, and
+   on some hosts the worker port flags described in [Ports on each node](#ports-on-each-node).
 3. Runs the launcher's `before_ray_job_submit` hook, if it has one (used for the ssh
    fan-out below).
 4. Builds the Ray runtime env for the job: `PYTHONUNBUFFERED`,
@@ -193,11 +206,41 @@ Two environment variables skip parts of this sequence:
 
 | Env var | Effect |
 |---|---|
-| `MILES_SCRIPT_EXTERNAL_RAY=1` | The Ray cluster is already running: skip the Ray teardown and `ray start`, only submit |
+| `MILES_SCRIPT_EXTERNAL_RAY=1` | The Ray cluster is already running: skip the Ray teardown and `ray start`, only submit. Miles then cannot add the worker port flags from [Ports on each node](#ports-on-each-node); add them to your own `ray start` commands, including those taken from the model guides, on hosts that need them |
 | `MILES_SCRIPT_ENABLE_RAY_SUBMIT=0` | Run everything except the submission — shows what a launcher would do |
 
 The head-node address defaults to `127.0.0.1` and is taken from `MASTER_ADDR`; export
 it on multi-node runs so Ray and torch distributed bind to the right interface.
+
+### Ports on each node
+
+Three kinds of ports share every node of a job:
+
+- **Ephemeral ports.** When a process opens an outgoing connection, the kernel gives it
+  a source port from the host's ephemeral port range, `net.ipv4.ip_local_port_range`
+  (read it with `cat /proc/sys/net/ipv4/ip_local_port_range`; a stock Linux kernel uses
+  32768-60999). Any port in this range can be taken this way at any moment.
+- **Ray worker ports.** Each Ray worker process, which runs one actor such as a training
+  rank or a rollout engine, serves Ray's own traffic on a port from the range `ray start`
+  gets through `--min-worker-port` and `--max-worker-port`, 10002-19999 by default.
+- **Service ports.** The ports Miles picks for what runs inside its actors: the SGLang
+  engines, the router, and the training process group's master port.
+
+Ray worker ports and service ports are both picked first and bound later. A port picked
+inside the ephemeral range can be taken by an outgoing connection in between, and the
+bind then fails with "Address already in use". Miles keeps the three apart:
+
+- It picks service ports only from a range outside both the ephemeral range and Ray's
+  10002-19999, which each node works out from its own ephemeral range: 20000-32767 on a
+  stock kernel, 1024-8999 where the ephemeral range is 9000-65000.
+- Where the ephemeral range overlaps 10002-19999, the `ray start` commands Miles runs add
+  `--min-worker-port 0 --max-worker-port 0`. Ray then picks no port, and each worker
+  binds a free port the kernel assigns at that moment, which no connection can take
+  first.
+
+If the ephemeral range covers every port from 1024 to 65535, as in some containers,
+nothing lies outside it: Miles logs a warning and picks service ports from 20000-65535,
+where the failure can still happen. Narrowing the ephemeral range on such hosts avoids it.
 
 ## Multi-step and multi-node launchers
 

@@ -4,9 +4,11 @@ from megatron.core.transformer.enums import AttnBackend
 from mbridge.core import register_model
 from mbridge.models import DeepseekV3Bridge
 
+from miles_plugins.mbridge.deepseek_mtp import DeepseekMtpBridgeMixin
+
 
 @register_model("glm4_moe_lite")
-class GLM4MoELiteBridge(DeepseekV3Bridge):
+class GLM4MoELiteBridge(DeepseekMtpBridgeMixin, DeepseekV3Bridge):
     """Bridge for GLM-4.7 MoE Lite models (e.g. GLM-4.7-Flash).
 
     Here "runtime config" means the config object returned by
@@ -41,7 +43,9 @@ class GLM4MoELiteBridge(DeepseekV3Bridge):
             "original_max_position_embeddings": 4096,
             "type": "rope",
         }
-        rope_scaling = getattr(hf_config, "rope_scaling", None)
+        rope_scaling = getattr(
+            hf_config, "rope_scaling", None
+        )  # config-access-exempt: HF checkpoints may omit rotary scaling
         if rope_scaling is not None:
             mla_rope_config.update(rope_scaling)
 
@@ -58,14 +62,20 @@ class GLM4MoELiteBridge(DeepseekV3Bridge):
             "moe_router_topk": hf_config.num_experts_per_tok,
             "num_moe_experts": hf_config.n_routed_experts,
             "moe_shared_expert_intermediate_size": hf_config.moe_intermediate_size
-            * getattr(hf_config, "n_shared_experts", 1),
-            "moe_aux_loss_coeff": getattr(hf_config, "aux_loss_alpha", 0.001),
+            * getattr(
+                hf_config, "n_shared_experts", 1
+            ),  # config-access-exempt: HF checkpoints may omit shared expert count
+            "moe_aux_loss_coeff": getattr(
+                hf_config, "aux_loss_alpha", 0.001
+            ),  # config-access-exempt: HF checkpoints may omit auxiliary loss coefficient
             "moe_router_load_balancing_type": "none",
             "moe_shared_expert_overlap": True,
             "moe_grouped_gemm": True,
             "moe_router_score_function": "sigmoid",
             "moe_router_pre_softmax": True,
-            "moe_router_topk_scaling_factor": getattr(hf_config, "routed_scaling_factor", 1.0),
+            "moe_router_topk_scaling_factor": getattr(
+                hf_config, "routed_scaling_factor", 1.0
+            ),  # config-access-exempt: HF checkpoints may omit routing scale
             "moe_layer_freq": self.moe_layer_freq,
             # MLA
             "q_lora_rank": hf_config.q_lora_rank,
@@ -91,14 +101,18 @@ class GLM4MoELiteBridge(DeepseekV3Bridge):
 
         import megatron.core
 
-        megatron_version = getattr(megatron.core, "__version__", "0.0")
+        megatron_version = getattr(
+            megatron.core, "__version__", "0.0"
+        )  # config-access-exempt: Megatron distributions may omit package version metadata
         if megatron_version >= "0.14":
             base_config["original_max_position_embeddings"] = mla_rope_config["original_max_position_embeddings"]
         else:
             base_config["max_position_embeddings"] = mla_rope_config["original_max_position_embeddings"]
 
         mtp_args = {}
-        num_nextn_predict_layers = getattr(hf_config, "num_nextn_predict_layers", None)
+        num_nextn_predict_layers = getattr(
+            hf_config, "num_nextn_predict_layers", None
+        )  # config-access-exempt: HF checkpoints may omit MTP depth
         if num_nextn_predict_layers is not None:
             mtp_args["mtp_num_layers"] = num_nextn_predict_layers
             mtp_args["mtp_loss_scaling_factor"] = 0.1
@@ -114,29 +128,11 @@ class GLM4MoELiteBridge(DeepseekV3Bridge):
             rotary_base=self.rope_theta,
         )
 
-    def _convert_mtp_param(self, name: str) -> tuple[list[str]]:
-        assert self.config.mtp_num_layers == 1, "only support one mtp layer for now"
+    def _convert_mtp_param(self, name: str) -> list[str]:
         assert (
             self.config.num_layers == self._EXPECTED_NUM_LAYERS
         ), f"glm4_moe_lite only supports {self._EXPECTED_NUM_LAYERS} layers for now"
-
-        mtp_layer_id = self.config.num_layers
-        direct_name_mapping = {
-            "mtp.layers.0.enorm.weight": f"model.layers.{mtp_layer_id}.enorm.weight",
-            "mtp.layers.0.hnorm.weight": f"model.layers.{mtp_layer_id}.hnorm.weight",
-            "mtp.layers.0.eh_proj.weight": f"model.layers.{mtp_layer_id}.eh_proj.weight",
-            "mtp.layers.0.final_layernorm.weight": f"model.layers.{mtp_layer_id}.shared_head.norm.weight",
-        }
-        if name in direct_name_mapping:
-            return [direct_name_mapping[name]]
-
-        assert "mtp.layers.0.transformer_layer" in name, "mtp not found"
-        proxy_name = name.replace("mtp.layers.0.transformer_layer", f"decoder.layers.{mtp_layer_id}")
-        if "self_attention" in proxy_name or "input_layernorm.weight" in proxy_name:
-            return self._weight_name_mapping_attention(proxy_name)
-        if "mlp" in proxy_name:
-            return self._weight_name_mapping_mlp(proxy_name)
-        raise NotImplementedError(f"Unsupported parameter name: {name}")
+        return super()._convert_mtp_param(name)
 
     def _weight_to_hf_format(
         self, mcore_weights_name: str, mcore_weights: torch.Tensor

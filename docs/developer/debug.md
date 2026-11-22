@@ -11,8 +11,8 @@ time. Once you know which side is wrong, it becomes an ordinary debugging sessio
 | Flag | What it does |
 |---|---|
 | `--debug-rollout-only` | Run generation only. The training backend (Megatron or FSDP) is never initialized. |
-| `--debug-train-only` | Run training only. No SGLang engines are started. |
-| `--save-debug-rollout-data <path>` | Pickle every rollout to `path.format(rollout_id)`. |
+| `--debug-train-only` | Run training only. No rollout engines are started; a snapshot-eval fleet (`--eval-num-gpus`) still is when configured. |
+| `--save-debug-rollout-data <path>` | Pickle every rollout to `path.format(rollout_id)`. The template must contain `{rollout_id}`, which also carries the eval and policy prefixes. |
 | `--load-debug-rollout-data <path>` | Train from those recordings instead of generating. Implies `--debug-train-only`, since it does not start engines. |
 
 The two `--debug-*-only` flags are mutually exclusive and argument validation rejects
@@ -85,10 +85,11 @@ legitimately not hold.
 
 Three more take values rather than switching off:
 
-**Accuracy gate.** `--ci-metric-checker-key <key> --ci-metric-checker-threshold <x>` asserts
-that at least one eval during the run reported `key >= x`. The verdict lands when the
-checker is disposed at the end of the run, so a single good eval is enough to pass and a
-run with no eval at all fails.
+**Accuracy gate.** `--ci-metric-checker-key <key> --ci-metric-checker-threshold <x>`
+checks eval metrics when the checker is disposed at the end of the run. By default, at
+least one eval must report `key >= x`. Set `--ci-metric-checker-expect-num <n>` to
+require exactly `n` eval checks and require all of them to succeed. A run with no eval
+always fails.
 
 **Gradient-norm comparison.** `--ci-save-grad-norm <path>` writes the grad norm, and
 `--ci-load-grad-norm <path>` asserts a later run matches within `rel_tol=abs_tol=0.03`.
@@ -101,11 +102,15 @@ SHA256 over each layer's parameter bytes, including name, shape and dtype, and w
 JSON per rank under `iter_<iteration>/model_hash_tp*_pp*_dp*_cp*.json`. Layer granularity
 is deliberate: a mismatch names the layer instead of just saying the model differs.
 
-**Fault injection.** `--ci-ft-test-actions` takes a JSON array of actions such as
-`{"at_rollout": 3, "action": "stop_cell_at_end", "cell_index": -1}`, with
-`stop_cell_at_end`, `start_cell_at_end` and `crash_before_allreduce` available and
-`cell_index: -1` meaning the last cell. It is how the fault-tolerance suite kills things on
-purpose. See [Fault Tolerance](/advanced/fault-tolerance).
+**Fault injection.** `--ci-fault-hooks` takes a JSON array of fault hook requests, such as
+`[{"request_id": "stop", "hook_name": "trainer_controller_step_end", "action": {"kind": "stop_cell", "cell_id": "trainer-engine-actor-00000"}, "rollout_id": 3}]`. A request waits at a named hook
+(`trainer_step_before_allreduce`, `trainer_controller_step_start`, `trainer_controller_step_end`, `orchestrator_step_end`, the weight-update
+hooks) and runs its action there (`kill_process`, `exit_process`, `segfault_process`, `freeze_process`, `stop_process`, `deadlock_thread`, `stop_cell`, `start_cell`,
+`sleep`, `sleep_forever`, `observe`, `api_server_fault`, `restart_rollout_cell`). The rollout
+restart runs immediately at `orchestrator_step_end` for its declared rollout, requires rollout fault tolerance
+and synchronous single-policy training, and waits for a fresh Running replacement before the
+next weight transaction. It is how the fault-tolerance suite kills things on purpose. See
+[Fault Tolerance](/advanced/fault-tolerance).
 
 ## Aligning precision
 

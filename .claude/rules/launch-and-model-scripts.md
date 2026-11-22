@@ -4,7 +4,7 @@ paths:
   - "scripts/**/*.sh"
   - "examples/**/*.py"
   - "examples/**/*.sh"
-  - "miles/utils/external_utils/command_utils.py"
+  - "miles/utils/external_utils/command_utils/**/*.py"
   - "miles/utils/external_utils/model_args_utils.py"
 ---
 
@@ -71,8 +71,8 @@ definition, and when substantially modifying an existing one.
 - **Reach the shell only through `command_utils`.** `execute_train` owns the
   preamble, `ray start`, the runtime env and the job submission;
   `convert_checkpoint`, `hf_download_dataset`, `fp8_cast_bf16`,
-  `start_mooncake_master` and `ssh_start_ray_workers` (passed as
-  `before_ray_job_submit`) cover the rest. Do not hand-roll `ray start` /
+  `exec_command_gpu_once`, `start_mooncake_master` and `ssh_start_ray_workers`
+  (passed as `before_ray_job_submit`) cover the rest. Do not hand-roll `ray start` /
   `ray job submit`; the self-executing launchers under `examples/` are legacy
   pinned by `tests/manual/launch_scripts/test_self_executing_launchers.py`.
 - **Build the argv as grouped blocks** — checkpoint, rollout, perf, algorithm,
@@ -99,6 +99,22 @@ definition, and when substantially modifying an existing one.
 - **A cluster that is already joined is expressed with
   `MILES_SCRIPT_EXTERNAL_RAY=1`,** not by deleting the `ray start` from the
   launcher.
+
+## Derived checkpoints
+
+- **A checkpoint derived from the HF one lives next to it under `--model-dir`**
+  — `<model>_torch_dist`, `<model>-bf16`, `<model>-FP8`, `<model>-INT4`,
+  `<model>-NVFP4` — never under `/root` or a separate checkpoint directory.
+  `convert_checkpoint` writes there by default. CI mounts `/root/models` from
+  the host, so a conversion made there is reused by every later job on it.
+- **Skip a finished conversion.** `convert_checkpoint` checks its tracker and
+  `fp8_cast_bf16` its index; run any other converter through
+  `exec_command_gpu_once`, which skips once `<dst>.done` exists. A converter
+  copies the source's index files first, so a file inside its output never
+  marks completion.
+- **One directory per conversion recipe.** Two conversions with different
+  arguments write different names; never `rm -rf` a derived checkpoint to force
+  a fresh one, since another job on the host may be reading it.
 
 ## One launcher per recipe family
 

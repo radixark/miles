@@ -2,6 +2,21 @@ from typing import Any
 
 import torch
 
+from miles.utils.args.schema import A, Arg, BaseConfig
+
+
+class MisConfig(BaseConfig):
+    use_rs: A[bool, Arg()] = False
+    tis_level: A[str, Arg(choices=["token", "sequence", "geometric"])] = "token"
+    rs_level: A[str, Arg(choices=["token", "sequence", "geometric"])] = "token"
+    tis_mode: A[str, Arg(choices=["truncate", "mask", "clip"])] = "truncate"
+    tis_lower_bound: A[float | None, Arg()] = 0.5
+    tis_upper_bound: A[float, Arg()] = 2.0
+    rs_lower_bound: A[float | None, Arg()] = None
+    rs_upper_bound: A[float | None, Arg()] = None
+    rs_veto_threshold: A[float | None, Arg()] = 1.0e-4
+    tis_batch_normalize: A[bool, Arg()] = False
+
 
 # NOTE:
 # - `compute_mis_weights` is a lightweight, standalone function that is useful to unit-test on CPU.
@@ -279,7 +294,7 @@ def compute_mis_weights(
             total_weights_sum = sum(masked_sum(w, m) for w, m in zip(all_weights, loss_masks, strict=False))
             total_mask_count = sum(m.sum() for m in loss_masks)
             weights_mean = total_weights_sum / torch.clamp_min(total_mask_count, 1)
-        elif tis_level == "sequence":
+        elif tis_level in ("sequence", "geometric"):
             # Sequence-level: normalize over sequence weights (one weight per sequence)
             # For each sequence, compute mean over valid tokens (they all have the same weight)
             # then average across sequences
@@ -333,7 +348,7 @@ def compute_mis_weights_with_cp(
         is_metrics: The metrics for the importance sampling weights, a dict of flattened tensors.
     """
     # Lazy import to avoid importing Megatron dependencies when only `compute_mis_weights` is used.
-    from miles.backends.training_utils.cp_utils import all_gather_with_cp, slice_log_prob_with_cp
+    from miles.backends.training_utils.data.context_parallel import all_gather_with_cp, slice_log_prob_with_cp
 
     qkv_format = args.qkv_format
     max_seq_lens = kwargs.get("max_seq_lens", None)
@@ -393,6 +408,9 @@ def compute_mis_weights_with_cp(
         result_metrics[key_name] = values
 
     return pg_loss, modified_masks, result_metrics
+
+
+compute_mis_weights_with_cp.config_class = MisConfig
 
 
 def add_ppl_metrics(
@@ -506,3 +524,6 @@ def compute_mis_weights_fsdp(
         result_metrics[f"mis_{key}"] = torch.cat(values, dim=0)
 
     return pg_loss, modified_masks, result_metrics
+
+
+compute_mis_weights_fsdp.config_class = MisConfig

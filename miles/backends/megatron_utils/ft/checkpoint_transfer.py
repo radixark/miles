@@ -12,6 +12,7 @@ except ImportError:
 from megatron.core.dist_checkpointing.tensor_aware_state_dict import MCoreTensorAwareStateDict
 
 from miles.backends.megatron_utils.ft.in_memory_checkpoint import InMemoryCheckpointManager, save_to_memory
+from miles.utils.args.runtime import TrainerConfig
 from miles.utils.ft_utils.process_group_utils import GroupInfo
 from miles.utils.tracking_utils.structured_log import log_structured
 
@@ -23,6 +24,7 @@ _DEFAULT_TIMEOUT = timedelta(seconds=600)
 
 def send_ckpt(
     *,
+    args: TrainerConfig,
     indep_dp: GroupInfo,
     model: Sequence,
     optimizer: object,
@@ -43,6 +45,7 @@ def send_ckpt(
         timeout: Timeout for the NCCL send operation.
     """
     state_dict = save_to_memory(
+        args=args,
         iteration=iteration,
         model=model,
         optimizer=optimizer,
@@ -53,7 +56,13 @@ def send_ckpt(
 
     transport = _create_transport(indep_dp, timeout)
     log_structured(
-        logger.info, op="cross_cell", phase="start", kind="ckpt_send", iteration=iteration, to_alive_rank=dst_rank
+        logger.info,
+        tag="ft",
+        op="cross_cell",
+        phase="start",
+        kind="ckpt_send",
+        iteration=iteration,
+        to_alive_rank=dst_rank,
     )
     transport.send_checkpoint(
         dst_ranks=[dst_rank],
@@ -63,7 +72,13 @@ def send_ckpt(
     )
     transport.disallow_checkpoint()
     log_structured(
-        logger.info, op="cross_cell", phase="end", kind="ckpt_send", iteration=iteration, to_alive_rank=dst_rank
+        logger.info,
+        tag="ft",
+        op="cross_cell",
+        phase="end",
+        kind="ckpt_send",
+        iteration=iteration,
+        to_alive_rank=dst_rank,
     )
 
 
@@ -88,7 +103,7 @@ def recv_ckpt(
         initialize_model_and_optimizer to consume.
     """
     transport = _create_transport(indep_dp, timeout)
-    log_structured(logger.info, op="cross_cell", phase="start", kind="ckpt_recv", from_alive_rank=src_rank)
+    log_structured(logger.info, tag="ft", op="cross_cell", phase="start", kind="ckpt_recv", from_alive_rank=src_rank)
     payload = transport.recv_checkpoint(
         src_rank=src_rank,
         metadata=transport.metadata(),
@@ -98,7 +113,13 @@ def recv_ckpt(
 
     iteration, state_dict = _TransportCodec.decode(payload)
     log_structured(
-        logger.info, op="cross_cell", phase="end", kind="ckpt_recv", iteration=iteration, from_alive_rank=src_rank
+        logger.info,
+        tag="ft",
+        op="cross_cell",
+        phase="end",
+        kind="ckpt_recv",
+        iteration=iteration,
+        from_alive_rank=src_rank,
     )
 
     manager = InMemoryCheckpointManager()

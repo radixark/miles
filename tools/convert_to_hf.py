@@ -6,7 +6,7 @@ from transformers import AutoModelForCausalLM
 import miles.backends.megatron_utils as megatron_utils
 from miles.backends.megatron_utils import update_weight_utils
 from miles.utils.arguments import parse_args
-from miles.utils.hf_config import load_hf_config
+from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.processing_utils import load_tokenizer
 
 
@@ -45,7 +45,7 @@ def main(args):
     # Setup the model and optimizer
     args.no_load_optim = True
     args.no_load_rng = True
-    model, _, _, _ = megatron_utils.initialize_model_and_optimizer(args)
+    model, _, _, _ = megatron_utils.initialize_model_and_optimizer(args, resume_from_ckpt=True)
 
     hf_config = load_hf_config(args.hf_checkpoint)
     model_name = type(hf_config).__name__.lower()

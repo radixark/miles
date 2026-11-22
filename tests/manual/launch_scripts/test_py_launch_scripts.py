@@ -7,6 +7,7 @@ import pytest
 
 from tests.fast.launch_scripts.py_harness import (
     CLEARED_ENV,
+    FROZEN_HARDWARE,
     call_entrypoint,
     format_recording,
     freeze_environment,
@@ -14,6 +15,7 @@ from tests.fast.launch_scripts.py_harness import (
     import_launch_script,
     install_command_recorder,
     iter_py_launch_scripts,
+    launcher_hardware_literals,
 )
 from tests.fast.launch_scripts.sh_harness import REPO_ROOT, assert_matches_snapshot
 
@@ -53,17 +55,41 @@ def _nemotron_checkpoint(sandbox: Path) -> dict[str, object]:
 
 
 _SCRIPTS_WHOSE_DEFAULTS_ARE_UNSUPPORTED: dict[str, Callable[[Path], dict[str, object]]] = {
+    "scripts/amd/run_glm5_2_744b_a40b.py": lambda sandbox: _glm_checkpoint(sandbox, "GLM-5.2_5layer", 5),
     "scripts/run_deepseek_v4.py": lambda sandbox: {"model_name": "DeepSeek-V4-Flash-FP8-4layer"},
     "scripts/run_glm5_744b_a40b.py": lambda sandbox: _glm_checkpoint(sandbox, "GLM-5", 78),
     "scripts/run_glm5_2_744b_a40b.py": lambda sandbox: _glm_checkpoint(sandbox, "GLM-5.2", 78),
     "scripts/run_inkling.py": lambda sandbox: {"model_name": "Inkling-4layer"},
+    # convert_checkpoint locks a file under model_dir, which must be writable while recording
+    "scripts/run_kimi_k3.py": lambda sandbox: {"model_dir": str(sandbox / "models"), "skip_saving": True},
+    # test_prepare_waits_for_shared_checkpoint_conversion covers the real cache lock.
+    "scripts/run_mimo_v2_6_flash.py": lambda sandbox: {"model_dir": str(sandbox / "models")},
+    # Its prepare takes the same lock through run_mimo_v2_6_flash._prepare_checkpoint.
+    "scripts/run_mimo_v2_6_flash_tinker.py": lambda sandbox: {"model_dir": str(sandbox / "models")},
     "scripts/run_nemotron_3_nano_4b_fsdp.py": _nemotron_checkpoint,
     "scripts/run_nemotron_3_ultra_550b_a55b.py": lambda sandbox: {
         "model_name": "NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16-4layer"
     },
 }
 
-_ENTRYPOINTS_DISABLED_BY_THEIR_OWN_DEFAULTS = {("scripts/run_deepseek_v4.py", "prepare_mxfp8")}
+# The machine each recording represents. Launchers default --hardware to whatever node they run on, so the
+# suite pins one; FROZEN_HARDWARE covers the rest.
+_HARDWARE_A_RECORDING_REPRESENTS = {
+    "scripts/amd/run_gpt_oss_20b_lora.py": "MI355X",
+    "scripts/amd/run_qwen3_30b_a3b.py": "MI355X",
+    "scripts/amd/run_qwen3_4b.py": "MI355X",
+    "scripts/amd/run_qwen3_4b_lora.py": "MI355X",
+    "scripts/run_deepseek_v32.py": "B200",
+    "scripts/run_glm45_355b_a32b.py": "GB200",
+    "scripts/run_joy_ai_llm_flash.py": "B200",
+    "scripts/run_mcore_fsdp.py": "H100",
+    "scripts/run_qwen3_30b_a3b.py": "H100",
+    "scripts/run_qwen3_4b.py": "H100",
+}
+
+_ENTRYPOINTS_DISABLED_BY_THEIR_OWN_DEFAULTS = {
+    ("scripts/run_deepseek_v4.py", "prepare_fp8"),
+}
 
 _SCRIPTS = [
     script for script in iter_py_launch_scripts() if script.rel not in _SCRIPTS_IMPORTABLE_ONLY_UNDER_THE_NPU_PATCH
@@ -74,7 +100,7 @@ _CASES = [(script.rel, entrypoint) for script in _SCRIPTS for entrypoint in scri
 @pytest.fixture(params=_CASES, ids=[f"{rel}::{entrypoint}" for rel, entrypoint in _CASES])
 def recorded(request, monkeypatch, tmp_path):
     rel, entrypoint = request.param
-    freeze_environment(monkeypatch)
+    freeze_environment(monkeypatch, hardware=_HARDWARE_A_RECORDING_REPRESENTS.get(rel, FROZEN_HARDWARE))
     recording = install_command_recorder(monkeypatch)
     module = import_launch_script(REPO_ROOT / rel)
     call_entrypoint(
@@ -114,7 +140,7 @@ class TestHostFilesystemIsFrozen:
             assert not Path("/root/models/some-checkpoint/model.safetensors.index.json").exists()
 
     def test_the_checkout_stays_visible(self, tmp_path):
-        """A launcher resolves its own model args script out of the checkout, so hiding it breaks every launcher."""
+        """A launcher resolves its own model args script out of the checkout, so hiding it breaks every entrypoint."""
         with host_filesystem_frozen(tmp_path):
             assert (REPO_ROOT / "pyproject.toml").exists()
             assert (REPO_ROOT / "scripts" / "models").exists()
@@ -147,6 +173,34 @@ class TestDiscovery:
         """Once the NPU patch is upstreamed this fails, forcing the exclusion out instead of letting it rot."""
         with pytest.raises(ImportError, match="execute_train_npu"):
             import_launch_script(REPO_ROOT / rel)
+
+    def test_every_pinned_recording_names_a_launcher_that_accepts_that_hardware(self):
+        """A pin the launcher does not accept records a profile nobody can run, and a stale key pins nothing."""
+        literals = launcher_hardware_literals()
+
+        assert _HARDWARE_A_RECORDING_REPRESENTS.keys() <= literals.keys()
+        for rel, hardware in _HARDWARE_A_RECORDING_REPRESENTS.items():
+            assert hardware in literals[rel], rel
+
+    def test_a_launcher_the_frozen_default_covers_is_not_pinned_as_well(self):
+        """Two ways to say the same thing drift apart; only the launchers FROZEN_HARDWARE cannot serve get a pin."""
+        redundant = {rel for rel, hardware in _HARDWARE_A_RECORDING_REPRESENTS.items() if hardware == FROZEN_HARDWARE}
+
+        assert not redundant
+
+    def test_every_discovered_entrypoint_has_a_golden_and_vice_versa(self):
+        """A removed entrypoint leaves its golden behind, and a new one would otherwise go unrecorded."""
+        expected = {f"{rel}/{entrypoint}.txt" for rel, entrypoint in _CASES}
+        recorded = {path.relative_to(_SNAPSHOT_DIR).as_posix() for path in _SNAPSHOT_DIR.rglob("*.txt")}
+
+        assert expected == recorded
+
+    def test_the_snapshot_tree_holds_nothing_outside_the_three_recorded_families(self):
+        """A whole orphan directory would sit under tests/snapshots/launch_scripts with nobody checking it."""
+        root = _SNAPSHOT_DIR.parent
+        families = {root / name for name in ("py", "sh", "self_executing")}
+
+        assert set(root.iterdir()) == families
 
     def test_every_environment_knob_a_model_script_reads_is_frozen(self):
         """The snapshots now pin expanded model args, so a developer's exported override would fail them."""

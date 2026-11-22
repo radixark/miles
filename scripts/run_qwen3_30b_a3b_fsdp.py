@@ -3,7 +3,7 @@ single node.
 
 dapo-math-17k @ 4k response len, AIME-2024 eval @ 4k every 10 rollouts.
 
---fsdp-cpu-offload is on by default: fp32 master + Adam states for 30B params (~366GB) do not fit in
+--optimizer-cpu-offload is on by default: fp32 master + Adam states for 30B params (~366GB) do not fit in
 4x141GB HBM alongside activations; the optimizer runs on CPU (also disables offload_train internally,
 the two are mutually exclusive).
 
@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 HF_REPO = "Qwen/Qwen3-30B-A3B"
 MODEL_NAME = "Qwen3-30B-A3B"
@@ -24,17 +24,18 @@ WANDB_GROUP = "qwen3-30B-A3B-fsdp-dapo4k"
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     num_gpus_per_node: int = 4
     num_rollout: int = 100
     data_dir: str = "/root"
     model_dir: str = "/root/models"
     wandb_project: str = "miles-fsdp-curve"
-    fsdp_cpu_offload: bool = True
+    optimizer_cpu_offload: bool = True
     extra_args: str = ""
 
 
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir}")
     U.exec_command_cpu(f"hf download {HF_REPO} --local-dir {args.model_dir}/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
@@ -42,6 +43,7 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     model_path = f"{args.model_dir}/{MODEL_NAME}"
 
     ckpt_args = f"--hf-checkpoint {model_path} " f"--ref-load {model_path} "
@@ -112,16 +114,13 @@ def execute(args: ScriptArgs):
         "--gradient-checkpointing "
         "--attn-implementation flash_attention_3 "
         """--train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}' """
-        f"{'--fsdp-cpu-offload ' if args.fsdp_cpu_offload else ''}"
+        f"{'--optimizer-cpu-offload ' if args.optimizer_cpu_offload else ''}"
     )
 
     perf_args = "--use-dynamic-batch-size --max-tokens-per-gpu 9216 "
 
     misc_args = (
-        f"--actor-num-nodes {args.num_nodes} "
-        f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
-        "--colocate "
-        "--use-fault-tolerance "
+        f"--actor-num-nodes {args.num_nodes} " f"--actor-num-gpus-per-node {args.num_gpus_per_node} " "--colocate "
     )
 
     U.execute_train(
@@ -138,13 +137,12 @@ def execute(args: ScriptArgs):
             f"{misc_args} "
             f"{args.extra_args} "
         ),
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=None,
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     prepare(args)
     execute(args)

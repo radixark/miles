@@ -2,12 +2,15 @@ from argparse import Namespace
 
 import torch
 import torch.distributed as dist
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
-from miles.backends.training_utils.cp_utils import all_gather_with_cp, slice_log_prob_with_cp
-from miles.backends.training_utils.loss import compute_advantages_and_returns
-from miles.backends.training_utils.loss_hub.advantages import compute_advantages
+from miles.backends.training_utils.data.context_parallel import all_gather_with_cp, slice_log_prob_with_cp
+from miles.backends.training_utils.loss.hub.advantages import compute_advantages
+from miles.backends.training_utils.loss.objective import compute_advantages_and_returns
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set_parallel_state
+
+register_cpu_ci(est_time=50, suite="stage-b-cpu", labels=["precision"])
 
 
 def _parallel_state(rank: int = 0, world_size: int = 1) -> ParallelState:

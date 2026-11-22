@@ -2,7 +2,7 @@
 
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
+register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["sglang"])
 
 import pytest
 import yaml
@@ -14,37 +14,39 @@ def _write_yaml(data: dict, tmp_path) -> str:
     return str(path)
 
 
+def _resolve(path: str, *, rollout_num_gpus: int, hf_checkpoint: str = "/path/to/model"):
+    from argparse import Namespace
+
+    from tests.fast.fixtures.sglang_config_fixtures import resolve_sglang_config_and_scaling
+
+    args = Namespace(
+        sglang_config=path,
+        prefill_num_servers=None,
+        rollout_num_gpus=rollout_num_gpus,
+        rollout_num_gpus_per_engine=1,
+        sglang_pp_size=1,
+        sglang_pp_layer_partition=None,
+        num_gpus_per_node=8,
+        eval_num_gpus=0,
+        starts_inference_engines=True,
+        hf_checkpoint=hf_checkpoint,
+        offload_rollout=False,
+        debug_train_only=False,
+        debug_rollout_only=False,
+        colocate=False,
+        actor_num_nodes=1,
+        actor_num_gpus_per_node=8,
+        critic_num_nodes=0,
+        critic_num_gpus_per_node=0,
+        use_critic=False,
+        multi_lora=False,
+    )
+    return resolve_sglang_config_and_scaling(args)
+
+
 class TestSglangConfigUpdateWeights:
-    def test_update_weights_default_true(self, tmp_path):
-        """Models without explicit update_weights should resolve to True when model_path matches hf_checkpoint."""
-        from argparse import Namespace
-
-        from miles.backends.sglang_utils.sglang_config import SglangConfig
-
-        path = _write_yaml(
-            {
-                "sglang": [
-                    {
-                        "name": "actor",
-                        "engine_groups": [{"worker_type": "regular", "num_gpus": 4}],
-                    }
-                ]
-            },
-            tmp_path,
-        )
-        config = SglangConfig.from_yaml(path)
-        assert len(config.models) == 1
-        # Before resolve, update_weights is None (not yet inferred)
-        assert config.models[0].update_weights is None
-        # After resolve with matching hf_checkpoint, defaults to True
-        args = Namespace(hf_checkpoint="/path/to/model", rollout_num_gpus_per_engine=1)
-        config.models[0].resolve(args)
-        assert config.models[0].update_weights is True
-
     def test_update_weights_explicit_false(self, tmp_path):
         """Models with update_weights: false should be parsed correctly."""
-        from miles.backends.sglang_utils.sglang_config import SglangConfig
-
         path = _write_yaml(
             {
                 "sglang": [
@@ -63,7 +65,7 @@ class TestSglangConfigUpdateWeights:
             },
             tmp_path,
         )
-        config = SglangConfig.from_yaml(path)
+        config, _ = _resolve(path, rollout_num_gpus=6)
         assert len(config.models) == 2
         assert config.models[0].name == "actor"
         assert config.models[0].update_weights is True
@@ -72,9 +74,7 @@ class TestSglangConfigUpdateWeights:
         assert config.models[1].model_path == "/path/to/ref"
 
     def test_multi_model_total_gpus(self, tmp_path):
-        """total_num_gpus should sum across all models."""
-        from miles.backends.sglang_utils.sglang_config import SglangConfig
-
+        """Group gpu counts should sum across all models."""
         path = _write_yaml(
             {
                 "sglang": [
@@ -91,8 +91,8 @@ class TestSglangConfigUpdateWeights:
             },
             tmp_path,
         )
-        config = SglangConfig.from_yaml(path)
-        assert config.total_num_gpus == 12
+        config, scaling = _resolve(path, rollout_num_gpus=12)
+        assert sum(g.num_gpus for groups in scaling.groups.values() for g in groups) == 12
 
 
 class TestGetModelUrl:
@@ -128,7 +128,7 @@ class TestGetModelUrl:
         assert get_model_url(args, "unknown") == "http://10.0.0.1:3000/generate"
 
     def test_get_model_url_no_routers(self):
-        """get_model_url should work when sglang_model_routers is not set."""
+        """get_model_url should work when sglang_model_routers is left at its parser default."""
         from argparse import Namespace
 
         from miles.rollout.sglang_rollout import get_model_url
@@ -136,6 +136,7 @@ class TestGetModelUrl:
         args = Namespace(
             sglang_router_ip="10.0.0.1",
             sglang_router_port=3000,
+            sglang_model_routers=None,
         )
         assert get_model_url(args, "anything") == "http://10.0.0.1:3000/generate"
 

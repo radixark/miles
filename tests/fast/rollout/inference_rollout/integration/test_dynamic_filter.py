@@ -8,7 +8,7 @@ from tests.fast.rollout.inference_rollout.integration.utils import (
     load_and_call_train,
 )
 
-from miles.utils.misc import function_registry
+from miles.utils.function_registry import function_registry
 
 
 @pytest.mark.parametrize(
@@ -44,3 +44,27 @@ def test_filter_effect(rollout_env, use_filter, expect_all_correct):
         assert rewards == {1}, "Filter should keep only correct samples"
     else:
         assert 0 in rewards, "Without filter, incorrect samples should be present"
+
+
+@pytest.mark.parametrize(
+    "rollout_env",
+    [
+        pytest.param(
+            integration_env_config(
+                ["--rollout-batch-size", "3", "--dynamic-sampling-filter-path", "test:filter_by_reward"],
+                data_rows=MIXED_DATA_ROWS,
+            ),
+            id="with_filter",
+        )
+    ],
+    indirect=["rollout_env"],
+)
+def test_raw_reward_still_sees_the_dropped_groups(rollout_env):
+    """The training batch contains only correct samples; raw_reward must still count the rejected samples."""
+    env = rollout_env
+
+    with function_registry.temporary("test:filter_by_reward", filter_by_reward):
+        out = load_and_call_train(env.args, env.data_source)
+
+    assert {group[0].reward for group in out.samples} == {1}
+    assert 0 < out.metrics["rollout/raw_reward"] < 1

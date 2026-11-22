@@ -34,16 +34,22 @@ import math
 import multiprocessing
 import os
 import statistics
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+# Direct execution and spawn children need the repository root for tests.manual imports.
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 # No miles imports at module level, deliberately: multiprocessing "spawn"
 # children (the load generators and the mock backend) re-import this script as
 # __mp_main__, and the miles chain drags in transformers (~10s per child). All
 # miles imports live inside the driver-side functions that use them.
+if TYPE_CHECKING:
+    from miles.rollout.session.config import SessionServerConfig
 
 DEFAULT_HF_CHECKPOINT = "Qwen/Qwen3-0.6B"
 DEFAULT_TITO_MODEL = "qwen3"
@@ -74,6 +80,47 @@ class TurnSpec:
     full_sequence_r3_token_count: int
     r3_raw_bytes: int
     r3_json_chars: int
+
+
+def benchmark_resources() -> dict[str, Any]:
+    """Report host resources and cgroup v2 limits without resizing the workload."""
+    import psutil
+
+    memory = psutil.virtual_memory()
+    cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
+    result = {
+        "cpu_affinity_count": cpus,
+        "effective_cpus": cpus,
+        "host_memory_bytes": memory.total,
+        "available_memory_bytes": memory.available,
+    }
+    mount = Path("/sys/fs/cgroup")
+    membership = Path("/proc/self/cgroup")
+    if membership.exists():
+        for line in membership.read_text().splitlines():
+            if line.startswith("0::"):
+                cgroup = mount / line[3:].lstrip("/")
+                break
+        else:
+            cgroup = None
+        while cgroup is not None and cgroup.is_relative_to(mount):
+            cpu_max = cgroup / "cpu.max"
+            if cpu_max.exists():
+                quota, period = cpu_max.read_text().split()
+                if quota != "max":
+                    result["effective_cpus"] = min(result["effective_cpus"], int(quota) / int(period))
+            memory_max = cgroup / "memory.max"
+            if memory_max.exists():
+                limit = memory_max.read_text().strip()
+                if limit != "max":
+                    current = int((cgroup / "memory.current").read_text())
+                    result["available_memory_bytes"] = min(
+                        result["available_memory_bytes"], max(0, int(limit) - current)
+                    )
+            if cgroup == mount:
+                break
+            cgroup = cgroup.parent
+    return result
 
 
 def _positive_int(value: str) -> int:
@@ -154,12 +201,15 @@ def _completion_token_ids(
     assistant_message: dict[str, Any],
     tools: list[dict[str, Any]] | None,
 ):
-    prompt_text = tito_tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False, tools=tools)
+    template_args = tito_tokenizer.default_template_args(tools)
+    prompt_text = tito_tokenizer.apply_chat_template(
+        messages, add_generation_prompt=True, tokenize=False, template_args=template_args
+    )
     full_text = tito_tokenizer.apply_chat_template(
         messages + [assistant_message],
         add_generation_prompt=False,
         tokenize=False,
-        tools=tools,
+        template_args=template_args,
     )
     if not full_text.startswith(prompt_text):
         raise RuntimeError("assistant response does not extend the rendered prompt")
@@ -241,7 +291,7 @@ def _build_turn_specs(
             request_messages,
             add_generation_prompt=True,
             tokenize=True,
-            tools=tools,
+            template_args=tito_tokenizer.default_template_args(tools),
         )
         completion_token_ids = _completion_token_ids(
             tito_tokenizer, tokenizer, request_messages, assistant_message, tools
@@ -317,7 +367,7 @@ def _write_json(result: dict[str, Any], path: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_server_args(
+def _build_server_config(
     bench_args,
     *,
     chat_template_path,
@@ -325,28 +375,62 @@ def _build_server_args(
     ip: str,
     port: int,
     instance_idx: int,
-) -> SimpleNamespace:
-    """A Miles-args namespace carrying exactly what one session-server instance reads.
+    backend_url: str,
+) -> SessionServerConfig:
+    """The config carrying exactly what one session-server instance reads.
 
     `use_rollout_routing_replay=True` makes the server inject
     `return_routed_experts=True` upstream and exercise the R3-strip path, i.e.
     the production-shaped large-R3 scenario the overhead doc is about.
+
     `pause_generation_mode` follows `--incremental-r3` so the delta-shaped
     payloads run against a server that actually requests additional R3
     (`routed_experts_start_len` on every upstream chat request).
+
+    `use_session_server` selects which implementation is measured, so it comes
+    from the command line rather than being pinned here; the sample picker and
+    postprocessor stay unset, matching `SessionServerConfig.from_args` defaults.
     """
-    return SimpleNamespace(
+    from miles.rollout.session.config import SessionServerConfig
+    from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
+
+    tito_type = TITOTokenizerType(bench_args.tito_model)
+    return SessionServerConfig(
         hf_checkpoint=bench_args.hf_checkpoint,
         chat_template_path=chat_template_path,
         apply_chat_template_kwargs=chat_template_kwargs,
         tito_model=bench_args.tito_model,
+        allow_stop_token_replace=TITOTokenizerType.get_tokenizer_class(tito_type).allow_stop_token_replace,
+        allow_truncated_continuation=(
+            TITOTokenizerType.get_tokenizer_class(tito_type).FIXED_TEMPLATE.truncation_closer is not None
+        ),
         use_rollout_routing_replay=True,
         use_rollout_indexer_replay=False,
+        rollout_indexer_topk_num_streams=None,
+        replay_layer_splits=[],
+        use_sampling_support_replay=False,
+        sglang_speculative_algorithm=None,
+        num_layers=None,
+        moe_router_topk=None,
+        save_debug_trajectory_data=None,
+        lora_rank=0,
+        lora_adapter_path=None,
+        lora_train_only=False,
+        timeout=600.0,
+        backend_url=backend_url,
+        routing_key_header="X-SMG-Routing-Key",
+        host=ip,
+        port=port,
+        instance_id=f"bench-i{instance_idx}",
+        use_session_server=bench_args.use_session_server,
+        session_message_matcher="strict",
         pause_generation_mode="in_place" if bench_args.incremental_r3 else "retract",
-        miles_router_timeout=600.0,
-        session_server_ip=ip,
-        session_server_port=port,
-        session_server_instance_id=f"bench-i{instance_idx}",
+        session_sample_picker_path=None,
+        session_sample_postprocessor_path=None,
+        rollout_top_logprobs_num=0,
+        rollout_sampling_logprobs_mode="selected",
+        rollout_temperature=1.0,
+        output_store_backend_config=None,
     )
 
 
@@ -362,30 +446,32 @@ def _start_backend(
     `response_bodies`. `inference_interval` (seconds) is the simulated
     generation delay the mock waits before returning each chat response.
     """
-    # `_mock_r3_backend` lives beside this script; `sys.path[0]` is this
-    # script's dir, which the spawn child inherits, so a top-level import resolves
-    # in both parent and child without a tests/manual/session package.
-    from _mock_r3_backend import run_mock_r3_backend
+    from tests.manual.session._mock_r3_backend import run_mock_r3_backend
 
     from miles.utils.http_utils import find_available_port, wait_for_server_ready
 
     ctx = multiprocessing.get_context("spawn")
     port = find_available_port(28000)
     backend_procs = []
-    for _ in range(procs):
-        proc = ctx.Process(
-            target=run_mock_r3_backend,
-            args=(response_bodies, ip, port, inference_interval),
-            name="bench-mock-r3-backend",
-            daemon=False,
-        )
-        proc.start()
-        backend_procs.append(proc)
-    # The port probe passes once ANY shard listens; shards bind before serving
-    # and workers only open connections after the (much later) server readiness,
-    # so all shards are accepting by the time load arrives.
-    for proc in backend_procs:
-        wait_for_server_ready(ip, port, proc, timeout=120.0)
+    try:
+        for _ in range(procs):
+            proc = ctx.Process(
+                target=run_mock_r3_backend,
+                args=(response_bodies, ip, port, inference_interval),
+                name="bench-mock-r3-backend",
+                daemon=False,
+            )
+            proc.start()
+            backend_procs.append(proc)
+        # The port probe passes once ANY shard listens; shards bind before serving
+        # and workers only open connections after the (much later) server readiness,
+        # so all shards are accepting by the time load arrives.
+        for proc in backend_procs:
+            wait_for_server_ready(ip, port, proc, timeout=120.0)
+    except BaseException:
+        for proc in backend_procs:
+            _terminate_proc(proc)
+        raise
     return backend_procs, f"http://{ip}:{port}"
 
 
@@ -476,7 +562,7 @@ def _drive_workload(
     """
     # Imported here (not at module top) so the spawn children that target the
     # mock backend / session server do not transitively import httpx eagerly.
-    from _bench_load_generator import lg_drive_all, load_generator_entry
+    from tests.manual.session._bench_load_generator import lg_drive_all, load_generator_entry
 
     if driver_procs <= 1:
         wall_start = time.perf_counter()
@@ -531,7 +617,9 @@ def _drive_workload(
     return samples, agg, wall_s
 
 
-def run_http_bench(args) -> dict[str, Any]:
+def run_http_bench(args, *, warmup_sessions: int = 0) -> dict[str, Any]:
+    import psutil
+
     from miles.utils.chat_template_utils import get_tito_tokenizer, resolve_fixed_chat_template
     from miles.utils.http_utils import find_available_port, is_port_available, wait_for_server_ready
     from miles.utils.processing_utils import load_tokenizer
@@ -574,8 +662,8 @@ def run_http_bench(args) -> dict[str, Any]:
     try:
         from miles.rollout.session.server import run_session_server
 
-        # Consecutive ports from one free base, mirroring the production
-        # `--session-server-port start end` range deployment.
+        # Consecutive ports from one free base, mirroring production's
+        # `--session-server-port START --session-server-workers N` deployment.
         base_port = find_available_port(33000)
         ports = list(range(base_port, base_port + instances))
         for port in ports[1:]:
@@ -584,21 +672,22 @@ def run_http_bench(args) -> dict[str, Any]:
         base_urls = [f"http://{ip}:{port}" for port in ports]
 
         # Spawn every instance before waiting on any (matches
-        # start_session_server): N instances pay ~one transformers import of
+        # wait_session_server_ready): N instances pay ~one transformers import of
         # wall-time, not N.
         ctx = multiprocessing.get_context("spawn")
         for idx, port in enumerate(ports):
-            server_args = _build_server_args(
+            server_config = _build_server_config(
                 args,
                 chat_template_path=chat_template_path,
                 chat_template_kwargs=chat_template_kwargs,
                 ip=ip,
                 port=port,
                 instance_idx=idx,
+                backend_url=backend_url,
             )
             proc = ctx.Process(
                 target=run_session_server,
-                args=(server_args, backend_url),
+                args=(server_config,),
                 name=f"bench-session-server-{idx}",
                 daemon=False,
             )
@@ -611,7 +700,25 @@ def run_http_bench(args) -> dict[str, Any]:
         server_root_pids = [p.pid for p in server_procs]
 
         request_bodies = [spec.request_body for spec in specs]
-        with _RSSSampler(server_root_pids) as rss:
+        if warmup_sessions:
+            _, warmup, _ = _drive_workload(
+                base_urls,
+                request_bodies,
+                warmup_sessions,
+                get_records=False,
+                tool_interval=0.0,
+                driver_procs=args.bench_driver_procs,
+            )
+            if (
+                warmup["completed_turns"] != warmup_sessions * args.turns
+                or warmup["chat_server_errors"]
+                or warmup["chat_transport_errors"]
+            ):
+                raise RuntimeError(f"benchmark warmup failed: {warmup}")
+        cpu_before = sum(sum(psutil.Process(pid).cpu_times()[:2]) for pid in server_root_pids)
+        backend_cpu_before = sum(sum(psutil.Process(p.pid).cpu_times()[:2]) for p in backend_procs)
+        driver_cpu_before = time.process_time()
+        with _RSSSampler(server_root_pids) as rss, _RSSSampler([os.getpid()]) as tree_rss:
             samples, agg, wall_s = _drive_workload(
                 base_urls,
                 request_bodies,
@@ -620,7 +727,11 @@ def run_http_bench(args) -> dict[str, Any]:
                 tool_interval=args.tool_interval,
                 driver_procs=args.bench_driver_procs,
             )
+        server_cpu_s = sum(sum(psutil.Process(pid).cpu_times()[:2]) for pid in server_root_pids) - cpu_before
         peak_rss_bytes = rss.peak_bytes
+        tree_peak_rss_bytes = tree_rss.peak_bytes
+        driver_cpu_s = time.process_time() - driver_cpu_before
+        backend_cpu_s = sum(sum(psutil.Process(p.pid).cpu_times()[:2]) for p in backend_procs) - backend_cpu_before
     finally:
         for proc in server_procs:
             _terminate_proc(proc)
@@ -670,6 +781,10 @@ def run_http_bench(args) -> dict[str, Any]:
         "chat_template_path": chat_template_path,
         "chat_template_kwargs": chat_template_kwargs,
         "wall_s": wall_s,
+        "server_cpu_s": server_cpu_s,
+        "driver_parent_cpu_s": driver_cpu_s,
+        "backend_cpu_s": backend_cpu_s,
+        "tree_peak_rss_bytes": tree_peak_rss_bytes,
         "throughput_turns_per_s": completed_turns / wall_s if wall_s > 0 else float("nan"),
         "throughput_content_tokens_per_s": content_tokens / wall_s if wall_s > 0 else float("nan"),
         "throughput_completion_tokens_per_s": completion_tokens / wall_s if wall_s > 0 else float("nan"),
@@ -786,6 +901,12 @@ def main() -> None:
     )
     parser.add_argument("--hf-checkpoint", default=DEFAULT_HF_CHECKPOINT, help="tokenizer checkpoint or local path")
     parser.add_argument("--tito-model", default=DEFAULT_TITO_MODEL, help="TITO tokenizer family")
+    parser.add_argument(
+        "--use-session-server",
+        choices=["v1", "v2"],
+        default="v2",
+        help="session server implementation to measure",
+    )
     parser.add_argument(
         "--append-role",
         choices=["user", "tool"],

@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-# doc-dev: docs/ci/02-docker-build.md
+# doc-dev: docs/developer/ci/02-docker-build.md
 """Build and push Miles Docker images.
 
 Usage:
     python docker/build.py --variant cu13 --image-tag dev --push          # multi-arch (amd64+arm64)
     python docker/build.py --variant cu13-x86 --image-tag dev --push      # single arch
-    python docker/build.py --variant cu12-x86 --image-tag latest
     python docker/build.py --variant cu13 --image-tag dev --dry-run
 """
 
@@ -21,71 +20,90 @@ import typer
 CACHE_DIR = "/tmp/miles-docker-cache"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# Variants without an "image" push to the --image-repo the caller names.
 VARIANTS = {
     "cu13": {
-        "image": "radixark/miles",
         "platforms": ["linux/amd64", "linux/arm64"],
         "tag_postfix": "",
         "build_args": {},
     },
     "cu13-x86": {
-        "image": "radixark/miles",
         "platforms": ["linux/amd64"],
         "tag_postfix": "",
         "build_args": {},
     },
     "cu13-aarch64": {
-        "image": "radixark/miles",
         "platforms": ["linux/arm64"],
         "tag_postfix": "",
         "build_args": {},
     },
-    "cu12-x86": {
+    "rubin": {
+        "platforms": ["linux/arm64"],
+        "tag_postfix": "-rubin",
+        "dockerfile": "docker/Dockerfile.rubin",
+        "build_args": {},
+    },
+    "tpu": {
+        # TPU CI (pr-test-tpu.yml) and its images belong to radixark/miles.
         "image": "radixark/miles",
         "platforms": ["linux/amd64"],
-        "tag_postfix": "-cu12",
-        "build_args": {
-            "ENABLE_CUDA_13": "0",
-            "SGLANG_IMAGE_TAG": "v0.5.16-cu129",
-            "WHEELS_TAG_X86": "cu129-x86_64",
-        },
+        "tag_postfix": "-tpu",
+        "dockerfile": "docker/Dockerfile.tpu",
+        "build_args": {},
     },
-    "rocm700-mi35x": {
+    "rocm724-mi35x": {
         "image": "rocm/sgl-dev",
-        "tag_postfix": "-rocm700-mi35x",
+        "tag_postfix": "-rocm724-mi35x",
         "tag_prefix": "miles",
         "dockerfile": "docker/Dockerfile.rocm",
         "build_args": {
             "GPU_ARCH": "gfx950",
-            "SGLANG_IMAGE_REPO": "rocm/sgl-dev",
-            "SGLANG_IMAGE_TAG": "v0.5.14-rocm700-mi35x-20260627",
-            "SGLANG_USE_ROCM700A": "1",
-        },
-    },
-    "rocm700-mi30x": {
-        "image": "rocm/sgl-dev",
-        "tag_postfix": "-rocm700-mi30x",
-        "tag_prefix": "miles",
-        "dockerfile": "docker/Dockerfile.rocm",
-        "build_args": {
-            "GPU_ARCH": "gfx942",
-            "SGLANG_IMAGE_TAG": "v0.5.10-rocm700-mi30x",
-            "SGLANG_USE_ROCM700A": "1",
-        },
-    },
-    "rocm720-mi35x": {
-        "image": "rocm/sgl-dev",
-        "tag_postfix": "-rocm720-mi35x",
-        "tag_prefix": "miles",
-        "dockerfile": "docker/Dockerfile.rocm",
-        "build_args": {
-            "GPU_ARCH": "gfx950",
-            "SGLANG_IMAGE_REPO": "rocm/sgl-dev",
-            "SGLANG_IMAGE_TAG": "v0.5.16-rocm720-mi35x-20260730",
+            "SGLANG_IMAGE_REPO": "lmsysorg/sglang",
+            "SGLANG_IMAGE_TAG": "v0.5.23-rocm724-mi35x",
+            "WHEELS_TAG_ROCM": "rocm724-gfx950-v0.5.20",
             "APPLY_ROCR_VMMFIX": "1",
             "TE_USE_WHEEL": "1",
         },
     },
+    "rocm10-mi35x": {
+        "image": "rocm/sgl-dev",
+        "tag_postfix": "-rocm10-mi35x",
+        "tag_prefix": "miles",
+        "dockerfile": "docker/Dockerfile.rocm",
+        "build_args": {
+            "GPU_ARCH": "gfx950",
+            "SGLANG_IMAGE_REPO": "lmsysorg/sglang",
+            "SGLANG_IMAGE_TAG": "v0.5.23-rocm10-mi35x",
+            "WHEELS_TAG_ROCM": "rocm10-gfx950-v0.5.18",
+            "APEX_USE_PREBUILT": "1",
+            "TE_USE_WHEEL": "1",
+        },
+    },
+    "rocm10-mi30x": {
+        "image": "rocm/sgl-dev",
+        "tag_postfix": "-rocm10-mi30x",
+        "tag_prefix": "miles",
+        "dockerfile": "docker/Dockerfile.rocm",
+        "build_args": {
+            "GPU_ARCH": "gfx942",
+            "SGLANG_IMAGE_REPO": "lmsysorg/sglang",
+            "SGLANG_IMAGE_TAG": "v0.5.23-rocm10-mi30x",
+            "WHEELS_TAG_ROCM": "rocm10-gfx942-v0.5.20",
+            "APEX_USE_PREBUILT": "1",
+            "TE_USE_WHEEL": "1",
+            "AITER_PREBUILD_JIT": "1",
+        },
+    },
+}
+
+# PR images live with Miles' CUDA/TPU PR tags; rolling ROCm tags keep their
+# existing repository and native-platform behavior. The PR tag carries its own
+# suffix (image_inputs.pr_image), so this variant adds none.
+VARIANTS["rocm10-mi35x-pr"] = {
+    **VARIANTS["rocm10-mi35x"],
+    "image": "radixark/miles",
+    "tag_postfix": "",
+    "platforms": ["linux/amd64"],
 }
 
 
@@ -104,12 +122,15 @@ def build_and_push(
     push: bool = False,
     custom_tag: str = "",
     extra_build_args: list[str] | None = None,
+    context: Path = REPO_ROOT,
+    output: str = "",
+    image_repo: str = "radixark/miles",
 ) -> None:
     extra_build_args = extra_build_args or []
     config = VARIANTS[variant]
     # A variant may pin its own Dockerfile (e.g. ROCm); otherwise use the CLI default.
     dockerfile = config.get("dockerfile", dockerfile)
-    image = config["image"]
+    image = config.get("image", image_repo)
     postfix = config.get("tag_postfix", "")
     platforms = config.get("platforms")
 
@@ -131,7 +152,7 @@ def build_and_push(
         "buildx",
         "build",
         "-f",
-        dockerfile,
+        str(context / dockerfile),
     ]
 
     if platforms:
@@ -139,6 +160,8 @@ def build_and_push(
 
     if push:
         cmd += ["--push"]
+    if output:
+        cmd += ["--output", output]
 
     # Proxy args (pass through if set in environment, check both cases)
     for arg_name in ["HTTP_PROXY", "HTTPS_PROXY"]:
@@ -147,6 +170,11 @@ def build_and_push(
             cmd += ["--build-arg", f"{arg_name}={value}"]
 
     cmd += ["--build-arg", "NO_PROXY=localhost,127.0.0.1"]
+
+    # Authenticates the Dockerfiles' GitHub API release lookups: a shared builder IP exhausts the anonymous limit
+    # (a 403). A BuildKit secret stays out of the image; never set it for an untrusted (fork) build.
+    if os.environ.get("BUILD_GITHUB_TOKEN"):
+        cmd += ["--secret", "id=github_token,env=BUILD_GITHUB_TOKEN"]
 
     # Variant-specific build args
     for key, value in config.get("build_args", {}).items():
@@ -159,13 +187,13 @@ def build_and_push(
         cmd += ["--build-arg", spec]
 
     # CI reads this back off the published tag to skip rebuilds whose inputs are unchanged.
-    cmd += ["--label", f"{image_inputs.LABEL_KEY}={image_inputs.compute()}"]
+    cmd += ["--label", f"{image_inputs.LABEL_KEY}={image_inputs.compute(root=context, variant=variant)}"]
 
     for tag in tags:
         cmd += ["-t", tag]
 
     # Context is repo root
-    cmd += ["."]
+    cmd += [str(context)]
 
     print(f"\n=== Building {' '.join(tags)} ===", flush=True)
     run(cmd, dry_run)
@@ -175,10 +203,12 @@ class Variant(str, Enum):
     cu13 = "cu13"
     cu13_x86 = "cu13-x86"
     cu13_aarch64 = "cu13-aarch64"
-    cu12_x86 = "cu12-x86"
-    rocm700_mi35x = "rocm700-mi35x"
-    rocm700_mi30x = "rocm700-mi30x"
-    rocm720_mi35x = "rocm720-mi35x"
+    rubin = "rubin"
+    tpu = "tpu"
+    rocm724_mi35x = "rocm724-mi35x"
+    rocm10_mi35x = "rocm10-mi35x"
+    rocm10_mi35x_pr = "rocm10-mi35x-pr"
+    rocm10_mi30x = "rocm10-mi30x"
 
 
 class ImageTag(str, Enum):
@@ -195,6 +225,9 @@ def main(
     push: bool = typer.Option(False, help="Push images to registry after building."),  # noqa: B008
     custom_tag: str = typer.Option("", help="Custom tag name (required when --image-tag is custom)."),  # noqa: B008
     build_arg: list[str] = typer.Option([], help="Extra KEY=VALUE build-arg (repeatable)."),  # noqa: B008
+    context: Path = typer.Option(REPO_ROOT, help="Repository build context, separate from this driver."),  # noqa: B008
+    output: str = typer.Option("", help="Buildx exporter, e.g. type=oci,dest=/tmp/image,tar=false."),  # noqa: B008
+    image_repo: str = typer.Option("radixark/miles", help="Repository of the Miles images (not ROCm)."),  # noqa: B008
 ) -> None:
     build_and_push(
         variant.value,
@@ -204,6 +237,9 @@ def main(
         push=push,
         custom_tag=custom_tag,
         extra_build_args=build_arg,
+        context=context.resolve(),
+        output=output,
+        image_repo=image_repo,
     )
 
 

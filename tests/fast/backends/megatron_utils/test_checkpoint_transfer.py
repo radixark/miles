@@ -1,12 +1,60 @@
+import logging
 import pickle
+from collections.abc import Iterator
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
+import torch.distributed as dist
 from megatron.core.dist_checkpointing.mapping import ShardedTensor
 from megatron.core.dist_checkpointing.tensor_aware_state_dict import MCoreTensorAwareStateDict
+from tests.fast.fixtures.args_fixtures import make_trainer_args
 from torch.utils._pytree import tree_flatten_with_path, tree_unflatten
 
+from miles.backends.megatron_utils.ft import checkpoint_transfer, in_memory_checkpoint
 from miles.backends.megatron_utils.ft.checkpoint_transfer import _TensorViewCodec, _TransportCodec
+from miles.backends.training_utils.model_companion import ModelCompanion
+from miles.utils.ft_utils.process_group_utils import GroupInfo
+from miles.utils.types import SampleLineage
+
+_CKPT_TRANSFER_LOGGER = "miles.backends.megatron_utils.ft.checkpoint_transfer"
+
+
+@pytest.fixture()
+def single_rank_gloo(tmp_path: Path) -> Iterator[dist.ProcessGroup]:
+    """Provide the real single-rank process group required by integrity validation."""
+    rendezvous = tmp_path / "gloo-rendezvous"
+    dist.init_process_group(backend="gloo", init_method=f"file://{rendezvous}", rank=0, world_size=1)
+    try:
+        yield dist.group.WORLD
+    finally:
+        dist.destroy_process_group()
+
+
+class _FakeTransport:
+    def __init__(self, recv_payload: dict | None = None) -> None:
+        self.recv_payload = recv_payload
+        self.sent_payloads: list[dict] = []
+        self.sent_dst_ranks: list[list[int]] = []
+        self.disallow_calls = 0
+
+    def send_checkpoint(self, *, dst_ranks: list[int], step: int, state_dict: dict, timeout) -> None:
+        self.sent_dst_ranks.append(dst_ranks)
+        self.sent_payloads.append(state_dict)
+
+    def disallow_checkpoint(self) -> None:
+        self.disallow_calls += 1
+
+    def metadata(self) -> str:
+        return "fake-metadata"
+
+    def recv_checkpoint(self, *, src_rank: int, metadata: str, step: int, timeout) -> dict:
+        return self.recv_payload
+
+
+def _transfer_messages(caplog) -> list[str]:
+    return [record.getMessage() for record in caplog.records if record.name == _CKPT_TRANSFER_LOGGER]
 
 
 @pytest.fixture()
@@ -22,7 +70,10 @@ def state_dict() -> MCoreTensorAwareStateDict:
             "step": ShardedTensor.from_rank_offsets("step", torch.tensor([100], dtype=torch.int64)),
         },
     }
-    common = {"iteration": 0, "args_repr": "dummy"}
+    common = {
+        "iteration": 0,
+        "args_repr": "dummy",
+    }
     return MCoreTensorAwareStateDict(common=common, sharded_state_dict=sharded_state_dict)
 
 
@@ -73,6 +124,44 @@ class TestSerializeForTransport:
 
 
 class TestDeserializeFromTransport:
+    def test_round_trip_preserves_the_real_model_companion_parameters(
+        self, single_rank_gloo: dist.ProcessGroup
+    ) -> None:
+        """A surviving cell donor restores both witness outcomes into a healing receiver."""
+        donor = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+        sample = SampleLineage(source_sample_index=7, output_index=0, output_count=1)
+        skipped_sample = SampleLineage(source_sample_index=8, output_index=0, output_count=1)
+        donor.record_sample_consumptions([sample])
+        donor.record_sample_consumptions([skipped_sample], is_skipped=True)
+        donor.weight_version.fill_(17)
+        state_dict, _ = MCoreTensorAwareStateDict.from_state_dict(
+            {"model": donor.sharded_state_dict(prefix="model_companion.")},
+            algo="atomic",
+            parallelization_group=single_rank_gloo,
+        )
+
+        donor.record_sample_consumptions([sample])
+        donor.record_sample_consumptions([skipped_sample], is_skipped=True)
+
+        _, restored = _TransportCodec.decode(_TransportCodec.encode(state_dict=state_dict, iteration=11))
+
+        receiver = ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0))
+        receiver_state = restored.to_state_dict(
+            {"model": receiver.sharded_state_dict(prefix="model_companion.")},
+            algo="atomic",
+            parallelization_group=single_rank_gloo,
+        )
+        receiver.load_state_dict(
+            {
+                "sample_consumptions": receiver_state["model"]["model_companion.sample_consumptions"],
+                "weight_version": receiver_state["model"]["model_companion.weight_version"],
+            }
+        )
+
+        assert receiver.weight_version.item() == 17
+        assert receiver.snapshot_sample_consumptions(is_skipped=False) == {sample: 1}
+        assert receiver.snapshot_sample_consumptions(is_skipped=True) == {skipped_sample: 1}
+
     def test_round_trip_preserves_tensor_values_iteration_and_common(self, state_dict: MCoreTensorAwareStateDict):
         original_tensors = [t.clone() for t in state_dict.tensors]
         original_common = dict(state_dict.common)
@@ -129,6 +218,56 @@ class TestDeserializeFromTransport:
         assert state_dict_back.common == original_common
         for original, back in zip(original_tensors, state_dict_back.tensors, strict=True):
             assert torch.equal(original, back)
+
+
+class TestSendCkptRecords:
+    def test_send_brackets_the_transfer_with_ft_tagged_records(self, state_dict, monkeypatch, caplog):
+        """send_ckpt brackets the transport send with ft-tagged ckpt_send records carrying iteration and dst rank."""
+        transport = _FakeTransport()
+        monkeypatch.setattr(checkpoint_transfer, "save_to_memory", lambda **kwargs: state_dict)
+        monkeypatch.setattr(checkpoint_transfer, "_create_transport", lambda indep_dp, timeout: transport)
+
+        with caplog.at_level(logging.INFO, logger=_CKPT_TRANSFER_LOGGER):
+            checkpoint_transfer.send_ckpt(
+                args=make_trainer_args(),
+                indep_dp=GroupInfo(rank=0, size=2, group=None),
+                model=[],
+                optimizer=object(),
+                opt_param_scheduler=object(),
+                iteration=7,
+                dst_rank=3,
+            )
+
+        assert transport.sent_dst_ranks == [[3]]
+        assert transport.sent_payloads[0]["iteration"] == 7
+        assert _transfer_messages(caplog) == [
+            "ft op=cross_cell phase=start kind=ckpt_send iteration=7 to_alive_rank=3",
+            "ft op=cross_cell phase=end kind=ckpt_send iteration=7 to_alive_rank=3",
+        ]
+
+
+class TestRecvCkptRecords:
+    def test_recv_brackets_the_transfer_with_ft_tagged_records(self, state_dict, monkeypatch, caplog):
+        """recv_ckpt brackets the transport recv with ft-tagged ckpt_recv records naming the source rank."""
+        transport = _FakeTransport(recv_payload=_TransportCodec.encode(state_dict=state_dict, iteration=11))
+        monkeypatch.setattr(checkpoint_transfer, "_create_transport", lambda indep_dp, timeout: transport)
+        monkeypatch.setattr(
+            in_memory_checkpoint,
+            "get_args",
+            lambda: SimpleNamespace(
+                non_persistent_ckpt_type="local",
+                non_persistent_local_ckpt_algo="fully_parallel",
+            ),
+        )
+
+        with caplog.at_level(logging.INFO, logger=_CKPT_TRANSFER_LOGGER):
+            manager = checkpoint_transfer.recv_ckpt(indep_dp=GroupInfo(rank=1, size=2, group=None), src_rank=2)
+
+        assert manager.find_latest() == 11
+        assert _transfer_messages(caplog) == [
+            "ft op=cross_cell phase=start kind=ckpt_recv from_alive_rank=2",
+            "ft op=cross_cell phase=end kind=ckpt_recv iteration=11 from_alive_rank=2",
+        ]
 
 
 class TestTensorViewCodec:

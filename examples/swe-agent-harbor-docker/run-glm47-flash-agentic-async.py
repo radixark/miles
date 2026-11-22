@@ -32,7 +32,7 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -42,9 +42,9 @@ MAX_CONVERT_GPUS = 92
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_rollout_only"] = "normal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     megatron_model_type: str = "glm4.7-flash"
     num_gpus_per_node: int = 8
     megatron_path: str = "/root/Megatron-LM"
@@ -55,11 +55,18 @@ class ScriptArgs(U.ExecuteTrainConfig):
     hf_checkpoint: str = "/models/zai-org/GLM-4.7-Flash"
     ref_load: str = "/models/zai-org/GLM-4.7-Flash_torch_dist"
     save_dir: str = "/root/GLM-4.7-Flash_agentic_async/"
+    load_dir: str = ""  # empty: resume from save_dir
     # Directory to dump rollout + training traces (per-rollout .pt files). Empty
     # means default to ``<save_dir>/traces``; set to ``"disabled"`` to skip.
     save_traces_dir: str = ""
     prompt_data: str = "/root/swe_train.jsonl"
     max_seq_len: int = 16384
+    # Engine-side hard cap on prompt + generation per request. Without it sglang serves up to the
+    # model's own context window, so a runaway trajectory can hold a 100k+ token KV footprint and
+    # starve every other request. Defaults to max_seq_len + rollout_max_response_len: a session at
+    # the max_seq_len budget can still take one more turn, so the trial ends on max_seq_len
+    # rather than on an engine-side context error.
+    sglang_context_length: int | None = None
     rollout_max_response_len: int = 8192
     save_interval: int = 5
 
@@ -78,13 +85,15 @@ class ScriptArgs(U.ExecuteTrainConfig):
     agent_server_url: str = os.environ.get("AGENT_SERVER_URL", "http://localhost:8080")
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
-    router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
+    # The host agents outside the cluster reach every session server on; passed as
+    # --session-server-external-host, which also keeps the session servers on the head node.
+    session_server_external_host: str = ""
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")
 
     # Disaggregated fully-async settings
     train_num_nodes: int = 1
     pause_generation_mode: Literal["in_place", "retract"] = "in_place"
-    update_weight_transfer_mode: Literal["broadcast", "p2p"] = "broadcast"
+    update_weight_transfer_mode: Literal["broadcast", "broadcast_packed", "p2p"] = "broadcast"
     accumulate_allreduce_grads_in_fp32: bool = False
     max_tokens_per_gpu: int = 8192
     optimizer_cpu_offload: bool = True
@@ -125,6 +134,7 @@ def cleanup():
 
 def prepare(args: ScriptArgs):
     """Convert HF checkpoint to torch_dist format."""
+    U = args.create_backend()
     max_convert_nodes = MAX_CONVERT_GPUS // args.num_gpus_per_node
     convert_nodes = min(args.num_nodes, max_convert_nodes)
     U.convert_checkpoint(
@@ -139,7 +149,14 @@ def prepare(args: ScriptArgs):
     )
 
 
+def _sglang_context_length(args: ScriptArgs) -> int:
+    if args.sglang_context_length is not None:
+        return args.sglang_context_length
+    return args.max_seq_len + args.rollout_max_response_len
+
+
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     if args.pause_generation_mode == "in_place" and args.update_weight_transfer_mode == "p2p":
         raise ValueError(
             "in_place + p2p is not supported: P2P transfer engine conflicts with "
@@ -149,6 +166,8 @@ def execute(args: ScriptArgs):
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} "
         f"--ref-load {args.ref_load} "
+        # Resume from save_dir when it holds a checkpoint; miles falls back to ref_load otherwise.
+        f"--load {args.load_dir or args.save_dir} "
         f"--save {args.save_dir} "
         f"--save-interval {args.save_interval} "
     )
@@ -257,6 +276,7 @@ def execute(args: ScriptArgs):
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
         "--sglang-mem-fraction-static 0.80 "
+        f"--sglang-context-length {_sglang_context_length(args)} "
         f"--sglang-tp-size {sglang_world_size} "
         f"--sglang-ep-size {sglang_world_size} "
         "--sglang-enable-dp-attention "
@@ -265,13 +285,19 @@ def execute(args: ScriptArgs):
         "--sglang-enable-dp-lm-head "
         f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
         f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
-        f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+        f"--sglang-cuda-graph-max-bs-decode {sglang_decode_max_bs} "
         "--sglang-tool-call-parser glm47 "
         "--sglang-reasoning-parser glm45 "
         "--sglang-router-port 31000 "
         f"{sglang_p2p_extra}"
     )
     sglang_extra_env_vars: dict[str, str] = {}
+
+    external_host_arg = (
+        f"--session-server-external-host {args.session_server_external_host} "
+        if args.session_server_external_host
+        else ""
+    )
 
     agent_args = (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
@@ -280,6 +306,8 @@ def execute(args: ScriptArgs):
         "--tito-model glm47 "
         "--use-session-server "
         "--session-server-port 30000 "
+        "--session-server-workers 32 "
+        f"{external_host_arg}"
     )
 
     misc_args = (
@@ -294,7 +322,6 @@ def execute(args: ScriptArgs):
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         f"--rollout-num-gpus {rollout_gpus} "
         "--grad-reduce-in-bf16 "
-        "--use-fault-tolerance "
         f"--rollout-health-check-first-wait {args.rollout_health_check_first_wait} "
     )
     if args.accumulate_allreduce_grads_in_fp32:
@@ -342,7 +369,7 @@ def execute(args: ScriptArgs):
         f"{debug_args}"
     )
 
-    miles_root = U.repo_base_dir
+    miles_root = command_utils.repo_base_dir
 
     extra_env_vars = {
         "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{miles_root}",
@@ -353,14 +380,11 @@ def execute(args: ScriptArgs):
         "HARBOR_TASKS_DIR": args.harbor_tasks_dir,
         **sglang_extra_env_vars,
     }
-    if args.router_external_host:
-        extra_env_vars["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
     if args.miles_host_ip:
         extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         train_script="train_async.py",
@@ -369,7 +393,7 @@ def execute(args: ScriptArgs):
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     cleanup()
     if not args.skip_prepare:

@@ -1,50 +1,88 @@
 """Standalone session-server process: HTTP chassis + upstream proxy transport.
 
-- ``SessionServer`` is a FastAPI app plus one shared httpx client; ``do_proxy`` forwards a request to the inference router (sglang or miles) — which does the load balancing to worker engines — and returns the raw result, or a 502 JSON error on transport failure.
+- ``SessionServer`` is a FastAPI app plus one shared aiohttp client; ``do_proxy`` forwards a request to the inference router (sglang or miles) — which does the load balancing to worker engines — and returns the raw result, or a 502 JSON error on transport failure.
 - Session/TITO logic lives in ``core.SessionCore``; ``setup_session_routes`` (``sessions.py``) wires the HTTP routes to it.
 - Standalone (own process, own event loop) so sessions also work with the SGLang Rust Router or any other backend, decoupled from the Miles Router.
 - ``run_session_server`` is the subprocess entry point: fresh interpreter, so it configures logging and the process title itself, then serves uvicorn.
 """
 
+import asyncio
 import json
 import logging
+from contextlib import asynccontextmanager
 
-import httpx
+import aiohttp
 import setproctitle
 import uvicorn
+from aiohttp.helpers import get_env_proxy_for_url
 from fastapi import FastAPI
+from yarl import URL
 
+from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.core import ProxyRequest
 from miles.rollout.session.sessions import setup_session_routes
 from miles.utils.logging_utils import configure_logger_raw
+from miles.utils.workers.argv_utils import parse_config_argv
 
 logger = logging.getLogger(__name__)
 
-# Request headers that must not be forwarded verbatim to the upstream backend.
-_DROP_REQUEST_HEADERS = ("content-length", "transfer-encoding", "host")
+# Request headers that must not be forwarded verbatim to the upstream backend. A forwarded
+# "Expect: 100-continue" makes aiohttp wait for a 100 response before sending the body.
+_DROP_REQUEST_HEADERS = ("content-length", "transfer-encoding", "host", "expect")
+
+
+class _TimedBytesPayload(aiohttp.BytesPayload):
+    def __init__(self, body: bytes, *, timeout: float):
+        super().__init__(body)
+        self._write_timeout = timeout
+
+    async def write(self, writer) -> None:
+        await self.write_with_length(writer, None)
+
+    async def write_with_length(self, writer, content_length: int | None) -> None:
+        body = self._value if content_length is None else self._value[:content_length]
+        # aiohttp's read deadline starts after upload; bound a stalled upload separately.
+        await asyncio.wait_for(writer.write(body), timeout=self._write_timeout)
 
 
 class SessionServer:
     """Lightweight FastAPI server that manages sessions and proxies inference
     requests through the inference router (sglang or miles)."""
 
-    def __init__(self, args, backend_url: str):
-        self.backend_url = backend_url
-        self.app = FastAPI()
+    def __init__(self, config: SessionServerConfig):
+        self.backend_url = config.backend_url
+        self.app = FastAPI(lifespan=self._lifespan)
 
-        timeout = getattr(args, "miles_router_timeout", 600.0)
-        self.client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=1024),
-            timeout=httpx.Timeout(timeout),
-        )
+        # Every turn's backend reply is megabytes (per-token logprobs, R3). aiohttp parses it in C;
+        # httpx's pure-Python client path took 35-40% of a saturated server's CPU.
+        # Connecting (pool wait included) and each socket read; the payload bounds writing.
+        self.timeout = aiohttp.ClientTimeout(total=None, connect=config.timeout, sock_read=config.timeout)
+        self.client: aiohttp.ClientSession
+        # Read the proxy environment once, as httpx did: aiohttp's trust_env re-reads it, and ~/.netrc,
+        # on a worker thread for every request.
+        try:
+            self.proxy, self.proxy_auth = get_env_proxy_for_url(URL(self.backend_url))
+        except LookupError:
+            self.proxy, self.proxy_auth = None, None
 
-        # Close the httpx connection pool when uvicorn shuts down to avoid FD leaks.
-        self.app.router.on_shutdown.append(self.client.aclose)
+        # `retract` may recompute earlier rows and must return full R3; all other
+        # pause modes preserve prior rows and can request only the appended R3.
+        self.use_addition_r3 = config.pause_generation_mode != "retract"
+        self._core = setup_session_routes(self.app, self, config, use_addition_r3=self.use_addition_r3)
 
-        # `in_place` weight updates keep the active request and its KV-backed
-        # prefix, so the session may request only additional R3 rows.
-        self.use_addition_r3 = getattr(args, "pause_generation_mode", None) == "in_place"
-        setup_session_routes(self.app, self, args, use_addition_r3=self.use_addition_r3)
+    @asynccontextmanager
+    async def _lifespan(self, app: FastAPI):
+        # Bind the client to uvicorn's running loop before accepting requests.
+        async with aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(limit=1024, keepalive_timeout=5),
+            timeout=self.timeout,
+        ) as client:
+            self.client = client
+            try:
+                yield
+            finally:
+                if self._core is not None:
+                    await self._core.close()
 
     async def do_proxy(self, request: ProxyRequest, path: str, *, body: bytes, headers: dict) -> dict:
         url = f"{self.backend_url}/{path}"
@@ -54,8 +92,23 @@ class SessionServer:
         headers = {k: v for k, v in headers.items() if k.lower() not in _DROP_REQUEST_HEADERS}
 
         try:
-            response = await self.client.request(request.method, url, content=body, headers=headers)
-        except httpx.TransportError as exc:
+            # The body is read inside the try: a reply cut off mid-body is a transport error (502), as with httpx.
+            # skip_auto_headers: a request without Content-Type reaches the backend without one (SGLang then
+            # parses JSON), instead of aiohttp's application/octet-stream.
+            async with self.client.request(
+                request.method,
+                url,
+                data=_TimedBytesPayload(body, timeout=self.timeout.sock_read),
+                headers=headers,
+                allow_redirects=False,
+                skip_auto_headers=("Content-Type",),
+                proxy=self.proxy,
+                proxy_auth=self.proxy_auth,
+            ) as response:
+                content = await response.read()
+        # ValueError: aiohttp refuses to send a CR/LF header value (e.g. in a session id), which httpx raised as a
+        # transport error.
+        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
             logger.warning("Proxy transport error for %s %s: %s", request.method, path, exc)
             error_body = json.dumps({"error": f"backend transport error: {type(exc).__name__}: {exc}"}).encode()
             return {
@@ -64,27 +117,40 @@ class SessionServer:
                 "status_code": 502,
                 "headers": {"content-type": "application/json"},
             }
-        content = await response.aread()
         return {
             "request_body": body,
             "response_body": content,
-            "status_code": response.status_code,
-            "headers": dict(response.headers),
+            "status_code": response.status,
+            # Lower-case keys, as httpx returned them: callers look up "content-type".
+            "headers": {k.lower(): v for k, v in response.headers.items()},
         }
 
 
-def run_session_server(args, backend_url: str):
+def run_session_server(config: SessionServerConfig):
     """Entry point to start the standalone session server as a subprocess."""
     # Spawned as a fresh interpreter, so it inherits no logging config.
     configure_logger_raw("session_server")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     # Visible to `pkill -9 miles`; without this the daemon inherits "python".
     setproctitle.setproctitle("miles-session-server")
 
-    server = SessionServer(args, backend_url)
+    server = SessionServer(config)
     logger.info(
         "[session-server] Starting on %s:%s, proxying to %s",
-        args.session_server_ip,
-        args.session_server_port,
-        backend_url,
+        config.host,
+        config.port,
+        config.backend_url,
     )
-    uvicorn.run(server.app, host=args.session_server_ip, port=args.session_server_port, log_level="info")
+    # Keep server-side idle closure well after the HTTP client's default 5s expiry.
+    uvicorn.run(
+        server.app, host=config.host, port=config.port, log_level="info", access_log=False, timeout_keep_alive=60
+    )
+
+
+def main(argv: list[str] | None = None) -> None:
+    run_session_server(parse_config_argv(SessionServerConfig, argv))
+
+
+if __name__ == "__main__":
+    main()

@@ -19,7 +19,7 @@ baseline.
   `noise_pred` mean |Δ| was approximately `2e-2`. `postprocess_model_after_materialize` rebuilds the caches on device
   after FSDP wrapping.
 - **Variable-length text.** Conditioning is padded per batch with the attention mask derived
-  from `txt_seq_lens` — the mask itself is never transmitted from rollout.
+  from `txt_seq_lens`; the trainer rebuilds it and does not use a mask the engine may send for batched requests.
 
 ## 2. Supported variants
 
@@ -27,8 +27,9 @@ baseline.
 |---|---|---|
 | Qwen-Image | [`Qwen/Qwen-Image`](https://huggingface.co/Qwen/Qwen-Image) | Family key `qwen_image` |
 
-Any checkpoint whose name matches `qwen-image` resolves to the same config. For a
-differently-named local directory — the usual case — add `--diffusion-model-family qwen_image`.
+A checkpoint name containing `qwen-image` resolves to this config. A longer match
+such as `qwen-image-2.1` resolves to [Qwen-Image 2.1](/diffusion/models/qwen-image/qwen-image-21). For a
+differently-named local directory, add `--diffusion-model-family qwen_image`.
 
 ## 3. Family config
 
@@ -48,7 +49,7 @@ Registered in `miles/backends/fsdp_utils/configs/qwen_image.py`:
 Canonical recipe: `scripts/run_diffusion_grpo_pickscore_5gpu_flowgrpo_aligned.py` — 4 colocate
 GPUs + 1 PickScore GPU, 512×512, PickScore reward.
 
-**Status:** [📈 V — Verified](/diffusion/user-guide/recipe-verification#v)
+**Status:** [🛡️ FG — Fully gated](/diffusion/user-guide/recipe-verification#fg)
 
 ```bash
 python3 scripts/run_diffusion_grpo_pickscore_5gpu_flowgrpo_aligned.py
@@ -63,11 +64,19 @@ Overrides go through the dataclass CLI, e.g.
   `--diffusion-num-sde-steps 2` leaves the window nowhere to move, so every sample trains the
   same two mid-schedule steps as SDE while the rest run ODE.
 - Batch arithmetic: 32 prompts × 16 samples = 512 samples per rollout, split into two optimizer
-  steps of 256 samples; the 2 trained SDE steps expand those to 1024 train pairs.
-- `--rollout-patch-group sgld` applies the diffusers-op-parity patches on the engine. It costs a
+  steps of 256 samples; the 2 trained SDE steps expand the 512 samples to 1024 train pairs per rollout.
+- `--rollout-patch-group qwen_image` applies the diffusers-op-parity patches on the engine. It costs a
   little rollout throughput and buys a much smaller `train/log_prob_mean_abs_diff`.
 
-## 6. Pairs well with
+## 6. Reference results
+
+The 5-GPU recipe raises PickScore (`rollout/reward/raw_mean`) from ~0.84 to ~0.90 over 400 rollouts;
+held-out `eval/pickscore_test` goes from 0.859 at the first eval (after rollout 30; the recipe skips the
+pre-training eval with `--skip-eval-before-train`) to 0.900:
+
+![Qwen-Image PickScore reward mean](/diffusion/assets/images/qwen-image/grpo-pickscore-raw-reward.png)
+
+## 7. Pairs well with
 
 - [LoRA weight sync](/diffusion/advanced/lora) — `--lora-ipc-weight-sync` is on in this recipe.
 - [Dtype Control](/diffusion/advanced/dtype-control) — why fp32 master + bf16 forward.

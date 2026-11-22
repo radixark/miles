@@ -1,17 +1,157 @@
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from typing import Any
 
 import numpy
 import torch
 
+from miles.utils.output_store.plan import StorePlan
+from miles.utils.sampling_mask import RolloutSamplingMask
+
+LEGACY_WEIGHT_VERSIONS_KEY = "legacy_weight_versions"
+
 
 @dataclass(frozen=True)
-class AdapterRef:
-    """Which LoRA adapter a sample is bound to (training slot routing, inference lora_path); ``None`` = no adapter."""
+class SampleLineage:
+    """Tracks an output's source and position among sibling outputs."""
 
-    name: str
-    slot: int
+    source_sample_index: int  # Index of the original input sample.
+    output_index: int  # Zero-based position among outputs from that input.
+    output_count: int  # Total outputs from that input before filtering.
+
+
+@dataclass(frozen=True)
+class WeightVersionSpan:
+    version: str
+    abs_start: int
+    abs_end: int
+
+
+@dataclass
+class WeightVersionsPerCall:
+    spans: list[WeightVersionSpan] = field(default_factory=list)
+    prefill_spans: list[WeightVersionSpan] = field(default_factory=list)
+    output_start: int | None = None
+    prompt_tokens: int | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "spans": [asdict(span) for span in self.spans],
+            "prefill_spans": [asdict(span) for span in self.prefill_spans],
+            "output_start": self.output_start,
+            "prompt_tokens": self.prompt_tokens,
+        }
+
+    @staticmethod
+    def from_dict(data: dict | list[dict]) -> "WeightVersionsPerCall":
+        if isinstance(data, list):
+            spans = [WeightVersionSpan(**span) for span in data]
+            return WeightVersionsPerCall(spans=spans, output_start=spans[0].abs_start if spans else None)
+
+        assert isinstance(data, dict)
+        return WeightVersionsPerCall(
+            spans=[WeightVersionSpan(**span) for span in data["spans"]],
+            prefill_spans=[WeightVersionSpan(**span) for span in data["prefill_spans"]],
+            output_start=data["output_start"],
+            prompt_tokens=data.get("prompt_tokens"),
+        )
+
+    def validate(self, *, num_tokens: int) -> None:
+        for span in self.prefill_spans + self.spans:
+            assert span.version, f"weight version call {self} carries a span with an empty version: {span}"
+
+        if (output_start := self.output_start) is None:
+            assert not self.prefill_spans, f"weight version call {self} carries prefill spans without output_start"
+            return
+
+        assert (
+            0 <= output_start <= num_tokens
+        ), f"weight version call {self} starts its output at {output_start} but the sample has {num_tokens} tokens"
+
+        if self.prefill_spans:
+            prefill_end = _assert_spans_run_in_order(spans=self.prefill_spans, call=self, kind="prefill", start=0)
+            prompt_tokens = self.prompt_tokens if self.prompt_tokens is not None else output_start
+            assert prefill_end == prompt_tokens, (
+                f"prefill weight version spans of call {self} must cover exactly the {prompt_tokens} prompt tokens "
+                f"of this call; the engine stamps every prompt token whose KV it computed or reused"
+            )
+
+        output_end = _assert_spans_run_in_order(spans=self.spans, call=self, kind="output", start=output_start)
+        assert (
+            output_end <= num_tokens
+        ), f"output weight version spans of call {self} end at {output_end} but the sample has {num_tokens} tokens"
+
+    @property
+    def prefill_lag(self) -> int | None:
+        decode = compute_numeric_versions_of_spans(self.spans)
+        prefill = compute_numeric_versions_of_spans(self.prefill_spans)
+        if len(decode) != len(self.spans) or len(prefill) != len(self.prefill_spans) or not decode or not prefill:
+            return None
+        return max(decode) - min(prefill)
+
+    @property
+    def max_decode_version(self) -> int | None:
+        return max(compute_numeric_versions_of_spans(self.spans), default=None)
+
+    @staticmethod
+    def from_meta_info(meta_info: dict, output_end: int) -> "WeightVersionsPerCall":
+        num_output_tokens = len(meta_info.get("output_token_logprobs") or [])
+        if (raw_spans := meta_info.get("weight_versions")) is not None:
+            output_relative = [(span["version"], span["start"], span["end"]) for span in raw_spans]
+            assert all(end <= num_output_tokens for _, _, end in output_relative), (
+                f"weight version spans {raw_spans} extend past the {num_output_tokens} output tokens implied by "
+                f"output_token_logprobs; anchoring spans relies on return_logprob reporting every output token"
+            )
+        elif meta_info.get("weight_version") is not None:
+            assert num_output_tokens > 0 or not meta_info.get("completion_tokens"), (
+                "weight_version is present but output_token_logprobs is empty; anchoring the version to output "
+                "tokens requires return_logprob=True on the generate request"
+            )
+            output_relative = [(meta_info["weight_version"], 0, num_output_tokens)]
+        else:
+            output_relative = []
+
+        output_start = output_end - num_output_tokens
+        return WeightVersionsPerCall(
+            spans=[
+                WeightVersionSpan(version=version, abs_start=output_start + start, abs_end=output_start + end)
+                for version, start, end in output_relative
+                if start < end
+            ],
+            prefill_spans=_compute_prefill_spans_from_meta_info(meta_info),
+            output_start=output_start,
+            prompt_tokens=meta_info.get("prompt_tokens"),
+        )
+
+
+def _assert_spans_run_in_order(
+    *, spans: list[WeightVersionSpan], call: WeightVersionsPerCall, kind: str, start: int
+) -> int:
+    expected_start = start
+    for span in spans:
+        assert span.abs_start == expected_start and span.abs_start < span.abs_end, (
+            f"{kind} weight version span {span} of call {call} must be non-empty and start at "
+            f"token {expected_start}"
+        )
+        expected_start = span.abs_end
+    return expected_start
+
+
+def _compute_prefill_spans_from_meta_info(meta_info: dict) -> list[WeightVersionSpan]:
+    if (raw_prefill_spans := meta_info.get("prefill_weight_versions")) is None:
+        return []
+
+    assert isinstance(
+        raw_prefill_spans, list
+    ), f"prefill_weight_versions must be a list of spans, got {type(raw_prefill_spans).__name__}"
+    return [
+        WeightVersionSpan(version=span["version"], abs_start=span["start"], abs_end=span["end"])
+        for span in raw_prefill_spans
+    ]
+
+
+def compute_numeric_versions_of_spans(spans: list[WeightVersionSpan]) -> list[int]:
+    return [int(span.version) for span in spans if str(span.version).isdigit()]
 
 
 @dataclass(frozen=True)
@@ -28,13 +168,14 @@ class Sample:
 
     group_index: int | None = None
     index: int | None = None
+    lineage: SampleLineage | None = None
     # Rollout execution id; None falls back to ``index``. Compact / subagent
     # siblings must share it so the rollout is counted once.
     rollout_id: int | None = None
     # prompt
     prompt: str | list[dict[str, str]] = ""
     tokens: list[int] = field(default_factory=list)
-    multimodal_inputs: dict[str, Any] = None  # raw multimodal data, e.g. images, videos, etc.
+    multimodal_inputs: dict[str, Any] = None  # raw media; in token space the shared paths (media_refs.py)
     multimodal_train_inputs: dict[str, Any] = None  # processed multimodal data, e.g. pixel_values, etc.
     # response
     response: str = ""
@@ -42,14 +183,18 @@ class Sample:
     label: str | None = None
     reward: float | dict[str, Any] | None = None
     loss_mask: list[int] | None = None
-    weight_versions: list[str] = field(default_factory=list)
+    weight_versions: list[WeightVersionsPerCall] = field(default_factory=list)
     rollout_log_probs: list[float] | None = None  # Log probabilities from rollout engine
+    rollout_topk_token_ids: numpy.ndarray | None = None  # [response_length, k], int32; -1 pads unused slots
+    rollout_topk_log_probs: numpy.ndarray | None = None  # [response_length, k], float32; -inf pads unused slots
+    rollout_sampling_mask: RolloutSamplingMask | None = None
     rollout_routed_experts: numpy.ndarray | None = (
         None  # Routed experts from rollout engine. shape: (num_tokens-1, num_layers, moe_router_topk), dtype=int32
     )
     rollout_indexer_topk: numpy.ndarray | None = (
         None  # Indexer topk from rollout engine. shape: (num_tokens-1, num_indexer_layers, index_topk), dtype=int32
     )
+    rollout_store_plan: StorePlan | None = None  # Output store: where the replay arrays live in stored objects
     remove_sample: bool = False
     teacher_log_probs: list[float] | None = None  # Log probabilities from teacher model for OPD
     opd_reverse_kl: list[float] | None = None  # Precomputed per-token OPD reverse-KL estimate
@@ -68,55 +213,69 @@ class Sample:
 
     metadata: dict = field(default_factory=dict)
     generate_function_path: str | None = None
+    # may only lower the run's max_new_tokens
+    max_response_len: int | None = None
+    # a mixed dataset's agent for agentic_tool_call, else --custom-agent-function-path
+    agent_function_path: str | None = None
+    # a mixed dataset's agentic sequence limit; it may only lower --max-seq-len
+    max_seq_len: int | None = None
     # metadata used during training, e.g., what loss to use for this sample.
     train_metadata: dict | None = None
 
-    # MultiLoRA: which adapter this sample trains/infers with
-    adapter: AdapterRef | None = None
-    # Per-sample reward dispatch override (e.g., per-adapter RM in multi-LoRA)
+    # Per-sample reward dispatch override
     reward_spec: RewardSpec | None = None
 
     # Per-sample routing key for the router's consistent_hashing policy (sent as X-SMG-Routing-Key)
     routing_key: str | None = None
 
+    # Which policy model this sample trains and generates on; None when the run trains one policy
+    trainer_model_id: str | None = None
+
+    kv_cache_namespace: str | None = None
+
     non_generation_time: float = 0.0  # time spent in non-generation steps
 
     @dataclass
     class SpecInfo:
-        spec_accept_token_num: int = 0
-        spec_draft_token_num: int = 0
+        spec_num_correct_drafts: int = 0
+        spec_num_proposed_drafts: int = 0
         spec_verify_ct: int = 0
-        completion_token_num: int = 0
+        completion_tokens: int = 0
 
         @property
         def spec_accept_rate(self) -> float:
-            return self.spec_accept_token_num / self.spec_draft_token_num if self.spec_draft_token_num > 0 else 0.0
+            if self.spec_num_proposed_drafts == 0:
+                return 0.0
+            return self.spec_num_correct_drafts / self.spec_num_proposed_drafts
 
         @property
         def spec_accept_length(self) -> float:
-            return self.completion_token_num / self.spec_verify_ct if self.spec_verify_ct > 0 else 0.0
+            return self.completion_tokens / self.spec_verify_ct if self.spec_verify_ct > 0 else 0.0
 
         def add(self, meta_info: dict):
-            self.spec_accept_token_num += meta_info.get("spec_accept_token_num", 0)
-            self.spec_draft_token_num += meta_info.get("spec_draft_token_num", 0)
-            self.spec_verify_ct += meta_info.get("spec_verify_ct", 0)
-            self.completion_token_num += meta_info.get("completion_tokens", 0)
+            spec_verify_ct = meta_info.get("spec_verify_ct") or 0
+            if spec_verify_ct <= 0:
+                return
+            self.spec_num_correct_drafts += meta_info.get("spec_num_correct_drafts", 0)
+            self.spec_num_proposed_drafts += meta_info.get("spec_num_proposed_drafts", 0)
+            self.spec_verify_ct += spec_verify_ct
+            self.completion_tokens += meta_info.get("completion_tokens", 0)
 
         def to_dict(self):
             return {
-                "spec_accept_token_num": self.spec_accept_token_num,
-                "spec_draft_token_num": self.spec_draft_token_num,
+                "spec_num_correct_drafts": self.spec_num_correct_drafts,
+                "spec_num_proposed_drafts": self.spec_num_proposed_drafts,
                 "spec_verify_ct": self.spec_verify_ct,
-                "completion_token_num": self.completion_token_num,
+                "completion_tokens": self.completion_tokens,
             }
 
         @staticmethod
         def from_dict(data: dict):
             info = Sample.SpecInfo()
-            info.spec_accept_token_num = data.get("spec_accept_token_num", 0)
-            info.spec_draft_token_num = data.get("spec_draft_token_num", 0)
+            info.spec_num_correct_drafts = data.get("spec_num_correct_drafts", data.get("spec_accept_token_num", 0))
+            info.spec_num_proposed_drafts = data.get("spec_num_proposed_drafts", data.get("spec_draft_token_num", 0))
             info.spec_verify_ct = data.get("spec_verify_ct", 0)
-            info.completion_token_num = data.get("completion_token_num", 0)
+            info.completion_tokens = data.get("completion_tokens", data.get("completion_token_num", 0))
             return info
 
     spec_info: SpecInfo = field(default_factory=SpecInfo)
@@ -152,17 +311,28 @@ class Sample:
 
     def to_dict(self):
         value = self.__dict__.copy()
+        value["lineage"] = asdict(self.lineage) if self.lineage is not None else None
         value["status"] = self.status.value
         value["spec_info"] = self.spec_info.to_dict()
         value["prefix_cache_info"] = self.prefix_cache_info.to_dict()
+        value["weight_versions"] = [call.to_dict() for call in self.weight_versions]
         return value
 
     @staticmethod
     def from_dict(data: dict):
         data = dict(data)
+        if (identity := data.get("lineage")) is not None:
+            data["lineage"] = SampleLineage(**identity)
         data["status"] = Sample.Status(data["status"])
         data["spec_info"] = Sample.SpecInfo.from_dict(data.get("spec_info", {}))
         data["prefix_cache_info"] = Sample.PrefixCacheInfo.from_dict(data.get("prefix_cache_info", {}))
+        raw_weight_versions = data.get("weight_versions") or []
+
+        if raw_weight_versions and isinstance(raw_weight_versions[0], str):
+            data[LEGACY_WEIGHT_VERSIONS_KEY] = raw_weight_versions
+            raw_weight_versions = []
+
+        data["weight_versions"] = [WeightVersionsPerCall.from_dict(call) for call in raw_weight_versions]
 
         field_names = set(Sample.__dataclass_fields__.keys())
         init_data = {k: v for k, v in data.items() if k in field_names}
@@ -194,6 +364,20 @@ class Sample:
             assert (
                 len(self.rollout_log_probs) == self.response_length
             ), f"rollout_log_probs length ({len(self.rollout_log_probs)}) != response_length ({self.response_length})"
+        if self.rollout_topk_token_ids is not None or self.rollout_topk_log_probs is not None:
+            ids, logps = self.rollout_topk_token_ids, self.rollout_topk_log_probs
+            assert (
+                ids is not None and logps is not None
+            ), "Rollout top-k logprobs IDs and probabilities must both be present"
+            assert ids.ndim == 2 and ids.shape == logps.shape, "Rollout top-k logprobs candidate shapes do not match"
+            assert (
+                ids.shape[0] == self.response_length
+            ), "Rollout top-k logprobs candidates do not match response length"
+        if self.rollout_sampling_mask is not None:
+            assert len(self.rollout_sampling_mask) == self.response_length, (
+                f"rollout_sampling_mask length ({len(self.rollout_sampling_mask)}) "
+                f"!= response_length ({self.response_length})"
+            )
         if self.teacher_log_probs is not None:
             assert (
                 len(self.teacher_log_probs) == self.response_length
@@ -217,6 +401,17 @@ class Sample:
             actual = len(self.rollout_indexer_topk)
             expect = len(self.tokens) - 1
             assert actual == expect, f"rollout_indexer_topk length ({actual}) != len(tokens) - 1 ({expect})"
+        if self.rollout_store_plan is not None:
+            self.rollout_store_plan.validate(num_tokens=len(self.tokens), response_length=self.response_length)
+        previous_end = 0
+        for span in self.all_weight_version_spans:
+            assert span.version, f"weight version span has empty version: {self.weight_versions}"
+            assert (
+                previous_end <= span.abs_start < span.abs_end <= len(self.tokens)
+            ), f"invalid weight version span {span} (previous_end={previous_end}, len(tokens)={len(self.tokens)})"
+            previous_end = span.abs_end
+        for call in self.weight_versions:
+            call.validate(num_tokens=len(self.tokens))
 
     def strip_last_output_tokens(self, n: int, tokenizer) -> None:
         """Remove the last *n* output tokens and all associated per-token info."""
@@ -227,8 +422,13 @@ class Sample:
         ), f"cannot strip {n} tokens: only {self.response_length} output tokens available"
         self.tokens = self.tokens[:-n]
         self.response_length -= n
+        if self.rollout_topk_token_ids is not None:
+            self.rollout_topk_token_ids = self.rollout_topk_token_ids[:-n]
+            self.rollout_topk_log_probs = self.rollout_topk_log_probs[:-n]
         if self.rollout_log_probs is not None:
             self.rollout_log_probs = self.rollout_log_probs[:-n]
+        if self.rollout_sampling_mask is not None:
+            self.rollout_sampling_mask = self.rollout_sampling_mask.prefix(self.response_length)
         if self.teacher_log_probs is not None:
             self.teacher_log_probs = self.teacher_log_probs[:-n]
         if self.opd_reverse_kl is not None:
@@ -242,13 +442,24 @@ class Sample:
             self.rollout_routed_experts = self.rollout_routed_experts[:-n]
         if self.rollout_indexer_topk is not None:
             self.rollout_indexer_topk = self.rollout_indexer_topk[:-n]
+        if self.rollout_store_plan is not None:
+            self.rollout_store_plan = self.rollout_store_plan.strip_tail(n)
+        self.weight_versions = [
+            call for call in self.weight_versions if call.output_start is None or call.output_start <= len(self.tokens)
+        ]
+        for call in self.weight_versions:
+            call.spans = [
+                span if span.abs_end <= len(self.tokens) else replace(span, abs_end=len(self.tokens))
+                for span in call.spans
+                if span.abs_start < len(self.tokens)
+            ]
 
     def reset_for_retry(self) -> None:
         """Reset generated outputs so the original prompt can be re-sampled.
 
         Keeps identity / prompt fields (group_index, index, prompt, label,
-        multimodal_inputs, metadata, generate_function_path, routing_key) and
-        restores everything else to dataclass defaults.
+        multimodal_inputs, metadata, generate_function_path, max_response_len,
+        agent_function_path, max_seq_len, routing_key) and restores everything else to dataclass defaults.
         """
         self.tokens = []
         self.multimodal_train_inputs = None
@@ -258,9 +469,15 @@ class Sample:
         self.loss_mask = None
         self.weight_versions = []
         self.rollout_log_probs = None
+        self.rollout_topk_token_ids = None
+        self.rollout_topk_log_probs = None
+        self.rollout_sampling_mask = None
         self.rollout_routed_experts = None
         self.rollout_indexer_topk = None
+        self.rollout_store_plan = None
         self.status = Sample.Status.ABORTED
+        self.trainer_model_id = None
+        self.kv_cache_namespace = None
         self.non_generation_time = 0.0
         self.spec_info = Sample.SpecInfo()
         self.prefix_cache_info = Sample.PrefixCacheInfo()
@@ -268,25 +485,35 @@ class Sample:
         self.train_metadata = None
 
     @property
+    def all_weight_version_spans(self) -> list[WeightVersionSpan]:
+        return [span for call in self.weight_versions for span in call.spans]
+
+    @property
+    def all_prefill_weight_version_spans(self) -> list[WeightVersionSpan]:
+        return [span for call in self.weight_versions for span in call.prefill_spans]
+
+    @property
     def oldest_weight_version(self) -> int | None:
         """Minimum weight version across all turns (generation calls) for this trajectory."""
-        numeric = [int(v) for v in self.weight_versions if str(v).isdigit()]
-        return min(numeric) if numeric else None
+        return min(compute_numeric_versions_of_spans(self.all_weight_version_spans), default=None)
+
+    @property
+    def oldest_prefill_weight_version(self) -> int | None:
+        return min(compute_numeric_versions_of_spans(self.all_prefill_weight_version_spans), default=None)
 
     def update_from_meta_info(self, args, meta_info: dict):
         """
         Update the sample with new information from meta_info returned by the rollout engine.
         And extract
         """
-        if args.sglang_speculative_algorithm:
+        if args.sglang.common_value("speculative_algorithm"):
             # cannot directly use spec info from sglang because of partial rollout.
             self.spec_info.add(meta_info=meta_info)
 
         # Collect prefix cache statistics
         self.prefix_cache_info.add(meta_info=meta_info)
 
-        if "weight_version" in meta_info:
-            self.weight_versions.append(meta_info["weight_version"])
+        self.weight_versions.append(WeightVersionsPerCall.from_meta_info(meta_info, output_end=len(self.tokens)))
 
         match meta_info["finish_reason"]["type"]:
             case "length":
@@ -310,7 +537,7 @@ class ParamInfo:
 # A dict-based batch produced along the rollout -> training path
 # In Megatron backend, several fields are converted to torch.Tensor lists on GPU
 # before being consumed by data iterators (see megatron_utils.actor._get_rollout_data).
-RolloutBatch = dict[str, list[torch.Tensor] | list[int] | list[float] | list[str]]
+RolloutBatch = dict[str, list[torch.Tensor] | list[numpy.ndarray] | list[int] | list[float] | list[str]]
 
 
 @dataclass

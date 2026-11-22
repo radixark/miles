@@ -1,20 +1,26 @@
 from tests.fast.fixtures.generation_fixtures import extra_argv_for_variant
 from tests.fast.fixtures.rollout_fixtures import RolloutEnvConfig
 
+from miles.ray.rollout.rollout_executor import _compute_rollout_function_config
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
     RolloutFnEvalInput,
     RolloutFnOutput,
     RolloutFnTrainInput,
 )
-from miles.rollout.filter_hub.base_types import DynamicFilterOutput
+from miles.rollout.filter_hub.base_types import FilterOutput
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
-from miles.utils.types import Sample
+from miles.utils.types import Sample, SampleLineage, WeightVersionsPerCall
 
 
 def expected_sample(*, group_index: int | None) -> Sample:
     return Sample(
         group_index=group_index,
+        lineage=(
+            None
+            if group_index is None
+            else SampleLineage(source_sample_index=group_index, output_index=0, output_count=1)
+        ),
         index=0,
         prompt="What is 1+7?",
         tokens=[3838, 374, 220, 16, 10, 22, 30, 59, 79075, 90, 23, 92],
@@ -25,7 +31,7 @@ def expected_sample(*, group_index: int | None) -> Sample:
         label="8",
         reward=1,
         loss_mask=None,
-        weight_versions=[],
+        weight_versions=[WeightVersionsPerCall(spans=[], output_start=7, prompt_tokens=7)],
         rollout_log_probs=[-0.0, -0.0078125, -0.015625, -0.0234375, -0.03125],
         rollout_routed_experts=None,
         remove_sample=False,
@@ -34,7 +40,7 @@ def expected_sample(*, group_index: int | None) -> Sample:
         train_metadata=None,
         non_generation_time=0.0,
         spec_info=Sample.SpecInfo(
-            spec_accept_token_num=0, spec_draft_token_num=0, spec_verify_ct=0, completion_token_num=0
+            spec_num_correct_drafts=0, spec_num_proposed_drafts=0, spec_verify_ct=0, completion_tokens=0
         ),
         prefix_cache_info=Sample.PrefixCacheInfo(cached_tokens=0, total_prompt_tokens=7),
     )
@@ -69,7 +75,7 @@ def integration_env_config(
 def load_and_call_rollout(args, data_source, mode: str = "train") -> RolloutFnOutput:
     function_path = args.rollout_function_path if mode == "train" else args.eval_function_path
     fn = load_rollout_function(
-        RolloutFnConstructorInput(args=args, data_source=data_source),
+        RolloutFnConstructorInput(args=_compute_rollout_function_config(args, function_path), data_source=data_source),
         function_path,
     )
     if mode == "train":
@@ -85,5 +91,5 @@ def load_and_call_train(args, data_source):
 def filter_by_reward(args, samples, **kwargs):
     reward = samples[0].reward if not isinstance(samples[0], list) else samples[0][0].reward
     if reward == 1:
-        return DynamicFilterOutput(keep=True)
-    return DynamicFilterOutput(keep=False, reason="reward_zero")
+        return FilterOutput(keep=True)
+    return FilterOutput(keep=False, reason="reward_zero")

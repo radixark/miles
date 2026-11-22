@@ -1,34 +1,34 @@
 from __future__ import annotations
 
 import textwrap
-from argparse import Namespace
-from typing import Any
+from argparse import ArgumentParser, Namespace
+from collections.abc import AsyncIterator
+from typing import Any, TypeVar
 from unittest.mock import MagicMock
 
 import pytest
 import ray
+from sglang_router.launch_router import RouterArgs
+from tests.fast.fixtures.args_fixtures import parser_defaults, resolve_parse_boundary_configs
 
+from miles.ray.specs.inference import inference_controller_worker_name
 from miles.utils import object_store
+from miles.utils.args.component_rollout import InferenceRuntimeImmutState, InferenceRuntimeMutState
+from miles.utils.args.configs.router import RouterConfig
+from miles.utils.args.custom_function import CustomFunctionConfig
+from miles.utils.args.runtime import AllConfig, InferenceControllerConfig, RolloutConfig
 from miles.utils.types import Sample
-
-
-def fake_actor_handle() -> MagicMock:
-    """MagicMock that passes ``isinstance(x, ray.actor.ActorHandle)``.
-
-    Setting ``_spec_class`` directly (rather than ``spec=...``) keeps
-    arbitrary-attribute auto-creation working so ``actor.shutdown.remote(...)``
-    chains still resolve — ``ActorHandle`` routes its methods via
-    ``__getattr__`` and they don't show up as class attributes."""
-    m = MagicMock()
-    m._spec_class = ray.actor.ActorHandle
-    return m
 
 
 def make_args(**overrides: Any) -> Namespace:
     """Args namespace covering every field touched by ``miles/ray/rollout/``.
     Adding a new field is fine; deleting one likely breaks tests."""
+    parser: ArgumentParser = ArgumentParser()
+    RouterArgs.add_cli_args(parser, use_router_prefix=True, exclude_host_port=True)
+    router_defaults: dict[str, Any] = vars(parser.parse_args([]))
     defaults: dict[str, Any] = dict(
         # rollout core
+        rollout_data_yaml_config=None,
         rollout_num_gpus=8,
         rollout_num_gpus_per_engine=1,
         eval_num_gpus=0,
@@ -40,9 +40,18 @@ def make_args(**overrides: Any) -> Namespace:
         n_samples_per_eval_prompt=4,
         rollout_max_response_len=512,
         rollout_temperature=1.0,
+        rollout_top_p=1.0,
+        rollout_top_k=-1,
+        rollout_top_logprobs_num=0,
+        rollout_sampling_logprobs_mode="selected",
+        use_sampling_support_replay=False,
         over_sampling_batch_size=None,
         rollout_global_dataset=False,
         num_rollout=1,
+        update_weights_interval=1,
+        check_weight_update_equal=False,
+        check_weight_update_skip_list=None,
+        check_weight_update_selector="all",
         # batch / training
         global_batch_size=8,
         use_dynamic_global_batch_size=False,
@@ -52,50 +61,104 @@ def make_args(**overrides: Any) -> Namespace:
         delay_split_train_data_by_dp=False,
         # object store
         object_store_backend="ray",
+        worker_comm_backend="ray",
         mooncake_store_init_kwargs=None,
         mooncake_replica_num=1,
         # advantage / reward
         advantage_estimator="grpo",
         rewards_normalization=True,
         grpo_std_normalization=False,
+        length_penalty_coeff=0.0,
+        length_penalty_min_tokens=1,
         reward_key=None,
         log_reward_category=None,
         log_passrate=False,
+        pin_rollout_manager_to_head=False,
+        cluster_backend="ray",
         # placement / colocation
         debug_train_only=False,
         debug_rollout_only=False,
+        debug_skip_weight_update=False,
         colocate=False,
         actor_num_nodes=1,
         actor_num_gpus_per_node=8,
+        indep_dp=False,
+        train_backend="megatron",
+        kl_coef=0,
+        use_kl_loss=False,
+        use_opd=False,
+        opd_type="megatron",
+        train_env_vars={},
+        dumper_source_patcher_config_train=None,
+        offload_train=False,
+        offload_train_target="cpu",
+        offload_train_disk_dir="/tmp/offload",
+        offload_train_disk_chunk_mb=64,
         critic_num_nodes=0,
         critic_num_gpus_per_node=0,
         use_critic=False,
-        critic_train_only=False,
+        megatron_config=None,
         # sglang router
         sglang_router_ip=None,
         sglang_router_port=None,
         sglang_router_policy=None,
         sglang_router_request_timeout_secs=600,
         sglang_dp_size=1,
+        sglang_pp_size=1,
+        sglang_pp_layer_partition=None,
+        sglang_ep_size=1,
+        sglang_api_key=None,
+        multi_lora_n_adapters=0,
+        target_modules=None,
         sglang_speculative_algorithm=None,
         sglang_config=None,
         sglang_model_routers=None,
         prefill_num_servers=None,
         # routers / session server
-        use_miles_router=False,
+        router="sglang",
+        miles_router_timeout=None,
+        miles_router_max_connections=None,
+        miles_router_health_check_failure_threshold=3,
+        sglang_server_concurrency=512,
         use_session_server=False,
+        use_rollout_routing_replay=False,
+        multimodal_token_space_processing=False,
+        sglang_enable_prefill_weight_versions=False,
         session_server_ip=None,
+        session_server_external_host=None,
         session_server_port=None,
+        session_server_workers=1,
+        run_uuid="0123456789abcdef",
+        # deployment
+        deploy_component="all",
+        deploy_instance_id=None,
+        init_expected_num_cells=None,
+        trainer_controller_addrs=None,
+        inference_controller_addr=None,
         # external rollout
         rollout_external=False,
         rollout_external_engine_addrs=None,
+        rollout_external_router_pd=False,
+        custom_inference_engine_provider_path="miles.ray.specs.inference.backend_inference_engine_provider",
         # offload / fault tolerance
         offload_rollout=False,
         use_fault_tolerance=False,
-        rollout_health_check_interval=10.0,
+        ft_components=[],
+        rollout_health_check_interval=30.0,
         rollout_health_check_timeout=30.0,
+        rollout_health_check_first_wait=0.0,
+        rollout_health_check_failure_threshold=1,
+        # engine launch command
+        seed=42,
+        fp16=False,
+        use_rollout_indexer_replay=False,
+        rollout_indexer_topk_num_streams=None,
+        replay_layer_splits=[],
+        use_output_store=False,
+        env_report_interval_seconds=3600.0,
         # checkpoint / data source
         hf_checkpoint="/fake/model",
+        lora_rank=0,
         rollout_function_path="miles.rollout.sglang_rollout.generate_rollout",
         eval_function_path="miles.rollout.sglang_rollout.eval_generate_rollout",
         data_source_path="miles.data.dummy.DummyDataSource",
@@ -111,18 +174,80 @@ def make_args(**overrides: Any) -> Namespace:
         ci_inject_rollout_data_path=None,
         ci_inject_rollout_data_start_rollout_id=None,
         ci_inject_rollout_data_min_match_ratio=0.9,
-        # event checkpointing (event_logger.restore/snapshot in RolloutManager)
+        # event checkpointing (event_logger.restore/snapshot in RolloutExecutor)
         save_debug_event_data=None,
+        enable_sample_ownership_checker=False,
+        sample_ownership_grace_steps=10,
         load=None,
+        requested_load=None,
         save=None,
         # CI
         ci_test=False,
+        ci_tito_special_token_count_threshold=0.0,
+        ci_assert_prefill_lag_max=None,
         # dumper (sglang debug dumper integration)
         dumper_enable=False,
-        dumper_inference=False,
     )
+    defaults.update(router_defaults)
+    defaults["inference_runtime_mut_state"] = InferenceRuntimeMutState()
     defaults.update(overrides)
-    return Namespace(**defaults)
+    defaults.setdefault("starts_inference_engines", not defaults["debug_train_only"] or defaults["eval_num_gpus"] > 0)
+    if defaults["debug_train_only"]:
+        defaults["rollout_num_gpus"] = 0
+    return resolve_parse_boundary_configs(Namespace(**{**parser_defaults(), **defaults}))
+
+
+def make_rollout_config(**overrides: Any) -> RolloutConfig:
+    """The typed config the rollout executor receives, sliced from ``make_args``."""
+    return _slice_config(RolloutConfig, make_args(**overrides))
+
+
+def make_inference_controller_config(args: Namespace) -> InferenceControllerConfig:
+    """The typed config the inference controller receives, sliced from a ``make_args`` namespace."""
+    return _slice_config(InferenceControllerConfig, args)
+
+
+def _slice_config(config_class: type[_LeafConfigT], args: Namespace) -> _LeafConfigT:
+    values = vars(args) | _RESOLVED_ROLLOUT_FIELDS | RouterConfig.from_args(args)
+    for name in _CUSTOM_FUNCTION_FIELDS:
+        if isinstance(path := values[name], str):
+            values[name] = CustomFunctionConfig(path=path)
+    return config_class.model_validate({name: values[name] for name in config_class.model_fields if name in values})
+
+
+_LeafConfigT = TypeVar("_LeafConfigT", RolloutConfig, InferenceControllerConfig)
+
+_RESOLVED_ROLLOUT_FIELDS: dict[str, Any] = dict(
+    ci_enable_metrics_capture=False,
+    eval_datasets=[],
+    ckpt_step=None,
+    num_layers=None,
+    raw_fsdp=None,
+    raw_torchtitan=None,
+    lora_A_init_method="xavier",
+    lora_B_init_method="zero",
+    lora_sync_sends_base=True,
+)
+
+_CUSTOM_FUNCTION_FIELDS = [
+    name
+    for name, field in AllConfig.model_fields.items()
+    if field.annotation in {CustomFunctionConfig, CustomFunctionConfig | None}
+]
+
+
+class FakeInferenceTopologyProvider:
+    """Serves the inference controller the rollout executor asks for the observed engine topology."""
+
+    def __init__(self, state: InferenceRuntimeImmutState) -> None:
+        self._state = state
+
+    def get_handle(self, worker_name: str) -> FakeInferenceTopologyProvider:
+        assert worker_name == inference_controller_worker_name()
+        return self
+
+    async def get_inference_runtime_immut_state(self) -> InferenceRuntimeImmutState:
+        return self._state
 
 
 def make_sample(
@@ -188,7 +313,7 @@ def make_sglang_config_yaml(
     update_weights: bool | None = None,
     model_path: str | None = None,
 ) -> str:
-    """Render a small SglangConfig YAML for from_yaml() round-trip tests."""
+    """Render a small SglangConfig YAML for from_file_arg() round-trip tests."""
     server_groups = server_groups or [{"worker_type": "regular", "num_gpus": 8, "num_gpus_per_engine": 1}]
     lines = ["sglang:", f"  - name: {name}"]
     if model_path is not None:
@@ -202,6 +327,34 @@ def make_sglang_config_yaml(
         if "num_gpus_per_engine" in g:
             lines.append(f"        num_gpus_per_engine: {g['num_gpus_per_engine']}")
     return "\n".join(lines) + "\n"
+
+
+def make_args_with_sglang_config(tmp_path, *, server_groups: list[dict] | None = None, **overrides: Any) -> Namespace:
+    """Args namespace pointed at a freshly written sglang config file."""
+    config_path = tmp_path / "sglang.yaml"
+    config_path.write_text(make_sglang_config_yaml(server_groups=server_groups))
+    return make_args(sglang_config=str(config_path), **overrides)
+
+
+# --------------------------- server cell fixtures ---------------------------
+
+_tracked_server_cells: list[Any] = []
+
+
+def track_server_cell(cell: Any) -> Any:
+    """Register a cell for teardown. ``ServerCell.__del__`` asserts that every cell was disposed."""
+    _tracked_server_cells.append(cell)
+    return cell
+
+
+@pytest.fixture
+async def dispose_tracked_server_cells() -> AsyncIterator[None]:
+    """Dispose every cell registered through ``track_server_cell`` during the test."""
+    _tracked_server_cells.clear()
+    yield
+    for cell in _tracked_server_cells:
+        await cell.dispose()
+    _tracked_server_cells.clear()
 
 
 # --------------------------- ray fixtures ---------------------------
@@ -231,76 +384,72 @@ def _autouse_reset_object_store(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _autouse_subprocess_leak_check():
-    """Catch leaked router / session-server multiprocessing children."""
+def _autouse_subprocess_leak_check(monkeypatch):
+    """Catch leaked router / session-server children (multiprocessing and Popen)."""
     import multiprocessing
+
+    from miles.utils.workers import process_utils
+
+    launched: list = []
+    real_launch = process_utils.launch_bound_subprocess
+
+    def _recording_launch(argv, *, envs):
+        process = real_launch(argv, envs=envs)
+        launched.append(process)
+        return process
+
+    monkeypatch.setattr(process_utils, "launch_bound_subprocess", _recording_launch)
 
     before = {p.pid for p in multiprocessing.active_children()}
     yield
-    after = {p.pid for p in multiprocessing.active_children()}
-    leaked = after - before
-    if leaked:
+    leaked_mp = {p.pid for p in multiprocessing.active_children()} - before
+    leaked_popen = [p for p in launched if p.poll() is None]
+    if leaked_mp or leaked_popen:
         # Tear down leaked children to avoid cascading test failures.
         for p in multiprocessing.active_children():
-            if p.pid in leaked:
+            if p.pid in leaked_mp:
                 try:
                     p.terminate()
                     p.join(timeout=2)
                 except Exception:
                     pass
-        raise AssertionError(f"Subprocess leaked from previous test: pids={leaked}")
+        for p in leaked_popen:
+            process_utils.terminate_process_tree(p)
+        raise AssertionError(
+            f"Subprocess leaked from previous test: mp={leaked_mp} popen={[p.pid for p in leaked_popen]}"
+        )
 
 
 def dedent(s: str) -> str:
     return textwrap.dedent(s).lstrip("\n")
 
 
-def make_dataclass_group(
-    *,
-    num_engines: int = 2,
-    num_gpus_per_engine: int = 1,
-    gpu_offset: int = 0,
-):
-    """Build a ``ServerGroup`` with ``pg=None`` (no actor scheduling). Each
-    engine starts unallocated."""
-    from miles.ray.rollout.server_engine import ServerEngine
-    from miles.ray.rollout.server_group import ServerGroup
-
-    args = make_args(num_gpus_per_node=8)
-    engines = [ServerEngine() for _ in range(num_engines)]
-    return ServerGroup(
-        args=args,
-        pg=None,
-        all_engines=engines,
-        num_gpus_per_engine=num_gpus_per_engine,
-        has_new_engines=False,
-        gpu_offset=gpu_offset,
-        update_weights=True,
-    )
+FAKE_SERVICE_PORT_START = 20000
 
 
 def fake_engine(host: str = "10.0.0.1", port_seed: int = 30000) -> MagicMock:
-    """MagicMock that mimics ``SGLangEngine`` enough for ``addr_allocator``.
+    """MagicMock that mimics the engine ``CommandActor`` enough for ``addr_allocator``.
 
-    Mocks ``_get_current_node_ip_and_free_port.remote(start_port, consecutive)``
-    with a deterministic ``max(seq, start_port)`` counter so allocator tests
-    can predict and assert on port assignment."""
+    Mocks ``_get_free_port_block.remote(start_port, count)`` with a
+    deterministic ``max(seq, start_port)`` counter so allocator tests can
+    predict and assert on port assignment. A node without a cursor starts at
+    20000, where the service port range starts on a host with the default
+    ephemeral range. ``_get_node_ip.remote()`` is the
+    node-ip probe, which the cell awaits, so it returns an awaitable just like
+    a real ``ObjectRef``. It also passes ``isinstance(x, ray.actor.ActorHandle)``
+    so it can be handed to ``mark_allocated_uninitialized``."""
     e = MagicMock()
+    e._spec_class = ray.actor.ActorHandle
     e._port_cursor = port_seed
 
-    def _alloc(start_port: int = 15000, consecutive: int = 1):
-        port = max(e._port_cursor, start_port)
-        e._port_cursor = port + consecutive
-        return (host, port)
+    async def _alloc(start_port: int | None = None, count: int = 1):
+        port = max(e._port_cursor, FAKE_SERVICE_PORT_START if start_port is None else start_port)
+        e._port_cursor = port + count
+        return port
 
-    e._get_current_node_ip_and_free_port.remote.side_effect = lambda **kw: _alloc(**kw)
+    async def _probe():
+        return host
+
+    e._get_free_port_block.remote.side_effect = _alloc
+    e._get_node_ip.remote.side_effect = _probe
     return e
-
-
-@pytest.fixture
-def patch_ray_get(monkeypatch):
-    """Make ``ray.get(remote_call(...))`` return the MagicMock's value directly,
-    so allocator tests don't need a real Ray cluster."""
-    import miles.ray.rollout.addr_allocator as mod
-
-    monkeypatch.setattr(mod.ray, "get", lambda x: x)

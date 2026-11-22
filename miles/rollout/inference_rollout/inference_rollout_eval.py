@@ -6,7 +6,8 @@ from typing import Any
 
 from tqdm import tqdm
 
-from miles.rollout.generate_utils.generate_endpoint_utils import policy_uses_routing_key
+from miles.rollout.base_types import stamp_kv_cache_namespace
+from miles.rollout.generate_utils.generate_endpoint_utils import router_routes_by_key
 from miles.rollout.inference_rollout.inference_rollout_common import (
     GenerateState,
     compute_sampling_params,
@@ -24,13 +25,19 @@ logger = logging.getLogger(__name__)
 async def run_eval_datasets(
     state: GenerateState,
     prompt_dataset_cache: dict[Any, Dataset],
+    *,
+    kv_cache_namespace: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     args = state.args
     assert not args.group_rm, "Group RM is not supported for eval rollout"
 
     coros = []
     for dataset_cfg in args.eval_datasets:
-        coros.append(eval_rollout_single_dataset(state, dataset_cfg, prompt_dataset_cache))
+        coros.append(
+            eval_rollout_single_dataset(
+                state, dataset_cfg, prompt_dataset_cache, kv_cache_namespace=kv_cache_namespace
+            )
+        )
     results_list = await asyncio.gather(*coros)
     return {k: v for r in results_list for k, v in r.items()}
 
@@ -39,6 +46,8 @@ async def eval_rollout_single_dataset(
     state: GenerateState,
     dataset_cfg: EvalDatasetConfig,
     prompt_dataset_cache: dict[Any, Dataset],
+    *,
+    kv_cache_namespace: str | None = None,
 ) -> dict[str, dict[str, list[Any]]]:
     args = state.args
     assert not args.group_rm, "Group RM is not supported for eval rollout"
@@ -48,7 +57,11 @@ async def eval_rollout_single_dataset(
         tokenizer = load_tokenizer(
             args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True
         )
-        processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
+        processor = (
+            None
+            if args.multimodal_token_space_processing
+            else load_processor(args.hf_checkpoint, trust_remote_code=True)
+        )
         prompt_dataset_cache[cache_key] = Dataset(
             path=dataset_cfg.path,
             tokenizer=tokenizer,
@@ -61,6 +74,8 @@ async def eval_rollout_single_dataset(
             tool_key=dataset_cfg.tool_key,
             apply_chat_template=args.apply_chat_template,
             apply_chat_template_kwargs=args.apply_chat_template_kwargs,
+            media_dir=args.shared_media_dir,
+            token_space_processing=args.multimodal_token_space_processing,
         )
     dataset = prompt_dataset_cache[cache_key]
 
@@ -81,12 +96,13 @@ async def eval_rollout_single_dataset(
             sample = copy.deepcopy(prompt_sample)
             sample.index = sample_index
             sample_index += 1
-            sample.metadata = dataset_cfg.inject_metadata(getattr(sample, "metadata", None))
-            sample.generate_function_path = dataset_cfg.custom_generate_function_path
-            if policy_uses_routing_key(args):
+            sample.metadata = dataset_cfg.inject_metadata(sample.metadata)
+            sample.generate_function_path = x.path if (x := dataset_cfg.custom_generate_function_path) else None
+            stamp_kv_cache_namespace(sample, namespace=kv_cache_namespace)
+            if router_routes_by_key(args):
                 sample.routing_key = str(uuid.uuid4())
             sampling_params = base_sampling_params
-            if getattr(args, "sglang_enable_deterministic_inference", False):
+            if args.sglang.common_value("enable_deterministic_inference"):
                 sampling_params = base_sampling_params.copy()
                 sampling_params["sampling_seed"] = args.rollout_seed + j
             tasks.append(

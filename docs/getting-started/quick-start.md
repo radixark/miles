@@ -47,7 +47,7 @@ Megatron-LM at `/root/Megatron-LM`. Refresh the editable install so you run the
 latest main:
 
 ```bash
-cd /root/miles && git pull && pip install -e . --no-deps
+cd /root/miles && git pull && pip install -e . --no-deps && pip install -e packages/miles-dashboard --no-deps
 ```
 
 **Everything from here on runs inside the container.**
@@ -105,14 +105,14 @@ Once the engines warm up and the first rollout completes, the log settles into
 per-rollout metric lines (values illustrative, keys abridged):
 
 ```text
-perf 0: {'perf/rollout_time': 98.6, ...}
-rollout 0: {'rollout/raw_reward': 0.32, 'rollout/log_probs': -0.27, ...}
+perf 0: {'rollout/raw_reward': 0.32, 'perf/rollout_time': 98.6, ...}
+rollout 0: {'rollout/raw_reward_filtered': 0.32, 'rollout/log_probs': -0.27, ...}
 step 0: {'train/loss': 0.0021, 'train/pg_loss': 0.0018, 'train/grad_norm': 0.62, ...}
 perf 0: {'perf/train_wait_time': 101.2, 'perf/actor_train_time': 41.3, ...}
 ```
 
-`rollout/raw_reward` is the number to watch: the mean reward of the freshly scored
-responses, drifting upward as the policy improves. You have a live RL run.
+`rollout/raw_reward` is the number to watch: the mean reward before dynamic
+sampling filters, including the groups they drop. You have a live RL run.
 
 ## What's happening
 
@@ -170,7 +170,8 @@ size 256.
   and training. Sharing GPUs also makes the weight sync local — each rank gathers
   its shards over NCCL and hands them to its engine through IPC, no network
   involved. Disaggregated runs choose a transport with
-  `--update-weight-transfer-mode`: `broadcast` (the default, over NCCL),
+  `--update-weight-transfer-mode`: `broadcast` (the default, one NCCL broadcast per tensor),
+  `broadcast_packed` (one byte-buffer broadcast per bucket; non-colocated Megatron),
   [`p2p`](/advanced/p2p-weight-transfer) (point-to-point RDMA via Mooncake), or
   [`disk-delta`](/advanced/disaggregated-rollout) (versioned deltas through
   shared storage). `p2p` and `disk-delta` are incompatible with `--colocate`.

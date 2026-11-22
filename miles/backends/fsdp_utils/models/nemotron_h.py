@@ -5,68 +5,18 @@ forward row, which dominates its train/rollout logprob gap. We derive per-doc bo
 position_ids and feed seq_idx to the mixer's un-fused conv/scan kernels + run attention as varlen
 flash-attn with cu_seqlens, so each doc stays isolated. Boundaries are stashed from the CausalLM
 forward (position_ids don't reach the mixers otherwise). No-op when not packing.
-
-The post-load fixup re-asserts checkpoint weights that transformers' Mamba ``_init_weights`` clobbers.
 """
 
 import functools
-import glob
-import json
 import logging
-import os
 import sys
 
-import torch
-
-from ..adaptations.packing.boundaries import packed_seq_context
+from ..adaptations.packing import packed_seq_context
 
 logger = logging.getLogger(__name__)
 
-_CLOBBERED_PARAM_SUFFIXES = (".mixer.dt_bias", ".mixer.out_proj.weight")
-
-
-def reload_nemotron_h_clobbered_weights(model, ckpt_path, tol=1e-3) -> int:
-    """Restore NemotronH mixer parameters overwritten after checkpoint loading."""
-    try:
-        from safetensors import safe_open
-    except Exception:  # pragma: no cover
-        return 0
-    files = sorted(glob.glob(os.path.join(ckpt_path, "*.safetensors")))
-    if not files:
-        return 0
-    index = os.path.join(ckpt_path, "model.safetensors.index.json")
-    if os.path.exists(index):
-        with open(index) as f:
-            shard_of = json.load(f)["weight_map"]
-    else:
-        shard_of = {}
-
-    reloaded = 0
-    with torch.no_grad():
-        for name, param in model.named_parameters():
-            if not name.endswith(_CLOBBERED_PARAM_SUFFIXES) or param.device.type == "meta":
-                continue
-            shards = [os.path.join(ckpt_path, shard_of[name])] if name in shard_of else files
-            for f in shards:
-                try:
-                    with safe_open(f, framework="pt") as sf:
-                        if name not in sf.keys():
-                            continue
-                        disk = sf.get_tensor(name)
-                except Exception:
-                    continue
-                if disk.shape == param.shape:
-                    disk = disk.to(device=param.device, dtype=param.dtype)
-                    if (param.detach() - disk).abs().max().item() > tol:
-                        param.copy_(disk)
-                        reloaded += 1
-                break
-    if reloaded:
-        logger.info(
-            "[fsdp post_load] restored %d NemotronH mixer parameter(s) overwritten by _init_weights",
-            reloaded,
-        )
-    return reloaded
+# Set per attention-mixer instance by plugins/hf_kernels/binders.py; read per forward.
+HUB_VARLEN_ATTR = "_hub_flash_attn_varlen_func"
 
 
 def _inject_seq_idx(fn, seq_idx):
@@ -80,19 +30,23 @@ def _inject_seq_idx(fn, seq_idx):
 
 def _patch_mixer_forward(mixer_cls):
     orig = mixer_cls.cuda_kernels_forward
-    if getattr(orig, "_nemotron_packing", False):
+    if getattr(
+        orig, "_nemotron_packing", False
+    ):  # config-access-exempt: probe Nemotron patch markers and model-specific mixer state
         return
 
     @functools.wraps(orig)
     def cuda_kernels_forward(self, hidden_states, *args, **kwargs):
-        seq_idx = getattr(self, "_packing_seq_idx", None)
+        seq_idx = getattr(
+            self, "_packing_seq_idx", None
+        )  # config-access-exempt: probe Nemotron patch markers and model-specific mixer state
         cache_params = args[0] if args else kwargs.get("cache_params")
         if seq_idx is None or cache_params is not None:
             return orig(self, hidden_states, *args, **kwargs)
         mod = sys.modules[mixer_cls.__module__]
         saved = {}
         for n in ("causal_conv1d_fn", "mamba_chunk_scan_combined"):
-            fn = getattr(mod, n, None)
+            fn = getattr(mod, n, None)  # config-access-exempt: attribute selected at runtime from n
             if fn is not None:
                 saved[n] = fn
                 setattr(mod, n, _inject_seq_idx(fn, seq_idx))
@@ -111,19 +65,28 @@ def _patch_mixer_forward(mixer_cls):
 
 def _patch_attn_forward(attn_cls):
     orig = attn_cls.forward
-    if getattr(orig, "_nemotron_packing", False):
+    if getattr(
+        orig, "_nemotron_packing", False
+    ):  # config-access-exempt: probe Nemotron patch markers and model-specific mixer state
         return
 
     try:
-        from flash_attn import flash_attn_varlen_func
+        from flash_attn import flash_attn_varlen_func as native_varlen_func
     except Exception:  # pragma: no cover
-        flash_attn_varlen_func = None
+        native_varlen_func = None
 
     @functools.wraps(orig)
     def forward(self, hidden_states, *args, **kwargs):
-        cu = getattr(self, "_packing_cu_seqlens", None)
+        cu = getattr(
+            self, "_packing_cu_seqlens", None
+        )  # config-access-exempt: probe Nemotron patch markers and model-specific mixer state
         cache = kwargs.get("past_key_values", kwargs.get("cache_params"))
-        if cu is None or cache is not None or flash_attn_varlen_func is None:
+        # A hub kernel bound on the instance wins over the flash-attn wheel; without either,
+        # the packed-document reset below cannot run and attention goes dense across documents.
+        varlen_func = (
+            getattr(self, HUB_VARLEN_ATTR, None) or native_varlen_func
+        )  # config-access-exempt: optional hub kernel is attached to the attention instance at runtime
+        if cu is None or cache is not None or varlen_func is None:
             return orig(self, hidden_states, *args, **kwargs)
         # Packed rows arrive as (1, total_tokens, hidden); flash varlen consumes flat
         # (tokens, heads, head_dim) and handles GQA natively, so K/V stay at kv-head count.
@@ -132,9 +95,7 @@ def _patch_attn_forward(attn_cls):
         kf = self.k_proj(hidden_states).view(b * q, -1, self.head_dim)
         vf = self.v_proj(hidden_states).view(b * q, -1, self.head_dim)
         ml = self._packing_max_seqlen
-        o = flash_attn_varlen_func(
-            qf, kf, vf, cu_seqlens_q=cu, cu_seqlens_k=cu, max_seqlen_q=ml, max_seqlen_k=ml, causal=True
-        )
+        o = varlen_func(qf, kf, vf, cu_seqlens_q=cu, cu_seqlens_k=cu, max_seqlen_q=ml, max_seqlen_k=ml, causal=True)
         return self.o_proj(o.reshape(b, q, -1)), None
 
     forward._nemotron_packing = True
@@ -143,7 +104,9 @@ def _patch_attn_forward(attn_cls):
 
 def _patch_causallm_forward(causallm_cls, mixer_cls, attn_cls):
     orig = causallm_cls.forward
-    if getattr(orig, "_nemotron_packing", False):
+    if getattr(
+        orig, "_nemotron_packing", False
+    ):  # config-access-exempt: probe Nemotron patch markers and model-specific mixer state
         return
     import inspect
 
@@ -177,9 +140,13 @@ def apply_nemotron_h_sglang_match_patch(model):
     mixer_cls = attn_cls = None
     for mod in model.modules():
         cn = type(mod).__name__
-        if mixer_cls is None and cn.endswith("Mamba2Mixer") and hasattr(type(mod), "cuda_kernels_forward"):
+        if (
+            mixer_cls is None and cn.endswith("Mamba2Mixer") and hasattr(type(mod), "cuda_kernels_forward")
+        ):  # config-access-exempt: probe Nemotron patch markers and model-specific mixer state
             mixer_cls = type(mod)
-        if attn_cls is None and getattr(mod, "block_type", None) == "attention" and hasattr(mod, "mixer"):
+        if (
+            attn_cls is None and getattr(mod, "block_type", None) == "attention" and hasattr(mod, "mixer")
+        ):  # config-access-exempt: probe Nemotron patch markers and model-specific mixer state
             attn_cls = type(mod.mixer)
     if mixer_cls is None:
         return False

@@ -1,97 +1,110 @@
 import asyncio
-import importlib
-import inspect
 import logging
-from collections.abc import Sequence
-from contextlib import contextmanager
-from typing import Any
+import os
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
+from dataclasses import dataclass
+from typing import Any, Generic, TypeVar
 
 import ray
 
-from miles.utils.http_utils import is_port_available
+from miles.utils.args.custom_function import CustomFunctionConfig
+from miles.utils.args.custom_view import compute_custom_function_config
+from miles.utils.function_registry import load_function
+from miles.utils.http_utils import MILES_HOST_IP_ENV, is_port_available
+from miles.utils.port_range import service_port_range
 
 logger = logging.getLogger(__name__)
 
+# ray uses 10002-19999, and 32768+ is the ephemeral range, so wrapped scans restart above ray's block
+_MIN_DYNAMIC_PORT = 20000
+_MAX_PORT = 65535
 
-# Mainly used for test purpose where `load_function` needs to load many in-flight generated functions
-class FunctionRegistry:
-    def __init__(self):
-        self._registry: dict[str, object] = {}
-
-    @contextmanager
-    def temporary(self, name: str, fn: object):
-        self._register(name, fn)
-        try:
-            yield
-        finally:
-            self._unregister(name)
-
-    def get(self, name: str) -> object | None:
-        return self._registry.get(name)
-
-    def _register(self, name: str, fn: object) -> None:
-        assert name not in self._registry
-        self._registry[name] = fn
-
-    def _unregister(self, name: str) -> None:
-        assert name in self._registry
-        self._registry.pop(name)
+_K = TypeVar("_K")
+_V = TypeVar("_V")
+_T = TypeVar("_T")
 
 
-function_registry = FunctionRegistry()
+@dataclass
+class MutableBox(Generic[_T]):
+    value: _T
 
 
-# TODO may rename to `load_object` since it can be used to load things like tool_specs
-def load_function(path, *, sync_required=False):
-    """
-    Load a function from registry or module.
-    :param path: The path to the function, e.g. "module.submodule.function".
-    :param sync_required: Reject coroutine functions, for callers that run the
-        loaded function synchronously on an event loop.
-    :return: The function object.
-    """
-    if not path:
-        return None
+def split_evenly(total: int, num_parts: int) -> list[slice]:
+    quotient, remainder = divmod(total, num_parts)
+    slices = []
+    start = 0
+    for i in range(num_parts):
+        stop = start + quotient + (1 if i < remainder else 0)
+        slices.append(slice(start, stop))
+        start = stop
+    return slices
 
-    fn = function_registry.get(path)
-    if fn is None:
-        module_path, _, attr = path.rpartition(".")
-        module = importlib.import_module(module_path)
-        fn = getattr(module, attr)
-    if sync_required:
-        if not callable(fn):
-            raise ValueError(f"load_function({path!r}) did not resolve to a callable")
-        if inspect.iscoroutinefunction(fn):
-            raise ValueError(f"load_function({path!r}) resolved to an async function; a synchronous one is required")
-    return fn
+
+def partition(xs: Iterable[_T], predicate: Callable[[_T], bool]) -> tuple[list[_T], list[_T]]:
+    falses: list[_T] = []
+    trues: list[_T] = []
+    for x in xs:
+        (trues if predicate(x) else falses).append(x)
+    return falses, trues
+
+
+def merge_asserting_consistency(a: dict[_K, _V], b: dict[_K, _V]) -> dict[_K, _V]:
+    conflicts = {key: (a[key], b[key]) for key in a.keys() & b.keys() if a[key] != b[key]}
+    assert not conflicts, f"cannot merge two dicts that disagree: {conflicts}"
+    return a | b
 
 
 async def call_agent_abort_hook(args) -> None:
-    """Invoke the agent plugin's optional abort hook, if it defines one.
+    """Invoke the optional abort hook of every agent function the run can call.
 
     When oversampling collects enough samples, the rollout aborts SGLang, but an
-    external agent loop (driven by ``--custom-agent-function-path``) keeps running
-    and keeps issuing fresh completion requests until it hits its own limit. The
-    agent integration knows how to tell its backend to stop, so we look for a
-    sibling ``abort`` callable in the same module as the configured agent function
-    and call it. Backends that don't expose one are left to drain as before.
+    external agent loop keeps running and keeps issuing fresh completion requests
+    until it hits its own limit. The agent integration knows how to tell its
+    backend to stop, so we look for a sibling ``abort`` callable in the same module
+    as each agent function -- ``--custom-agent-function-path`` and every
+    ``--rollout-data-yaml-config`` dataset's ``custom_agent_function_path`` -- and call it once per
+    distinct (module, config).
+    Backends that don't expose one are left to drain as before.
     """
-    agent_function_path = getattr(args, "custom_agent_function_path", None)
-    if not agent_function_path:
-        return
+    for hook_path, abort_hook, agent_function in _agent_function_hooks(args, "abort"):
+        try:
+            fn_args = compute_custom_function_config(args, agent_function)
+            await abort_hook(fn_args)
+        except Exception as e:
+            logger.warning(f"Agent abort hook {hook_path} failed: {e}")
 
-    module_path, _, _ = agent_function_path.rpartition(".")
-    if not module_path:
-        return
-    try:
-        abort_hook = load_function(f"{module_path}.abort")
-    except (AttributeError, ModuleNotFoundError):
-        return  # plugin doesn't expose an abort hook; nothing to tear down
 
-    try:
-        await abort_hook(args)
-    except Exception as e:
-        logger.warning(f"Agent abort hook {module_path}.abort failed: {e}")
+async def call_agent_preflight_hook(args) -> None:
+    """Invoke the optional ``preflight`` hook of every agent function the run can call; its error fails the run.
+
+    An agent function's error aborts only its own sample, so a setup that fails
+    every sample would otherwise leave the rollout dropping and refilling samples
+    without end. Called once, before the first rollout.
+    """
+    for _, preflight_hook, agent_function in _agent_function_hooks(args, "preflight"):
+        await preflight_hook(compute_custom_function_config(args, agent_function))
+
+
+def _agent_function_hooks(
+    args, hook_name: str
+) -> Iterator[tuple[str, Callable[..., Awaitable[None]], CustomFunctionConfig]]:
+    """The ``hook_name`` callable next to each agent function the run can call, once per distinct (module, config)."""
+    agent_functions = [args.custom_agent_function_path] if args.custom_agent_function_path else []
+    # resolved at startup and carried by both rollout and orchestrator configs, so a hook never rereads the YAML
+    agent_functions += args.rollout_dataset_agent_functions
+    # one call per (module, config): two agents in one module with different typed configs each get theirs
+    called: list[tuple[str, Any]] = []
+    for agent_function in agent_functions:
+        module_path, _, _ = agent_function.path.rpartition(".")
+        if not module_path or (module_path, agent_function.config) in called:
+            continue
+        called.append((module_path, agent_function.config))
+        hook_path = f"{module_path}.{hook_name}"
+        try:
+            hook = load_function(hook_path)
+        except (AttributeError, ModuleNotFoundError):
+            continue  # plugin doesn't expose this hook
+        yield hook_path, hook, agent_function
 
 
 class SingletonMeta(type):
@@ -101,10 +114,14 @@ class SingletonMeta(type):
 
     _instances = {}
 
-    def __call__(cls, *args, **kwargs):
+    def __call__(cls, *args: Any, **kwargs: Any) -> Any:
         if cls not in cls._instances:
             instance = super().__call__(*args, **kwargs)
             cls._instances[cls] = instance
+        elif (
+            validate_reuse := getattr(cls, "_validate_reuse", None)
+        ) is not None:  # config-access-exempt: optional singleton reuse protocol
+            validate_reuse(cls._instances[cls], *args, **kwargs)
         return cls._instances[cls]
 
     @staticmethod
@@ -119,12 +136,99 @@ def get_current_node_ip():
     return address
 
 
-def get_free_port(start_port=10000, consecutive=1):
-    # find the port where port, port + 1, port + 2, ... port + consecutive - 1 are all available
+MILES_NODE_EXTERNAL_IP_ENV = "MILES_NODE_EXTERNAL_IP"
+
+
+def get_node_external_ip() -> str | None:
+    """The address off-cluster peers reach this node on (a DNS name also works),
+    or None when its own address already routes from there.
+
+    The deployment supplies this per node -- a tailscale sidecar or an init
+    container writing the interface it joined. It is never forwarded through the
+    job's runtime env, which would give every node one shared value; one host for
+    every session server is ``--session-server-external-host`` instead.
+    """
+    return os.environ.get(MILES_NODE_EXTERNAL_IP_ENV) or None
+
+
+def get_free_port(start_port=10000, consecutive=1, *, port_range: tuple[int, int] | None = None):
+    # find the port where port, port + 1, port + 2, ... port + consecutive - 1 are all available,
+    # scanning upwards from start_port and wrapping around once the ports run out;
+    # port_range bounds the scan to an inclusive range that contains start_port
+    lowest_start, highest_port = port_range or (min(start_port, _MIN_DYNAMIC_PORT), _MAX_PORT)
+    highest_start = highest_port - consecutive + 1
+    assert (
+        lowest_start <= start_port <= highest_start
+    ), f"{start_port=} leaves no room for {consecutive=} ports in [{lowest_start}, {highest_port}]"
+
     port = start_port
-    while not all(is_port_available(port + i) for i in range(consecutive)):
-        port += 1
-    return port
+    for _ in range(highest_start - lowest_start + 1):
+        if all(is_port_available(port + i) for i in range(consecutive)):
+            return port
+        port = port + 1 if port < highest_start else lowest_start
+
+    raise RuntimeError(f"No {consecutive} consecutive free ports in [{lowest_start}, {highest_port}]")
+
+
+def get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
+    """Best-effort NVML UUIDs so the dashboard can reconcile GPU index
+    spaces across processes; None entries when NVML is unavailable."""
+    try:
+        import pynvml
+
+        pynvml.nvmlInit()
+        return [str(pynvml.nvmlDeviceGetUUID(pynvml.nvmlDeviceGetHandleByIndex(i))) for i in gpu_ids]
+    except Exception:
+        return [None] * len(gpu_ids)
+
+
+def _to_local_gpu_id(physical_gpu_id: int) -> int:
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")
+    if not cvd:
+        return physical_gpu_id  # no remapping
+    # CUDA_VISIBLE_DEVICES can be like "4,5,6,7"
+    visible = [int(x) for x in cvd.split(",") if x.strip() != ""]
+    # In a remapped process, valid torch device indices are 0..len(visible)-1
+    if physical_gpu_id in visible:
+        return visible.index(physical_gpu_id)
+    # If we're already getting local IDs, allow them
+    if 0 <= physical_gpu_id < len(visible):
+        return physical_gpu_id
+    raise RuntimeError(
+        f"GPU id {physical_gpu_id} is not valid under CUDA_VISIBLE_DEVICES={cvd}. "
+        f"Expected one of {visible} (physical) or 0..{len(visible)-1} (local)."
+    )
+
+
+class NodeProbeMixin:
+    @staticmethod
+    def _get_node_ip() -> str:
+        return os.getenv(MILES_HOST_IP_ENV) or get_current_node_ip()
+
+    @staticmethod
+    def _get_node_external_ip() -> str | None:
+        return get_node_external_ip()
+
+    @staticmethod
+    def _get_free_port_block(*, start_port: int | None, count: int) -> int:
+        # A cursor that is missing, lies outside this node's service port range, or leaves
+        # no room for the block before the range ends starts over at the range's start.
+        low, high = service_port_range()
+        if start_port is None or not low <= start_port <= high - count + 1:
+            start_port = low
+        return get_free_port(start_port=start_port, consecutive=count, port_range=(low, high))
+
+    @staticmethod
+    def _to_local_gpu_ids(*, gpu_ids: list[int]) -> list[int]:
+        return [_to_local_gpu_id(gpu_id) for gpu_id in gpu_ids]
+
+    @staticmethod
+    def _is_port_available(*, port: int) -> bool:
+        return is_port_available(port)
+
+    @staticmethod
+    def _get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
+        return get_gpu_uuids(gpu_ids)
 
 
 def should_run_periodic_action(
@@ -162,3 +266,28 @@ def filter_keys(d: dict[str, Any], interest_keys: Sequence[str]) -> dict[str, An
     except Exception:
         logger.error(f"filter_keys d.keys={list(d)} {interest_keys=}", exc_info=True)
         raise
+
+
+class SimpleTicker:
+    def __init__(self, fn: Callable[[], Awaitable[None]], *, interval_seconds: float):
+        self._fn = fn
+        self._interval_seconds = interval_seconds
+        self._task = asyncio.create_task(self._loop())
+
+    async def dispose(self) -> None:
+        await cancel_and_await_task(self._task)
+
+    async def _loop(self) -> None:
+        while True:
+            await asyncio.sleep(self._interval_seconds)
+            try:
+                await self._fn()
+            except Exception:
+                logger.exception(f"Ticking {self._fn} failed; retrying")
+
+
+async def cancel_and_await_task(task: asyncio.Task) -> None:
+    task.cancel()
+    await asyncio.wait([task])
+    if not task.cancelled():
+        task.result()

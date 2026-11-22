@@ -3,18 +3,18 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     model_org: str = "zai-org"
     model_name: str = "GLM-4.7-Flash"
     megatron_model_type: str = "glm4.7-flash"
-    num_gpus_per_node: int = 8
-    hardware: Literal["H200", "B200"] = "H200"
+    num_gpus_per_node: int | None = None
+    hardware: Literal["auto", "H200", "B200"] = "auto"
     rollout_num_gpus_per_engine: int | None = None  # None => derive from hardware
     sglang_attention_backend: str | None = None
     enable_eval: bool = True
@@ -23,8 +23,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
 
+    def __post_init__(self):
+        self.hardware = command_utils.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or command_utils.NUM_GPUS_OF_HARDWARE[self.hardware]
+
 
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     U.exec_command_cpu(
         f"hf download {args.model_org}/{args.model_name} " f"--local-dir {args.model_dir}/{args.model_name}"
@@ -43,6 +48,7 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     ref_load_path = f"{args.model_dir}/{args.model_name}_torch_dist"
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
 
@@ -143,6 +149,8 @@ def execute(args: ScriptArgs):
         sglang_args += "--sglang-flashinfer-mla-disable-ragged "
 
     misc_args = (
+        # train the model script's MTP layer, which serves as the EAGLE draft
+        "--enable-mtp-training "
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
         "--accumulate-allreduce-grads-in-fp32 "
@@ -152,7 +160,6 @@ def execute(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
-        "--use-fault-tolerance "
         # "--ci-test "
     )
 
@@ -161,7 +168,7 @@ def execute(args: ScriptArgs):
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
@@ -171,14 +178,13 @@ def execute(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         megatron_path=args.megatron_path,
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     prepare(args)
     execute(args)

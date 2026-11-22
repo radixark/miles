@@ -105,7 +105,7 @@ python examples/swe-agent-harbor-docker/run.py \
     --num-rollout 200 \
     --save-interval 20 \
     --agent-server-url http://<agent-server>:30000 \
-    --router-external-host <trainer-host-reachable-from-agent-server> \
+    --session-server-external-host <trainer-host-reachable-from-agent-server> \
     --miles-host-ip 0.0.0.0 \
     --save-traces-dir /path/to/traces
 ```
@@ -114,12 +114,16 @@ For a smoke test, set `--num-rollout 1`. Expect roughly 10 minutes per step at
 this shape; because synchronous rollout waits for the slowest trajectory in the
 batch, a step that draws an unusually slow task can take several times that.
 
-`--router-external-host` is the address Harbor sandboxes use to call the Miles
-session server and SGLang router. It must resolve and route from the agent-server
-machine. `--miles-host-ip 0.0.0.0` is useful when those services must accept
-connections forwarded from another host. Ensure ports 30000 and 31000 are
-reachable end to end; Tailscale is one option when the machines are on different
-networks.
+The launcher resumes from `--save-dir`: if that directory already holds a
+checkpoint, training continues from it instead of starting over from
+`--ref-load`. Relaunching the same command after a crash or preemption picks up
+where the run stopped. Use a fresh `--save-dir` for a new run, because reusing
+an old one silently continues that run. Pass `--load-dir` to resume from a
+different directory.
+
+`--session-server-external-host` is the address Harbor sandboxes use to call the Miles session server and SGLang router. It must resolve and route from the agent-server machine. `--miles-host-ip 0.0.0.0` is useful when those services must accept connections forwarded from another host. The launcher starts 32 session-server workers on ports 30000-30031 and the SGLang router on port 31000, so ensure that range and port are reachable end to end; Tailscale is one option when the machines are on different networks.
+
+`--session-server-external-host` publishes every session server at that one host and keeps them all on the head node, so it must reach the head; that is what a multi-node job needs when only the head is reachable from the sandboxes. When every trainer pod has its own reachable address, leave the flag unset and have the deployment set `MILES_NODE_EXTERNAL_IP` in each pod to that pod's own address -- a tailscale sidecar's `tailscale ip -4`, for instance; a DNS name also works. Each node then reports its own, and Miles hands every sandbox the address of the one instance holding its session. Nothing is needed at all when the pod addresses already route from the sandbox network, which is the case whenever the sandbox platform is allowed the trainer's subnet.
 
 ## 4. Verify progress
 

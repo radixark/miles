@@ -3,19 +3,20 @@ import sys
 from argparse import Namespace
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
-from packaging.version import Version
 
 if sys.version_info < (3, 11):
     pytest.skip("Verifiers requires Python 3.11+", allow_module_level=True)
 
+import examples.experimental.verifiers.verifiers_rollout as verifiers_rollout
 from examples.experimental.verifiers.verifiers_rollout import (
     MilesSGLangTransport,
     VerifiersRolloutFn,
-    _check_version,
     _config_path,
     _finish_reason,
+    _import_verifiers,
     _load_config_data,
     _make_eval_args,
     _raise_for_unsupported_trace_errors,
@@ -27,7 +28,12 @@ from examples.experimental.verifiers.verifiers_rollout import (
     trace_to_sample,
     trace_to_samples,
 )
+from tests.fast.fixtures.args_fixtures import sglang_router_args
+from tests.fast.train_parallel_config_utils import make_train_parallel_config
 
+from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
+from miles.rollout.base_types import BaseRolloutFn, RolloutFnConstructorInput
+from miles.utils.args.custom_view import ImmutableNamespace
 from miles.utils.types import Sample
 
 
@@ -36,7 +42,11 @@ def _args(**overrides) -> Namespace:
         "lora_adapter_path": None,
         "lora_rank": 0,
         "reward_key": None,
-        "rollout_max_context_len": 64,
+        "length_penalty_coeff": 0.0,
+        "length_penalty_min_tokens": 1,
+        "num_rollout": None,
+        "router": "sglang",
+        "max_seq_len": 64,
         "rollout_max_prompt_len": None,
         "rollout_max_response_len": 8,
         "rollout_skip_special_tokens": True,
@@ -44,9 +54,9 @@ def _args(**overrides) -> Namespace:
         "rollout_stop_token_ids": None,
         "sglang_model_routers": None,
         "sglang_router_ip": "127.0.0.1",
-        "sglang_router_policy": "round_robin",
+        **sglang_router_args("round_robin"),
         "sglang_router_port": 30000,
-        "sglang_tokenizer_path": None,
+        "sglang": SglangConfig(models=[], base_args={"tokenizer_path": None, "enable_deterministic_inference": False}),
     }
     values.update(overrides)
     return Namespace(**values)
@@ -143,9 +153,28 @@ def test_config_loader_rejects_non_toml_formats(tmp_path):
         _load_config_data(path)
 
 
-def test_verifiers_0_2_1_is_rejected_with_compatibility_reason():
+def test_verifiers_0_2_1_is_rejected_with_compatibility_reason(monkeypatch):
+    monkeypatch.setattr(
+        "examples.experimental.verifiers.verifiers_rollout._installed_version",
+        lambda package: {"verifiers": "0.2.1"}[package],
+    )
+
     with pytest.raises(RuntimeError, match="SGLang 0.5.15 pins OpenAI"):
-        _check_version("verifiers", "0.2.1", Version("0.2.0"), Version("0.2.1"))
+        _import_verifiers()
+
+
+def test_renderers_0_1_11_is_rejected_with_compatibility_reason(monkeypatch):
+    versions = {"verifiers": "0.2.0", "renderers": "0.1.11"}
+    monkeypatch.setattr(
+        "examples.experimental.verifiers.verifiers_rollout._installed_version",
+        versions.__getitem__,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"renderers>=0\.1\.8,<0\.1\.11.*removes the renderer pool APIs",
+    ):
+        _import_verifiers()
 
 
 def test_transport_does_not_treat_aborted_generation_as_complete():
@@ -170,7 +199,8 @@ def test_renderer_identity_is_inferred_from_standard_checkpoint_paths(checkpoint
     assert _renderer_identity(checkpoint) == expected
 
 
-def test_train_client_uses_local_tokenizer_with_inferred_renderer_identity(monkeypatch):
+def test_train_client_uses_local_tokenizer_with_inferred_renderer_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Local tokenizer files retain the checkpoint's registered renderer identity."""
     renderers = pytest.importorskip("renderers", minversion="0.1.8")
     checkpoint = "/cache/models--Qwen--Qwen3-4B-Instruct-2507/snapshots/revision"
     seen = {}
@@ -203,7 +233,7 @@ def test_train_client_uses_local_tokenizer_with_inferred_renderer_identity(monke
     monkeypatch.setattr("renderers.base.load_tokenizer", load_tokenizer)
     runtime = SimpleNamespace(TrainClient=BaseTrainClient)
 
-    args = _args(sglang_tokenizer_path="/models/custom-tokenizer")
+    args = _args(sglang=SglangConfig(models=[], base_args={"tokenizer_path": "/models/custom-tokenizer"}))
     client = _train_client(runtime, args, checkpoint, pool_size=3)
     pool = client._renderer_pool(checkpoint, chat_template_kwargs={"enable_thinking": False})
 
@@ -216,6 +246,33 @@ def test_train_client_uses_local_tokenizer_with_inferred_renderer_identity(monke
         "kwargs": {"enable_thinking": False},
         "renderer": "renderer",
     }
+
+
+def test_canonical_tokenizer_selects_tool_renderer_for_ambiguous_local_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Structured tokenizer identity disambiguates local Qwen checkpoints for tools."""
+    renderers = pytest.importorskip("renderers", minversion="0.1.8")
+    runtime = pytest.importorskip("verifiers.v1.clients.train")
+    checkpoint = "/root/models/Qwen3-0.6B"
+    loaded_sources: list[str] = []
+
+    def load_tokenizer(source: str) -> SimpleNamespace:
+        loaded_sources.append(source)
+        return SimpleNamespace(name_or_path=source, convert_tokens_to_ids=lambda token: 1, unk_token_id=0)
+
+    monkeypatch.setattr("renderers.base.load_tokenizer", load_tokenizer)
+    args = ImmutableNamespace.model_validate(
+        vars(_args(sglang=SglangConfig(models=[], base_args={"tokenizer_path": "Qwen/Qwen3-0.6B"})))
+    )
+    assert _renderer_identity(checkpoint) is None
+
+    client = _train_client(runtime, args, checkpoint, pool_size=1)
+    pool = client._renderer_pool(checkpoint)
+
+    assert isinstance(pool, renderers.RendererPool)
+    assert pool.supports_tools is True
+    assert loaded_sources == ["Qwen/Qwen3-0.6B"]
 
 
 @pytest.mark.asyncio
@@ -389,7 +446,9 @@ def test_convert_group_uses_standard_miles_group_shape():
         global_batch_size=1,
         use_dynamic_global_batch_size=False,
     )
-    flattened, _ = postprocess_rollout_data(args, [group], train_parallel_config={"dp_size": 1})
+    flattened, _ = postprocess_rollout_data(
+        args=args, data=[group], train_parallel_config=make_train_parallel_config(dp_size=1)
+    )
     assert [sample.routing_key for sample in flattened] == ["first", "second"]
 
 
@@ -450,60 +509,78 @@ def test_group_reward_train_count_is_ignored_for_eval_only_runs():
 
 
 @pytest.mark.asyncio
-async def test_verifiers_episode_owns_group_reward_computation():
+@pytest.mark.parametrize("deterministic", [False, True])
+async def test_verifiers_episode_owns_group_reward_computation(deterministic: bool) -> None:
+    """Episodes own rewards and receive distinct seeds only when deterministic."""
     pytest.importorskip("verifiers", minversion="0.2.0")
     pytest.importorskip("renderers", minversion="0.1.8")
     traces = [_trace(id="a", reward=0.0), _trace(id="b", reward=0.0)]
+    runtime = _import_verifiers()
+    ctx = runtime.ModelContext(client=object(), model="test-model", sampling=runtime.SamplingConfig(sampling_seed=19))
+    rollouts = [SimpleNamespace(ctx=ctx), SimpleNamespace(ctx=ctx)]
 
     class Episode:
-        rollouts = []
+        def __init__(self) -> None:
+            self.rollouts = rollouts
 
-        async def run(self, semaphore):
+        async def run(self, semaphore: asyncio.Semaphore) -> list[SimpleNamespace]:
             assert semaphore is not None
             traces[0].reward = -1.0
             traces[1].reward = 1.0
             return traces
 
     class Environment:
-        def episode(self, task, ctx, n):
+        def episode(self, task: str, ctx: Any, n: int) -> Episode:
             assert task == "task"
-            assert ctx == "ctx"
+            assert ctx.model == "test-model"
             assert n == 2
             return Episode()
 
     adapter = object.__new__(VerifiersRolloutFn)
-    adapter.args = _args(sglang_enable_deterministic_inference=False)
+    adapter.args = _args(sglang=SglangConfig(models=[], base_args={"enable_deterministic_inference": deterministic}))
     adapter.env = Environment()
-    adapter.ctx = "ctx"
+    adapter.ctx = ctx
+    adapter.model = "test-model"
 
-    result = await adapter._run_task_group("task", 2, asyncio.Semaphore(2), seed_base=0)
+    result = await adapter._run_task_group("task", 2, asyncio.Semaphore(2), seed_base=41)
 
     assert [trace.reward for trace in result] == [-1.0, 1.0]
+    assert [rollout.ctx.sampling.sampling_seed for rollout in rollouts] == ([41, 42] if deterministic else [19, 19])
+    assert ctx.sampling.sampling_seed == 19
+    assert all(rollout.ctx.client is ctx.client and rollout.ctx.model == ctx.model for rollout in rollouts)
 
 
-def test_sampling_config_preserves_miles_minimum_tokens():
+@pytest.mark.parametrize("min_tokens", [None, 3])
+def test_sampling_config_accepts_runtime_args_without_train_minimum_tokens(min_tokens: int | None) -> None:
+    """Training defaults omit minimum tokens while evaluation preserves its explicit limit."""
+
     class SamplingConfig:
         @staticmethod
-        def model_validate(data):
+        def model_validate(data: dict[str, Any]) -> dict[str, Any]:
             return data
 
-    config = VerifiersRolloutFn._sampling_config(
-        SamplingConfig,
-        _args(
+    args = ImmutableNamespace.model_validate(
+        dict(
             apply_chat_template_kwargs={},
-            rollout_min_new_tokens=3,
+            rollout_max_response_len=8,
             rollout_temperature=0.7,
             rollout_top_k=20,
             rollout_top_p=0.9,
-        ),
+        )
     )
+    if min_tokens is None:
+        config = VerifiersRolloutFn._sampling_config(SamplingConfig, args, min_tokens=None)
+    else:
+        config = VerifiersRolloutFn._sampling_config(SamplingConfig, args, min_tokens=min_tokens)
 
-    assert config["min_tokens"] == 3
+    expected = {"temperature": 0.7, "top_p": 0.9, "top_k": 20, "max_tokens": 8}
+    if min_tokens is not None:
+        expected["min_tokens"] = min_tokens
+    assert config == expected
 
 
 def test_eval_args_clear_training_prompt_cap_and_preserve_other_fallbacks():
     args = _args(
-        eval_max_context_len=128,
         eval_max_prompt_len=None,
         eval_max_response_len=None,
         eval_min_new_tokens=None,
@@ -512,14 +589,14 @@ def test_eval_args_clear_training_prompt_cap_and_preserve_other_fallbacks():
         eval_top_k=None,
         eval_top_p=None,
         reward_key="score",
-        rollout_max_context_len=64,
+        max_seq_len=64,
         rollout_max_prompt_len=32,
         rollout_max_response_len=8,
     )
 
-    eval_args = _make_eval_args(args)
+    eval_args = _make_eval_args(ImmutableNamespace.model_validate(vars(args)))
 
-    assert eval_args.rollout_max_context_len == 128
+    assert eval_args.max_seq_len == 64
     assert eval_args.rollout_max_prompt_len is None
     assert eval_args.rollout_max_response_len == 8
     assert eval_args.reward_key == "score"
@@ -705,3 +782,76 @@ async def test_eval_extracts_structured_miles_reward(monkeypatch):
     output = await adapter._call_eval(SimpleNamespace(rollout_id=0))
 
     assert output.data["test-env"]["rewards"] == [0.75]
+
+
+class TestRolloutFnContract:
+    def test_it_is_a_rollout_fn_the_loader_accepts(self):
+        """The loader rejects a rollout function that forgets the base, however complete it is."""
+        assert issubclass(VerifiersRolloutFn, BaseRolloutFn)
+
+    def test_the_constructor_input_reaches_the_base(self, monkeypatch):
+        """Skipping super().__init__ leaves constructor_input missing on every path that reads it."""
+
+        class _ImportVerifiersSentinel(Exception):
+            pass
+
+        def raise_sentinel():
+            raise _ImportVerifiersSentinel
+
+        monkeypatch.setattr(verifiers_rollout, "_import_verifiers", raise_sentinel)
+        data_source = object()
+        constructor_input = RolloutFnConstructorInput(args=_args(), data_source=data_source)
+        adapter = object.__new__(VerifiersRolloutFn)
+
+        with pytest.raises(_ImportVerifiersSentinel):
+            VerifiersRolloutFn.__init__(adapter, constructor_input)
+
+        assert adapter.constructor_input.data_source is data_source
+
+
+@pytest.mark.parametrize(
+    "models,expected",
+    [
+        ([("eval", "/eval/tokenizer"), ("default", "/generation/tokenizer")], "/generation/tokenizer"),
+        ([("primary", "/first/tokenizer"), ("eval", "/eval/tokenizer")], "/first/tokenizer"),
+        ([("eval", "/eval/tokenizer"), ("default", None)], "/model/fallback"),
+    ],
+)
+def test_train_client_selects_only_the_generation_models_tokenizer(
+    monkeypatch: pytest.MonkeyPatch, models: list[tuple[str, str | None]], expected: str
+) -> None:
+    """Generation uses its own tokenizer while a conflicting evaluation model remains isolated."""
+
+    class BaseTrainClient:
+        def __init__(self, transport: object, *, pool_size: int, renderer_model_name: str) -> None:
+            self.renderer_model_name = renderer_model_name
+
+    config = SglangConfig(
+        models=[
+            ModelConfig(
+                name=name,
+                model_path=None,
+                update_weights=name != "eval",
+                server_groups=[
+                    ServerGroupConfig(
+                        worker_type="regular",
+                        num_gpus_per_engine=1,
+                        pp_size=1,
+                        needs_offload=False,
+                        overrides={"tokenizer_path": tokenizer},
+                    )
+                ],
+            )
+            for name, tokenizer in models
+        ],
+        base_args={"tokenizer_path": None},
+    )
+    before = config.model_dump()
+    monkeypatch.setattr(verifiers_rollout, "_renderer_identity", lambda _: None)
+
+    client = _train_client(
+        SimpleNamespace(TrainClient=BaseTrainClient), _args(sglang=config), "/model/fallback", pool_size=1
+    )
+
+    assert client.renderer_model_name == expected
+    assert config.model_dump() == before

@@ -21,7 +21,6 @@ signatures they expect, and the defaults they replace — in the same spirit as
 | | `--custom-reward-post-process-path` | Advantage normalization |
 | **Filtering** | `--dynamic-sampling-filter-path` | Per-group keep / drop |
 | | `--buffer-filter-path` | Buffer dequeue selection |
-| | `--rollout-sample-filter-path` | Per-sample loss mask |
 | **Training** | `--custom-expand-samples-to-train-pairs-path` | Trajectory → train pairs |
 | | `--custom-convert-samples-to-train-data-path` | Full sample → train_data |
 | | `--custom-prepare-train-batch-path` | DiT batch preparation |
@@ -41,8 +40,9 @@ shortcut that auto-fills several of the train-side paths; see § Training.
 
 ### `--rollout-function-path`
 
-Replace the entire train rollout. Diffusion recipes use
-`miles.rollout.sglang_diffusion_rollout.generate_rollout` (not the LLM default).
+Replace the entire train rollout. Diffusion recipes pass
+`miles.rollout.sglang_diffusion_rollout.generate_rollout`; the flag's default
+(`miles.rollout.sglang_rollout.generate_rollout`, the LLM path) is not shipped in miles-diffusion.
 
 ```python
 def generate_rollout(
@@ -74,6 +74,8 @@ class CustomDataSource:
     def load(self, rollout_id=None) -> None: ...
 ```
 
+`RolloutManager` also reads `len(data_source.dataset)` when `--num-rollout` is unset.
+
 ### `--custom-generate-function-path`
 
 Replace the inner microgroup generator inside
@@ -90,28 +92,38 @@ async def custom_generate(
 
 ### `--diffusion-step-strategy-path`
 
-Select which denoising steps contribute SDE log-probs / train pairs. Stock
-implementations live in `miles/rollout/step_strategy_hub.py`.
+Select which denoising steps contribute SDE log-probs / train pairs, and which
+latents the engine ships back for the trainer. Stock implementations live in
+`miles/rollout/step_strategy_hub.py`.
 
 ```python
 def strategy(args, sample, num_steps, seed) -> tuple[list[int] | None, list[int] | None]:
-    # returns (sde_step_indices, return_step_indices); return must be None today
+    # returns (sde_step_indices, return_step_indices)
+    # sde None = no per-step filter: every step uses --diffusion-sde-type
+    # return None = the engine returns every step's latent
     ...
 ```
 
+`--rollout-return-full-trajectory` overrides `return_step_indices` back to all
+steps for debugging / A-B runs.
+
 | Stock | Behavior |
 |---|---|
-| `sde_window` | Random contiguous window (`--diffusion-num-sde-steps`, `--diffusion-sde-window-range`) |
-| `epoch_global_random_choice` | Per-epoch subset of `--diffusion-sde-candidate-steps` |
+| `sde_window` | Random contiguous window (`--diffusion-num-sde-steps`, `--diffusion-sde-window-range`); returns all latents its steps touch |
+| `epoch_global_random_choice` | Subset of `--diffusion-sde-candidate-steps`, shared by each block of `--rollout-batch-size` consecutive prompt groups (one rollout, unless a dynamic-sampling filter drops groups); returns all latents its steps touch |
+| `ode_and_return_last` | No step filter (every step uses `--diffusion-sde-type`, which the DiffusionNFT recipes set to `ode`); return only the final clean `x0` |
 
-Details: [SDE step backend](/diffusion/advanced/sde-backend).
+DiffusionNFT picks the timesteps it trains on with a separate hook,
+`--diffusion-nft-timestep-strategy-path`: `(args, num_steps, generator) -> list[int]`, built in
+`drop_random_steps` (default) and `drop_final_steps` in `miles/ray/data_conversion_hub/nft.py`.
 
 ***
 
 ## Reward
 
-Built-in scorers (`--rm-type pickscore` / `ocr`) are documented in
-[Rewards](/diffusion/user-guide/rewards). The hooks below replace that dispatch entirely.
+Built-in scorers (`--rm-type pickscore` / `hps` / `ocr` / `custom_api` / `openai_api`) are documented in
+[Rewards](/diffusion/user-guide/rewards). `--custom-rm-path` replaces that dispatch entirely; `--custom-reward-post-process-path`
+replaces the normalization that runs after scoring.
 
 ### `--custom-rm-path`
 
@@ -121,15 +133,27 @@ async def custom_rm(args, samples: list[Sample], **kwargs) -> list[float]:
 ```
 
 Wired only through `batched_async_rm` — implement per-sample routing inside your
-batched function if needed.
+batched function if needed. Once set, `--rm-type` and `metadata.rm_type` are ignored: the
+custom function is the whole dispatch.
 
 ```bash
 --custom-rm-path my_project.rewards.aesthetic_rm
 ```
 
-HTTP / remote scoring: implement a batched custom RM and read `args.rm_url` (or
-your own flags). Encode images from `sample.generated_output` (see
-`_sample_to_rgb_hwc_uint8_frames` in `miles/rollout/rm_hub/pickscore.py`):
+`--custom-rm-args` is an opaque string passed through as `args.custom_rm_args` for the
+custom RM to parse (requires `--custom-rm-path`).
+
+Shipped custom RMs:
+
+| Path | What |
+|---|---|
+| `miles.rollout.rm_hub.weighted_mixture_rm.weighted_mixture_rm` | Weighted sum of built-in rewards (`hps`, `pickscore`, `ocr`, `custom_api`, `openai_api`), weights from `--custom-rm-args "hps=0.7,pickscore=0.3"`; returns a dict per sample, train on it with `--reward-key weighted`. See [Rewards](/diffusion/user-guide/rewards) § Combining rewards. |
+
+HTTP / remote scoring: `--rm-type openai_api` / `custom_api` (configured by
+`--openai-api-rm-config` / `--custom-api-rm-config`) call an external service; otherwise
+implement a batched custom RM and read `args.rm_url` (or your own flags). Encode images
+from `sample.generated_output` (see `generated_output_to_rgb_hwc_uint8_frames` in
+`miles/utils/processing_utils.py`):
 
 ```python
 import aiohttp
@@ -184,26 +208,14 @@ def filter_function(args, samples: list[Sample], **kwargs):
 ### `--buffer-filter-path`
 
 Select samples when dequeuing from the rollout buffer. Default is `pop_first`
-in `miles/rollout/data_source.py`.
+in `miles/rollout/data_source.py`. The stock diffusion rollout never calls
+`add_samples`, so this only fires when a custom rollout refills the buffer.
 
 ```python
 def buffer_filter(
     args, rollout_id: int | None, buffer: list[list[Sample]], num_samples: int
 ) -> list[list[Sample]]:
     ...
-```
-
-### `--rollout-sample-filter-path`
-
-Per-sample, in-place. Set `sample.remove_sample = True` to exclude a sample from
-the loss (it still participates in advantage normalization).
-
-```python
-def filter_function(args, data: list[list[Sample]]) -> None:
-    for group in data:
-        for s in group:
-            if not_good(s):
-                s.remove_sample = True
 ```
 
 ***
@@ -216,8 +228,13 @@ def filter_function(args, data: list[list[Sample]]) -> None:
 |---|---|---|---|
 | `policy_loss` (default) | Flow-GRPO built-in | `prepare_flow_grpo_batch` | `flow_grpo_loss_formula` |
 | `nft` | `data_conversion_hub.nft.expand_samples_to_train_pairs` | `loss_hub.nft.prepare_nft_batch` | `nft_loss_formula` |
-| `sft_loss` | (via SFT convert) | required custom / SFT defaults | required custom / SFT defaults |
+| `sft_loss` | none; convert `sft_rollout.convert_samples_to_train_data` | `loss_hub.sft.prepare_sft_batch` | `sft_loss_formula` |
 | `custom_loss` | your expand (or convert) | your prepare | your formula |
+
+`sft_loss` auto-fills nothing: it requires the convert, rollout-log, prepare and loss
+paths, plus `--train-only` and a rollout function that runs no engines (e.g.
+`miles.rollout.sft_rollout.generate_rollout`; see `scripts/run_diffusion_sft_wan22.py`). `custom_loss` behaves like `policy_loss`:
+any hook left unset falls back to the Flow-GRPO built-in.
 
 DiT forward always stays in the FSDP actor; the loss hook only computes the
 objective.
@@ -251,19 +268,24 @@ def prepare(ctx, batch, *, pad_to_len=None) -> PreparedBatch:
 
 Builds DiT inputs from train pairs. Defaults:
 `miles.backends.fsdp_utils.loss_hub.flow_grpo.prepare_flow_grpo_batch` or the NFT
-equivalent under `loss_hub.nft`.
+equivalent under `loss_hub.nft`. `PreparedBatch.latents`, `timesteps` and
+`timesteps_for_model` are keyed by latent stream name: `"visual"`, plus e.g.
+`"audio"` for joint audio-video models.
 
 ### `--custom-loss-function-path`
 
 ```python
-def loss_formula(ctx, batch, prepared, *, new_pred, ref_pred, metrics, **kwargs):
+def loss_formula(ctx, batch, prepared, *, new_pred, old_pred, ref_pred, metrics, **kwargs):
     ...
 ```
+
+`new_pred`, `old_pred` and `ref_pred` are keyed by the same stream names as `prepared.latents`.
+`old_pred` is `None` unless `--loss-type nft`; `ref_pred` is `None` with `--ref-mode none`.
 
 ### `--sde-step-backend-path`
 
 **Class** implementing `SdeStepBackend`. Auto-selected from
-`--diffusion-sde-type` (`sde` / `ode` → `DiffusersSdeStepBackend`, `cps` →
+`--diffusion-sde-type` (`sde` / `ode` → `FlowSdeStepBackend`, `cps` →
 `CpsSdeStepBackend`) unless overridden. See
 [SDE step backend](/diffusion/advanced/sde-backend).
 
@@ -285,16 +307,18 @@ Return a truthy value to skip the default logging; falsy layers on top.
 
 ## Model family
 
-### `--hf-checkpoint` / `--diffusion-model-family` / `--train-pipeline-config-path`
+### `--hf-checkpoint` / `--diffusion-model-family` / `--diffusion-task` / `--train-pipeline-config-path`
 
 `--hf-checkpoint` names the diffusers pipeline for train + rollout. Family is
 resolved from the checkpoint name unless you pass `--diffusion-model-family`
-(e.g. `sd3`). For an unregistered family, pass `--train-pipeline-config-path`
-to a `TrainPipelineConfig` subclass instead.
+(e.g. `sd3`). The longest matching name pattern wins, so `Qwen/Qwen-Image-2.1`
+resolves to `qwen_image21`. `--diffusion-task` (e.g. `t2i`) must be one of the
+`tasks` that family's `TrainPipelineConfig` declares. For an unregistered family, pass
+`--train-pipeline-config-path` to a `TrainPipelineConfig` subclass instead.
 
 ### `--model-backend-path`
 
-**Class** for loading components / FSDP / scheduler. Default comes from the
+**Class** for loading components / FSDP. Default comes from the
 family config (usually a `DiffusersModelBackend`).
 
 ***
@@ -306,21 +330,17 @@ Custom reward + post-process on top of the stock SD3 Flow-GRPO recipe:
 ```bash
 python3 scripts/run_diffusion_grpo_sd3_ocr_sglang.py \
   --cuda-visible-devices 6,7 \
-  --extra-args "
-    --custom-rm-path my_project.rewards.api_rm
-    --rm-url http://localhost:8000/score
-    --custom-reward-post-process-path my_project.rewards.normalize
-  "
+  --extra-args "--custom-rm-path my_project.rewards.api_rm --rm-url http://localhost:8000/score --custom-reward-post-process-path my_project.rewards.normalize"
 ```
 
-(`--extra-args` forwarding depends on the launch script; you can also splice the
+(`--extra-args` is spliced verbatim into a `bash -c` command line, so keep it on one line; you can also splice the
 flags into a forked recipe.)
 
 ***
 
 ## Pairs well with
 
-- [Rewards](/diffusion/user-guide/rewards) — built-in PickScore / OCR and prompt JSONL.
+- [Rewards](/diffusion/user-guide/rewards) — built-in PickScore / HPS / OCR and prompt JSONL.
 - [SDE step backend](/diffusion/advanced/sde-backend) — step strategies and SDE kernels.
 - [LoRA weight sync](/diffusion/advanced/lora) — IPC merge path used by most recipes.
 - [SD3 model guide](/diffusion/models/sd3/sd3) — end-to-end recipe flags.

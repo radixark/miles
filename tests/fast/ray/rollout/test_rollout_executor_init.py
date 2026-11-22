@@ -1,0 +1,153 @@
+from unittest.mock import MagicMock
+
+import pytest
+from tests.fast.ray.rollout.conftest import FakeInferenceTopologyProvider, make_args
+
+from miles.ray.rollout import rollout_executor as executor_module
+from miles.ray.rollout.rollout_executor import RolloutExecutor
+from miles.rollout.session.types import SessionServerInstance
+from miles.utils.args.component_rollout import InferenceRuntimeImmutState, InferenceRuntimeMutState
+from miles.utils.init_once import InitOnce, InitState
+
+pytestmark = pytest.mark.asyncio
+
+
+def _inited_executor() -> RolloutExecutor:
+    guard = InitOnce("RolloutExecutor")
+    with guard.guarding():
+        pass
+    executor = RolloutExecutor.__new__(RolloutExecutor)
+    executor._init_once = guard
+    return executor
+
+
+class TestInitRunsExactlyOnce:
+    async def test_train_only_eval_resolves_addresses_in_the_executor_process(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The executor resolves session addresses on its own copy of train-only evaluation args."""
+        args = make_args(debug_train_only=True, eval_num_gpus=1, use_session_server=True)
+        executor = RolloutExecutor(
+            args=args,
+            router_providers=[],
+            session_server_provider=MagicMock(),
+            inference_controller_provider=FakeInferenceTopologyProvider(
+                InferenceRuntimeImmutState(engine_count=1, gpu_count=1)
+            ),
+        )
+
+        async def resolve_router(args, *, router_providers) -> dict:
+            return {}
+
+        async def resolve_session(args, *, provider) -> None:
+            args.session_server_instances = [SessionServerInstance(addr="eval-session:5000")]
+
+        class StopAfterAddressResolution(Exception):
+            pass
+
+        def stop_tracking(*args, **kwargs) -> None:
+            raise StopAfterAddressResolution
+
+        monkeypatch.setattr(executor_module, "resolve_router_addrs", resolve_router)
+        monkeypatch.setattr(executor_module, "wait_session_server_ready", resolve_session)
+        monkeypatch.setattr(executor_module, "init_tracking", stop_tracking)
+
+        with pytest.raises(StopAfterAddressResolution):
+            await executor.init()
+
+        assert args.session_server_instances == [SessionServerInstance(addr="eval-session:5000")]
+        assert args.inference_runtime_mut_state == InferenceRuntimeMutState(engine_count=1, gpu_count=1)
+
+    async def test_a_constructed_executor_reports_itself_uninitialized(self):
+        """The constructor the run really uses is what has to leave the guard clear."""
+        executor = RolloutExecutor(
+            args=make_args(debug_train_only=True),
+            router_providers=[],
+            session_server_provider=None,
+            inference_controller_provider=MagicMock(),
+        )
+
+        assert await executor.get_init_state() == InitState.NOT_INITED.value
+
+    async def test_an_executor_that_ran_init_reports_itself_initialized(self):
+        """The wait at the start of the rollout components only ends once this answer flips back."""
+        assert await _inited_executor().get_init_state() == InitState.INITED.value
+
+    async def test_a_second_init_is_refused(self):
+        """An executor process the previous script initialized is about to be replaced, not re-initialized."""
+        with pytest.raises(AssertionError, match="stale worker"):
+            await _inited_executor().init()
+
+
+class TestAgentSetupCheck:
+    async def test_the_check_runs_the_agent_preflight_on_the_executor_args(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A check that skipped the hook would let a setup no sample can run on start the run."""
+        args = make_args()
+        executor = RolloutExecutor(
+            args=args, router_providers=[], session_server_provider=None, inference_controller_provider=MagicMock()
+        )
+        preflighted: list[object] = []
+
+        async def preflight(args) -> None:
+            preflighted.append(args)
+
+        monkeypatch.setattr(executor_module, "call_agent_preflight_hook", preflight)
+
+        await executor.check_agent_setup()
+        assert preflighted == [args]
+
+    async def test_a_replay_of_saved_rollouts_skips_the_agent_preflight(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A replay calls no agent function, so it must not need what the agent needs."""
+        executor = RolloutExecutor(
+            args=make_args(load_debug_rollout_data="/saved/{rollout_id}.pt"),
+            router_providers=[],
+            session_server_provider=None,
+            inference_controller_provider=MagicMock(),
+        )
+        preflighted: list[object] = []
+
+        async def preflight(args) -> None:
+            preflighted.append(args)
+
+        monkeypatch.setattr(executor_module, "call_agent_preflight_hook", preflight)
+
+        await executor.check_agent_setup()
+        assert preflighted == []
+
+
+def _fresh_executor() -> RolloutExecutor:
+    return RolloutExecutor(
+        args=make_args(),
+        router_providers=[],
+        session_server_provider=None,
+        inference_controller_provider=FakeInferenceTopologyProvider(
+            InferenceRuntimeImmutState(engine_count=1, gpu_count=1)
+        ),
+    )
+
+
+async def test_disposing_an_executor_that_never_initialized_is_a_no_op() -> None:
+    """The driver may dispose it after a startup failure elsewhere, before its init created anything to dispose."""
+    executor = _fresh_executor()
+
+    await executor.dispose()
+
+    assert executor._init_once.state is InitState.NOT_INITED
+
+
+async def test_disposing_an_executor_whose_init_failed_still_sweeps_the_output_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure after init connected the output store must not leak what the run wrote to it."""
+    executor = _fresh_executor()
+    executor._delete_store_refs = MagicMock()
+    swept = []
+    monkeypatch.setattr(executor, "_sweep_output_store", lambda: swept.append(True))
+    with pytest.raises(RuntimeError), executor._init_once.guarding():
+        raise RuntimeError("data source failed to load")
+
+    await executor.dispose()
+
+    assert swept == [True]

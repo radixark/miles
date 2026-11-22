@@ -47,7 +47,9 @@ class EvalEnvDatasetConfig:
         """Return a JSON-serializable payload for this dataset configuration."""
         payload: dict[str, Any] = {}
         for field_info in fields(self):
-            value = getattr(self, field_info.name)
+            value = getattr(
+                self, field_info.name
+            )  # config-access-exempt: dataclass field names drive delegate payload serialization
             if value is None:
                 continue
             payload[field_info.name] = value
@@ -130,7 +132,9 @@ class EvalDelegateClient:
 
     @classmethod
     def maybe_create(cls, args, env_configs: Sequence[EvalEnvConfig] | None = None) -> Optional["EvalDelegateClient"]:
-        env_configs = list(env_configs) if env_configs is not None else getattr(args, "eval_delegate_config", None)
+        env_configs = (
+            list(env_configs) if env_configs is not None else getattr(args, "eval_delegate_config", None)
+        )  # config-access-exempt: standalone delegate callers may provide pre-resolved configs outside the Miles schema
         if not env_configs:
             return None
 

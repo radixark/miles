@@ -10,6 +10,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 
 import miles.utils.chat_template_utils as chat_template_utils
 from miles.utils.chat_template_utils import message_matcher_hub, template
@@ -21,6 +22,8 @@ from miles.utils.chat_template_utils.message_matcher_hub import (
     strict_message_matches,
 )
 from miles.utils.chat_template_utils.message_matcher_hub.funcs import _validated
+
+register_cpu_ci(est_time=50, suite="stage-b-cpu", labels=["rollout"])
 
 _MISSING = object()
 
@@ -484,18 +487,19 @@ def test_compatibility_exports_are_direct_aliases() -> None:
     assert not hasattr(chat_template_utils, "resolve_session_message_matcher")
 
 
-def test_hub_import_keeps_misc_lazy_until_a_custom_path_is_resolved() -> None:
+def test_hub_import_keeps_the_function_registry_lazy_until_a_custom_path_is_resolved() -> None:
     code = """
 import importlib
 import sys
 
-assert "miles.utils.misc" not in sys.modules
+assert "miles.utils.function_registry" not in sys.modules
 hub = importlib.import_module("miles.utils.chat_template_utils.message_matcher_hub")
-assert "miles.utils.misc" not in sys.modules
+assert "miles.utils.function_registry" not in sys.modules
 assert hub.resolve_session_message_matcher("strict").__wrapped__ is hub.strict_message_matches
-assert "miles.utils.misc" not in sys.modules
+assert "miles.utils.function_registry" not in sys.modules
 hub.resolve_session_message_matcher("operator.eq")
-assert "miles.utils.misc" in sys.modules
+assert "miles.utils.function_registry" in sys.modules
+assert "miles.utils.misc" not in sys.modules
 """
     subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True, timeout=120)
 

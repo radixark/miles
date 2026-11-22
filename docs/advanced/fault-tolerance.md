@@ -2,6 +2,8 @@
 title: Fault Tolerance
 description: Rollout-side health checks and engine recovery, gated by --use-fault-tolerance.
 ---
+> **Outdated.** This page describes the pre-refactor fault-tolerance stack; the new fault-tolerance machinery is still being merged and will be documented once it lands.
+
 The `--use-fault-tolerance` flag enables Miles's rollout-side
 fault-tolerance machinery. It gates two code paths:
 
@@ -19,6 +21,9 @@ fault-tolerance machinery. It gates two code paths:
 The flag is `action="store_true"`, default `False`
 (`miles/utils/arguments.py`). The rollout paths below additionally require
 `rollout` in `--ft-components`, which is what that flag selects when omitted.
+
+Rollout fault tolerance requires a partial-target weight update:
+`--update-weight-transfer-mode p2p` without `--colocate`.
 
 ## Health monitor
 
@@ -49,15 +54,15 @@ Each loop iteration does:
 ## Engine recovery
 
 When `--use-fault-tolerance` is on, `MegatronActor.update_weights` calls
-`rollout_manager.recover_updatable_engines` on rank 0 before each weight
+`inference_controller.recover_updatable_engines` before each weight
 update (`miles/backends/megatron_utils/actor.py`).
 
-`recover_updatable_engines` (`miles/ray/rollout/rollout_manager.py`):
+`recover_updatable_engines` (`miles/ray/rollout/inference_controller.py`):
 
 1. Pauses health monitoring.
 2. Calls `srv.recover()` on the updatable server.
 
-`srv.recover()` (`miles/ray/rollout/rollout_server.py`, which fans out to `ServerGroup.recover` in `miles/ray/rollout/server_group.py`):
+`srv.recover()` (`miles/ray/rollout/rollout_server.py`, which fans out to `ServerCell.init` in `miles/ray/rollout/server_cell.py`):
 
 1. Finds engine slots set to `None` (killed by the health monitor).
 2. Calls `start_engines` for each affected group.
@@ -68,13 +73,13 @@ the new engines and the next weight transfer proceeds normally.
 
 ## P2P weight transfer timeouts
 
-When `--update-weight-transfer-mode p2p` is on, every P2P transfer is
-bounded by `--p2p-transfer-timeout` (default `30.0`s, defined in
-`miles/utils/arguments.py`; consumed at
-`miles/backends/megatron_utils/update_weight/update_weight_from_distributed/p2p.py`).
-On timeout the failed transfer is logged (`[P2P] Transfer future failed: ...`)
-in `p2p_transfer_utils.py`. There is no automatic retry or automatic
-broadcast-mode fallback in the source today.
+When `--update-weight-transfer-mode p2p` is on, each write is bounded by
+Mooncake's own timeout (`MC_TRANSFER_TIMEOUT`, default 30 s, plus 1 ns per byte
+written). At the end of the update the sender waits up to `--p2p-transfer-timeout`
+(default `30.0`s) for writes still in flight; a write that failed or is still
+running fails the update, and the error names each such rollout engine rank and
+its session (`miles/backends/training_utils/weight_update/protocols/p2p.py`).
+There is no automatic retry or broadcast-mode fallback.
 
 ## Dumper-mode interaction
 

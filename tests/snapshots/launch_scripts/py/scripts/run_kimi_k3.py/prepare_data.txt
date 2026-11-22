@@ -1,0 +1,4 @@
+### 0
+hf download
+  --repo-type dataset zhuzilin/gsm8k
+  --local-dir /root/datasets/gsm8k

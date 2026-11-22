@@ -9,17 +9,17 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "debug_minimal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     model_name: str = "Qwen3.6-35B-A3B"
     megatron_model_type: str = "qwen3.6-35B-A3B"
-    num_gpus_per_node: int = 8
-    hardware: Literal["H200"] = "H200"
+    num_gpus_per_node: int | None = None
+    hardware: Literal["auto", "H200"] = "auto"
     enable_eval: bool = False
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -46,8 +46,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
     recompute: bool = True
     skip_prepare: bool = False
 
+    def __post_init__(self):
+        self.hardware = command_utils.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or command_utils.NUM_GPUS_OF_HARDWARE[self.hardware]
+
 
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     # model path is a symlink to /cluster_public; skip download if already present
     U.exec_command_cpu(
@@ -75,6 +80,7 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     ref_load_path = f"{args.model_dir}/{args.model_name}_torch_dist"
 
     # Smoke runs: no checkpoint save (Megatron's final save is forced on the
@@ -154,14 +160,14 @@ def execute(args: ScriptArgs):
         f"--rollout-num-gpus-per-engine {args.num_gpus_per_node} "
         "--sglang-mem-fraction-static 0.7 "
         f"--sglang-ep-size {sglang_ep} "
-        "--sglang-cuda-graph-bs 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128 "
+        "--sglang-cuda-graph-bs-decode 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128 "
         # mtp speculative decoding
         "--sglang-speculative-algorithm EAGLE "
         "--sglang-speculative-num-steps 2 "
         "--sglang-speculative-eagle-topk 1 "
         "--sglang-speculative-num-draft-tokens 3 "
         "--sglang-max-running-requests 256 "
-        "--sglang-mamba-scheduler-strategy extra_buffer "
+        "--sglang-mamba-radix-cache-strategy extra_buffer "
     )
 
     mtp_args = "--enable-mtp-training " "--mtp-num-layers 1 " "--mtp-loss-scaling-factor 0.2 "
@@ -194,7 +200,6 @@ def execute(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={
@@ -204,7 +209,7 @@ def execute(args: ScriptArgs):
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     if not args.skip_prepare:
         prepare(args)

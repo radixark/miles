@@ -46,6 +46,7 @@ Starting from a working run, the rest of this page covers what you can change:
 | To change | See |
 |---|---|
 | How much generation stays in flight | [Arguments: Scheduling options](#arguments-scheduling-options) |
+| Whether the engines and the trainer share GPUs | [Colocate](#colocate) |
 | How deep the buffer is, how stale a group may be, which groups reach training, or the buffer implementation itself | [Arguments: Buffer options](#arguments-buffer-options) |
 | Where eval runs and where it gets its weights | [Evaluation](#evaluation) |
 | Which numbers tell you where the bottleneck is, or where the metrics are logged | [Metrics](#metrics) |
@@ -108,6 +109,29 @@ Three flags control how much generation stays in flight:
 | `--async-max-concurrent-samples` | In-flight cap in trajectories rather than groups, floored to `value // n_samples_per_prompt` groups. Use it to decouple generation concurrency from batch size |
 | `--rollout-submission-granularity` | Sets when a finished unit frees a submission slot. Under `--fully-async` the default is `sample`, which frees each slot as its own sample completes; `group` holds the slot until the whole group returns |
 
+## Colocate
+
+`--fully-async --colocate` puts the engines and the trainer on the same GPUs, down to a
+single one. Generation still runs continuously between training steps, but the two now
+take turns on the device instead of holding separate GPUs. Generation stops for the whole
+train window, so no samples are produced there. That is the same gap as the pause window
+in the disaggregated mode, and `--max-weight-staleness` and the weight-version
+bookkeeping are unchanged.
+
+### Launch
+
+```diff
+  python3 train_async.py ...
+    --fully-async
++   --colocate
++   --num-gpus-per-node 1
+-   --rollout-num-gpus 4
+```
+
+[`examples/retool_v2`](https://github.com/radixark/miles/blob/main/examples/retool_v2)
+runs a multi-turn tool-call recipe this way on one GPU:
+`python examples/retool_v2/run_retool_multi_turn.py --fully-async --num-gpus-per-node 1`.
+
 ## Data path
 
 ### The data buffer
@@ -119,15 +143,18 @@ The **data buffer** is the store of finished groups between the two loops, and e
 group-level decision lives in it. The producer puts each group in as it completes, the
 trainer takes groups back out one at a time, and everything in between — what to keep,
 what to discard, what to send back for regeneration — is the buffer's call. It is one
-replaceable component with three methods:
+replaceable component with the following interface:
 
 | Method | Called by | Purpose |
 |---|---|---|
 | `put()` | The rollout worker, once per finished group | Store the group, or reject it |
-| `get()` | The trainer, once per group it needs | Return the next group to train on, waiting if none is available |
-| `get_metrics()` | The trainer, once per step | Report what the buffer did since the previous step |
+| `get(num_groups=...)` | The trainer, once per training batch | Return that many groups at once, waiting until the buffer holds them |
+| `get_metrics(trainer_model_id)` | The trainer, once per step | Report what the buffer did since the previous step. The trainer model id is always passed, and is `None` in a run of one policy |
+| `state_dict()` | Checkpoint save | Return every accepted entry needed to resume without loss or duplication |
+| `load_state_dict(state)` | Checkpoint load | Replace the buffer state with a previously returned state |
+| `admits(in_flight)` | The rollout worker, before each submission | Whether one more group may start generating. The base class always admits; `--async-submit-within-staleness` requires a buffer that overrides it, as `DefaultDataBuffer` does |
 
-Those three methods are the whole interface: the worker and the trainer see nothing
+These methods are the whole interface: the worker and the trainer see nothing
 else, and everything inside the box below is the built-in `DefaultDataBuffer`.
 
 ```mermaid
@@ -156,6 +183,14 @@ both are decided on `put()`. Staleness depends on how long the group then sits i
 buffer, so it is decided on `get()`. Once the trainer has a full batch it sorts the
 groups by index and applies `--rollout-sample-filter-path` to the assembled batch.
 
+If a sample cancels itself (for example, a sandbox client raises `CancelledError`),
+its group is marked aborted after the sibling samples settle. The default buffer
+discards the entire group from training, counts it in
+`rollout/fully_async/aborted_groups_filtered`, and applies
+`--async-unused-samples-handler` to the original prompts. Other groups keep running.
+Cancelling the producer itself still propagates, and unexpected non-cancellation
+exceptions still fail the worker rather than being silently discarded.
+
 The buffer decouples the two loops. As long as it holds finished groups, the trainer
 never waits for generation. If it sits empty, rollout is still the bottleneck and async
 cannot hide it.
@@ -168,16 +203,37 @@ Buffer capacity bounds how far generation can run ahead of training:
 |---|---|
 | `--async-data-buffer-capacity-factor` | Buffer holds `floor(factor * rollout_batch_size)` groups, `2.0` by default. When it is full the producer blocks until training consumes |
 
+Selection decides which of the buffered groups a training step takes:
+
+| Flag | Effect |
+|---|---|
+| `--async-data-buffer-selection` | `fifo` (default) takes the earliest finished groups; `random` takes a uniformly random subset of the buffered groups, seeded by `--rollout-seed`. Either way the groups taken, and those left, keep their completion order |
+
 Staleness control decides which of those groups training is allowed to see:
 
 | Flag | Effect |
 |---|---|
 | `--max-weight-staleness` | Maximum gap between a group's oldest weight version and the current engine version. Unset by default, which disables the filter |
 | `--async-unused-samples-handler` | What happens to a group training does not use, either aborted or too stale. The default `drop` discards it; `retry` recycles its prompts into the data source for regeneration. Dynamic-filter rejects are always dropped |
+| `--async-submit-within-staleness` | Also applies `--max-weight-staleness N` when the worker submits a group, instead of only when the trainer takes it. Off by default |
+
+The filter rejects a group only after all of it was generated. With
+`--async-submit-within-staleness`, the default buffer admits a new group only while the buffered
+and in-flight groups number fewer than `N * rollout_batch_size`, plus one `rollout_batch_size`
+while a training step waits for its batch (the bound AReaL uses). With `fifo` selection, which
+hands out groups in completion order:
+
+- A group is trained at most `N` weight versions after it entered the buffer, so the
+  filter only rejects groups whose generation spanned a weight update.
+- With `N = 0` nothing generates during a training step: rollout is synchronous and no
+  group is stale.
+
+The flag counts staleness in training steps, so it requires `--update-weights-interval 1`
+and one optimizer step per rollout.
 
 When those knobs are not enough, `--custom-async-data-buffer-path` replaces the buffer
 itself. This is a larger step than setting any flag above: your `DataBuffer` subclass
-takes over all three methods and therefore every group-level decision, and the flags in
+takes over the full interface and therefore every group-level decision, and the flags in
 this section apply only if your class reads them. The one decision that stays outside is
 `--rollout-sample-filter-path`, which runs on the assembled batch rather than on
 individual groups.
@@ -271,6 +327,11 @@ The fleet and an external backend both evaluate a checkpoint, so both need
 | A fresh export per eval point | `--eval-hf-dir`, pointed at tmpfs | `eval/export_time_seconds` per point, plus staging space |
 | The periodic HF checkpoints | `--eval-hf-dir` unset and `--save-hf` set | None, but `eval_interval` must be a multiple of `save_interval` |
 
+When snapshot eval reuses `--save-hf`, a fixed path such as `/checkpoints/hf`
+automatically becomes `/checkpoints/hf/step_{rollout_id}`. Existing rollout ID
+format fields, including `{rollout_id:06d}`, keep their original layout. Save paths
+are unchanged when eval uses `--eval-hf-dir` or shared engines, or eval is disabled.
+
 On a real run you are persisting checkpoints anyway, so reuse costs nothing. A test run
 that saves no checkpoints needs the export, and a tmpfs staging directory keeps it off
 disk.
@@ -300,13 +361,33 @@ rollout/fully_async/queue_size
 rollout/fully_async/aborted_groups_filtered
 rollout/fully_async/stale_groups_filtered
 rollout/fully_async/avg_staleness, rollout/fully_async/max_staleness
+rollout/fully_async/avg_post_generation_staleness, rollout/fully_async/max_post_generation_staleness
+rollout/fully_async/avg_generation_version_span, rollout/fully_async/max_generation_version_span
+rollout/fully_async/token_weighted_staleness
+rollout/fully_async/weight_version_sample_coverage
 rollout/fully_async/buffer_avg_staleness, rollout/fully_async/buffer_max_staleness
 rollout/dynamic_filter/drop_<reason>
 ```
 
-The `avg_staleness` and `max_staleness` pair covers the groups training actually
-consumed, while the `buffer_` pair covers the groups still sitting in the buffer when
-the step drained it.
+Staleness is measured in published rollout weight versions: with
+`--update-weights-interval 1`, one version normally corresponds to one optimizer step;
+otherwise it does not. The metrics separate three parts of policy provenance:
+
+- `avg_staleness` and `max_staleness` are the gap from the current version to the
+  oldest version in each selected group. `stale_groups_filtered` counts groups that
+  exceeded `--max-weight-staleness`; rejected groups do not enter these averages.
+- `post_generation_staleness` is the gap from the current version to the newest version
+  in each selected group. `generation_version_span` is the newest minus oldest version
+  within the group. Together they distinguish aging after generation from updates that
+  landed while a trajectory was being generated.
+- `token_weighted_staleness` averages `current_version - span.version`, weighting each
+  numeric version span by its number of generated tokens. It therefore describes the
+  typical version gap of stamped generation tokens rather than the oldest token only.
+
+`weight_version_sample_coverage` is the fraction of selected samples with at least one
+numeric version span. Missing provenance is excluded from lag averages, not treated as
+zero. The `buffer_` pair covers groups still sitting in the buffer when the step drained
+it.
 
 A `queue_size` pinned at zero means rollout is the bottleneck, so scale rollout capacity
 or lower per-sample generation cost. A `queue_size` pinned at capacity means training is

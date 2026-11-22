@@ -1,7 +1,10 @@
 import abc
+import functools
 import logging
 import os
 import random
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Literal
 
@@ -10,25 +13,81 @@ import torch
 import torch.distributed as dist
 
 import miles.utils.eval_config
-from miles.ray.ray_actor import RayActor
-from miles.utils import object_store
+from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
+from miles.backends.training_utils.data.token_space_media_process import (
+    RolloutEngineProcessorArgs,
+    TrainerProcessor,
+    build_trainer_processor,
+)
+from miles.backends.training_utils.types import TrainStepOutput
+from miles.platforms import current_platform, tpu_shared_slice
+from miles.ray.rollout.inference_controller import UpdatableEngines
+from miles.utils import object_store, observers
+from miles.utils.args.runtime import TrainerConfig
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
-from miles.utils.distributed_utils import init_gloo_group
-from miles.utils.env_report import collect_and_print_node_env_report
+from miles.utils.audit_utils.witness.allocator import WitnessInfo
+from miles.utils.distributed_utils import init_gloo_group, one_rank_at_a_time
+from miles.utils.dp_schedule import TrainParallelConfig
+from miles.utils.flops_utils import ModelFlops, model_flops_from_hf_config
 from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
-from miles.utils.logging_utils import configure_logger
+from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.hf_utils.config import load_hf_config
+from miles.utils.init_once import InitOnce, init_once
+from miles.utils.logging_utils import configure_logger, rebind_env_reporting
 from miles.utils.memory_utils import clear_memory, print_memory
+from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port
+from miles.utils.object_store import StoreObjectRef
+from miles.utils.output_store.config import trainer_output_store
+from miles.utils.port_range import service_port_range
+from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
-from miles.utils.test_utils.fault_injector import inject_fault as _inject_fault
+from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, fault_hook_controller
+from miles.utils.test_utils.fault_injector.models import FaultHookRecord
+from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR
+from miles.utils.workers.rpc.common.metadata import rpc
+from miles.utils.workers.rpc.common.wire_types import Pickled
+from miles.utils.workers.serving.utils import override_env
+from miles.utils.workers.serving.worker_identity import read_worker_in_pod_index
 
 if TYPE_CHECKING:
-    from miles.ray.rollout.rollout_manager import EnginesAndLock
-
+    from radix_transfer_plugins import OutputStore
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class WeightUpdateOutput:
+    weight_version: int | None
+    failed_cell_ids: tuple[str, ...]
+    debug_trainer_load_state_timestamp: float | None = None
+    debug_weight_update_id: str | None = None
+
+    @classmethod
+    def merge(cls, outputs: list["WeightUpdateOutput"]) -> "WeightUpdateOutput":
+        if not outputs:
+            return cls(weight_version=None, failed_cell_ids=())
+        weight_versions = {output.weight_version for output in outputs if output.weight_version is not None}
+        assert len(weight_versions) <= 1, f"trainer cells disagree on the weight version: {weight_versions}"
+        failed_cell_ids = [cell_id for output in outputs for cell_id in output.failed_cell_ids]
+        assert len(failed_cell_ids) == len(
+            set(failed_cell_ids)
+        ), f"a cell failed under more than one trainer cell: {failed_cell_ids}"
+        [weight_version] = weight_versions or {None}
+        return cls(weight_version=weight_version, failed_cell_ids=tuple(failed_cell_ids))
+
+
+def _held_gpu_ids() -> list[int]:
+    # a train rank in a Kubernetes pod runs outside any Ray worker, on the pod GPU of its index
+    if CELL_INDEX_ENV_VAR in os.environ:
+        return [read_worker_in_pod_index(os.environ)]
+    return ray.get_gpu_ids()
+
+
 def get_local_gpu_id():
+    if CELL_INDEX_ENV_VAR in os.environ:
+        return read_worker_in_pod_index(os.environ)
+
     cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")
     if not cvd:
         return ray.get_gpu_ids()[0]
@@ -36,87 +95,187 @@ def get_local_gpu_id():
         return cvd.split(",").index(str(ray.get_gpu_ids()[0]))
 
 
-class TrainRayActor(RayActor):
+def _get_nvml_pci_bus_id(device: int) -> str:
+    props = torch.cuda.get_device_properties(device)
+    # NVML's canonical nvmlPciInfo_t.busId form: 8-hex-digit domain, uppercase, function 0
+    return f"{props.pci_domain_id:08X}:{props.pci_bus_id:02X}:{props.pci_device_id:02X}.0"
+
+
+class TrainRayActor(NodeProbeMixin):
+    # The trainer's token-space processor, built once in load_hf_assets when --multimodal-token-space-processing is on.
+    token_space_processor: TrainerProcessor | None = None
+    # This worker's client of the SGLang output store; set in __init__ with --use-output-store.
+    output_store: "OutputStore | None" = None
+
     def __init__(
         self,
+        *,
         args,
         world_size: int,
         rank: int,
-        master_addr,
-        master_port,
-        indep_dp_store_addr: str,
         role: Literal["actor", "critic"],
         cell_index: int,
     ):
-        configure_logger(
-            args, source=TrainProcessIdentity(component=role, cell_index=cell_index, rank_within_cell=rank)
-        )
-        self.args = args
+        self._init_once = InitOnce(type(self).__name__)
 
+        self.args = args
         self._heartbeat = SimpleHeartbeat()
         self._world_size = world_size
         self._rank = rank
-        self._indep_dp_store_addr = indep_dp_store_addr
-        if master_addr:
-            self.master_addr, self.master_port = master_addr, master_port
-        else:
-            self.master_addr, self.master_port = self._get_current_node_ip_and_free_port(
-                start_port=random.randint(20000, 21000)
-            )
+        if SNAPSHOT_TESTING_ENABLED:
+            self._config_snapshot_train_recorded = False
 
-        os.environ["MASTER_ADDR"] = self.master_addr
-        os.environ["MASTER_PORT"] = str(self.master_port)
         os.environ["WORLD_SIZE"] = str(self._world_size)
         os.environ["RANK"] = str(self._rank)
         # TODO: currently this doesn't work as ray has already set torch.cuda.device_count().
         # os.environ.pop("CUDA_VISIBLE_DEVICES", None)
         # os.environ["LOCAL_RANK"] = str(ray.get_gpu_ids()[0])
         os.environ["LOCAL_RANK"] = str(get_local_gpu_id())
+        if args.update_weight_transfer_mode == "ici":
+            # at construction, not in init(): the engine sharing the slice cannot finish starting (and be
+            # discovered) until the trainer joins it, and init() runs after discovery
+            tpu_shared_slice.join(tpu_shared_slice.spec(), job_rank=self._rank, job_size=self._world_size)
+
+        configure_logger(
+            args,
+            source=TrainProcessIdentity(
+                component=role,
+                model_id=args.trainer_model_id,
+                cell_index=cell_index,
+                rank_within_cell=rank,
+            ),
+        )
 
         object_store.init_instance(args)
+        self.output_store = trainer_output_store(args)
+        observers.start_process("train", rank=rank, gpus=_held_gpu_ids)
+
+    @functools.cached_property
+    def _model_flops(self) -> ModelFlops | None:
+        """The FLOPs model of the trained HF config, for MFU; None when the config cannot be sized."""
+        try:
+            return model_flops_from_hf_config(self.hf_config)
+        except Exception as e:
+            logger.warning(f"MFU will not be reported, the HF config could not be sized: {e!r}")
+            return None
+
+    @property
+    def _trains_indexers(self) -> bool:
+        return False
+
+    @property
+    def _fwd_tflops(self) -> Callable[[list[int]], float] | None:
+        """Per-GPU forward TFLOPs of a list of sequence lengths."""
+        model_flops = self._model_flops
+        if model_flops is None:
+            return None
+        return lambda seq_lens: model_flops.fwd_flops(seq_lens) / dist.get_world_size() / 1e12
+
+    @property
+    def _train_tflops(self) -> Callable[[list[int]], float] | None:
+        """Per-GPU forward-plus-backward TFLOPs of a list of sequence lengths."""
+        model_flops = self._model_flops
+        if model_flops is None:
+            return None
+        trains_indexers = model_flops.has_indexers and self._trains_indexers
+        return lambda seq_lens: model_flops.train_flops(seq_lens, trains_indexers) / dist.get_world_size() / 1e12
+
+    def load_hf_assets(self, *, with_processor: bool = False) -> None:
+        with one_rank_at_a_time():
+            self.hf_config = load_hf_config(self.args.hf_checkpoint)
+            self.tokenizer = load_tokenizer(
+                self.args.hf_checkpoint, chat_template_path=self.args.chat_template_path, trust_remote_code=True
+            )
+            if with_processor and hasattr(
+                self.hf_config, "vision_config"
+            ):  # config-access-exempt: HF text-only configurations omit vision_config
+                self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)
+        # Built once per rank: it carries the processor clones and I/O threads every rebuild shares.
+        self.token_space_processor = (
+            build_trainer_processor(
+                RolloutEngineProcessorArgs.from_sglang_config(self.args.sglang, hf_checkpoint=self.args.hf_checkpoint),
+                mm_processor_worker_num=self.args.trainer_mm_processor_worker_num,
+                mm_io_worker_num=self.args.trainer_mm_io_worker_num,
+                device=current_platform.current_device(),
+            )
+            if self.args.multimodal_token_space_processing
+            else None
+        )
+
+    def propose_master_addr_and_port(self) -> tuple[str, int]:
+        low, high = service_port_range()
+        start_port = random.randint(low, min(low + 1000, high))
+        return get_current_node_ip(), get_free_port(start_port=start_port, port_range=(low, high))
+
+    def configure_master_addr_and_port(self, *, master_addr: str, master_port: int) -> None:
+        os.environ["MASTER_ADDR"] = master_addr
+        os.environ["MASTER_PORT"] = str(master_port)
 
     # TODO mv the args into ctor
-    def init(self, args, role, with_ref=False, with_opd_teacher=False):
+    @abc.abstractmethod
+    def init(
+        self,
+        args: Pickled,
+        role: str,
+        *,
+        ckpt_load_config: MegatronCkptLoadConfig | None = None,
+        with_ref: bool = False,
+        with_opd_teacher: bool = False,
+        recv_ckpt_src_rank: int | None = None,
+        indep_dp_info: IndepDPInfo,
+        indep_dp_store_addr: str | None,
+    ) -> int | None:
+        raise NotImplementedError
+
+    @init_once
+    def _init_common(
+        self, args: TrainerConfig, role: str, with_ref: bool = False, with_opd_teacher: bool = False
+    ) -> None:
+        assert isinstance(args, TrainerConfig)
         self.args = args
         self.role = role
         self.with_ref = with_ref
         self.with_opd_teacher = with_opd_teacher
 
-        if env_report := args.env_report:
-            collect_and_print_node_env_report(
-                role=role,
-                rank=self._rank,
-                partial_env_report=env_report,
-            )
-
         torch.serialization.add_safe_globals([miles.utils.eval_config.EvalDatasetConfig])
 
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        torch.cuda.set_device(f"cuda:{local_rank}")
+        current_platform.bind_device_before_process_group(int(os.environ.get("LOCAL_RANK", 0)))
 
         if args.debug_deterministic_collective:
             register_det_nccl_backend()
-            args.distributed_backend = DET_NCCL_BACKEND_NAME
+            assert args.backend.distributed_backend == DET_NCCL_BACKEND_NAME
             logger.info("Deterministic collectives: training world uses the det_nccl backend")
 
-        # Use hybrid backend when FSDP CPU offload is enabled with a CPU backend
-        backend = args.distributed_backend
-        if getattr(args, "fsdp_cpu_offload", False) and getattr(args, "fsdp_cpu_backend", None):
-            cpu_backend = args.fsdp_cpu_backend
-            backend = f"cpu:{cpu_backend},cuda:{args.distributed_backend}"
+        # FSDP2's CPU offload steps the optimizer on host tensors, which needs a CPU backend alongside the device's
+        backend = args.backend.distributed_backend
+        if (
+            args.train_backend in ("fsdp", "torchtitan")
+            and args.backend.optimizer_cpu_offload
+            and args.backend.fsdp_cpu_backend
+        ):
+            backend = (
+                f"cpu:{args.backend.fsdp_cpu_backend},"
+                f"{current_platform.device_type}:{args.backend.distributed_backend}"
+            )
             logger.info(f"FSDP CPU offload enabled, using hybrid backend: {backend}")
 
-        dist.init_process_group(
-            backend=backend,
-            timeout=timedelta(minutes=args.distributed_timeout_minutes),
-        )
+        with override_env({"TORCH_NCCL_DUMP_ON_TIMEOUT": "0"} if args.indep_dp else {}):
+            dist.init_process_group(
+                backend=backend,
+                timeout=timedelta(minutes=args.backend.distributed_timeout_minutes),
+            )
+        current_platform.bind_device_after_process_group()
         init_gloo_group()
 
-        args.rank = dist.get_rank()
-        args.world_size = dist.get_world_size()
+        with args.backend.mutable():
+            args.backend.rank = dist.get_rank()
+            args.backend.world_size = dist.get_world_size()
+        rebind_env_reporting(args)
 
         try:
-            if torch.version.hip is not None:
+            if not current_platform.nvml_numa_affinity:
+                logger.info(f"{current_platform.device_type} trainer: no NVML device to bind NUMA affinity to")
+            elif torch.version.hip is not None:
                 logger.info("Detected ROCm/HIP environment, skipping NUMA affinity setup")
                 # will find the coresponding API to implement ROCm version as below
             else:
@@ -124,12 +283,15 @@ class TrainRayActor(RayActor):
 
                 pynvml.nvmlInit()
 
-                local_rank = int(os.environ["RANK"]) % args.num_gpus_per_node
-
-                handle = pynvml.nvmlDeviceGetHandleByIndex(local_rank)
+                # NVML indexes GPUs physically and ignores CUDA_VISIBLE_DEVICES, so resolve the device this
+                # process bound above by its PCI bus id rather than by a rank-derived index.
+                device = torch.cuda.current_device()
+                bus_id = _get_nvml_pci_bus_id(device)
+                handle = pynvml.nvmlDeviceGetHandleByPciBusId(bus_id)
+                nvml_index = pynvml.nvmlDeviceGetIndex(handle)
                 pynvml.nvmlDeviceSetCpuAffinity(handle)
 
-                logger.info(f"Set NUMA affinity for GPU {local_rank}")
+                logger.info(f"Set NUMA affinity for cuda:{device} (NVML index {nvml_index}, PCI bus id {bus_id})")
                 pynvml.nvmlShutdown()
 
         except ImportError:
@@ -139,31 +301,50 @@ class TrainRayActor(RayActor):
 
         self._heartbeat.bump()
 
+    def is_initialized(self) -> bool:
+        return self._init_once.is_initialized()
+
+    def load_state(self, ckpt_load_config: MegatronCkptLoadConfig | None) -> int:
+        raise NotImplementedError(f"{type(self).__name__} cannot reload its state without restarting")
+
+    @rpc(concurrency_group="heartbeat_status")
     def get_heartbeat_status(self) -> HeartbeatStatus:
         return self._heartbeat.status()
 
-    def inject_fault(self, mode: str) -> None:
-        _inject_fault(mode=mode)
+    @rpc(concurrency_group="fault_injector")
+    def control_fault_hook(self, command: FaultHookCommand) -> FaultHookRecord:
+        return fault_hook_controller.apply(command)
 
-    def clear_memory(self):
+    @rpc(concurrency_group="kill_self")
+    def kill_self(self) -> None:
+        os._exit(1)
+
+    def clear_memory(self) -> None:
         print_memory("before TrainRayActor.clear_memory")
         clear_memory()
         print_memory("after TrainRayActor.clear_memory")
 
     @abc.abstractmethod
-    def sleep(self, tags):
+    def sleep(self) -> None:
         raise NotImplementedError
 
     @abc.abstractmethod
-    def wake_up(self, tags):
+    def wake_up(self) -> None:
         raise NotImplementedError
 
     @abc.abstractmethod
-    def train(self, rollout_id, rollout_data_ref, external_data=None):
+    def train(
+        self,
+        rollout_id: int,
+        rollout_data_ref: StoreObjectRef | list[StoreObjectRef],
+        witness_info: WitnessInfo | None = None,
+        attempt: int = 0,
+        external_data: TrainStepOutput | None = None,
+    ) -> TrainStepOutput:
         raise NotImplementedError
 
     @abc.abstractmethod
-    def save_model(self, rollout_id, force_sync=False):
+    def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         raise NotImplementedError
 
     def export_hf(self, rollout_id: int, path: str) -> None:
@@ -171,14 +352,14 @@ class TrainRayActor(RayActor):
         raise NotImplementedError(f"{type(self).__name__} does not support HF export")
 
     @abc.abstractmethod
-    def update_weights(self, info: "EnginesAndLock") -> None:
+    def update_weights(
+        self, info: UpdatableEngines, debug_weight_update_id: str, rollout_id: int | None
+    ) -> WeightUpdateOutput:
         raise NotImplementedError
 
     @abc.abstractmethod
     def _get_parallel_config(self):
         raise NotImplementedError
 
-    def set_rollout_manager(self, rollout_manager):
-        self.rollout_manager = rollout_manager
-        if self.args.rank == 0:
-            ray.get(self.rollout_manager.set_train_parallel_config.remote(self.train_parallel_config))
+    def get_train_parallel_config(self) -> TrainParallelConfig | None:
+        return self.train_parallel_config

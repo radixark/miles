@@ -5,10 +5,10 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-import miles.backends.training_utils.cp_utils as cp_utils_mod
-import miles.backends.training_utils.data as data_mod
-from miles.backends.training_utils.cp_utils import slice_with_cp
-from miles.backends.training_utils.data import get_batch
+import miles.backends.training_utils.data.context_parallel as cp_utils_mod
+import miles.backends.training_utils.data.rollout as data_mod
+from miles.backends.training_utils.data.context_parallel import slice_with_cp
+from miles.backends.training_utils.data.rollout import get_batch
 
 
 def _parallel_state(cp_rank: int, cp_size: int, tp_size: int = 1) -> SimpleNamespace:
@@ -54,8 +54,7 @@ def _make_batch(max_seqlen: int | None = None) -> dict:
 
 @pytest.fixture(autouse=True)
 def _stub_cuda(monkeypatch):
-    monkeypatch.setattr(torch.Tensor, "cuda", lambda self, *args, **kwargs: self, raising=False)
-    monkeypatch.setattr(torch.cuda, "current_device", lambda: "cpu", raising=False)
+    monkeypatch.setattr(data_mod.current_platform, "current_device", lambda: torch.device("cpu"))
 
 
 def _patch_state(monkeypatch, state: SimpleNamespace) -> None:

@@ -63,9 +63,40 @@ bucket rather than the whole state. Buckets are capped at 200M elements independ
 DDP's bucket sizes, which reach tens of GB at DP=1. Native-fp32 model params (a router's
 `expert_bias`, a GDN/Mamba `A_log`) stay GPU-resident under a small separate Adam: they
 are tiny, and unlike the bf16 path their optimizer shards alias the model params directly.
+The fp32 gradients the step reads are bounded the same way: instead of Megatron copying every
+reduced bf16 gradient into an fp32 `.grad` up front (4 more bytes per local parameter), each
+bucket's gradients are converted, times the clip coefficient, right before its Adam step and
+dropped after it. The grad norm reads the reduced gradients in the DDP grad buffer directly and
+matches Megatron's up to float summation order.
 
-`fp32` storage is bit-identical to keeping the state on GPU, so turning this on does not
-change results — it trades step time for memory. The step is I/O bound and the moments
+For the Adam/DistributedOptimizer path, streaming also bounds initialization: Megatron releases
+each fp32 main shard's storage after creating its tensor handle, then Miles fills one existing
+runtime bucket at a time directly in the final files. There is no temporary state file. Peak
+initialization HBM is the largest individual shard during construction and one main-only bucket
+afterward (normally at most about 200M fp32 elements, except for an oversized entry). Each
+initialized bucket is evicted from the page cache once its writeback completes.
+
+The step's writes are buffered, so by default the host page cache keeps whatever of the state
+it has room for. That is the fastest setting when host RAM can hold the whole state: the next
+step reads it from memory, and the kernel finishes the writeback during rollout. A colocated
+run pays for it elsewhere, since that cache is reclaimed lazily and races every pinned
+allocation at the rollout/train handoff. Cap it per rank:
+
+```bash
+--stream-optimizer-state-page-cache-mb 8192
+```
+
+A writer thread then writes back and drops each flushed bucket in order, so a bucket's
+writeback overlaps the buckets after it instead of stalling its own flush. A flush waits only
+while more than the cap is still waiting to be written back; the bucket being read comes on top
+of it. The step finishes its writeback before it returns, so none of the store's files stay
+cached past a step and each step reads its state back from disk. Checkpoint save and resume
+put both ends of each bucket's copy, the store's file and the checkpoint's, through the same
+cap, so one bucket's writeback overlaps the next copy, and likewise finish it before returning.
+
+With `fp32` storage the state round-trips bit for bit and only the grad norm's summation
+order differs from keeping it on GPU, so turning this on changes results by rounding at
+most — it trades step time for memory. The step is I/O bound and the moments
 tolerate less precision than the master copy, so they can be stored narrower:
 
 ```bash
@@ -77,13 +108,16 @@ dtypes it was written with and a resume verifies them, so bytes written as bf16 
 be read back as fp32. The fp8 options work but are not recommended: `exp_avg_sq` needs
 per-block scaling to survive 8-bit storage, which this does not implement.
 
-Three limits to know about. Resume is same-topology only — the on-disk layout follows this
+Four limits to know about. Resume is same-topology only — the on-disk layout follows this
 rank's DP shard, so changing TP/PP/DP/EP fails the layout assert rather than resharding.
 A checkpoint written before streaming was enabled cannot be resumed with it: the streamed
 state is the only optimizer state read, so miles refuses rather than silently restarting
 Adam from zero — pass `--no-load-optim` to accept a fresh optimizer state. And the
 optimizer state is copied to the checkpoint directory synchronously, outside
-`--async-save`, so expect checkpoint saves to take noticeably longer.
+`--async-save`, so expect checkpoint saves to take noticeably longer. Finally, the streamed
+params have fp32 gradients only inside the step, so streaming refuses what reads them outside
+it: fp16 loss scaling, `--log-num-zeros-in-grad`, and `--enable-mtp-training`, whose detached MTP
+heads are clipped by their own grad norm.
 
 The two also help each other. With the optimizer state already on disk there is that much
 less to move when the actor is paused: on Qwen3-30B-A3B, sleep/wake went from 24s/8.9s to

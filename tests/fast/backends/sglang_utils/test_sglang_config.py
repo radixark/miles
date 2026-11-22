@@ -1,0 +1,873 @@
+from __future__ import annotations
+
+import argparse
+from argparse import Namespace
+
+import pytest
+from tests.fast.fixtures.sglang_config_fixtures import resolve_sglang_config, resolve_sglang_config_and_scaling
+
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
+from miles.backends.sglang_utils.sglang_config import (
+    ModelConfig,
+    ServerGroupConfig,
+    ServerGroupScalingConfig,
+    SglangConfig,
+    _compute_megatron_num_gpus,
+    _compute_rollout_offset,
+    _extract_base_args,
+)
+from miles.utils.external_utils.command_utils.common import encode_pseudo_file
+
+
+def _make_args(**overrides) -> Namespace:
+    defaults = dict(
+        sglang_config=None,
+        prefill_num_servers=None,
+        rollout_num_gpus=8,
+        rollout_num_gpus_per_engine=1,
+        sglang_pp_size=1,
+        sglang_pp_layer_partition=None,
+        num_gpus_per_node=8,
+        eval_num_gpus=0,
+        eval_num_gpus_per_engine=1,
+        hf_checkpoint="/ckpt/actor",
+        offload_rollout=False,
+        debug_train_only=False,
+        debug_rollout_only=False,
+        colocate=False,
+        actor_num_nodes=1,
+        actor_num_gpus_per_node=8,
+        critic_num_nodes=0,
+        critic_num_gpus_per_node=0,
+        use_critic=False,
+        multi_lora=False,
+    )
+    defaults.update(overrides)
+    defaults.setdefault("starts_inference_engines", not defaults["debug_train_only"] or defaults["eval_num_gpus"] > 0)
+    if defaults["debug_train_only"]:
+        defaults["rollout_num_gpus"] = 0
+    return Namespace(**defaults)
+
+
+def _resolve_yaml(tmp_path, yaml_text: str, **args_overrides):
+    config, _ = _resolve_yaml_and_scaling(tmp_path, yaml_text, **args_overrides)
+    return config
+
+
+def _resolve_yaml_and_scaling(tmp_path, yaml_text: str, **args_overrides):
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml_text)
+    return resolve_sglang_config_and_scaling(_make_args(sglang_config=str(cfg_path), **args_overrides))
+
+
+class TestNumGpusPerEnginePrecedence:
+    def test_group_level_value_wins_over_model_and_args(self, tmp_path):
+        """A group's own num_gpus_per_engine beats the model-level and args-level defaults."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: actor\n"
+            "    num_gpus_per_engine: 4\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "        num_gpus_per_engine: 2\n",
+            rollout_num_gpus=8,
+            rollout_num_gpus_per_engine=1,
+        )
+        assert cfg.models[0].server_groups[0].num_gpus_per_engine == 2
+
+    def test_model_then_global_num_gpus_per_engine_defaults_are_resolved(self, tmp_path):
+        """A group without its own value takes the model-level value, or the args-level one when the model is silent."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: actor\n"
+            "    num_gpus_per_engine: 4\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "  - name: ref\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 4\n",
+            rollout_num_gpus=12,
+            rollout_num_gpus_per_engine=2,
+        )
+        assert cfg.models[0].server_groups[0].num_gpus_per_engine == 4
+        assert cfg.models[1].server_groups[0].num_gpus_per_engine == 2
+
+    def test_a_group_asking_for_zero_gpus_per_engine_is_rejected_not_defaulted(self, tmp_path):
+        """Falling back on any falsy value hid the typo and silently started engines with the wrong tp topology."""
+        with pytest.raises(ValueError, match="greater than 0"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n"
+                "        num_gpus_per_engine: 0\n",
+                rollout_num_gpus=8,
+                rollout_num_gpus_per_engine=1,
+            )
+
+    def test_a_model_asking_for_zero_gpus_per_engine_is_rejected_not_defaulted(self, tmp_path):
+        """The model-level default took the same falsy fallback, so its groups silently inherited the args value."""
+        with pytest.raises(ValueError, match="greater than 0"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    num_gpus_per_engine: 0\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n",
+                rollout_num_gpus=8,
+                rollout_num_gpus_per_engine=1,
+            )
+
+
+class TestModelPathConsistency:
+    def test_groups_for_one_model_cannot_resolve_to_different_model_paths(self, tmp_path):
+        """One model serving two different checkpoints would silently mis-route, so it fails at resolve time."""
+        with pytest.raises(AssertionError, match="different model_path values"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    model_path: /model/a\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 4\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 4\n"
+                "        overrides:\n"
+                "          model_path: /model/b\n",
+                rollout_num_gpus=8,
+            )
+
+    def test_multi_lora_engines_may_serve_a_quantized_copy_of_the_base(self, tmp_path):
+        """Tinker engines never receive base weights, so they may load another copy of the base than the trainer."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: default\n"
+            "    model_path: /ckpt/actor-fp8\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n",
+            rollout_num_gpus=8,
+            rollout_num_gpus_per_engine=2,
+            multi_lora=True,
+        )
+        assert cfg.models[0].server_groups[0].model_path == "/ckpt/actor-fp8"
+        assert cfg.models[0].update_weights is False
+
+    def test_multi_lora_rejects_weight_updates(self, tmp_path):
+        with pytest.raises(AssertionError, match="frozen base"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: default\n"
+                "    update_weights: true\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n",
+                rollout_num_gpus=8,
+                multi_lora=True,
+            )
+
+
+class TestResolvedServerGroupValidation:
+    def test_a_resolved_group_with_zero_gpus_is_rejected(self):
+        """A group reserving no GPUs cannot host an engine and must fail construction."""
+        with pytest.raises(ValueError, match="greater than 0"):
+            ServerGroupScalingConfig(num_gpus=0, gpu_offset=0, engine_offset=0)
+
+    def test_a_resolved_group_with_non_positive_gpus_per_engine_is_rejected(self):
+        """A non-positive engine width would make the engine count division meaningless."""
+        with pytest.raises(ValueError, match="greater than 0"):
+            ServerGroupConfig(worker_type="regular", num_gpus_per_engine=-1, pp_size=1, needs_offload=False)
+
+
+class TestNumServerCells:
+    def test_non_placeholder_engine_cells_are_counted(self, tmp_path):
+        """The server cell count includes every engine except placeholder reservations."""
+        cfg, scaling = _resolve_yaml_and_scaling(
+            tmp_path,
+            "sglang:\n"
+            "  - name: actor\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "        num_gpus_per_engine: 4\n"
+            "      - worker_type: prefill\n"
+            "        num_gpus: 4\n"
+            "        num_gpus_per_engine: 2\n"
+            "      - worker_type: placeholder\n"
+            "        num_gpus: 4\n"
+            "        num_gpus_per_engine: 1\n",
+            rollout_num_gpus=16,
+        )
+
+        assert cfg.models[0].num_server_cells(scaling) == 4
+
+
+class TestOverridesResolution:
+    def test_an_explicit_model_path_override_is_not_replaced(self, tmp_path):
+        """A group's own model_path override is parsed verbatim."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: actor\n"
+            "    model_path: /model/level/path\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "        overrides:\n"
+            "          model_path: /group/level/path\n",
+            rollout_num_gpus=8,
+        )
+        assert cfg.models[0].server_groups[0].overrides["model_path"] == "/group/level/path"
+
+    def test_unrelated_override_keys_pass_through(self, tmp_path):
+        """Arbitrary ServerArgs overrides are parsed verbatim."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: actor\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "        overrides:\n"
+            "          mem_fraction_static: 0.5\n",
+            rollout_num_gpus=8,
+        )
+        overrides = cfg.models[0].server_groups[0].overrides
+        assert overrides["mem_fraction_static"] == 0.5
+
+
+class TestYamlShapeValidation:
+    def test_engine_groups_is_accepted_as_an_alias_for_server_groups(self, tmp_path):
+        """The documented engine_groups spelling keeps parsing."""
+        _, scaling = _resolve_yaml_and_scaling(
+            tmp_path,
+            "sglang:\n  - name: actor\n    engine_groups:\n      - worker_type: regular\n        num_gpus: 8\n",
+            rollout_num_gpus=8,
+        )
+        assert scaling.group(model_name="actor", group_index=0).num_gpus == 8
+
+    def test_a_yaml_without_the_sglang_key_is_rejected(self, tmp_path):
+        """A config missing the top-level sglang key fails loudly."""
+        with pytest.raises((AssertionError, ValueError), match="sglang|models"):
+            _resolve_yaml(tmp_path, "other_key:\n  - name: actor\n", rollout_num_gpus=8)
+
+    def test_an_unknown_model_key_is_rejected(self, tmp_path):
+        """Typos at the model level fail parsing instead of being silently dropped."""
+        with pytest.raises(ValueError, match="typo_key"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    typo_key: 1\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n",
+                rollout_num_gpus=8,
+            )
+
+    def test_an_unknown_server_group_key_is_rejected(self, tmp_path):
+        """Typos at the server-group level fail parsing instead of dropping an intended SGLang override."""
+        with pytest.raises(ValueError, match="typo_key"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n"
+                "        typo_key: 1\n",
+                rollout_num_gpus=8,
+            )
+
+    def test_giving_both_group_spellings_is_rejected(self, tmp_path):
+        """server_groups plus engine_groups on one model is ambiguous and fails parsing."""
+        with pytest.raises(ValueError, match="engine_groups"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n"
+                "    engine_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n",
+                rollout_num_gpus=8,
+            )
+
+
+class TestPrefillNumServersPath:
+    @pytest.mark.parametrize("multi_lora", [False, True])
+    def test_prefill_num_servers_counts_engines_not_gpus(self, multi_lora):
+        """prefill_num_servers is a server count, so its GPU span scales with the engine width."""
+        cfg, scaling = resolve_sglang_config_and_scaling(
+            _make_args(
+                rollout_num_gpus=16, prefill_num_servers=3, rollout_num_gpus_per_engine=2, multi_lora=multi_lora
+            )
+        )
+        groups = zip(cfg.models[0].server_groups, scaling.groups["default"], strict=True)
+        assert [(group.worker_type, group_scaling.num_gpus) for group, group_scaling in groups] == [
+            (WorkerType.PREFILL, 6),
+            (WorkerType.DECODE, 10),
+        ]
+        assert cfg.models[0].update_weights is not multi_lora
+
+    def test_prefill_consuming_all_gpus_is_rejected(self):
+        """prefill_num_servers leaving no decode gpus fails loudly."""
+        args = _make_args(rollout_num_gpus=4, prefill_num_servers=4, rollout_num_gpus_per_engine=1)
+        with pytest.raises(AssertionError, match="No decode GPUs"):
+            resolve_sglang_config(args)
+
+
+class TestGpuOffset:
+    def test_gpu_offsets_accumulate_across_groups_and_models_including_placeholders(self, tmp_path):
+        """Each group's gpu_offset equals the num_gpus sum of all preceding groups, counting placeholders."""
+        _, scaling = _resolve_yaml_and_scaling(
+            tmp_path,
+            "sglang:\n"
+            "  - name: actor\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 4\n"
+            "      - worker_type: placeholder\n"
+            "        num_gpus: 4\n"
+            "  - name: ref\n"
+            "    update_weights: false\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n",
+            rollout_num_gpus=16,
+        )
+        assert [group.gpu_offset for group in scaling.groups["actor"]] == [0, 4]
+        assert scaling.groups["ref"][0].gpu_offset == 8
+
+
+class TestEngineOffset:
+    def test_engine_offsets_count_the_workers_of_every_preceding_group(self, tmp_path):
+        """Groups of different engine widths contribute different worker counts, so a gpu offset alone cannot number them."""
+        _, scaling = _resolve_yaml_and_scaling(
+            tmp_path,
+            "sglang:\n"
+            "  - name: actor\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "        num_gpus_per_engine: 2\n"
+            "      - worker_type: placeholder\n"
+            "        num_gpus: 4\n"
+            "        num_gpus_per_engine: 4\n"
+            "  - name: ref\n"
+            "    update_weights: false\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 16\n"
+            "        num_gpus_per_engine: 8\n",
+            rollout_num_gpus=28,
+            num_gpus_per_node=4,
+        )
+        assert [group.engine_offset for group in scaling.groups["actor"]] == [0, 4]
+        assert scaling.groups["ref"][0].engine_offset == 5
+
+    def test_a_group_whose_engine_spans_nodes_contributes_one_worker_per_node(self, tmp_path):
+        """A cross-node engine is launched by one actor per node, so it consumes that many numbers, not one."""
+        _, scaling = _resolve_yaml_and_scaling(
+            tmp_path,
+            "sglang:\n"
+            "  - name: actor\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 16\n"
+            "        num_gpus_per_engine: 8\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 4\n"
+            "        num_gpus_per_engine: 2\n",
+            rollout_num_gpus=20,
+            num_gpus_per_node=4,
+        )
+        assert [group.engine_offset for group in scaling.groups["actor"]] == [0, 4]
+
+    def test_prefill_and_decode_groups_are_numbered_in_that_order(self):
+        """The legacy --prefill-num-servers layout has no YAML to carry offsets, so the cursor must number it too."""
+        _, scaling = resolve_sglang_config_and_scaling(
+            _make_args(rollout_num_gpus=16, prefill_num_servers=3, rollout_num_gpus_per_engine=2)
+        )
+
+        assert [group.engine_offset for group in scaling.groups["default"]] == [0, 3]
+
+    def test_the_generated_eval_model_is_numbered_after_every_rollout_engine(self):
+        """The eval fleet is appended without YAML, and reusing the rollout numbers would clone their RNG streams."""
+        _, scaling = resolve_sglang_config_and_scaling(
+            _make_args(
+                rollout_num_gpus=8,
+                rollout_num_gpus_per_engine=2,
+                eval_num_gpus=4,
+                eval_num_gpus_per_engine=2,
+            )
+        )
+
+        assert scaling.groups["default"][0].engine_offset == 0
+        assert scaling.groups["eval"][0].engine_offset == 4
+
+
+class TestNeedsOffload:
+    @pytest.mark.parametrize("multi_lora", [False, True])
+    def test_no_offload_flag_means_no_group_needs_offload(self, tmp_path, multi_lora):
+        """With offload_rollout off, no group offloads and no memory-saver override is injected."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n  - name: actor\n    server_groups:\n      - worker_type: regular\n        num_gpus: 8\n",
+            rollout_num_gpus=8,
+            multi_lora=multi_lora,
+        )
+        group = cfg.models[0].server_groups[0]
+        assert group.needs_offload is False
+        assert "enable_memory_saver" not in group.overrides
+        assert cfg.models[0].update_weights is not multi_lora
+
+    def test_groups_overlapping_megatron_offload_and_the_rest_disable_memory_saver(self, tmp_path):
+        """Only groups starting inside the megatron gpu range offload; later ones get enable_memory_saver=False."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: actor\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n",
+            rollout_num_gpus=16,
+            offload_rollout=True,
+            colocate=True,
+            actor_num_nodes=1,
+            actor_num_gpus_per_node=8,
+        )
+        first, second = cfg.models[0].server_groups
+        assert first.needs_offload is True
+        assert "enable_memory_saver" not in first.overrides
+        assert second.needs_offload is False
+        assert second.overrides["enable_memory_saver"] is False
+
+    def test_the_gpu_cursor_accumulates_across_models(self, tmp_path):
+        """A later model's group starts where the previous model's gpus ended."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: actor\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "  - name: ref\n"
+            "    update_weights: false\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n",
+            rollout_num_gpus=16,
+            offload_rollout=True,
+            colocate=True,
+            actor_num_nodes=1,
+            actor_num_gpus_per_node=8,
+        )
+        assert cfg.models[0].server_groups[0].needs_offload is True
+        assert cfg.models[1].server_groups[0].needs_offload is False
+
+    def test_a_disaggregated_rollout_group_past_the_megatron_gpus_does_not_offload(self, tmp_path):
+        """Without colocate the rollout pg offset pushes the group past the megatron gpus, so it disables memory saver."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n  - name: actor\n    server_groups:\n      - worker_type: regular\n        num_gpus: 8\n",
+            rollout_num_gpus=8,
+            offload_rollout=True,
+            colocate=False,
+            actor_num_nodes=1,
+            actor_num_gpus_per_node=8,
+        )
+        group = cfg.models[0].server_groups[0]
+        assert group.needs_offload is False
+        assert group.overrides["enable_memory_saver"] is False
+
+    def test_an_explicit_memory_saver_override_wins(self, tmp_path):
+        """A user-provided enable_memory_saver survives the conditional injection."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: actor\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "        overrides:\n"
+            "          enable_memory_saver: true\n",
+            rollout_num_gpus=8,
+            offload_rollout=True,
+            colocate=True,
+            actor_num_nodes=0,
+            actor_num_gpus_per_node=0,
+        )
+        group = cfg.models[0].server_groups[0]
+        assert group.needs_offload is False
+        assert group.overrides["enable_memory_saver"] is True
+
+
+class TestYamlEvalModel:
+    def test_a_yaml_without_an_eval_model_is_rejected_when_eval_gpus_are_requested(self, tmp_path):
+        """--eval-num-gpus with no eval model in the YAML would silently run evals on the rollout fleet."""
+        with pytest.raises(AssertionError, match="exactly one model named 'eval'"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: default\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 10\n",
+                rollout_num_gpus=8,
+                eval_num_gpus=2,
+            )
+
+    def test_a_yaml_eval_model_sized_differently_from_eval_num_gpus_is_rejected(self, tmp_path):
+        """A matching grand total is not enough; the eval model itself must own exactly --eval-num-gpus."""
+        with pytest.raises(AssertionError, match="exactly one model named 'eval'"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: default\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n"
+                "  - name: eval\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 2\n",
+                rollout_num_gpus=6,
+                eval_num_gpus=4,
+            )
+
+    def test_yaml_eval_update_weights_is_not_overridden(self, tmp_path):
+        """An explicit update_weights in the YAML survives the eval model's False default."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: default\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "  - name: eval\n"
+            "    update_weights: true\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 2\n",
+            rollout_num_gpus=8,
+            eval_num_gpus=2,
+        )
+        [eval_model] = [model for model in cfg.models if model.name == "eval"]
+        assert eval_model.update_weights is True
+
+    def test_yaml_eval_group_num_gpus_per_engine_wins_over_eval_cli(self, tmp_path):
+        """A group that states its own engine width keeps it instead of taking --eval-num-gpus-per-engine."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: default\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "  - name: eval\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 4\n"
+            "        num_gpus_per_engine: 2\n",
+            rollout_num_gpus=8,
+            eval_num_gpus=4,
+            eval_num_gpus_per_engine=4,
+        )
+        [eval_model] = [model for model in cfg.models if model.name == "eval"]
+        assert eval_model.server_groups[0].num_gpus_per_engine == 2
+
+
+class TestRolloutOffset:
+    def test_debug_train_only_without_eval_fleet_has_zero_rollout_placement_offset(self):
+        args = _make_args(debug_train_only=True, colocate=False, actor_num_nodes=2, actor_num_gpus_per_node=8)
+        assert _compute_rollout_offset(args) == 0
+
+    def test_debug_train_only_places_the_eval_fleet_after_the_actor_bundles(self):
+        args = _make_args(
+            debug_train_only=True, colocate=False, actor_num_nodes=2, actor_num_gpus_per_node=8, eval_num_gpus=4
+        )
+        assert _compute_rollout_offset(args) == 16
+
+    def test_debug_rollout_only_has_zero_rollout_placement_offset(self):
+        """In rollout-only debug runs no megatron bundles are reserved ahead of the rollout ones."""
+        args = _make_args(debug_rollout_only=True, colocate=False, actor_num_nodes=2, actor_num_gpus_per_node=8)
+        assert _compute_rollout_offset(args) == 0
+
+
+class TestMegatronNumGpus:
+    def test_a_namespace_carrying_the_removed_critic_train_only_field_is_rejected(self):
+        """critic_train_only no longer resizes the megatron span, so a namespace still carrying it fails loudly."""
+        args = _make_args(critic_train_only=True, critic_num_nodes=1, critic_num_gpus_per_node=4)
+        with pytest.raises(AssertionError, match="critic_train_only is not supported"):
+            _compute_megatron_num_gpus(args)
+
+
+class TestOutputStoreOverrideRejection:
+    def test_a_group_may_not_set_the_output_store(self, tmp_path):
+        """--use-output-store configures every engine's store; a group override would bypass it."""
+        with pytest.raises(AssertionError, match="must not set"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n"
+                "        overrides:\n"
+                "          output_store_backend: mooncake\n",
+                rollout_num_gpus=8,
+            )
+
+
+class TestHostPortOverrideRejection:
+    @pytest.mark.parametrize("mode", ["null", "prefill", "decode"])
+    def test_a_disaggregation_mode_override_is_rejected_at_resolve_time(self, tmp_path, mode: str):
+        """worker_type owns the engine's role; an override would launch a different role than the one registered."""
+        with pytest.raises(AssertionError, match="must not override host/port/disaggregation_mode"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n"
+                "        overrides:\n"
+                f"          disaggregation_mode: {mode}\n",
+                rollout_num_gpus=8,
+            )
+
+    def test_a_port_override_is_rejected_at_resolve_time(self, tmp_path):
+        """Overriding the allocator-owned port must fail fast instead of desyncing engine and controller."""
+        with pytest.raises(AssertionError, match="must not override host/port"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n"
+                "        overrides:\n"
+                "          port: 12345\n",
+                rollout_num_gpus=8,
+            )
+
+    def test_a_host_override_is_rejected_at_resolve_time(self, tmp_path):
+        """Overriding the allocator-owned host must fail fast as well."""
+        with pytest.raises(AssertionError, match="must not override host/port"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n"
+                "        overrides:\n"
+                "          host: 10.0.0.1\n",
+                rollout_num_gpus=8,
+            )
+
+    def test_a_gated_launch_port_override_is_rejected_at_resolve_time(self, tmp_path):
+        """The launch gate port belongs to the allocator; an override would make the engine wait on the wrong socket."""
+        with pytest.raises(AssertionError, match="must not override host/port"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n"
+                "        overrides:\n"
+                "          gated_launch_port: 13007\n",
+                rollout_num_gpus=8,
+            )
+
+    def test_a_gated_launch_port_override_in_a_later_group_is_rejected(self, tmp_path):
+        """The check runs per group, so a gate port hidden behind valid groups and valid keys still fails fast."""
+        with pytest.raises(AssertionError, match="must not override host/port"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 4\n"
+                "  - name: ref\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 2\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 2\n"
+                "        overrides:\n"
+                "          mem_fraction_static: 0.5\n"
+                "          gated_launch_port: 13007\n",
+                rollout_num_gpus=8,
+            )
+
+    def test_a_gated_launch_port_reaching_the_eval_fleet_from_the_cli_is_rejected(self, tmp_path):
+        """An --eval-sglang-* gate port becomes an eval override, and that channel must be refused too."""
+        with pytest.raises(AssertionError, match="must not override host/port"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n"
+                "  - name: eval\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 2\n",
+                rollout_num_gpus=8,
+                eval_num_gpus=2,
+                eval_sglang_gated_launch_port=13007,
+            )
+
+
+class TestSglangConfigFileArg:
+    _YAML = (
+        "sglang:\n" "  - name: actor\n" "    server_groups:\n" "      - worker_type: regular\n" "        num_gpus: 8\n"
+    )
+
+    def test_a_path_is_still_read_from_disk(self, tmp_path):
+        """The flag has always named a file, and every existing launch script still passes one."""
+        cfg = _resolve_yaml(tmp_path, self._YAML)
+
+        assert [model.name for model in cfg.models] == ["actor"]
+
+    def test_an_inline_base64_payload_is_accepted(self, tmp_path):
+        """A test or a launcher that has no writable shared path must be able to inline the config."""
+        cfg = resolve_sglang_config(_make_args(sglang_config=encode_pseudo_file(self._YAML)))
+
+        assert [model.name for model in cfg.models] == ["actor"]
+
+
+class TestCommonValue:
+    def test_groups_that_agree_share_their_override(self):
+        """Every engine group overriding a field to the same value yields that value."""
+        group = ServerGroupConfig(
+            worker_type=WorkerType.REGULAR, num_gpus_per_engine=1, pp_size=1, needs_offload=False, overrides={"x": 2}
+        )
+        model = ModelConfig(name="actor", model_path=None, server_groups=[group, group], update_weights=True)
+
+        assert SglangConfig(models=[model], base_args={"x": 1}).common_value("x") == 2
+
+    def test_a_config_without_engine_groups_reads_the_cli_value(self):
+        """External engines leave no local engine group, so the CLI value is the common value."""
+        assert SglangConfig(models=[], base_args={"x": 1}).common_value("x") == 1
+
+    def test_a_field_nobody_declares_is_rejected(self):
+        """Reading an unknown field fails instead of returning a default."""
+        with pytest.raises(AttributeError, match="No common field 'y'"):
+            SglangConfig(models=[], base_args={"x": 1}).common_value("y")
+
+
+class TestCommonValueBoundaries:
+    @pytest.mark.parametrize("second_overrides", [{}, {"x": 3}])
+    def test_disagreeing_groups_cannot_supply_a_shared_value(self, second_overrides: dict[str, int]) -> None:
+        """A shared consumer cannot silently select one engine group's conflicting setting."""
+        groups = [
+            ServerGroupConfig(
+                worker_type="regular", num_gpus_per_engine=1, pp_size=1, needs_offload=False, overrides=value
+            )
+            for value in [{"x": 2}, second_overrides]
+        ]
+        model = ModelConfig(name="actor", model_path=None, server_groups=groups, update_weights=True)
+
+        with pytest.raises(AssertionError, match="Field 'x' differs"):
+            SglangConfig(models=[model], base_args={"x": 1}).common_value("x")
+
+    @pytest.mark.parametrize("include_engine", [False, True])
+    def test_placeholder_overrides_do_not_affect_shared_engine_values(self, include_engine: bool) -> None:
+        """GPU reservations without engines cannot override settings used by live engine consumers."""
+        groups = [
+            ServerGroupConfig(
+                worker_type="placeholder", num_gpus_per_engine=1, pp_size=1, needs_offload=False, overrides={"x": 99}
+            )
+        ]
+        if include_engine:
+            groups.append(
+                ServerGroupConfig(worker_type="regular", num_gpus_per_engine=1, pp_size=1, needs_offload=False)
+            )
+        model = ModelConfig(name="actor", model_path=None, server_groups=groups, update_weights=True)
+
+        assert SglangConfig(models=[model], base_args={"x": 1}).common_value("x") == 1
+
+    def test_a_field_missing_from_one_live_group_is_rejected(self) -> None:
+        """An override in only one group cannot manufacture a globally available setting."""
+        groups = [
+            ServerGroupConfig(
+                worker_type="regular", num_gpus_per_engine=1, pp_size=1, needs_offload=False, overrides=value
+            )
+            for value in [{"x": 2}, {}]
+        ]
+        model = ModelConfig(name="actor", model_path=None, server_groups=groups, update_weights=True)
+
+        with pytest.raises(AttributeError, match="No common field 'x'"):
+            SglangConfig(models=[model], base_args={}).common_value("x")
+
+
+class TestActorValue:
+    @staticmethod
+    def _group(**overrides):
+        return ServerGroupConfig(
+            worker_type="regular", num_gpus_per_engine=1, pp_size=1, needs_offload=False, overrides=overrides
+        )
+
+    def test_frozen_models_do_not_take_part(self):
+        """A reward or reference engine with its own setting must not block the actor engines' value."""
+        actor = ModelConfig(name="actor", model_path=None, server_groups=[self._group(x=2)], update_weights=True)
+        reward = ModelConfig(
+            name="reward", model_path="/reward", server_groups=[self._group(x=3)], update_weights=False
+        )
+        cfg = SglangConfig(models=[actor, reward], base_args={"x": 1})
+
+        assert cfg.actor_value("x") == 2
+        with pytest.raises(AssertionError, match="Field 'x' differs"):
+            cfg.common_value("x")
+
+    def test_disagreeing_actor_groups_are_still_rejected(self):
+        actor = ModelConfig(
+            name="actor", model_path=None, server_groups=[self._group(x=2), self._group(x=3)], update_weights=True
+        )
+
+        with pytest.raises(AssertionError, match="Field 'x' differs"):
+            SglangConfig(models=[actor], base_args={"x": 1}).actor_value("x")
+
+    def test_without_actor_engines_the_cli_value_stands_in(self):
+        """--debug-train-only starts no engine; a frozen model alone does not change that."""
+        reward = ModelConfig(
+            name="reward", model_path="/reward", server_groups=[self._group(x=3)], update_weights=False
+        )
+
+        assert SglangConfig(models=[], base_args={"x": 1}).actor_value("x") == 1
+        assert SglangConfig(models=[reward], base_args={"x": 1}).actor_value("x") == 1
+
+
+def test_a_suppress_default_server_arg_is_extracted_only_when_given(monkeypatch):
+    """A SUPPRESS-default action leaves no dest on the namespace; reading it raised KeyError at startup."""
+
+    def add_server_args(parser):
+        parser.add_argument("--sglang-tp-size", dest="sglang_tp_size", type=int, default=1)
+        parser.add_argument("--sglang-old-alias", dest="sglang_old_alias", default=argparse.SUPPRESS)
+
+    monkeypatch.setattr("miles.backends.sglang_utils.sglang_config._add_prefixed_primary_server_args", add_server_args)
+
+    assert _extract_base_args(Namespace(sglang_tp_size=1)) == {"tp_size": 1}
+    assert _extract_base_args(Namespace(sglang_tp_size=1, sglang_old_alias="x")) == {"tp_size": 1, "old_alias": "x"}

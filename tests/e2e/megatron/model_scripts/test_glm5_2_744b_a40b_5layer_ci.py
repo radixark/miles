@@ -22,19 +22,23 @@ else:
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
-import miles.utils.external_utils.command_utils as U
 
 # Smoke test for the GLM-5.2 (glm_moe_dsa) training script. Exercises the DSA
 # cross-layer index-sharing path (5 layers = 3 dense + 2 MoE, computing layers
 # 0,1,2 + skip layers 3,4). Verifies the script is functional, not model accuracy.
 
 
-register_cuda_ci(est_time=900, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"])
+register_cuda_ci(
+    est_time=900,
+    suite="stage-c-2-gpu-h200",
+    labels=["megatron", "model-scripts"],
+    hardware=["hopper", "blackwell"],
+    num_gpus=2,
+)
 register_rocm_ci(
     est_time=900,
-    suite="stage-c-4-gpu-mi350",
+    suite="stage-c-2-gpu-mi350",
     labels=["megatron", "model-scripts", "amd"],
-    disabled="FIXME: re-enable once this case passes on the MI350 runners.",
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -42,20 +46,25 @@ register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 
 def _args() -> ScriptArgs:
-    return ScriptArgs(
+    return ScriptArgs.from_env(
         model_name="GLM-5.2_5layer",
         num_nodes=1,
-        num_gpus_per_node=4,
+        num_gpus_per_node=2,
         num_rollout=2,
+        rollout_batch_size=4,
+        n_samples_per_prompt=4,
+        global_batch_size=16,
         enable_optimizer_offload=True,
         extra_args=("--ci-test " "--ci-disable-logprobs-checker "),
     )
 
 
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.output_dir}")
     _prepare_download(args)
     _validate_glm_checkpoint(args)

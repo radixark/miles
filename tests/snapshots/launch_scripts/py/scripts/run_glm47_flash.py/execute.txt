@@ -42,6 +42,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --swiglu
   --untie-embeddings-and-output-weights
   --position-embedding-type rope
+  --rope-type rope
   --no-position-embedding
   --normalization RMSNorm
   --norm-epsilon 1e-5
@@ -120,6 +121,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-speculative-eagle-topk 1
   --sglang-speculative-num-draft-tokens 3
   --use-rollout-routing-replay 
+  --enable-mtp-training
   --attention-dropout 0.0
   --hidden-dropout 0.0
   --accumulate-allreduce-grads-in-fp32
@@ -128,5 +130,5 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --actor-num-nodes 1
   --actor-num-gpus-per-node 8
   --num-gpus-per-node 8
-  --colocate
-  --use-fault-tolerance   
+  --colocate   
+  --deploy-component all

@@ -11,7 +11,10 @@ import torch
 from huggingface_hub import snapshot_download
 from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.sglang.utils.sglang_server import start_sglang_server
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
+from miles.backends.megatron_utils.megatron_config import MegatronConfig
+from miles.rollout.session.config import compute_session_server_config
 from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
 from miles.rollout.session.server import SessionServer
 from miles.utils.http_utils import find_available_port
@@ -19,9 +22,7 @@ from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 from miles.utils.types import Sample
 
 register_cuda_ci(
-    est_time=400,
-    suite="stage-c-2-gpu-h200",
-    labels=["sglang", "replay"],
+    est_time=400, suite="stage-c-2-gpu-h200", labels=["sglang", "replay"], hardware=["hopper"], num_gpus=2
 )
 
 _MODEL_ID = "Qwen/Qwen3-30B-A3B"
@@ -73,16 +74,44 @@ def _serve_session(backend_url: str) -> Iterator[str]:
         chat_template_path=None,
         apply_chat_template_kwargs={"enable_thinking": False},
         tito_model="qwen3",
-        sglang_speculative_algorithm=None,
+        allow_stop_token_replace=False,
+        allow_truncated_continuation=False,
+        sglang=make_sglang_config(speculative_algorithm=None),
+        raw_megatron=MegatronConfig(trainers=[], base_args={}),
         use_session_server="v1",
         use_rollout_routing_replay=True,
         use_rollout_indexer_replay=False,
-        session_server_instance_id="session-addition-r3-e2e",
+        rollout_indexer_topk_num_streams=None,
+        replay_layer_splits=[],
+        use_sampling_support_replay=False,
+        use_output_store=False,
+        rollout_temperature=1.0,
+        rollout_top_p=1.0,
+        rollout_top_k=-1,
+        rollout_top_logprobs_num=0,
+        rollout_sampling_logprobs_mode="selected",
         save_debug_trajectory_data=None,
         pause_generation_mode="in_place",
         num_layers=_NUM_LAYERS,
+        lora_rank=0,
+        lora_adapter_path=None,
+        lora_train_only=False,
+        session_message_matcher="strict",
+        session_sample_picker_path=None,
+        session_sample_postprocessor_path=None,
+        router="sglang",
+        sglang_router_policy="manual",
+        router_args=dict(policy=None, prefill_policy=None, decode_policy=None),
+        rollout_external_router_pd=False,
     )
-    server = UvicornThreadServer(SessionServer(args, backend_url=backend_url).app, host="127.0.0.1", port=port)
+    config = compute_session_server_config(
+        args,
+        host="127.0.0.1",
+        port=port,
+        instance_id="session-addition-r3-e2e",
+        backend_url=backend_url,
+    )
+    server = UvicornThreadServer(SessionServer(config).app, host="127.0.0.1", port=port)
     server.start()
     try:
         yield server.url

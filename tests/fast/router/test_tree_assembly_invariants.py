@@ -4,7 +4,7 @@ The independent oracle checks:
 
 1. token fields match each possibly truncated leaf snapshot;
 2. every kept completion span is trainable in exactly one surviving leaf;
-3. temporal retry trimming accepts shorter replacements;
+3. rolled-back leaf trimming accepts shorter replacements;
 4. one trajectory reward reaches every kept sample;
 5. samples sort by checkpoint count, then leaf seq, descending.
 """
@@ -31,10 +31,17 @@ _ARGS = SimpleNamespace(
     apply_chat_template_kwargs={"enable_thinking": False},
     tito_model="default",
     sglang_speculative_algorithm=None,
+    use_rollout_routing_replay=False,
+    use_rollout_indexer_replay=False,
+    use_sampling_support_replay=False,
+    lora_rank=0,
+    lora_adapter_path=None,
+    lora_train_only=False,
     session_server_instance_id=uuid.uuid4().hex,
     save_debug_trajectory_data=None,
-    session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_retries",
+    session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_rolled_back_leaves",
     session_sample_postprocessor_path="miles.rollout.session.v2.postprocessor_hub.default_postprocess",
+    output_store_backend_config=None,
 )
 
 
@@ -51,7 +58,7 @@ def core():
         tokenizer_type=_ARGS.tito_model,
         chat_template_kwargs=_ARGS.apply_chat_template_kwargs,
     )
-    registry = SessionRegistryV2(_ARGS, tokenizer, tito_tokenizer=tito_tokenizer)
+    registry = SessionRegistryV2(tokenizer, tito_tokenizer=tito_tokenizer)
     return SessionCoreV2(_UnusedBackend(), registry, _ARGS, _ARGS.session_server_instance_id)
 
 
@@ -92,7 +99,11 @@ async def _fresh_grower(core):
 
 
 def _oracle_pick(state):
-    """Independent re-derivation of ruling F: (kept, trimmed)."""
+    """Independent re-derivation of drop_rolled_back_leaves: (kept, trimmed).
+
+    Every root leaf is kept: the grower's token ids are globally unique, so no
+    two roots share a prompt and the re-sent-first-turn rule never applies.
+    """
     kept, trimmed = [], []
     for leaf in state.tree.leaves():
         if leaf.parent is None:
@@ -129,9 +140,9 @@ def _assert_sample_legality(sample: Sample, leaf, owner: dict[int, int]) -> None
             continue
         lo, hi = node.completion_span
         expected |= set(range(lo, min(hi, len(sample.tokens))))
-    # Mid-path early-stop (a non-COMPLETED turn ends the fold) may keep the
-    # sample shorter than the snapshot; trained positions must then be the
-    # owned completions clipped to the kept range.
+    # Truncation by max_seq_len may keep the sample shorter than the snapshot;
+    # trained positions must then be the owned completions clipped to the kept
+    # range.
     expected = {p for p in expected if response_start <= p < len(sample.tokens)}
     assert trained == expected, f"exactly-once violated: trained={sorted(trained)} expected={sorted(expected)}"
 
@@ -141,8 +152,8 @@ async def _collect(core, sid, *, max_seq_len=None, agent_metadata=None):
     return response.status_code, bytes(response.body)
 
 
-def _grow_random_tree(grower, rng: random.Random, *, allow_shorter_retries: bool = False):
-    """Grow a random forest, optionally allowing shorter retry branches."""
+def _grow_random_tree(grower, rng: random.Random, *, allow_shorter_replacements: bool = False):
+    """Grow a random forest, optionally allowing shorter replacement branches."""
     grower.grow(None, env_len=rng.randint(1, 3), completion_len=rng.randint(1, 4))
     for _ in range(rng.randint(2, 9)):
         state = grower.state
@@ -150,13 +161,13 @@ def _grow_random_tree(grower, rng: random.Random, *, allow_shorter_retries: bool
         leaves = state.tree.leaves()
         if op < 0.15:  # new root (subagent)
             grower.grow(None, env_len=rng.randint(1, 3), completion_len=rng.randint(1, 4))
-        elif op < 0.45:  # retry: supersede a random childless leaf with a sibling
+        elif op < 0.45:  # rollback: supersede a random childless leaf with a sibling
             leaf = rng.choice(leaves)
             if leaf.parent is None:
                 grower.grow(leaf, env_len=rng.randint(1, 2), completion_len=rng.randint(1, 3))
                 continue
             abandoned_len = len(leaf.token_ids) - len(leaf.parent.token_ids)
-            floor = 1 if allow_shorter_retries else max(1, abandoned_len)
+            floor = 1 if allow_shorter_replacements else max(1, abandoned_len)
             grower.grow(
                 leaf.parent,
                 env_len=rng.randint(1, 2),
@@ -171,7 +182,6 @@ async def test_fuzz_forest_assembly_invariants(core, seed):
     sid, state, grower = await _fresh_grower(core)
     rng = random.Random(seed)
     _grow_random_tree(grower, rng)
-    state.active_leaf = state.tree.leaves()[-1]
 
     kept, trimmed = _oracle_pick(state)
     trajectory_reward = round(rng.random(), 3)
@@ -194,8 +204,7 @@ async def test_fuzz_shorter_replacements_assemble_legally(core, seed):
     """Shorter replacements still assemble under the temporal trim rule."""
     sid, state, grower = await _fresh_grower(core)
     rng = random.Random(seed)
-    _grow_random_tree(grower, rng, allow_shorter_retries=True)
-    state.active_leaf = state.tree.leaves()[-1]
+    _grow_random_tree(grower, rng, allow_shorter_replacements=True)
 
     kept, _ = _oracle_pick(state)
     status, payload = await _collect(core, sid)
@@ -212,7 +221,6 @@ async def test_fuzz_forest_invariants_under_truncation(core, seed):
     sid, state, grower = await _fresh_grower(core)
     rng = random.Random(seed)
     _grow_random_tree(grower, rng)
-    state.active_leaf = state.tree.leaves()[-1]
 
     kept, _ = _oracle_pick(state)
     max_seq_len = rng.randint(4, 12)
@@ -234,13 +242,12 @@ async def test_fuzz_forest_invariants_under_truncation(core, seed):
 
 
 class TestTargetedEdges:
-    async def test_chained_retries_single_survivor(self, core):
+    async def test_chained_rollbacks_single_survivor(self, core):
         sid, state, grower = await _fresh_grower(core)
         root = grower.grow(None, env_len=2, completion_len=2)
         for _ in range(3):  # three abandoned attempts, each superseded
             grower.grow(root, env_len=1, completion_len=2)
         survivor = grower.grow(root, env_len=1, completion_len=2)
-        state.active_leaf = survivor
 
         status, payload = await _collect(core, sid)
         assert status == 200
@@ -253,7 +260,6 @@ class TestTargetedEdges:
         root = grower.grow(None, env_len=2, completion_len=2)
         grower.grow(root, env_len=1, completion_len=2)
         twin_b = grower.grow(root, env_len=1, completion_len=2)
-        state.active_leaf = twin_b
 
         status, payload = await _collect(core, sid)
         assert status == 200
@@ -270,8 +276,7 @@ class TestTargetedEdges:
         deep_a = grower.grow(mid, env_len=1, completion_len=2)  # earliest leaf: owns root+mid+own
         grower.grow(deep_a, env_len=1, completion_len=2)  # extend: deep_a no longer a leaf
         grower.grow(mid, env_len=1, completion_len=3)  # later sibling below mid
-        side = grower.grow(root, env_len=1, completion_len=4)  # sibling below root
-        state.active_leaf = side
+        grower.grow(root, env_len=1, completion_len=4)  # sibling below root
 
         kept, _ = _oracle_pick(state)
         status, payload = await _collect(core, sid)
@@ -294,19 +299,18 @@ class TestTargetedEdges:
         surviving_nodes = {node.seq for leaf in kept for node in leaf.path_nodes()}
         assert span_train_count == {seq: 1 for seq in surviving_nodes}
 
-    async def test_midpath_length_turn_early_stops_but_stays_legal(self, core):
-        """A non-COMPLETED mid-path turn ends the fold (documented early-stop):
-        the sample stops at that turn and every trained position still lies in
-        an owned completion span."""
+    async def test_midpath_length_turn_merges_through(self, core):
+        """A mid-path length turn folds like a completed one: its child's
+        prompt continues it, so the sample reaches the leaf and every owned
+        completion span is trained exactly once."""
         sid, state, grower = await _fresh_grower(core)
         root = grower.grow(None, env_len=2, completion_len=2)
         cut = grower.grow(root, env_len=1, completion_len=2, finish_reason="length")
         leaf = grower.grow(cut, env_len=1, completion_len=2)
-        state.active_leaf = leaf
 
         status, payload = await _collect(core, sid)
         assert status == 200
         reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
         (sample,) = reply.samples
-        assert len(sample.tokens) == len(cut.token_ids)  # fold stopped at the length turn
+        assert sample.tokens == leaf.token_ids
         _assert_sample_legality(sample, leaf, _oracle_owner([leaf]))

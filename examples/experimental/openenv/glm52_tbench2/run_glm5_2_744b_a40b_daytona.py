@@ -25,7 +25,7 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 app = typer.Typer()
 
@@ -35,9 +35,9 @@ REPO_ROOT = SCRIPT_DIR.parents[3]
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal"] = "normal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     model_name: str = "GLM-5.2"
     megatron_model_type: str = "glm5.2-744B-A40B"
     num_gpus_per_node: int = 4
@@ -121,6 +121,7 @@ def _assert_openenv_deps():
 
 
 def _execute_train(args: ScriptArgs):
+    U = args.create_backend()
     _assert_openenv_deps()
 
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
@@ -173,6 +174,7 @@ def _execute_train(args: ScriptArgs):
         "--tito-model glm47 "
         "--use-session-server "
         "--session-server-port 30000 "
+        "--session-server-workers 32 "
     )
 
     # 32-GPU training half. CP4 splits --max-seq-len across the CP ranks;
@@ -228,11 +230,11 @@ def _execute_train(args: ScriptArgs):
         "--sglang-mem-fraction-static 0.85 "
         f"--sglang-ep-size {sglang_world_size} "
         "--sglang-kv-cache-dtype fp8_e4m3 "
-        "--sglang-nsa-decode-backend flashmla_kv "
-        "--sglang-nsa-prefill-backend flashmla_sparse "
+        "--sglang-dsa-decode-backend flashmla_kv "
+        "--sglang-dsa-prefill-backend flashmla_sparse "
         "--sglang-attention-backend nsa "
         "--sglang-page-size 64 "
-        "--sglang-cuda-graph-max-bs 32 "
+        "--sglang-cuda-graph-max-bs-decode 32 "
         f"--sglang-max-running-requests {256 if balanced else 512} "
         f"--sglang-chunked-prefill-size {32768 if balanced else 2048 * sglang_world_size} "
         "--sglang-watchdog-timeout 3600 "
@@ -256,11 +258,7 @@ def _execute_train(args: ScriptArgs):
     if args.fp8_rollout and not balanced:
         sglang_args += "--sglang-moe-runner-backend flashinfer_trtllm_routed "
 
-    dashboard_args = (
-        f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
-        "--use-miles-dashboard "
-        "--dashboard-sglang-scrape-mode direct "
-    )
+    dashboard_args = f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -292,7 +290,7 @@ def _execute_train(args: ScriptArgs):
         f"{agent_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
@@ -302,6 +300,7 @@ def _execute_train(args: ScriptArgs):
     )
 
     extra_env_vars = {
+        "MILES_DASHBOARD": "1",
         # FullyAsyncRolloutFn is the class-based rollout API
         # On a watchdog timeout every rank dumps its recent collectives, which
         # identifies the rank that never arrived. Must reach the train actors,
@@ -333,7 +332,6 @@ def _execute_train(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars=extra_env_vars,
@@ -350,7 +348,7 @@ def _cli():
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def train(args: ScriptArgs):
     _execute_train(args)
 

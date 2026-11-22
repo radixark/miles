@@ -26,7 +26,9 @@ separates the two halves:
       ``(sandbox, base_url)``. The sandbox carries ownership metadata and a
       TTL armed as a dead-man's switch: a keepalive thread re-arms the
       timeout while the creating process lives, so a hard-killed caller's
-      orphans are reclaimed instead of running forever.
+      orphans are reclaimed instead of running forever. Its metadata also
+      carries a max lifetime past the episode cap, for servers that end a
+      sandbox at that age.
   bake CLI (``python tb2_sandbox_e2b.py ...``)  pre-build templates for a
       task list so the first training episode doesn't pay the image build.
 
@@ -40,7 +42,6 @@ import os
 import re
 import shlex
 import sys
-import threading
 from pathlib import Path
 
 import tb2_sandbox_recipe as recipe
@@ -53,6 +54,8 @@ from tb2_sandbox_recipe import (
     task_env_resources,
     wait_server_ready,
 )
+from miles.rollout.agentic.credentials import resolve_provider_api_key
+from miles.rollout.agentic.rollout_limits import rollout_lock
 
 
 # The user every build command and the env server run as. The TB2 task images
@@ -105,18 +108,6 @@ def _connection_opts() -> dict:
     return {"api_key": resolve_api_key()}
 
 
-# One build per alias per process: a rollout fans out many episodes of the
-# same task at once, and every concurrent miss would otherwise start its own
-# multi-minute build. Cross-process dedup is the server's job (build cache).
-_build_locks: dict[str, threading.Lock] = {}
-_build_locks_guard = threading.Lock()
-
-
-def _build_lock(alias: str) -> threading.Lock:
-    with _build_locks_guard:
-        return _build_locks.setdefault(alias, threading.Lock())
-
-
 def ensure_task_template(
     task_dir: Path,
     *,
@@ -140,7 +131,9 @@ def ensure_task_template(
 
     task_dir = Path(task_dir)
     alias = template_alias(task_dir)
-    with _build_lock(alias):
+    # one build per alias per rollout: a rollout fans out many episodes of the same task at once,
+    # and every concurrent miss would otherwise start its own multi-minute build
+    with rollout_lock(f"openenv-e2b-build-{alias}"):
         if not force and Template.alias_exists(alias, **_connection_opts()):
             return alias
         base = resolve_docker_image(task_dir, None)
@@ -190,6 +183,19 @@ _READY_TIMEOUT_S = float(os.getenv("OPENENV_E2B_READY_TIMEOUT_S", "300"))
 _KEEPALIVE_INTERVAL_S = _SANDBOX_TTL_S / 6.0
 _KEEPALIVE_MAX_CONSECUTIVE_FAILURES = 3
 
+# The keepalive re-arms a sandbox for as long as this process lives, so one the
+# episode failed to kill would outlive it. Servers that enforce the
+# max_lifetime_secs metadata end it this much past the episode cap instead (an
+# estimate).
+_MAX_LIFETIME_SLACK_S = 30 * 60
+
+
+def _max_lifetime_s() -> int:
+    # imported on use: the bake CLI runs without the agent loop's dependencies (openai)
+    import openenv_agent_function
+
+    return int(openenv_agent_function.MAX_ROLLOUT_TIME_S) + _MAX_LIFETIME_SLACK_S
+
 
 def _start_keepalive(sandbox, task_id: str) -> None:
     """Re-arm the sandbox TTL for as long as THIS process lives.
@@ -232,10 +238,12 @@ def create_task_sandbox(
     # The TTL is deliberately not a parameter: the keepalive thread re-arms
     # _SANDBOX_TTL_S, so a different value passed here would be silently
     # overwritten at the first beat.
+    max_lifetime_s = _max_lifetime_s()
     sandbox = Sandbox.create(
         template=alias,
-        timeout=_SANDBOX_TTL_S,
-        metadata=sandbox_labels(task_dir),
+        # a server enforcing max_lifetime_secs refuses a longer timeout
+        timeout=min(_SANDBOX_TTL_S, max_lifetime_s),
+        metadata={**sandbox_labels(task_dir), "max_lifetime_secs": str(max_lifetime_s)},
         **opts,
     )
     try:
@@ -276,10 +284,10 @@ _DEFAULT_API_KEY_FILE = "~/.config/e2b/api_key"
 
 def resolve_api_key() -> str:
     """The E2B API key: E2B_API_KEY, else the key file (see
-    recipe.resolve_api_key for the file-indirection rationale). AgentENV does
+    recipe.resolve_provider_api_key for the file-indirection rationale). AgentENV does
     not enforce keys today, but recent SDKs validate the format client-side —
     provision a well-formed one (e2b_ + 40 hex chars)."""
-    return recipe.resolve_api_key("E2B_API_KEY", "E2B_API_KEY_FILE", _DEFAULT_API_KEY_FILE)
+    return resolve_provider_api_key("E2B_API_KEY", "E2B_API_KEY_FILE", _DEFAULT_API_KEY_FILE)
 
 
 def bake(tasks_dir: Path, task_id: str, force: bool) -> None:

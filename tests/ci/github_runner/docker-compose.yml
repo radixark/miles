@@ -9,7 +9,7 @@
 # container mounts the wrong (or empty) tree.
 #
 # Every CI host is expected to provide /data/miles_ci as a real directory or
-# as a symlink to the host's big disk; tests/ci/skills/setup-ci-host/setup-host.sh
+# as a symlink to the host's big disk; .claude/skills/setup-ci-host/setup-host.sh
 # automates this (df probe + symlink). Concrete per-runner services live in
 # a host-local docker-compose.override.yml (gitignored): each host defines
 # its own runners there with stable names, labels, and CUDA_VISIBLE_DEVICES
@@ -23,6 +23,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /data/miles_ci:/data/miles_ci
+      - /data/miles_ci/runner-hooks/job-container-docker:/opt/runner-hooks/job-container-docker:ro
       # it requires this folder
       - /home/runner/externals:/home/runner/externals
     deploy:
@@ -30,6 +31,9 @@ services:
     restart: always
     environment:
       RUNNER_ALLOW_RUNASROOT: "1"
+      ACTIONS_RUNNER_HOOK_JOB_STARTED: /data/miles_ci/runner-hooks/remove-foreign-checkouts.sh
+      # The runner resolves `docker` on PATH: the hook strips the host docker socket from job containers.
+      PATH: /opt/runner-hooks/job-container-docker:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     privileged: true
     user: root
     # ref: https://github.com/actions/runner/issues/367#issuecomment-2007558723

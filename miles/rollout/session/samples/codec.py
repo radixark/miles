@@ -13,15 +13,18 @@ from copy import copy, deepcopy
 
 import numpy as np
 import safetensors.numpy
+import torch
 
-from miles.utils.types import Sample
+from miles.utils.output_store.plan import StorePlan
+from miles.utils.sampling_mask import RolloutSamplingMask
+from miles.utils.types import Sample, WeightVersionsPerCall
 
 
 @dataclasses.dataclass(frozen=True)
 class ValueSpec:
     """Wire contract of one computed field."""
 
-    codec: str  # "tensor": ndarray on both sides | "tensor_list": tensor on the wire, list on decode | "json"
+    codec: str  # "tensor" | "tensor_list" | "sampling_mask" | "json"
     dtype: np.dtype | None = None  # tensor codecs: pinned on both sides; a mismatch raises instead of converting
     strict: bool = False  # encode never converts, only validates (R3 replay tensors must arrive as int32)
     null: object = None  # decoded value for a null-marked field; copied per sample so no instance is shared
@@ -35,10 +38,15 @@ SAMPLES_VALUE_SPEC: dict[str, ValueSpec] = {
     "response_length": ValueSpec("json"),
     "loss_mask": ValueSpec("tensor_list", np.dtype(np.uint8)),
     "rollout_log_probs": ValueSpec("tensor_list", np.dtype(np.float64)),
+    "rollout_topk_token_ids": ValueSpec("tensor", np.dtype(np.int32), strict=True),
+    "rollout_topk_log_probs": ValueSpec("tensor", np.dtype(np.float32), strict=True),
+    "rollout_sampling_mask": ValueSpec("sampling_mask"),
     "rollout_routed_experts": ValueSpec("tensor", np.dtype(np.int32), strict=True),
     "rollout_indexer_topk": ValueSpec("tensor", np.dtype(np.int32), strict=True),
+    "rollout_store_plan": ValueSpec("json"),
     "status": ValueSpec("json"),
     "weight_versions": ValueSpec("json"),
+    "spec_info": ValueSpec("json"),
     "prefix_cache_info": ValueSpec("json"),
     "metadata": ValueSpec("json"),
 }
@@ -49,19 +57,22 @@ SAMPLES_VALUE_SPEC_V2: dict[str, ValueSpec] = {
     "reward": ValueSpec("json"),
 }
 
+ROLLOUT_SAMPLING_MASK_FIELDS = ("rollout_sampling_mask",)
+
 # The wire allowlists, derived: only table fields cross the samples wire.
-COMPUTED_FIELDS = tuple(SAMPLES_VALUE_SPEC)
-COMPUTED_FIELDS_V2 = tuple(SAMPLES_VALUE_SPEC_V2)
+COMPUTED_FIELDS = tuple(field for field in SAMPLES_VALUE_SPEC if field not in ROLLOUT_SAMPLING_MASK_FIELDS)
+COMPUTED_FIELDS_V2 = tuple(field for field in SAMPLES_VALUE_SPEC_V2 if field not in ROLLOUT_SAMPLING_MASK_FIELDS)
 
 assert all(
-    spec.codec in ("tensor", "tensor_list", "json") for spec in SAMPLES_VALUE_SPEC_V2.values()
+    spec.codec in ("tensor", "tensor_list", "sampling_mask", "json") for spec in SAMPLES_VALUE_SPEC_V2.values()
 ), "unknown codec in SAMPLES_VALUE_SPEC"
 
 _TENSOR_FIELDS = frozenset(field for field, spec in SAMPLES_VALUE_SPEC_V2.items() if spec.codec != "json")
-assert _TENSOR_FIELDS <= set(COMPUTED_FIELDS), "every tensor field must be on the v1 wire too"
+assert _TENSOR_FIELDS <= set(COMPUTED_FIELDS + ROLLOUT_SAMPLING_MASK_FIELDS)
 
 _SAMPLES_META_KEY = "_samples_meta"
 _OPD_STUDENT_TOP_LOGPROBS_KEY = "opd_student_top_logprobs"
+_ROLLOUT_TOPK_LOGPROBS_FIELDS = ("rollout_topk_token_ids", "rollout_topk_log_probs")
 
 
 @dataclasses.dataclass
@@ -85,6 +96,38 @@ def _asarray_wire(field: str, value, dtype: np.dtype) -> np.ndarray:
     return converted
 
 
+# safetensors dtype names of every wire dtype in SAMPLES_VALUE_SPEC_V2 (incl. sampling-mask ids/offsets).
+# TODO: add "I16": np.int16 for #4035's int16 routed experts (past 256 experts), whichever lands second.
+_WIRE_DTYPES = {"I64": np.int64, "I32": np.int32, "U8": np.uint8, "F64": np.float64, "F32": np.float32}
+
+
+def _load_tensor_views(payload: bytes | np.ndarray) -> dict[str, np.ndarray]:
+    """Parse the safetensors container into arrays that view ``payload`` instead of copying it.
+
+    Layout: u64-le header length, JSON header (``dtype``, ``shape``, ``data_offsets`` per tensor),
+    then the tensor bytes. A read-only payload (``bytes``) is copied once into a writable buffer, so
+    decoded arrays are writable either way; the caller's buffer stays alive while any view does.
+    """
+    buffer = np.frombuffer(payload, dtype=np.uint8)
+    if not buffer.flags.writeable:
+        buffer = buffer.copy()
+    header_len = int.from_bytes(buffer[:8].tobytes(), "little")
+    if len(buffer) < 8 or 8 + header_len > len(buffer):
+        raise ValueError(f"invalid safetensors container: {len(buffer)} bytes, header length {header_len}")
+    header = json.loads(buffer[8 : 8 + header_len].tobytes())
+    data = buffer[8 + header_len :]
+    tensors = {}
+    for name, info in header.items():
+        if name == "__metadata__":
+            continue
+        dtype = np.dtype(_WIRE_DTYPES[info["dtype"]])  # KeyError propagates: dtype outside the wire contract
+        start, end = info["data_offsets"]
+        if not 0 <= start <= end <= len(data) or end - start != dtype.itemsize * int(np.prod(info["shape"])):
+            raise ValueError(f"invalid safetensors entry {name}: offsets {start}..{end}, shape {info['shape']}")
+        tensors[name] = data[start:end].view(dtype).reshape(info["shape"])
+    return tensors
+
+
 def encode_samples(
     samples: list[Sample],
     session_metadata: dict,
@@ -105,16 +148,35 @@ def encode_samples(
         nulls: list[str] = []
         for field in fields:
             spec = SAMPLES_VALUE_SPEC_V2[field]
-            value = getattr(sample, field)
+            value = getattr(sample, field)  # config-access-exempt: attribute selected at runtime from field
             if spec.codec == "json":
                 if field == "status":
                     value = value.value
+                elif field == "weight_versions":
+                    value = [call.to_dict() for call in value]
+                elif field == "spec_info":
+                    value = value.to_dict()
                 elif field == "prefix_cache_info":
+                    value = value.to_dict()
+                elif field == "rollout_store_plan":
+                    if value is None:
+                        # No key: a payload without plans stays byte-identical.
+                        continue
                     value = value.to_dict()
                 sample_meta[field] = value
                 continue
             if value is None:
+                # Preserve the existing wire format when rollout top-k logprobs collection is disabled.
+                if field in _ROLLOUT_TOPK_LOGPROBS_FIELDS:
+                    continue
                 nulls.append(field)
+                continue
+            if spec.codec == "sampling_mask":
+                if not isinstance(value, RolloutSamplingMask):
+                    raise TypeError(f"{field} must be a RolloutSamplingMask, got {type(value).__name__}")
+                ids, offsets = value._as_tensors()
+                tensors[f"{field}.ids.{sample_index}"] = np.ascontiguousarray(ids.numpy())
+                tensors[f"{field}.offsets.{sample_index}"] = np.ascontiguousarray(offsets.numpy())
                 continue
             if spec.strict:
                 arr = np.asarray(value)
@@ -135,15 +197,17 @@ def encode_samples(
 
 
 def decode_samples_and_merge_input_sample(
-    payload: bytes, input_sample: Sample, *, fields: tuple[str, ...] = COMPUTED_FIELDS
+    payload: bytes | np.ndarray, input_sample: Sample, *, fields: tuple[str, ...] = COMPUTED_FIELDS
 ) -> SamplesReply:
     """Driver side: overlay each wire sample's computed fields onto a deepcopy of `input_sample`.
 
     ``fields`` must match the server's encode allowlist (v1 default); extra
     keys a newer server sent are ignored, so a v1 decode of a v2 payload
-    keeps exactly the v1 overlay semantics.
+    keeps exactly the v1 overlay semantics. R3 and top-k tensor fields are
+    views of the payload buffer (see ``_load_tensor_views``); a sampling mask
+    copies its ids and offsets.
     """
-    tensors = safetensors.numpy.load(payload)  # SafetensorError propagates: invalid container
+    tensors = _load_tensor_views(payload)  # ValueError/KeyError propagate: invalid container
     meta_arr = tensors.pop(_SAMPLES_META_KEY)  # KeyError propagates: missing meta is malformed
     if meta_arr.ndim != 1 or meta_arr.dtype != np.uint8:
         raise ValueError(
@@ -161,11 +225,18 @@ def decode_samples_and_merge_input_sample(
         for field in fields:
             spec = SAMPLES_VALUE_SPEC_V2[field]
             if spec.codec == "json":
+                if field == "rollout_store_plan":
+                    # No key means no plan; the server's plan replaces the input sample's.
+                    value = sample_meta.get(field)
+                    sample.rollout_store_plan = None if value is None else StorePlan.from_dict(value)
+                    continue
                 value = sample_meta[field]
                 if field == "status":
                     value = Sample.Status(value)
                 elif field == "weight_versions":
-                    value = list(value)
+                    value = [WeightVersionsPerCall.from_dict(call) for call in value]
+                elif field == "spec_info":
+                    value = Sample.SpecInfo.from_dict(value)
                 elif field == "prefix_cache_info":
                     value = Sample.PrefixCacheInfo.from_dict(value)
                 elif field == "reward":
@@ -182,6 +253,24 @@ def decode_samples_and_merge_input_sample(
                 continue
             if field in nulls:
                 setattr(sample, field, copy(spec.null))
+                continue
+            if field in _ROLLOUT_TOPK_LOGPROBS_FIELDS and f"{field}.{sample_index}" not in tensors:
+                # Older producers have no candidate fields; training validates
+                # their presence when the new loss is actually selected.
+                setattr(sample, field, None)
+                continue
+            if spec.codec == "sampling_mask":
+                ids = tensors.pop(f"{field}.ids.{sample_index}")
+                offsets = tensors.pop(f"{field}.offsets.{sample_index}")
+                if ids.dtype != np.int32 or offsets.dtype != np.int64:
+                    raise ValueError(
+                        f"{field} must use int32 ids and int64 offsets, got {ids.dtype} and {offsets.dtype}"
+                    )
+                setattr(
+                    sample,
+                    field,
+                    RolloutSamplingMask(ids=torch.from_numpy(ids), offsets=torch.from_numpy(offsets)),
+                )
                 continue
             arr = tensors.pop(f"{field}.{sample_index}")  # KeyError propagates: a promised tensor must exist
             if arr.dtype != spec.dtype:

@@ -52,6 +52,11 @@ def generate_rollout(args, rollout_id, data_source, evaluation=False) \
 
 **Default:** `miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn`; use `miles.rollout.sglang_rollout.generate_rollout` under `MILES_USE_LEGACY_ROLLOUT_V1=1`.
 
+Plain functions with the signature above are wrapped in a legacy adapter. A class-based rollout
+function needs to subclass `miles.rollout.base_types.BaseRolloutFn`.
+
+`rollout/raw_reward` comes only from `RolloutFnTrainOutput.metrics`: the default rollouts fill it with `miles.rollout.filter_hub.base_types.MetricGatherer`, which collects rewards before dynamic sampling filters. A replacement must report it the same way; the trainer logs only the retained-batch mean, as `rollout/raw_reward_filtered`. A function that returns a bare sample list reports no metrics, so its run has no `rollout/raw_reward`.
+
 **Reference:** [`examples/experimental/multi_agent/rollout_with_multi_agents.py`](https://github.com/radixark/miles/blob/main/examples/experimental/multi_agent/rollout_with_multi_agents.py).
 
 ### `--custom-generate-function-path`
@@ -98,12 +103,11 @@ message/token ownership contract.
 ```python
 class CustomDataSource(DataSource):
     def get_samples(self, num_samples) -> list[list[Sample]]: ...
-    def add_samples(self, samples) -> None: ...
-    def save(self, rollout_id) -> None: ...
-    def load(self, rollout_id=None) -> None: ...
+    def save(self, directory: Path) -> None: ...
+    def load(self, directory: Path) -> None: ...
 ```
 
-**Default:** `miles.rollout.data_source.RolloutDataSourceWithBuffer`.
+**Default:** `miles.rollout.data_source.RolloutDataSource`.
 
 ### `--eval-function-path`
 
@@ -140,6 +144,12 @@ async def batched_custom_rm(args, samples: list[Sample]) -> list[float]:
     ...
 ```
 
+**Per-sample override:** a data source can set `Sample.reward_spec` to choose a sample's grader:
+`reward_spec.custom_rm_path` names a reward function and `reward_spec.rm_type` a built-in one, and each wins
+over the matching flag. A spec cannot carry hook config, so a per-sample function that declares its own config
+(`config_class` or `add_arguments`) must be the `--custom-rm-path` one. Under `--group-rm`, a batched
+`--custom-rm-path` scores the whole group, so samples naming a different function are rejected.
+
 **Built-in `--rm-type` options:** `math`, `dapo`, `deepscaler`, `gemma_math`, `f1`,
 `gpqa`, `ifbench`, `remote_rm` (with `--rm-url`), `random`, `deterministic_random`.
 Prefixing any of them with `boxed_` (for example `boxed_math`) extracts `\boxed{}`
@@ -158,8 +168,8 @@ Hook to normalize rewards differently from the default GRPO normalization.
 Per-group filter; runs after scoring, before queueing for training.
 
 ```python
-def filter_function(args, samples: list[Sample], **kwargs) -> DynamicFilterOutput:
-    return DynamicFilterOutput(keep=True, reason=None)
+def filter_function(args, samples: list[Sample], **kwargs) -> FilterOutput:
+    return FilterOutput(keep=True, reason=None)
 ```
 
 **Stock implementation:** `miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std`.
@@ -255,6 +265,7 @@ def convert_samples_to_train_data(args, samples) -> dict:
         "rollout_routed_experts":  [...],
         "metadata":                [...],
         "multimodal_train_inputs": [...],
+        "multimodal_inputs":       [...],
         "teacher_log_probs":       [...],
     }
 ```
@@ -324,5 +335,7 @@ ROLLOUT_ARGS+=(
 ```
 
 That is the entire delta from the stock GRPO recipe, with no source changes to Miles.
+
+For built-in group-relative reward shaping, see [Length penalties](/advanced/algorithms/length-penalties).
 
 → Next: [Server arguments reference](/user-guide/cli-reference)

@@ -1,6 +1,6 @@
 import torch
 
-from miles.backends.training_utils.loss_hub.math_utils import compute_approx_kl, compute_policy_loss
+from miles.backends.training_utils.loss.hub.math_utils import compute_approx_kl, compute_policy_loss
 
 compute_approx_kl_eager = compute_approx_kl.__wrapped__
 compute_policy_loss_eager = compute_policy_loss.__wrapped__

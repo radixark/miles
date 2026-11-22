@@ -13,6 +13,7 @@ Debug/test use only: the fold trades bandwidth and synchrony for determinism.
 """
 
 import logging
+from datetime import timedelta
 
 import torch
 import torch.distributed as dist
@@ -65,6 +66,7 @@ class DetProcessGroup(BaseProcessGroup):
     def __init__(self, inner: dist.ProcessGroup) -> None:
         super().__init__(inner.rank(), inner.size())
         self._inner = inner
+        self._coalesced_p2p_works: list[Work] | None = None
         # Register the cuda backend as torchft's ProcessGroupNCCL._create_pg does, so
         # _device_types reports cuda and object collectives pick cuda over cpu. Only
         # feeds device/backend lookups; collectives still dispatch to our methods.
@@ -128,10 +130,14 @@ class DetProcessGroup(BaseProcessGroup):
     def allgather_into_tensor_coalesced(
         self, output_tensors: list[torch.Tensor], input_tensors: list[torch.Tensor], opts: object = None
     ) -> Work:
-        # The coalescing manager's flush passes no opts; inner lacks the coalesced form.
+        # The coalescing manager's flush lands here with its region still open,
+        # so the inner calls are batched and hand back None; it waits on the
+        # aggregate itself.
         effective_opts = opts if opts is not None else AllgatherOptions()
         for output, input in zip(output_tensors, input_tensors, strict=True):
-            self._inner._allgather_base(output, input, effective_opts).wait()
+            work = self._inner._allgather_base(output, input, effective_opts)
+            if work is not None:
+                work.wait()
         return _CompletedWork()
 
     def _allgather_base(self, output: torch.Tensor, input: torch.Tensor, opts: object) -> Work:
@@ -156,6 +162,17 @@ class DetProcessGroup(BaseProcessGroup):
             self._reduce_scatter_base(output, input, opts)
         return _CompletedWork()
 
+    # torch 2.13 routes dist.reduce_scatter_tensor through these names; without
+    # them it reaches the C++ base, which dispatches to the NCCL backend
+    # registered above and silently drops the fixed-order fold.
+    def reduce_scatter_single(self, output: torch.Tensor, input: torch.Tensor, opts: object) -> Work:
+        return self._reduce_scatter_base(output, input, opts)
+
+    def reduce_scatter_single_coalesced(
+        self, output_tensors: list[torch.Tensor], input_tensors: list[torch.Tensor], opts: object
+    ) -> Work:
+        return self.reduce_scatter_tensor_coalesced(output_tensors, input_tensors, opts)
+
     def alltoall_base(
         self,
         output_tensor: torch.Tensor,
@@ -166,18 +183,41 @@ class DetProcessGroup(BaseProcessGroup):
     ) -> Work:
         return self._inner.alltoall_base(output_tensor, input_tensor, output_split_sizes, input_split_sizes, opts)
 
+    def all_to_all_single(
+        self,
+        output_tensor: torch.Tensor,
+        input_tensor: torch.Tensor,
+        output_split_sizes: list[int],
+        input_split_sizes: list[int],
+        opts: object,
+    ) -> Work:
+        # torch 2.13's entry point for dist.all_to_all_single. No reduction is
+        # involved, but the C++ base's alltoall faults in NCCL on a wrapper
+        # group, so forward it the way alltoall_base does.
+        return self.alltoall_base(output_tensor, input_tensor, output_split_sizes, input_split_sizes, opts)
+
     def send(self, tensors: list[torch.Tensor], dst_rank: int, tag: int) -> Work:
-        return self._inner.send(tensors, dst_rank, tag)
+        work = self._inner.send(tensors, dst_rank, tag)
+        if self._coalesced_p2p_works is not None:
+            self._coalesced_p2p_works.append(work)
+        return work
 
     def recv(self, tensors: list[torch.Tensor], src_rank: int, tag: int) -> Work:
-        return self._inner.recv(tensors, src_rank, tag)
+        work = self._inner.recv(tensors, src_rank, tag)
+        if self._coalesced_p2p_works is not None:
+            self._coalesced_p2p_works.append(work)
+        return work
 
     def _start_coalescing(self, device: torch.device) -> None:
         # Ops queue at the Python level and flush via the *_coalesced methods.
-        return None
+        assert self._coalesced_p2p_works is None, "Nested coalescing is not supported"
+        self._coalesced_p2p_works = []
 
     def _end_coalescing(self, device: torch.device) -> Work:
-        return _CompletedWork()
+        works = self._coalesced_p2p_works
+        assert works is not None, "Coalescing has not started"
+        self._coalesced_p2p_works = None
+        return _CoalescedP2PWork(works) if works else _CompletedWork()
 
     def getBackendName(self) -> str:
         return DET_NCCL_BACKEND_NAME
@@ -284,7 +324,21 @@ def _gather_into(group: dist.ProcessGroup, output: torch.Tensor, input: torch.Te
 
 def _reduce_op_of(opts: object) -> object:
     """Extract the ReduceOp from an options object (or pass a bare ReduceOp through)."""
-    return opts.reduceOp if hasattr(opts, "reduceOp") else opts
+    return (
+        opts.reduceOp if hasattr(opts, "reduceOp") else opts
+    )  # config-access-exempt: accept either ReduceOp or collective options wrappers
+
+
+class _CoalescedP2PWork(Work):
+    def __init__(self, works: list[Work]) -> None:
+        super().__init__()
+        self._works = works
+
+    def wait(self, timeout: timedelta | None = None) -> bool:
+        for work in self._works:
+            if not (work.wait() if timeout is None else work.wait(timeout)):
+                return False
+        return True
 
 
 class _CompletedWork(Work):

@@ -11,6 +11,7 @@ pytest.importorskip("verifiers", minversion="0.2.0")
 pytest.importorskip("renderers", minversion="0.1.8")
 
 from examples.experimental.verifiers.verifiers_rollout import MilesSGLangTransport
+from tests.fast.fixtures.args_fixtures import sglang_router_args
 from verifiers.v1.clients.train import TrainClient
 from verifiers.v1.dialects import ChatDialect, ResponsesDialect
 from verifiers.v1.env import EnvConfig, Environment
@@ -21,7 +22,7 @@ def _args(**overrides):
     values = {
         "lora_adapter_path": None,
         "lora_rank": 0,
-        "rollout_max_context_len": 64,
+        "max_seq_len": 64,
         "rollout_max_prompt_len": None,
         "rollout_max_response_len": 8,
         "rollout_skip_special_tokens": True,
@@ -29,9 +30,9 @@ def _args(**overrides):
         "rollout_stop_token_ids": None,
         "sglang_model_routers": None,
         "sglang_router_ip": "127.0.0.1",
-        "sglang_router_policy": "round_robin",
         "sglang_router_port": 30000,
         "sglang_tokenizer_path": None,
+        **sglang_router_args("round_robin"),
     }
     values.update(overrides)
     return Namespace(**values)

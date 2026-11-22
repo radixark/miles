@@ -15,10 +15,10 @@ import logging
 import os
 import socket
 from typing import Any
-from urllib.parse import urlparse, urlsplit, urlunparse
+from urllib.parse import urlsplit
 
 import httpx
-
+from miles.rollout.agentic.session import openai_session_url
 from miles.utils.http_utils import post
 
 logger = logging.getLogger(__name__)
@@ -34,22 +34,53 @@ def _agent_trial_timeout_s() -> int:
     return int(os.environ.get("AGENT_TRIAL_TIMEOUT", _DEFAULT_AGENT_TRIAL_TIMEOUT_S))
 
 
+def _agent_server_limits() -> httpx.Limits:
+    """Connection pool limits for the agent-server client, overridable via AGENT_SERVER_MAX_CONNECTIONS.
+
+    Unset means no cap: a fixed cap below the rollout concurrency silently queues trials.
+    An invalid value is ignored with a warning rather than failing or stalling every trial.
+    """
+    max_connections = None
+    raw = os.environ.get("AGENT_SERVER_MAX_CONNECTIONS")
+    if raw:
+        try:
+            max_connections = int(raw)
+        except ValueError:
+            pass
+        if max_connections is None or max_connections <= 0:
+            # A pool of 0 admits no connection, so every trial would wait out its timeout.
+            logger.warning(f"Ignoring AGENT_SERVER_MAX_CONNECTIONS={raw!r}: not a positive integer; using no cap")
+            max_connections = None
+    return httpx.Limits(max_connections=max_connections, max_keepalive_connections=32)
+
+
 def _get_agent_server_client() -> httpx.AsyncClient:
     """Return a client whose long-running requests survive idle network paths."""
     global _agent_server_client
     if _agent_server_client is None:
         socket_options = [
             (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
-            (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPIDLE", 4), 60),
-            (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPINTVL", 5), 30),
-            (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPCNT", 6), 5),
+            (
+                socket.IPPROTO_TCP,
+                getattr(socket, "TCP_KEEPIDLE", 4),
+                60,
+            ),  # config-access-exempt: TCP keepalive constant names vary across supported host platforms
+            (
+                socket.IPPROTO_TCP,
+                getattr(socket, "TCP_KEEPINTVL", 5),
+                30,
+            ),  # config-access-exempt: TCP keepalive constant names vary across supported host platforms
+            (
+                socket.IPPROTO_TCP,
+                getattr(socket, "TCP_KEEPCNT", 6),
+                5,
+            ),  # config-access-exempt: TCP keepalive constant names vary across supported host platforms
         ]
-        transport = httpx.AsyncHTTPTransport(socket_options=socket_options)
-        _agent_server_client = httpx.AsyncClient(
-            transport=transport,
-            limits=httpx.Limits(max_connections=64, max_keepalive_connections=32),
-            timeout=None,
-        )
+        # httpx ignores AsyncClient(limits=...) when transport= is given, so the pool
+        # limits must live on the transport. Each in-flight trial holds one connection
+        # for its whole run; miles already bounds how many trials are in flight.
+        transport = httpx.AsyncHTTPTransport(socket_options=socket_options, limits=_agent_server_limits())
+        _agent_server_client = httpx.AsyncClient(transport=transport, timeout=None)
     return _agent_server_client
 
 
@@ -80,13 +111,7 @@ async def run(
         os.getenv("SWE_AGENT_MODEL_NAME", "model"),
     )
 
-    session_url = f"{base_url}/v1"
-    external_host = os.getenv("MILES_ROUTER_EXTERNAL_HOST")
-    if external_host:
-        parsed = urlparse(session_url)
-        port = parsed.port
-        netloc = f"{external_host}:{port}" if port else external_host
-        session_url = urlunparse(parsed._replace(netloc=netloc))
+    session_url = openai_session_url(base_url)
 
     request: dict[str, Any] = {
         **metadata,
@@ -99,12 +124,9 @@ async def run(
     if max_seq_len is not None:
         request["max_seq_len"] = int(max_seq_len)
 
-    session_server_id = metadata.get("session_server_id")
-    if session_server_id is not None:
-        if external_host:
-            port = urlsplit(f"http://{session_server_id}").port
-            session_server_id = f"{external_host}:{port}"
-        request["session_server_id"] = session_server_id
+    if metadata.get("session_server_id") is not None:
+        # The id in metadata is the cluster address; the agent server needs the address base_url names.
+        request["session_server_id"] = urlsplit(session_url).netloc
 
     session_server_instance_id = metadata.get("session_server_instance_id")
     if session_server_instance_id is not None:
@@ -144,8 +166,18 @@ async def abort(args) -> None:
     available.
     """
     agent_server_url = os.getenv("AGENT_SERVER_URL", os.getenv("SWE_AGENT_URL"))
-    instance_id = getattr(args, "session_server_instance_id", None)
-    if not agent_server_url or not instance_id:
+
+    instances = (
+        getattr(args, "session_server_instances", None) or []
+    )  # config-access-exempt: abort accepts parent configs with instance lists and legacy child configs with only a singular id
+    instance_ids = {instance.instance_id for instance in instances if instance.instance_id}
+    singular = getattr(
+        args, "session_server_instance_id", None
+    )  # back-compat / child path  # config-access-exempt: legacy child configs carry a singular id absent from the parent SessionConfig
+    if singular:
+        instance_ids.add(singular)
+
+    if not agent_server_url or not instance_ids:
         return
 
     headers = None
@@ -153,13 +185,14 @@ async def abort(args) -> None:
     if admin_secret:
         headers = {"Authorization": f"Bearer {admin_secret}"}
 
-    try:
-        result = await post(
-            f"{agent_server_url.rstrip('/')}/flush",
-            {"session_server_instance_id": instance_id},
-            max_retries=3,
-            headers=headers,
-        )
-        logger.info(f"Flushed agent server {agent_server_url}: {result}")
-    except Exception as e:
-        logger.warning(f"Failed to flush agent server {agent_server_url}: {e}")
+    for instance_id in instance_ids:
+        try:
+            result = await post(
+                f"{agent_server_url.rstrip('/')}/flush",
+                {"session_server_instance_id": instance_id},
+                max_retries=3,
+                headers=headers,
+            )
+            logger.info(f"Flushed agent server {agent_server_url}: {result}")
+        except Exception as e:
+            logger.warning(f"Failed to flush agent server {agent_server_url}: {e}")

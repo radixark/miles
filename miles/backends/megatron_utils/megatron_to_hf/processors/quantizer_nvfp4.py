@@ -1,4 +1,5 @@
 import re
+from functools import lru_cache
 
 import torch
 
@@ -22,7 +23,23 @@ def _get_ignore_rules(quantization_config) -> list[str]:
     return list(ignore_rules) + [rule for rule in exclude_rules if rule not in ignore_rules]
 
 
-def _is_ignored(name: str, ignore_rules: list[str]) -> bool:
+@lru_cache(maxsize=16)
+def _literal_ignore_rules(ignore_rules: tuple[str, ...]) -> frozenset[str] | None:
+    # Preserve the original ordered matching (including short-circuit behavior)
+    # for regex policies. Snapshot keys also invalidate after config mutations.
+    if any(rule.startswith("re:") for rule in ignore_rules):
+        return None
+    return frozenset(ignore_rules)
+
+
+def _is_ignored(name: str, ignore_rules: list[str], literal_rules: frozenset[str] | None = None) -> bool:
+    if literal_rules is not None:
+        while True:
+            if name in literal_rules:
+                return True
+            name, separator, _ = name.rpartition(".")
+            if not separator:
+                return False
     for rule in ignore_rules:
         if rule.startswith("re:"):
             if re.match(rule[3:], name):
@@ -36,41 +53,42 @@ def _is_ignored(name: str, ignore_rules: list[str]) -> bool:
 def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantization_config):
     assert quantization_config is not None
     assert quantization_config.get("quant_algo") == "NVFP4" or quantization_config.get("quant_method") == "nvfp4"
-    if args is not None and bool(getattr(args, "fp4_param", False) or getattr(args, "fp4_param_gather", False)):
+    if bool(
+        getattr(args.backend, "fp4_param", False) or getattr(args.backend, "fp4_param_gather", False)
+    ):  # config-access-exempt: FP4 option names differ across Megatron versions
         raise NotImplementedError("fp4-param-gather is unsupported for Miles NVFP4 checkpoint export.")
 
-    if getattr(args, "extra_high_precision_layers_megatron", False):
-        for layer_name in getattr(args, "extra_high_precision_layers_megatron", ()):
+    if args.extra_high_precision_layers_megatron:
+        for layer_name in args.extra_high_precision_layers_megatron:
             if layer_name in megatron_name:
                 return converted_named_params
 
     ignore_rules = _get_ignore_rules(quantization_config)
 
-    decoder_layers_pattern = r"decoder\.layers\.(\d+)\.(.+)"
-    match = re.search(decoder_layers_pattern, megatron_name)
-
+    # Only the main language decoder is eligible; MTP and modality towers stay in high precision.
+    decoder_layers_pattern = r"(?:module\.)*(?:language_model\.)?decoder\.layers\.(\d+)\.(.+)"
+    match = re.match(decoder_layers_pattern, megatron_name)
     if not match:
-        # check mtp layers
-        mtp_layer_pattern = r"mtp\.layers\.(\d+)\.(.+)"
-        match = re.search(mtp_layer_pattern, megatron_name)
-        if not match:
-            return converted_named_params
-        layer_idx, rest = match.groups()
-        rest = rest.replace("transformer_layer.", "")
-    else:
-        layer_idx, rest = match.groups()
+        return converted_named_params
+    layer_idx, rest = match.groups()
 
     # Skip quantization for BF16 tail of main decoder layers.
-    if getattr(args, "first_last_layers_bf16", False):
-        num_layers = int(args.num_layers)
-        num_layers_at_start_in_bf16 = int(getattr(args, "num_layers_at_start_in_bf16", 0))
-        num_layers_at_end_in_bf16 = int(getattr(args, "num_layers_at_end_in_bf16", 0))
+    if getattr(
+        args.backend, "first_last_layers_bf16", False
+    ):  # config-access-exempt: BF16 layer options are absent in older Megatron parsers
+        num_layers = int(args.backend.num_layers)
+        num_layers_at_start_in_bf16 = int(
+            getattr(args.backend, "num_layers_at_start_in_bf16", 0)
+        )  # config-access-exempt: BF16 layer options are absent in older Megatron parsers
+        num_layers_at_end_in_bf16 = int(
+            getattr(args.backend, "num_layers_at_end_in_bf16", 0)
+        )  # config-access-exempt: BF16 layer options are absent in older Megatron parsers
         head_end_idx = num_layers_at_start_in_bf16
         tail_start_idx = num_layers - num_layers_at_end_in_bf16
         if int(layer_idx) < head_end_idx or int(layer_idx) >= tail_start_idx:
             return converted_named_params
 
-    # experts
+    # routed experts
     expert_pattern = r"mlp.experts\.(.+)\.weight(\d+)"
     match = re.match(expert_pattern, rest)
     if match:
@@ -81,28 +99,19 @@ def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantizat
         ]:
             return _quantize_moe_params(converted_named_params, ignore_rules)
 
-    # shared expert
-    shared_expert_pattern = r"mlp.shared_experts\.(.+)"
-    match = re.match(shared_expert_pattern, rest)
-    if match:
-        rest = match.groups()[0]
-        if rest in [
-            "linear_fc1.weight",
-            "linear_fc2.weight",
-        ]:
-            return _quantize_moe_params(converted_named_params, ignore_rules)
-
     # for other parameters, we just return the original converted_named_params
     return converted_named_params
 
 
 def _quantize_moe_params(converted_named_params, ignore_rules):
+    # Build/hash the policy once per conversion batch, not once per weight check.
+    literal_rules = _literal_ignore_rules(tuple(ignore_rules))
     gated_candidates = {}
     for converted_name, param in converted_named_params:
         base, role = _split_gated_pair_name(converted_name)
         if base is None or role is None:
             continue
-        if _should_quantize_param(converted_name, param, ignore_rules):
+        if _should_quantize_param(converted_name, param, ignore_rules, literal_rules):
             roles = gated_candidates.setdefault(base, {})
             if role in roles:
                 raise ValueError(
@@ -127,7 +136,7 @@ def _quantize_moe_params(converted_named_params, ignore_rules):
 
     quantize_named_params = []
     for converted_name, param in converted_named_params:
-        if not _should_quantize_param(converted_name, param, ignore_rules):
+        if not _should_quantize_param(converted_name, param, ignore_rules, literal_rules):
             quantize_named_params.append((converted_name, param))
             continue
         if converted_name in paired_outputs:
@@ -141,8 +150,8 @@ def _quantize_moe_params(converted_named_params, ignore_rules):
     return quantize_named_params
 
 
-def _should_quantize_param(name, weight, ignore_rules):
-    if ignore_rules and _is_ignored(name, ignore_rules):
+def _should_quantize_param(name, weight, ignore_rules, literal_rules=None):
+    if ignore_rules and _is_ignored(name, ignore_rules, literal_rules):
         return False
     if not name.endswith(".weight"):
         return False

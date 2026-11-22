@@ -1,7 +1,6 @@
 import os
 
-import miles.utils.external_utils.exec_command as U
-from miles.utils.external_utils.command_utils import execute_train
+from miles.utils.external_utils import command_utils
 
 MODEL_NAME = os.environ.get("MILES_SCRIPT_MODEL_NAME", "Qwen3-VL-2B-Instruct")
 assert MODEL_NAME in {
@@ -30,6 +29,7 @@ def get_megatron_model_type(model_name: str) -> str:
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     data_missing = not os.path.exists(TRAIN_DATA_PATH)
@@ -39,7 +39,7 @@ def prepare():
         raise FileNotFoundError(f"Dataset not found. Expected local dataset at {TRAIN_DATA_PATH}; ")
 
 
-def execute():
+def execute(extra_args: str = ""):
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} "
 
     wandb_args = (
@@ -61,7 +61,8 @@ def execute():
         "--rm-type math "
         "--apply-chat-template "
         "--custom-generate-function-path examples.geo3k_vlm.multi_turn.rollout.generate "
-        "--custom-config-path examples/geo3k_vlm/multi_turn/geo3k_vlm_multi_turn_config.yaml "
+        "--max-turns 3 "
+        "--rollout-interaction-env-path examples.geo3k_vlm.multi_turn.env_geo3k "
         "--rollout-shuffle "
         "--num-rollout 3000 "
         "--rollout-batch-size 64 "
@@ -101,7 +102,7 @@ def execute():
     sglang_args = (
         "--rollout-num-gpus-per-engine 1 "
         "--sglang-mem-fraction-static 0.6 "
-        f"--sglang-cuda-graph-bs {' '.join(map(str, [1, 2, 4, 8] + list(range(16, 257, 8))))} "
+        f"--sglang-cuda-graph-bs-decode {' '.join(map(str, [1, 2, 4, 8] + list(range(16, 257, 8))))} "
     )
 
     fsdp_args = (
@@ -156,9 +157,10 @@ def execute():
         f"{misc_args} "
         f"{wandb_args} "
         # f"{get_default_wandb_args(__file__)} "
+        f"{extra_args} "
     )
 
-    execute_train(
+    command_utils.default_config().create_backend().execute_train(
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=megatron_model_type,

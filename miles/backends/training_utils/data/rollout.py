@@ -1,0 +1,697 @@
+import logging
+from argparse import Namespace
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
+
+import torch
+import torch.distributed as dist
+import torch.nn.functional as F
+
+from miles.backends.training_utils.data.context_parallel import (
+    CPLayout,
+    natural_to_local_cp_rows,
+    slice_log_prob_with_cp,
+    slice_with_cp,
+    take_ranges,
+)
+from miles.backends.training_utils.data.multimodal import expand_multimodal_rollout_data_in_place
+from miles.backends.training_utils.data.token_space_media_process import (
+    TrainerProcessor,
+    compute_multimodal_train_inputs,
+    resolved_mrope_position_ids,
+    resolved_multimodal_train_inputs,
+)
+from miles.backends.training_utils.parallel import get_parallel_state
+from miles.platforms import current_platform
+from miles.utils.audit_utils.witness.allocator import WitnessInfo
+from miles.utils.data import get_minimum_num_micro_batch_size, padded_token_count, process_rollout_data
+from miles.utils.dp_schedule import TrainParallelConfig
+from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
+from miles.utils.object_store import ObjectStoreGetResult
+from miles.utils.output_store.plan import is_segments_column
+from miles.utils.ray_utils import Box
+from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
+from miles.utils.types import RolloutBatch
+
+if TYPE_CHECKING:
+    from radix_transfer_plugins import OutputStore
+
+logger = logging.getLogger(__name__)
+
+
+def _rollout_logprob_dtype(args: Namespace) -> torch.dtype:
+    if args.true_on_policy_mode:
+        if args.backend.bf16:
+            return torch.bfloat16
+        if args.backend.fp16:
+            return torch.float16
+    return torch.float32
+
+
+def get_rollout_data(
+    args: Namespace,
+    rollout_data_ref: Box,
+    witness_info: WitnessInfo | None = None,
+    *,
+    train_parallel_config: TrainParallelConfig,
+    output_store: "OutputStore | None" = None,
+    sample_device: torch.device | None = None,
+    token_space_processor: TrainerProcessor | None = None,
+) -> tuple[RolloutBatch, ObjectStoreGetResult]:
+    """Fetch this rank's rollout shard; per-sample tokens, masks and log-probs go to `sample_device`.
+
+    `sample_device` defaults to the accelerator; `PaddedRows` keeps them on the host.
+    """
+    # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
+    # Both first pp stage and the last pp stage will receive the data.
+    rollout_data, store_get_result = process_rollout_data(
+        args,
+        rollout_data_ref,
+        dp_rank=get_parallel_state().effective_dp.rank,
+        train_parallel_config=train_parallel_config,
+        witness_info=witness_info,
+        output_store=output_store,
+    )
+    rollout_data = prepare_rollout_data(
+        args, rollout_data, sample_device=sample_device, token_space_processor=token_space_processor
+    )
+    return rollout_data, store_get_result
+
+
+def prepare_rollout_data(
+    args: Namespace,
+    rollout_data: RolloutBatch,
+    *,
+    sample_device: torch.device | None = None,
+    token_space_processor: TrainerProcessor | None = None,
+) -> RolloutBatch:
+    """This rank's shard, with its per-sample lists as tensors; see `get_rollout_data` for `sample_device`."""
+    if sample_device is None:
+        sample_device = current_platform.current_device()
+    parallel_state = get_parallel_state()
+    rollout_data["tokens"] = [torch.tensor(t, dtype=torch.long, device=sample_device) for t in rollout_data["tokens"]]
+    rollout_data["loss_masks"] = [
+        torch.tensor(t, dtype=torch.int, device=sample_device) for t in rollout_data["loss_masks"]
+    ]
+    if "rollout_mask_sums" in rollout_data:
+        rollout_data["rollout_mask_sums"] = torch.tensor(
+            rollout_data["rollout_mask_sums"], dtype=torch.float32, device=sample_device
+        )
+    if args.enable_witness:
+        seq_witness_ids = rollout_data.pop("seq_witness_ids")
+        rollout_data["witness_ids"] = [
+            torch.full((len(t),), fill_value=sid, dtype=torch.long, device=current_platform.current_device())
+            for t, sid in zip(rollout_data["tokens"], seq_witness_ids, strict=True)
+        ]
+
+    if args.multimodal_token_space_processing and args.debug_rollout_only:
+        rollout_data.pop("multimodal_inputs", None)
+    elif args.multimodal_token_space_processing:
+        # A rollout without media ships no references, but its tokens still need the model's mRoPE positions.
+        multimodal_inputs = rollout_data.pop("multimodal_inputs", [None] * len(rollout_data["tokens"]))
+        token_space_train_inputs = compute_multimodal_train_inputs(
+            token_space_processor,
+            multimodal_inputs,
+            rollout_data["tokens"],
+            mm_processor_worker_num=args.trainer_mm_processor_worker_num,
+            # Megatron-Bridge and torch-native models place their media rows and rotate by themselves.
+            with_sglang_placement=args.train_backend == "megatron" and args.megatron_to_hf_mode == "raw",
+            device=current_platform.current_device(),
+        )
+        rollout_data["multimodal_train_inputs"] = token_space_train_inputs.multimodal_train_inputs
+        if token_space_train_inputs.mrope_position_ids is not None:
+            rollout_data["mrope_position_ids"] = token_space_train_inputs.mrope_position_ids
+    elif "multimodal_train_inputs" in rollout_data:
+        # Move multimodal training tensors to the device in advance
+        rollout_data["multimodal_train_inputs"] = [
+            (
+                {key: tensor.to(device=current_platform.current_device()) for key, tensor in mm_dict.items()}
+                if mm_dict is not None
+                else None
+            )
+            for mm_dict in rollout_data["multimodal_train_inputs"]
+        ]
+
+    if args.qkv_format == "bshd":
+        # TODO: micro-batch wise dynamic, possibly move to @data.py:get_data_iterator
+        max_seq_len = max(rollout_data["total_lengths"])
+
+        # pad to reduce memory fragmentation and maybe make the computation faster
+        pad_size = parallel_state.tp.size * args.data_pad_size_multiplier
+        max_compress_ratio = max(args.backend.compress_ratios) if args.backend.compress_ratios else 0
+        if max_compress_ratio:
+            local_seqlen_multiple = max_compress_ratio * (2 if parallel_state.cp.size > 1 else 1)
+            pad_size = max(pad_size, local_seqlen_multiple * parallel_state.cp.size)
+        max_seq_len = (max_seq_len + pad_size - 1) // pad_size * pad_size
+
+        rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
+
+    # Full-response SGLang OPD fields share rollout CP slicing but retain float32 precision.
+    for key in ("rollout_log_probs", "teacher_log_probs", "opd_reverse_kl"):
+        if key in rollout_data:
+            dtype = _rollout_logprob_dtype(args) if key == "rollout_log_probs" else torch.float32
+            rollout_data[key] = [
+                torch.as_tensor(
+                    slice_log_prob_with_cp(
+                        value,
+                        total_length,
+                        response_length,
+                        args.qkv_format,
+                        rollout_data["max_seq_lens"][i] if args.qkv_format == "bshd" else None,
+                    ),
+                    device=sample_device,
+                    dtype=dtype,
+                )
+                for i, (value, total_length, response_length) in enumerate(
+                    zip(
+                        rollout_data[key],
+                        rollout_data["total_lengths"],
+                        rollout_data["response_lengths"],
+                        strict=False,
+                    )
+                )
+            ]
+    # An output store column holds segments, whose rows replay reads per micro batch.
+    for key in ("rollout_routed_experts", "rollout_indexer_topk"):
+        if key in rollout_data and not is_segments_column(rollout_data[key]):
+            rollout_data[key] = [torch.from_numpy(r) for r in rollout_data[key]]
+    return rollout_data
+
+
+def _prepare_loss_masks(
+    loss_masks: Sequence[torch.Tensor],
+    total_lengths: Sequence[int],
+    response_lengths: Sequence[int],
+    *,
+    qkv_format: str,
+    max_seqlen: int,
+    pad: int,
+    allgather_cp: bool,
+) -> torch.Tensor:
+    """Expand response masks to input-token alignment, then pack/slice them like ``tokens``.
+
+    Contract: ``mask[i]`` is 1 iff ``tokens[i]`` is a supervised response token.
+    Whoever derives labels owns the prediction shift. Megatron does so when
+    ``labels=None``: it rolls ``input_ids`` and this mask together to build the
+    MTP labels, and it does not read the mask at all when MTP is off. The
+    alignment is fixed before CP slicing because a local roll in Miles would
+    have no halo exchange across shard or packed-sequence boundaries.
+    """
+    parallel_state = get_parallel_state()
+    cp_size = parallel_state.cp.size
+    cp_rank = parallel_state.cp.rank
+    aligned_masks = []
+    for loss_mask, total_length, response_length in zip(loss_masks, total_lengths, response_lengths, strict=True):
+        prompt_length = total_length - response_length
+        loss_mask = F.pad(loss_mask, (prompt_length, 0), value=0)
+        if not allgather_cp:
+            loss_mask = slice_with_cp(loss_mask, 0, qkv_format, max_seqlen)
+        aligned_masks.append(loss_mask)
+
+    if qkv_format == "bshd":
+        if allgather_cp:
+            local_len = max_seqlen // cp_size
+            start = cp_rank * local_len
+            aligned_masks = [
+                F.pad(mask, (0, max_seqlen - mask.size(0)), value=0)[start : start + local_len]
+                for mask in aligned_masks
+            ]
+        return torch.stack(aligned_masks)
+
+    loss_mask = F.pad(torch.cat(aligned_masks), (0, pad), value=0)
+    if allgather_cp:
+        loss_mask = loss_mask.chunk(cp_size, dim=0)[cp_rank]
+    return loss_mask.unsqueeze(0)
+
+
+def get_batch(
+    data_iterator: "DataIterator",
+    keys: Sequence[str],
+    pad_multiplier: int = 128,
+    qkv_format: str = "thd",
+    get_position_ids: bool = False,
+    allgather_cp: bool = False,
+) -> dict[str, torch.Tensor | list[torch.Tensor] | None]:
+    """
+    Generate a CP-ready micro-batch with packed sequence parameters.
+
+    Steps:
+    - Fetch raw fields via iterator.
+    - Save original token tensors under "unconcat_tokens".
+    - Slice tokens into two batches for Context Parallelism (CP), concatenate, and pad to a configurable multiple.
+    - Build cu_seqlens and `PackedSeqParams` with T-H-D layout (T: sequence length, H: attention heads, D: head dimension).
+
+    Args:
+        data_iterator: Iterator providing micro-batch data.
+        keys: List of keys to fetch from the iterator.
+        pad_multiplier: Multiplier for padding size calculation (default: 128).
+
+    Returns a dict including:
+    - "tokens": torch.LongTensor of shape [1, T_padded] on the current CUDA device
+    - "unconcat_tokens": list[torch.LongTensor] for the micro-batch before CP slicing/concat
+    - "packed_seq_params": PackedSeqParams with T-H-D settings (cu_seqlens on CUDA, dtype=int)
+    - "input_loss_masks": same shape as "tokens"; 1 where the token is a supervised response token.
+      Consumers that derive labels (Megatron with labels=None) shift it themselves.
+    Plus any other requested keys forwarded from the iterator.
+    """
+
+    parallel_state = get_parallel_state()
+
+    assert "tokens" in keys
+    # get_batch consumes adapter_slots itself (per-adapter token counts below);
+    # fetch it here so callers don't have to know. None for non-multi-LoRA runs.
+    if "adapter_slots" not in keys:
+        keys = [*keys, "adapter_slots"]
+    batch = data_iterator.get_next(keys)
+
+    if "dynamic_global_batch_size" in data_iterator.rollout_data:
+        batch["dynamic_global_batch_size"] = data_iterator.rollout_data["dynamic_global_batch_size"]
+
+    for unit_key in ("loss_fn", "loss_fn_config"):
+        if unit_key in data_iterator.rollout_data:
+            batch[unit_key] = data_iterator.rollout_data[unit_key]
+
+    # Token-space train inputs rebuild in the background; wait for this micro-batch's samples.
+    if (multimodal_train_inputs := batch.get("multimodal_train_inputs")) is not None:
+        batch["multimodal_train_inputs"] = resolved_multimodal_train_inputs(multimodal_train_inputs)
+
+    tokens = batch["tokens"]
+    # use 0 as the pad token id should be fine?
+    pad_token_id = 0
+    pad_size = parallel_state.tp.size * pad_multiplier
+    pad = 0
+
+    # for cp, we need all tokens to calculate logprob
+    batch["unconcat_tokens"] = tokens
+
+    cp_size = parallel_state.cp.size
+
+    if qkv_format == "bshd":
+        max_seqlen = batch["max_seq_lens"][0]
+        assert max([t.size(0) for t in tokens]) <= max_seqlen
+
+        if allgather_cp:
+            assert batch.get("adapter_slots") is None, "allgather CP is currently not supported with multi-LoRA: "
+        layout = CPLayout.build(
+            qkv_format=qkv_format,
+            allgather_cp=allgather_cp,
+            cp_rank=parallel_state.cp.rank,
+            cp_size=cp_size,
+            max_seq_len=max_seqlen,
+        )
+        local_ranges = layout.local_ranges([t.size(0) for t in tokens])
+        tokens = [take_ranges(t, ranges, pad_token_id) for t, ranges in zip(tokens, local_ranges, strict=True)]
+        sample_token_lengths = [t.size(0) for t in tokens]
+        tokens = torch.stack(tokens)
+
+    elif qkv_format == "thd":
+        cp_rank = parallel_state.cp.rank
+
+        if allgather_cp:
+            assert batch.get("adapter_slots") is None, "allgather CP is currently not supported with multi-LoRA: "
+            # DSA mode: concatenate all sequences first, then slice once with CP.
+            # We also pad the *global* concatenated stream to make per-rank batches equal.
+            cu_seqlens_list: list[int] = [0]
+            for t in tokens:
+                cu_seqlens_list.append(cu_seqlens_list[-1] + t.size(0))
+
+            tokens = torch.cat(tokens, dim=0)
+
+            # Pad global stream so (1) divisible by cp_size (equal batches),
+            # (2) divisible by pad_size (reduce fragmentation).
+            global_pad_size = cp_size * pad_size
+            pad = (global_pad_size - tokens.size(0) % global_pad_size) % global_pad_size
+            if pad != 0:
+                tokens = F.pad(tokens, (0, pad), value=pad_token_id)
+                cu_seqlens_list.append(cu_seqlens_list[-1] + pad)
+
+            cu_seqlens_host = tuple(cu_seqlens_list)
+            cu_seqlens = torch.tensor(cu_seqlens_list, dtype=torch.int, device=current_platform.current_device())
+            tokens = tokens.chunk(cp_size, dim=0)[cp_rank]
+        else:
+            tokens = [slice_with_cp(t, pad_token_id, qkv_format) for t in tokens]
+            sample_token_lengths = [t.size(0) for t in tokens]
+
+            cu_seqlens = [0]
+            for t in tokens:
+                cu_seqlens.append(cu_seqlens[-1] + t.size(0))
+
+            tokens = torch.cat(tokens)
+
+            # Always pad to reduce memory fragmentation and maybe make the computation faster
+            pad = padded_token_count(tokens.size(0), pad_size) - tokens.size(0)
+            if pad != 0:
+                tokens = F.pad(tokens, (0, pad), value=pad_token_id)
+                cu_seqlens.append(cu_seqlens[-1] + pad)
+
+            # thd requires the cu_seqlens to be of the origin length
+            cu_seqlens_host = tuple(boundary * cp_size for boundary in cu_seqlens)
+            cu_seqlens = torch.tensor(cu_seqlens, dtype=torch.int, device=current_platform.current_device()) * cp_size
+
+        max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
+
+        tokens = tokens.unsqueeze(0)
+
+        batch["cu_seqlens"] = cu_seqlens
+        # the same boundaries on the host, for consumers that must not sync the device to read them
+        batch["cu_seqlens_host"] = cu_seqlens_host
+        batch["max_seqlen"] = max_seqlen
+    else:
+        raise ValueError(f"Unsupported qkv_format: {qkv_format}")
+
+    # Multi-LoRA: compute per-adapter token counts from post-CP per-sample lengths.
+    # NOTE: allgather CP is currently not supported
+    adapter_slots = batch.get("adapter_slots")
+    if adapter_slots is not None:
+        assert all(
+            adapter_slots[i] <= adapter_slots[i + 1] for i in range(len(adapter_slots) - 1)
+        ), f"adapter_slots not sorted in micro-batch: {adapter_slots}"
+        n_adapters = data_iterator.rollout_data["n_adapters"]
+        total_tokens = tokens.numel()
+        counts = torch.zeros(n_adapters, dtype=torch.int32, device=current_platform.current_device())
+        for slot, length in zip(adapter_slots, sample_token_lengths, strict=True):
+            counts[slot] += length
+        counts[adapter_slots[-1]] += total_tokens - counts.sum().item()
+        batch["adapter_token_counts"] = counts
+
+    batch["tokens"] = tokens
+
+    def _compute_transform_like_token_ids(ids_list: list):
+        assert not allgather_cp, "allgather CP is not supported for FSDP"
+        if qkv_format == "bshd":
+            ids = [slice_with_cp(p, 0, qkv_format, max_seqlen) for p in ids_list]
+            ids = torch.stack(ids)
+        elif qkv_format == "thd":
+            ids = [slice_with_cp(p, 0, qkv_format) for p in ids_list]
+            ids = torch.cat(ids)
+            if pad != 0:
+                ids = F.pad(ids, (0, pad), value=0)
+            ids = ids.unsqueeze(0)
+        else:
+            raise NotImplementedError
+        return ids
+
+    mrope_position_ids = batch.pop("mrope_position_ids", None)
+    if mrope_position_ids is not None and (mrope_position_ids := resolved_mrope_position_ids(mrope_position_ids)):
+        assert qkv_format == "thd" and not allgather_cp, "mRoPE positions need the per-sample THD CP layout"
+        batch["position_ids"] = _pack_natural_position_ids(mrope_position_ids, cu_seqlens_host)
+
+    if get_position_ids:
+        position_ids_list = []
+        for t in batch["unconcat_tokens"]:
+            seq_len = t.size(0)
+            pos_ids = torch.arange(seq_len, device=t.device, dtype=torch.long)
+            position_ids_list.append(pos_ids)
+
+        batch["position_ids"] = _compute_transform_like_token_ids(position_ids_list)
+
+    if (witness_ids := batch.get("witness_ids")) is not None:
+        batch["witness_ids"] = _compute_transform_like_token_ids(witness_ids)
+
+    input_loss_masks = _prepare_loss_masks(
+        batch["loss_masks"],
+        batch["total_lengths"],
+        batch["response_lengths"],
+        qkv_format=qkv_format,
+        max_seqlen=max_seqlen,
+        pad=pad,
+        allgather_cp=allgather_cp,
+    )
+    assert (
+        input_loss_masks.shape == tokens.shape
+    ), f"input_loss_masks.shape: {input_loss_masks.shape}, tokens.shape: {tokens.shape}"
+    batch["input_loss_masks"] = input_loss_masks
+
+    # Process multimodal training tensors if present
+    multimodal_train_inputs = batch.get("multimodal_train_inputs", None)
+    if multimodal_train_inputs is not None:
+        sample_offsets = [0]
+        for t in batch["unconcat_tokens"]:
+            sample_offsets.append(sample_offsets[-1] + t.size(0))
+
+        def packed_rows(positions: torch.Tensor, sample_index: int) -> torch.Tensor:
+            if qkv_format == "thd" and not allgather_cp:
+                return natural_to_local_cp_rows(
+                    positions,
+                    sample_start=cu_seqlens_host[sample_index],
+                    sample_end=cu_seqlens_host[sample_index + 1],
+                    cp_size=cp_size,
+                    cp_rank=parallel_state.cp.rank,
+                )
+            return positions + sample_offsets[sample_index]
+
+        multimodal_data = {}  # key -> concatenated tensor
+        multimodal_num_items = {}  # key -> list of item counts per sequence
+        for i, mm_input_dict in enumerate(multimodal_train_inputs):
+            if mm_input_dict is not None:
+                for key, mm_tensor in mm_input_dict.items():
+                    # Sample-local token indices of tower output rows, one long entry per row in tower output order:
+                    # mm_image_positions and mm_video_positions from the token-space processor, mm_vision_positions
+                    # and mm_audio_positions from the Inkling expansion.
+                    if key.endswith("_positions"):
+                        mm_tensor = packed_rows(mm_tensor, i)
+                    if key not in multimodal_data:
+                        multimodal_data[key] = mm_tensor
+                        multimodal_num_items[key] = [mm_tensor.size(0)]
+                    else:
+                        multimodal_data[key] = torch.cat([multimodal_data[key], mm_tensor], dim=0)
+                        multimodal_num_items[key].append(mm_tensor.size(0))
+        batch["multimodal_train_inputs"] = multimodal_data
+        batch["multimodal_num_items"] = multimodal_num_items
+
+    return batch
+
+
+def _pack_natural_position_ids(sample_positions: list[torch.Tensor], cu_seqlens_host: tuple[int, ...]) -> torch.Tensor:
+    """Pack each sample's [num_tokens, 3] positions into the [3, 1, T] natural (not CP-sliced) packed row.
+
+    Each sample starts at its ``cu_seqlens`` boundary, the same packing the tokens get before the CP split;
+    Megatron's THD rotary picks each CP rank's rows from it. Padding keeps position 0: it only follows the
+    real tokens, so causal attention never lets them see it.
+    """
+    positions = sample_positions[0].new_zeros(cu_seqlens_host[-1], sample_positions[0].size(1))
+    for sample, start, end in zip(sample_positions, cu_seqlens_host, cu_seqlens_host[1:], strict=False):
+        assert sample.size(0) <= end - start, f"{sample.size(0)} positions for a {end - start}-token segment"
+        positions[start : start + sample.size(0)] = sample
+    return positions.T.unsqueeze(1)
+
+
+class DataIterator:
+    """Micro-batch iterator over rollout dicts.
+
+    Supports either fixed contiguous micro-batches or an explicit per-step
+    index schedule (for dynamic batch sizing / sequence-length balancing).
+    """
+
+    def __init__(
+        self,
+        rollout_data: RolloutBatch,
+        micro_batch_size: int | None = None,
+        micro_batch_indices: list[list[int]] | None = None,
+    ) -> None:
+        """Initialize an iterator over `rollout_data`.
+
+        Args:
+            rollout_data: Dict of per-sample fields for the local step.
+            micro_batch_size: Fixed contiguous slice size when not using dynamic scheduling.
+            micro_batch_indices: Explicit indices per micro-batch when using dynamic balancing.
+                Must be mutually exclusive with `micro_batch_size`.
+        """
+        self.rollout_data = rollout_data
+        self.micro_batch_size = micro_batch_size
+        self.micro_batch_indices = micro_batch_indices
+        assert micro_batch_size is None or micro_batch_indices is None
+        self.offset = 0
+
+    def get_next(self, keys: Sequence[str]) -> dict[str, list[object] | None]:
+        """Return the next micro-batch for the requested keys.
+
+        - If `micro_batch_indices` is provided, selects rows according to the current
+          index list for each requested key.
+        - Otherwise, slices a contiguous adapter batch of size `micro_batch_size` starting
+          at the current offset.
+
+        Returns a dict mapping each key to a list subset (or None if absent).
+        """
+        rows, next_offset = self._rows_at(self.offset)
+        batch = {}
+        for key in keys:
+            vals = self.rollout_data.get(key, None)
+            if vals is None:
+                batch[key] = None
+            elif isinstance(rows, slice):
+                assert rows.stop <= len(
+                    vals
+                ), f"offset: {self.offset}, micro_batch_size: {self.micro_batch_size}, len(vals): {len(vals)}"
+                batch[key] = vals[rows]
+            else:
+                batch[key] = [vals[i] for i in rows]
+
+        self.offset = next_offset
+        return batch
+
+    def microbatch_indices(self, count: int) -> list[list[int]]:
+        """Sample indices of the first `count` micro-batches, in the order `get_next` yields them."""
+        indices, offset = [], 0
+        for _ in range(count):
+            rows, offset = self._rows_at(offset)
+            indices.append(list(range(rows.start, rows.stop)) if isinstance(rows, slice) else rows)
+        return indices
+
+    def _rows_at(self, offset: int) -> tuple[slice | list[int], int]:
+        """Rows of the micro-batch that starts at `offset`, and the offset after it."""
+        if self.micro_batch_indices is not None:
+            return self.micro_batch_indices[offset], offset + 1
+        return slice(offset, offset + self.micro_batch_size), offset + self.micro_batch_size
+
+    def reset(self) -> "DataIterator":
+        """Reset internal offset to the start and return self."""
+        self.offset = 0
+        return self
+
+
+def get_num_rollouts(args: Namespace, rollout_data: RolloutBatch, num_steps: int) -> list[int]:
+    """Per-step rollout counts (total across DP); one entry per training step."""
+    if "num_rollouts" in rollout_data:
+        return rollout_data["num_rollouts"]
+    return [rollout_data.get("dynamic_global_batch_size", args.backend.global_batch_size)] * num_steps
+
+
+def get_data_iterator(
+    args: Namespace,
+    model: torch.nn.Module | Sequence[torch.nn.Module],
+    rollout_data: RolloutBatch,
+) -> tuple[list[DataIterator], list[int]]:
+    """
+    Create iterators and a micro-batch schedule for a rollout step.
+
+    - If `use_dynamic_batch_size` is False, splits into fixed-size contiguous
+      micro-batches of `micro_batch_size`.
+    - If True, computes the number of micro-batches per local step based on
+      `max_tokens_per_gpu` and per-sample lengths, all-reduces to a DP-wide
+      maximum, optionally enforces divisibility for Virtual Pipeline Parallelism (VPP), and builds a balanced
+      index schedule to equalize token counts across micro-batches.
+
+    Returns `(data_iterators, num_microbatches)` where:
+    - `data_iterators`: list of `DataIterator`, one per VPP stage (size 1 if VPP disabled)
+    - `num_microbatches`: list[int], one per local step in the rollout (length = steps)
+    """
+    # Token-space tokens arrive expanded, and their train inputs may still be rebuilding.
+    if not args.multimodal_token_space_processing:
+        expand_multimodal_rollout_data_in_place(rollout_data, qkv_format=args.qkv_format)
+
+    parallel_state = get_parallel_state()
+
+    if "micro_batch_indices" in rollout_data:
+        assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in rollout_data)
+        micro_batch_indices = rollout_data["micro_batch_indices"]
+        data_iterator = [
+            DataIterator(rollout_data, micro_batch_indices=micro_batch_indices) for _ in range(parallel_state.vpp_size)
+        ]
+        return data_iterator, rollout_data["num_microbatches"]
+
+    dp_size = parallel_state.effective_dp.size
+    dp_group = parallel_state.effective_dp.group
+    vpp_size = parallel_state.vpp_size
+    microbatch_group_size_per_vp_stage = parallel_state.microbatch_group_size_per_vp_stage
+
+    cp_size = parallel_state.cp.size
+
+    num_local_samples = len(rollout_data["total_lengths"])
+    assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in rollout_data)
+    global_batch_size = rollout_data.get("dynamic_global_batch_size", args.backend.global_batch_size)
+    assert (
+        global_batch_size % dp_size == 0
+    ), f"global_batch_size ({global_batch_size}) must be divisible by dp_size ({dp_size}) for the training-side schedule"
+    num_local_gbs = global_batch_size // dp_size
+    num_steps_per_rollout = num_local_samples // num_local_gbs
+
+    if global_batch_size != args.backend.global_batch_size:
+        logger.info(
+            f"Using dynamic global_batch_size={global_batch_size} (original={args.backend.global_batch_size}), "
+            f"num_local_samples={num_local_samples}, num_steps_per_rollout={num_steps_per_rollout}"
+        )
+
+    def _generate_data_iterator(rollout_data, micro_batch_size, micro_batch_indices=None):
+        data_iterator = []
+        for _ in range(vpp_size):
+            data_iterator.append(DataIterator(rollout_data, micro_batch_size, micro_batch_indices))
+        return data_iterator
+
+    if not args.use_dynamic_batch_size:
+        if "adapter_slots" in rollout_data and num_local_gbs % args.backend.micro_batch_size != 0:
+            raise ValueError(
+                "A multi-LoRA local batch must be divisible by --micro-batch-size; "
+                f"got local_batch_size={num_local_gbs}, micro_batch_size={args.backend.micro_batch_size}. "
+                "Use --use-dynamic-batch-size or choose compatible adapter batch shapes."
+            )
+        num_microbatches = [num_local_gbs // args.backend.micro_batch_size for _ in range(num_steps_per_rollout)]
+        data_iterator = _generate_data_iterator(rollout_data, args.backend.micro_batch_size)
+    else:
+        assert args.max_tokens_per_gpu is not None
+        # calculate the number of mirobatches for each step
+        samples = rollout_data["total_lengths"]
+        assert len(samples) == num_local_samples
+        num_microbatches = []
+        # a fixed-shape trainer cannot run a microbatch above the cap, which the balanced partition ignores
+        num_microbatches_for = (
+            get_minimum_num_micro_batch_size if current_platform.dynamic_shapes else _num_microbatches_within_cap
+        )
+        for i in range(num_steps_per_rollout):
+            start, end = i * num_local_gbs, (i + 1) * num_local_gbs
+            num_microbatches.append(num_microbatches_for(samples[start:end], args.max_tokens_per_gpu * cp_size))
+
+        num_microbatches = torch.tensor(num_microbatches, dtype=torch.int, device=current_platform.current_device())
+        GeneralPGUtil.create(dp_group).all_reduce(num_microbatches, dp_group, op=dist.ReduceOp.MAX)
+
+        if vpp_size > 1:
+            # vpp requies the number of microbatches to be divisible by vpp_size
+            num_microbatches = torch.clamp(
+                num_microbatches // microbatch_group_size_per_vp_stage * microbatch_group_size_per_vp_stage,
+                min=1,
+            )
+
+        num_microbatches = num_microbatches.tolist()
+
+        # balance the each micro batch
+        samples = rollout_data["total_lengths"]
+        # balance the number of mirobatches across steps
+        micro_batch_indices = []
+        for i, num_mbs in enumerate(num_microbatches):
+            start, end = i * num_local_gbs, (i + 1) * num_local_gbs
+            samples = rollout_data["total_lengths"][start:end]
+            partitions = get_seqlen_balanced_partitions(samples, num_mbs, equal_size=False)
+            for j in range(num_mbs):
+                for k in range(len(partitions[j])):
+                    partitions[j][k] += start
+                # Multi-LoRA: microbatches must be contiguous-by-slot for the
+                # grouped GEMM's per-adapter token-count math.
+                if "adapter_slots" in rollout_data:
+                    partitions[j].sort(key=lambda index: rollout_data["adapter_slots"][index])
+            micro_batch_indices.extend(partitions)
+
+        assert len(set(sum(micro_batch_indices, []))) == num_local_samples
+
+        data_iterator = _generate_data_iterator(rollout_data, None, micro_batch_indices)
+
+    return (
+        data_iterator,
+        num_microbatches,
+    )
+
+
+def _num_microbatches_within_cap(lengths: list[int], max_tokens: int) -> int:
+    """The fewest microbatches whose seqlen-balanced partition keeps each one within `max_tokens`.
+
+    First-fit only bounds the count from below: the balanced partition ignores the cap.
+    """
+    cap = max(max_tokens, max(lengths))
+    num = get_minimum_num_micro_batch_size(lengths, max_tokens)
+    while num < len(lengths) and _largest_partition(lengths, num) > cap:
+        num += 1
+    return num
+
+
+def _largest_partition(lengths: list[int], num_partitions: int) -> int:
+    partitions = get_seqlen_balanced_partitions(lengths, num_partitions, equal_size=False)
+    return max(sum(lengths[i] for i in partition) for partition in partitions)

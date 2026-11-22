@@ -1,18 +1,17 @@
 name: Docker Build & Push
 
 on:
+  # Every main push reaches the hosted planner; image_inputs.py alone decides
+  # which images need rebuilding, including inputs added outside docker/.
   push:
     branches:
       - main
-    paths:
-      - 'docker/Dockerfile'
-      - 'docker/install-kube-tools.sh'
-      - 'docker/verify_transformer_engine.py'
-      - 'requirements.txt'
 
   schedule:
-    # Every 12 hours: midnight and noon UTC
-    - cron: '0 0,12 * * *'
+    # Poll every 10 minutes so an upstream move starts a build within ~30 minutes;
+    # check-upstream gates each poll. Off the top of the hour, where GitHub delays
+    # or drops scheduled runs under load.
+    - cron: '5,15,25,35,45,55 * * * *'
 
   workflow_dispatch:
     inputs:
@@ -24,10 +23,11 @@ on:
           - cu13
           - cu13-x86
           - cu13-aarch64
-          - cu12-x86
-          - rocm700-mi35x
-          - rocm700-mi30x
-          - rocm720-mi35x
+          - rubin
+          - tpu
+          - rocm724-mi35x
+          - rocm10-mi35x
+          - rocm10-mi30x
       image_tag:
         description: 'Tag mode: latest, dev (rolling + timestamped), or custom'
         required: true
@@ -60,44 +60,59 @@ jobs:
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
     steps:
+      # before the cache restore: checkout empties a workspace that is not yet a clone
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/workflows/scripts/gh_api.sh
+          sparse-checkout-cone-mode: false
+
       - name: Restore last known upstream SHAs
         uses: actions/cache/restore@v4
         with:
           path: last_upstream_shas.txt
-          key: upstream-shas-
-          restore-keys: upstream-shas-
+          key: upstream-shas-cu13-
+          restore-keys: upstream-shas-cu13-
 
       - name: Check for new upstream commits
         id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -o pipefail
+          source .github/workflows/scripts/gh_api.sh
           SHOULD_BUILD=false
 
-          # Check sglang (sglang-miles branch)
-          SGLANG_SHA=$(curl -s -H "Accept: application/vnd.github.sha" \
-            "https://api.github.com/repos/sgl-project/sglang/commits/sglang-miles")
-
-          # Check Megatron-LM (miles-main branch)
-          MEGATRON_SHA=$(curl -s -H "Accept: application/vnd.github.sha" \
-            "https://api.github.com/repos/radixark/Megatron-LM/commits/miles-main")
-
-          # Fingerprint the miles-wheels releases the images install from (sgl-router +
-          # the other prebuilt wheels). cu13 installs cu130-x86_64 / cu130-aarch64;
-          # cu12-x86 installs cu129-x86_64 — both build automatically, so track all rolling
-          # release tags they bake. Rolling tags stay fixed while assets may be replaced,
-          # so fingerprint the asset list rather than a commit SHA.
-          wheels_fp() {
-            curl -s "https://api.github.com/repos/yueming-yuan/miles-wheels/releases/tags/$1" \
-              | python3 -c "import sys,json,hashlib; a=json.load(sys.stdin).get('assets',[]); fp=sorted([x['name'],x['id'],x['size'],x['updated_at']] for x in a); print(hashlib.sha256(repr(fp).encode()).hexdigest() if a else '')"
+          # A failed lookup must not read as an upstream move (an error body stored as
+          # the "SHA" would build now and again once the API recovers), and must not pass
+          # silently either: fail this poll without building or saving state, so a lookup
+          # that keeps failing shows as red runs instead of quietly stopping rebuilds.
+          fail_poll() {
+            echo "::error::$1"
+            exit 1
           }
-          WHEELS_CU13_X86_FP=$(wheels_fp cu130-x86_64)
-          WHEELS_CU13_ARM64_FP=$(wheels_fp cu130-aarch64)
-          WHEELS_CU12_X86_FP=$(wheels_fp cu129-x86_64)
+
+          head_sha() {
+            local sha
+            sha=$(gh_api "repos/$1/commits/$2" --jq .sha) && [[ "$sha" =~ ^[0-9a-f]{40}$ ]] && echo "$sha"
+          }
+          SGLANG_SHA=$(head_sha sgl-project/sglang sglang-miles) || fail_poll "sglang sglang-miles HEAD lookup failed"
+          MEGATRON_SHA=$(head_sha radixark/Megatron-LM miles-main) || fail_poll "Megatron-LM miles-main HEAD lookup failed"
+
+          # Fingerprint both architectures' wheel assets: rolling release tags stay
+          # fixed while wheels may be replaced, including same-version rebuilds.
+          wheels_fp() {
+            local fp
+            fp=$(gh_api "repos/radixark/miles-wheels/releases/tags/$1" \
+              | python3 -c "import sys,json,hashlib; a=json.load(sys.stdin).get('assets',[]); fp=sorted([x['name'],x['id'],x['size'],x['updated_at']] for x in a); print(hashlib.sha256(repr(fp).encode()).hexdigest() if a else '')") \
+              && [[ "$fp" =~ ^[0-9a-f]{64}$ ]] && echo "$fp"
+          }
+          WHEELS_CU13_X86_FP=$(wheels_fp cu130-torch214-x86_64) || fail_poll "wheels cu130-torch214-x86_64 lookup failed"
+          WHEELS_CU13_ARM64_FP=$(wheels_fp cu130-torch214-aarch64) || fail_poll "wheels cu130-torch214-aarch64 lookup failed"
 
           echo "sglang HEAD:   ${SGLANG_SHA}"
           echo "megatron HEAD: ${MEGATRON_SHA}"
           echo "wheels FP cu13 x86:   ${WHEELS_CU13_X86_FP}"
           echo "wheels FP cu13 arm64: ${WHEELS_CU13_ARM64_FP}"
-          echo "wheels FP cu12 x86:   ${WHEELS_CU12_X86_FP}"
 
           # Compare against last known values stored in cache
           CACHE_FILE="last_upstream_shas.txt"
@@ -106,18 +121,16 @@ jobs:
             LAST_MEGATRON=$(sed -n '2p' "$CACHE_FILE")
             LAST_WHEELS_CU13_X86=$(sed -n '3p' "$CACHE_FILE")
             LAST_WHEELS_CU13_ARM64=$(sed -n '4p' "$CACHE_FILE")
-            LAST_WHEELS_CU12_X86=$(sed -n '5p' "$CACHE_FILE")
-            LAST_BUILD_EPOCH=$(sed -n '6p' "$CACHE_FILE")
+            LAST_BUILD_EPOCH=$(sed -n '5p' "$CACHE_FILE")
           else
             LAST_SGLANG=""
             LAST_MEGATRON=""
             LAST_WHEELS_CU13_X86=""
             LAST_WHEELS_CU13_ARM64=""
-            LAST_WHEELS_CU12_X86=""
             LAST_BUILD_EPOCH=""
           fi
 
-          if [ "$SGLANG_SHA" != "$LAST_SGLANG" ] || [ "$MEGATRON_SHA" != "$LAST_MEGATRON" ] || [ "$WHEELS_CU13_X86_FP" != "$LAST_WHEELS_CU13_X86" ] || [ "$WHEELS_CU13_ARM64_FP" != "$LAST_WHEELS_CU13_ARM64" ] || [ "$WHEELS_CU12_X86_FP" != "$LAST_WHEELS_CU12_X86" ]; then
+          if [ "$SGLANG_SHA" != "$LAST_SGLANG" ] || [ "$MEGATRON_SHA" != "$LAST_MEGATRON" ] || [ "$WHEELS_CU13_X86_FP" != "$LAST_WHEELS_CU13_X86" ] || [ "$WHEELS_CU13_ARM64_FP" != "$LAST_WHEELS_CU13_ARM64" ]; then
             SHOULD_BUILD=true
             echo "Upstream change detected"
           else
@@ -125,8 +138,8 @@ jobs:
           fi
 
           # miles commits alone never trigger rebuilds, so bound how stale the baked
-          # miles checkout can get.
-          MAX_BUILD_AGE_SECONDS=$(( 24 * 3600 ))
+          # miles checkout can get: rebuild once the last triggered build is 12h old.
+          MAX_BUILD_AGE_SECONDS=$(( 12 * 3600 ))
           NOW_EPOCH=$(date +%s)
           if [ "$SHOULD_BUILD" = "false" ]; then
             if ! [ "$LAST_BUILD_EPOCH" -gt 0 ] 2>/dev/null; then
@@ -139,12 +152,11 @@ jobs:
           fi
 
           # Save current values for next run (cached only when a build triggers,
-          # so line 6 = when the last build was kicked off).
+          # so line 5 = when the last build was kicked off).
           echo "${SGLANG_SHA}" > "$CACHE_FILE"
           echo "${MEGATRON_SHA}" >> "$CACHE_FILE"
           echo "${WHEELS_CU13_X86_FP}" >> "$CACHE_FILE"
           echo "${WHEELS_CU13_ARM64_FP}" >> "$CACHE_FILE"
-          echo "${WHEELS_CU12_X86_FP}" >> "$CACHE_FILE"
           echo "${NOW_EPOCH}" >> "$CACHE_FILE"
 
           echo "should_build=${SHOULD_BUILD}" >> "$GITHUB_OUTPUT"
@@ -154,15 +166,63 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: last_upstream_shas.txt
-          key: upstream-shas-${{ github.run_id }}
+          key: upstream-shas-cu13-${{ github.run_id }}
+
+  push-variants:
+    # A push rebuilds only the images whose inputs it touched, so a TPU-only change
+    # does not spend an hour or more rebuilding the multi-arch cu13 image.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      variants: ${{ steps.pick.outputs.variants }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pick the variants the push touched
+        id: pick
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          git fetch -q --depth=1 origin "$BEFORE"
+          variants=()
+          candidates=(cu13)
+          # The TPU image (docker/build.py) and its CI (pr-test-tpu.yml) belong to radixark/miles.
+          if [ "$GITHUB_REPOSITORY" = radixark/miles ]; then
+            candidates+=(tpu)
+          fi
+          for variant in "${candidates[@]}"; do
+            current=$(python3 docker/image_inputs.py --variant "$variant" --rev HEAD)
+            base=$(python3 docker/image_inputs.py --variant "$variant" --rev "$BEFORE")
+            if [ "$current" != "$base" ]; then
+              variants+=("\"${variant}\"")
+            fi
+          done
+          echo "variants=[$(IFS=,; echo "${variants[*]}")]" | tee -a "$GITHUB_OUTPUT"
 
   build-and-push:
-    needs: [check-upstream]
+    needs: [check-upstream, push-variants]
     # schedule: only build if upstream changed
-    # push/dispatch: build; simulate_schedule runs the check but does not gate the manual build
+    # push: build the variants push-variants picked
+    # dispatch: build; simulate_schedule runs the check but does not gate the manual build
     if: |
       always() &&
-      (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true')
+      (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true') &&
+      (github.event_name != 'push' || (needs.push-variants.result == 'success' && needs.push-variants.outputs.variants != '[]'))
+    # A schedule keeps every rolling image current; a push builds what it touched, and
+    # a manual dispatch builds only the variant it picks.
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.variant) || github.event_name == 'push' && needs.push-variants.outputs.variants || github.repository == 'radixark/miles' && '["cu13", "tpu"]' || '["cu13"]') }}
+    # Automatic builds of a variant run one at a time: a build outlasts the poll
+    # interval, and overlapping ones race to push its dev / latest. A newer pending build
+    # replaces an older one, which is safe because builds clone branch HEADs when they
+    # start. Manual dispatches and polls that skip the build get a per-run group, so
+    # they never wait on, or cancel, an automatic build.
+    concurrency:
+      group: ${{ github.event_name != 'workflow_dispatch' && (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true') && format('docker-build-auto-{0}', matrix.variant) || format('docker-build-{0}-{1}', github.run_id, matrix.variant) }}
+      cancel-in-progress: false
     # The build itself never touches a GPU (buildx sandboxes RUN steps); docker-build
     # nodes are CI machines carrying a second runner instance dedicated to builds, so
     # image builds stop competing for GPU-suite runner slots.
@@ -190,6 +250,12 @@ jobs:
           pip3 install --help 2>/dev/null | grep -q -- --break-system-packages && PIP_BSP="--break-system-packages"
           pip3 install $PIP_BSP --ignore-installed typer
 
+      - name: Read the variant's tag postfix
+        # build.py owns each variant's tag_postfix; promoting latest and pruning follow it.
+        run: |
+          postfix=$(cd docker && python3 -c 'import sys, build; print(build.VARIANTS[sys.argv[1]].get("tag_postfix", ""))' '${{ matrix.variant }}')
+          echo "TAG_POSTFIX=${postfix}" >> "$GITHUB_ENV"
+
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -197,34 +263,33 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
+        env:
+          BUILD_GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 docker/build.py \
-            --variant ${{ inputs.variant || 'cu13' }} \
+            --variant ${{ matrix.variant }} \
             --image-tag ${{ inputs.image_tag || 'dev' }} \
             --dockerfile ${{ inputs.dockerfile || 'docker/Dockerfile' }} \
             ${{ inputs.custom_tag && format('--custom-tag {0}', inputs.custom_tag) || '' }} \
+            --image-repo "$GITHUB_REPOSITORY" \
             --push
-
-      - name: Build and push cu12-x86 (automatic builds only)
-        # schedule / push-to-main leave inputs.variant empty → also build the cu12.9 legacy
-        # image; a manual workflow_dispatch builds only the single variant the user picked.
-        if: ${{ !inputs.variant }}
-        run: |
-          python3 docker/build.py --variant cu12-x86 --image-tag dev --push
 
       - name: Point latest to current dev
         # schedule only: latest is published registry state, so — like prune — a [DEBUG]
-        # simulate_schedule must not move it. A scheduled run always builds both variants.
+        # simulate_schedule must not move it.
         if: github.event_name == 'schedule'
         run: |
-          docker buildx imagetools create -t radixark/miles:latest radixark/miles:dev
-          docker buildx imagetools create -t radixark/miles:latest-cu12 radixark/miles:dev-cu12
+          docker buildx imagetools create -t "${GITHUB_REPOSITORY}:latest${TAG_POSTFIX}" "${GITHUB_REPOSITORY}:dev${TAG_POSTFIX}"
 
       - name: Prune old dev tags
         if: github.event_name == 'schedule'
         run: |
           KEEP=20
-          IMAGE=radixark/miles
+          # A pinned dev-<ts> tag (see docs/developer/versions.md) must outlive this many
+          # days however often builds run, so the count limit alone never deletes it.
+          MIN_AGE_DAYS=14
+          CUTOFF=$(date -u -d "${MIN_AGE_DAYS} days ago" +%Y%m%d%H%M)
+          IMAGE=${GITHUB_REPOSITORY}
 
           # Authenticate with Docker Hub API
           TOKEN=$(curl -s -X POST "https://hub.docker.com/v2/users/login/" \
@@ -232,8 +297,8 @@ jobs:
             -d '{"username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}' \
             | jq -r .token)
 
-          # Keep the newest $KEEP timestamped tags matching $1, delete the rest.
-          # cu13 (dev-<ts>) and cu12-x86 (dev-cu12-<ts>) are pruned as independent series.
+          # Keep the newest $KEEP timestamped tags matching $1 plus any younger than
+          # $MIN_AGE_DAYS days, delete the rest.
           prune_series() {
             PATTERN="$1"
             TAGS=""
@@ -254,9 +319,13 @@ jobs:
             fi
 
             DELETE_COUNT=$((COUNT - KEEP))
-            echo "Pruning ${DELETE_COUNT} old tags matching ${PATTERN}..."
+            echo "Pruning up to ${DELETE_COUNT} old tags matching ${PATTERN}..."
             echo "$SORTED" | head -n "$DELETE_COUNT" | while read -r TAG; do
               [ -z "$TAG" ] && continue
+              if [ "${TAG##*-}" -ge "$CUTOFF" ]; then
+                echo "  Keeping ${TAG} (younger than ${MIN_AGE_DAYS} days)"
+                continue
+              fi
               HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
                 -H "Authorization: JWT ${TOKEN}" \
                 "https://hub.docker.com/v2/repositories/${IMAGE}/tags/${TAG}/")
@@ -268,5 +337,39 @@ jobs:
             done
           }
 
-          prune_series '^dev-[0-9]{12}$'
-          prune_series '^dev-cu12-[0-9]{12}$'
+          prune_series "^dev${TAG_POSTFIX}-[0-9]{12}\$"
+
+  # A failed automatic build leaves the published images behind their inputs until a
+  # later build succeeds, so report it to the Miles CI Lark group on the first failure.
+  # Manual dispatches are left to whoever started them.
+  notify-build-failure:
+    needs: [build-and-push]
+    if: |
+      always() && github.repository == 'radixark/miles' &&
+      needs.build-and-push.result == 'failure' && github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out the notifier
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/workflows/scripts/lark_notify.py
+            .github/workflows/scripts/ci_failure_analysis.py
+          sparse-checkout-cone-mode: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+
+      - name: Post the build failure card
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
+          RUN_ID: ${{ github.run_id }}
+        run: python .github/workflows/scripts/lark_notify.py docker-build-failure --run-id "$RUN_ID"

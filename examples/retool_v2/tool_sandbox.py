@@ -53,14 +53,15 @@ def aggressive_cleanup_memory():
 
     # Note: sys.intern doesn't have a clear method, so we skip this
     # Clear module cache if possible
-    if hasattr(sys, "modules"):
-        # Don't clear all modules, but clear some common ones that might cache data
-        modules_to_clear = ["numpy", "pandas", "matplotlib", "scipy"]
-        for module_name in modules_to_clear:
-            if module_name in sys.modules:
-                module = sys.modules[module_name]
-                if hasattr(module, "clear_cache"):
-                    module.clear_cache()
+    # Don't clear all modules, but clear some common ones that might cache data
+    modules_to_clear = ["numpy", "pandas", "matplotlib", "scipy"]
+    for module_name in modules_to_clear:
+        if module_name in sys.modules:
+            module = sys.modules[module_name]
+            if hasattr(
+                module, "clear_cache"
+            ):  # config-access-exempt: loaded optional libraries expose different cache cleanup APIs
+                module.clear_cache()
 
 
 def check_and_cleanup_memory():

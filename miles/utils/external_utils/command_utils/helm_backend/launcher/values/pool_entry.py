@@ -1,0 +1,233 @@
+from __future__ import annotations
+
+import shlex
+from typing import Any
+
+from miles.utils.args.configs.scaling import ScalingConfig
+from miles.utils.external_utils.colocate_pairing.config import PairingLayout
+from miles.utils.external_utils.command_utils.base_backend import TRAINER_ROLE
+from miles.utils.external_utils.command_utils.helm_backend import naming
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import (
+    PoolEntry,
+    PortEntry,
+)
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import (
+    SECTION_OF_CATEGORY,
+    TRAINER_ENGINES_SECTION,
+    LaunchPlan,
+)
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.placeholders import (
+    LEADER_ADDRESS_PLACEHOLDER,
+    RENDERED_CELL_INDEX,
+    WORKER_INDEX_SENTINEL,
+    real_or_sentinel_gpu_ids,
+    sentinel_to_placeholder,
+    sentinels_to_placeholders,
+)
+from miles.utils.workers.argv_utils import config_json_for_argv, python_argv_prefix
+from miles.utils.workers.connection_config import StaticConnConfig, build_worker_annotations
+from miles.utils.workers.naming import compute_port_name
+from miles.utils.workers.serving.worker_config import ServeWorkerConfig
+from miles.utils.workers.types import PlatformAccess
+from miles.utils.workers.worker_provider.kubernetes.helm import env
+from miles.utils.workers.worker_spec import (
+    BaseCommandSpec,
+    BaseServeSpec,
+    BaseSpec,
+    HostAndPort,
+    LaunchCommandContext,
+    NamedHostAndPorts,
+)
+
+_BIND_HOST = "0.0.0.0"
+
+_SERVE_MODULE = "miles.utils.workers.serving.serve"
+_SUPERVISOR_MODULE = "miles.utils.workers.process_supervisor"
+
+
+def build_entry(
+    spec: BaseSpec,
+    plan: LaunchPlan,
+    addresses: dict[str, dict[str, NamedHostAndPorts]],
+    pairing_layout: PairingLayout | None = None,
+    *,
+    static_connections: StaticConnConfig,
+    scaling: ScalingConfig,
+) -> PoolEntry:
+    scheduling = spec.scheduling(scaling)
+    assert scheduling.num_cells > 0, (
+        f"Spec '{spec.name}' asks for {scheduling.num_cells} cells; a spec a run has turned off is dropped "
+        f"before conversion, because a values entry always renders at least one pod"
+    )
+    is_sub_node = _is_sub_node(pairing_layout)
+    context = _launch_context(
+        spec,
+        args=spec.args,
+        addresses=addresses,
+        cell_index=RENDERED_CELL_INDEX,
+        worker_in_cell_index=WORKER_INDEX_SENTINEL,
+        is_sub_node=is_sub_node,
+        scaling=scaling,
+    )
+    pods_per_cell = scheduling.pods_per_cell()
+    gpus_per_pod = scheduling.gpus_per_pod()
+
+    return PoolEntry(
+        name=spec.name,
+        object_name=naming.component_name(plan.release, spec.name),
+        pool_id=spec.name,
+        command=_with_prepare_cmd(
+            _command_of_spec(spec, context, static_connections=static_connections, scaling=scaling),
+            spec,
+            plan=plan,
+            scaling=scaling,
+        ),
+        ports=[PortEntry(name=compute_port_name(port.name), port=port.static_port) for port in spec.port_infos],
+        env=_command_env_of_spec(spec, context, addresses=addresses, is_sub_node=is_sub_node, scaling=scaling) or None,
+        meta=_meta_of_spec(spec, scaling=scaling) or None,
+        annotations=build_worker_annotations(spec=spec, scaling=scaling),
+        service_account_name=_service_account_name(spec, plan=plan),
+        replicas=scheduling.num_cells,
+        size=pods_per_cell if pods_per_cell > 1 else None,
+        resources={"limits": {"nvidia.com/gpu": gpus_per_pod}} if gpus_per_pod else None,
+        restart_at=plan.rendered_restart_at(spec.name),
+    )
+
+
+def _service_account_name(spec: BaseSpec, *, plan: LaunchPlan) -> str | None:
+    if (access := spec.platform_access) is PlatformAccess.NONE:
+        return None
+    return naming.platform_account_name(release=plan.release, access=access)
+
+
+def _command_env_of_spec(
+    spec: BaseSpec,
+    context: LaunchCommandContext,
+    *,
+    addresses: dict[str, dict[str, NamedHostAndPorts]],
+    is_sub_node: bool,
+    scaling: ScalingConfig,
+) -> dict[str, str]:
+    if isinstance(spec, BaseServeSpec):
+        return {}
+
+    first = dict(spec.env_var(context))
+    second = dict(
+        spec.env_var(
+            _launch_context(
+                spec,
+                args=context.args,
+                addresses=addresses,
+                cell_index=1,
+                worker_in_cell_index=1,
+                is_sub_node=is_sub_node,
+                scaling=scaling,
+            )
+        )
+    )
+    assert first == second, (
+        f"Spec '{spec.name}' builds its environment out of the cell and worker it is given, but a values entry "
+        f"describes a whole pool and is rendered before any of them exists; serve the spec so its pod can "
+        f"compute the environment itself, or drop the dependency"
+    )
+    return {name: sentinel_to_placeholder(value, spec) for name, value in first.items()}
+
+
+def _with_prepare_cmd(command: list[str], spec: BaseSpec, *, plan: LaunchPlan, scaling: ScalingConfig) -> list[str]:
+    if SECTION_OF_CATEGORY[spec.category] != TRAINER_ENGINES_SECTION:
+        return command
+    prepare = plan.prepare_cmd.get(TRAINER_ROLE)
+    if not prepare:
+        return command
+
+    scheduling = spec.scheduling(scaling)
+    assert scheduling.gpus_per_pod() >= scheduling.num_gpus_per_node, (
+        f"A prepare command runs once per pod of '{spec.name}', but that pool takes "
+        f"{scheduling.gpus_per_pod()} of a node's {scheduling.num_gpus_per_node} gpus, so two of its "
+        f"pods can land on one node and run the command against the same node-local path at the same time; "
+        f"give the pool whole nodes, or serialize the command yourself with flock"
+    )
+    return ["bash", "-c", f"{prepare} && exec {shlex.join(command)}"]
+
+
+def _meta_of_spec(spec: BaseSpec, *, scaling: ScalingConfig) -> dict[str, str]:
+    gpus_per_pod = spec.scheduling(scaling).gpus_per_pod()
+    if not gpus_per_pod:
+        return {}
+    return {env.DEFAULT_LABEL_KEYS.gpu_ids_meta: ",".join(str(gpu_id) for gpu_id in range(gpus_per_pod))}
+
+
+def _launch_context(
+    spec: BaseSpec,
+    addresses: dict[str, dict[str, NamedHostAndPorts]],
+    *,
+    args: Any,
+    cell_index: int,
+    worker_in_cell_index: int,
+    is_sub_node: bool = False,
+    scaling: ScalingConfig,
+) -> LaunchCommandContext:
+    self_addrs = {
+        port.name: HostAndPort(
+            host=LEADER_ADDRESS_PLACEHOLDER if port.mode == "master" else _BIND_HOST,
+            port=port.static_port,
+        )
+        for port in spec.port_infos
+    }
+    pod_gpu_ids = real_or_sentinel_gpu_ids(spec, is_sub_node=is_sub_node, scaling=scaling)
+    return LaunchCommandContext(
+        args=args,
+        scaling=scaling,
+        cell_index=cell_index,
+        worker_in_cell_index=worker_in_cell_index,
+        num_workers_per_cell=spec.scheduling(scaling).num_workers_per_cell,
+        gpu_ids=pod_gpu_ids,
+        local_gpu_ids=pod_gpu_ids,
+        self_addrs=self_addrs,
+        pool_addrs={pool_id: list(cells.values()) for pool_id, cells in addresses.items()},
+    )
+
+
+def _command_of_spec(
+    spec: BaseSpec, context: LaunchCommandContext, *, static_connections: StaticConnConfig, scaling: ScalingConfig
+) -> list[str]:
+    match spec:
+        case BaseCommandSpec():
+            return sentinels_to_placeholders(shlex.split(spec.launch_command(context)), spec)
+        case BaseServeSpec():
+            return _serve_command(spec, static_connections=static_connections, scaling=scaling)
+        case _:
+            raise AssertionError(f"{spec.name} is neither launched by a command nor served over rpc: {spec}")
+
+
+def _serve_command(spec: BaseServeSpec, *, static_connections: StaticConnConfig, scaling: ScalingConfig) -> list[str]:
+    interpreter_prefix = python_argv_prefix()
+    workers_per_pod = spec.scheduling(scaling).workers_per_pod()
+    worker_config = ServeWorkerConfig(
+        worker_type=spec.worker_type,
+        args=spec.args.model_dump(mode="json"),
+        static_connections=static_connections,
+    )
+    serve = [
+        *interpreter_prefix,
+        "-m",
+        _SERVE_MODULE,
+        "--config",
+        config_json_for_argv(worker_config),
+    ]
+    if workers_per_pod == 1:
+        return serve
+    return [
+        *interpreter_prefix,
+        "-m",
+        _SUPERVISOR_MODULE,
+        "--num-subprocesses",
+        str(workers_per_pod),
+        "--",
+    ] + serve
+
+
+def _is_sub_node(pairing_layout: PairingLayout | None) -> bool:
+    if pairing_layout is None:
+        return False
+    return pairing_layout.num_gpus_per_inference_pod < pairing_layout.num_gpus_per_node

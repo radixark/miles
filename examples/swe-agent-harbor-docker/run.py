@@ -9,7 +9,6 @@ Usage:
 """
 
 import os
-import socket
 import subprocess
 import time
 from dataclasses import dataclass
@@ -18,15 +17,15 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_rollout_only"] = "normal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     megatron_model_type: str = "glm4.7-flash"
     num_gpus_per_node: int = 8
     megatron_path: str = "/root/Megatron-LM"
@@ -38,10 +37,18 @@ class ScriptArgs(U.ExecuteTrainConfig):
     hf_checkpoint: str = "zai-org/GLM-4.7-Flash"
     ref_load: str = "/root/GLM-4.7-Flash_torch_dist"
     save_dir: str = "/root/GLM-4.7-Flash_agent_v2/"
+    load_dir: str = ""  # empty: resume from save_dir
     prompt_data: str = "/root/swe_train.jsonl"
 
     # Training settings
     max_seq_len: int = 65536
+    rollout_max_response_len: int = 8192
+    # Engine-side hard cap on prompt + generation per request. Without it sglang serves up to the
+    # model's own context window, so a runaway trajectory can hold a 100k+ token KV footprint and
+    # starve every other request. Defaults to max_seq_len + rollout_max_response_len: a session at
+    # the max_seq_len budget can still take one more turn, so the trial ends on max_seq_len
+    # rather than on an engine-side context error.
+    sglang_context_length: int | None = None
     num_rollout: int = 3000
     rollout_batch_size: int = 4
     n_samples_per_prompt: int = 8
@@ -55,7 +62,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     )
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
-    router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", socket.gethostname())  # public IP
+    # The host agents outside the cluster reach every session server on; passed as
+    # --session-server-external-host, which also keeps the session servers on the head node.
+    session_server_external_host: str = ""
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")  # optional cluster/pod IP override
 
     # W&B settings
@@ -88,6 +97,7 @@ def cleanup():
 
 def prepare(args: ScriptArgs):
     """Convert HF checkpoint to torch_dist format if not already done."""
+    U = args.create_backend()
     U.convert_checkpoint(
         model_name=args.model_name,
         megatron_model_type=args.megatron_model_type,
@@ -98,10 +108,19 @@ def prepare(args: ScriptArgs):
     )
 
 
+def _sglang_context_length(args: ScriptArgs) -> int:
+    if args.sglang_context_length is not None:
+        return args.sglang_context_length
+    return args.max_seq_len + args.rollout_max_response_len
+
+
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} "
         f"--ref-load {args.ref_load} "
+        # Resume from save_dir when it holds a checkpoint; miles falls back to ref_load otherwise.
+        f"--load {args.load_dir or args.save_dir} "
         f"--save {args.save_dir} "
         f"--save-interval {args.save_interval} "
     )
@@ -115,7 +134,7 @@ def execute(args: ScriptArgs):
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         "--rollout-temperature 0.8 "
-        "--rollout-max-response-len 8192 "
+        f"--rollout-max-response-len {args.rollout_max_response_len} "
         f"--max-seq-len {args.max_seq_len} "
         f"--global-batch-size {args.global_batch_size} "
         "--balance-data "
@@ -160,9 +179,16 @@ def execute(args: ScriptArgs):
     sglang_args = (
         "--rollout-num-gpus-per-engine 1 "
         "--sglang-mem-fraction-static 0.7 "
+        f"--sglang-context-length {_sglang_context_length(args)} "
         "--sglang-tool-call-parser glm47 "
         "--sglang-reasoning-parser glm45 "
         "--sglang-router-port 31000 "
+    )
+
+    external_host_arg = (
+        f"--session-server-external-host {args.session_server_external_host} "
+        if args.session_server_external_host
+        else ""
     )
 
     agent_args = (
@@ -174,6 +200,8 @@ def execute(args: ScriptArgs):
         "--tito-model glm47 "
         "--use-session-server "
         "--session-server-port 30000 "
+        "--session-server-workers 32 "
+        f"{external_host_arg}"
     )
 
     misc_args = (
@@ -228,13 +256,12 @@ def execute(args: ScriptArgs):
         f"{debug_args}"
     )
 
-    miles_root = U.repo_base_dir
+    miles_root = command_utils.repo_base_dir
 
     extra_env_vars = {
         "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{miles_root}",
         "AGENT_SERVER_URL": args.agent_server_url,
         "AGENT_MODEL_NAME": args.agent_model_name,
-        "MILES_ROUTER_EXTERNAL_HOST": args.router_external_host,
         "HARBOR_TASKS_DIR": args.harbor_tasks_dir,
     }
     if args.miles_host_ip:
@@ -242,7 +269,6 @@ def execute(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         megatron_path=args.megatron_path,
@@ -250,7 +276,7 @@ def execute(args: ScriptArgs):
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     cleanup()
     if not args.skip_prepare:

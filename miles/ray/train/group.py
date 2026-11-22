@@ -1,169 +1,246 @@
 import asyncio
 import logging
+import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Any, TypeVar
+from uuid import uuid4
 
-import ray
-from ray.util.placement_group import PlacementGroup
-
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome
-from miles.ray.train.actor_factory import allocate_gpus_for_actor
-from miles.ray.train.cell import RayTrainCell
+from miles.backends.megatron_utils.megatron_config import CRITIC_ROLE
+from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
+from miles.ray.rollout.inference_controller import UpdatableEngines
+from miles.ray.specs.train import compute_trainer_pool_id
+from miles.ray.train.cell import TrainerCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
-from miles.utils.async_utils import AsyncioGatherUtils
-from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_checksums
+from miles.ray.train.init_request import TrainerControllerInitRequest
+from miles.ray.train_actor import WeightUpdateOutput
+from miles.utils import object_store
+from miles.utils.args.runtime import TrainerConfig
+from miles.utils.arguments import supports_partial_target_weight_update
+from miles.utils.async_utils import AsyncioGatherUtils, gather_and_raise_first
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import (
     CellReconfigureEvent,
-    InferenceEngineWeightChecksumEvent,
     TrainGroupStepEndEvent,
+    WeightUpdateResultEvent,
     WitnessAllocateIdEvent,
 )
+from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator, read_persisted_witness_counter
-from miles.utils.ft_utils.health_checker import NoopHealthChecker, SimpleHealthCheckerConfig
-from miles.utils.ft_utils.indep_dp import IndepDPInfo
-from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
-from miles.utils.retry_utils import retry
-from miles.utils.test_utils.ft_test_actions import FTTestActionGroupExecutor
+from miles.utils.data import RolloutDataPack, remove_train_output_refs
+from miles.utils.dp_schedule import TrainParallelConfig
+from miles.utils.ft_utils.api_server.models import CellStatus
+from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChecker, SimpleHealthCheckerConfig
+from miles.utils.ft_utils.indep_dp import IndepDPInfo, create_tcp_store
+from miles.utils.init_once import InitOnce, init_once
+from miles.utils.logging_utils import configure_logger
+from miles.utils.misc import split_evenly
+from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
+from miles.utils.test_utils.fault_injector.actions.base import FaultHookResources
+from miles.utils.test_utils.fault_injector.controller import fault_hook_controller, reach_fault_hook_async
+from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHookOwner
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles.utils.workers.cell_operations.base import BaseCellOperations
+from miles.utils.workers.types import DeploymentIdentity
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
+from miles.utils.workers.worker_provider.utils import apply_cell_observation
 
-if TYPE_CHECKING:
-    import torch
-
+_T = TypeVar("_T")
 
 logger = logging.getLogger(__name__)
 
+
 _RETRY_MAX_ATTEMPTS = 30
+_CELLS_READY_TIMEOUT_SECONDS = 3600.0
 
 
-class RayTrainGroup:
-    """
-    A group of ray actors
+def compute_trainer_health_checker_config(args: TrainerConfig) -> SimpleHealthCheckerConfig | None:
+    if not args.indep_dp:
+        return None
+    return SimpleHealthCheckerConfig.from_args(args, prefix="trainer_heartbeat_checker")
 
-    Args:
-        args (Namespace): Arguments for the actor group.
-        num_nodes (int): Number of nodes for this actor group.
-        num_gpus_per_node (int): Number of gpus for this actor group.
-        pg (PlacementGroup, optional): Placement group to schedule actor on.
-            If none, create new placement group automatically. Defaults to None.
-        num_gpus_per_actor (float, optional): Number of gpus allocated for each actor.
-            If < 1.0, multiple models can share same gpu. Defaults to 1.
-        resources (Dict[str, float], optional): Custom resources to allocate for each actor.
-            See https://docs.ray.io/en/latest/ray-core/scheduling/resources.html
-        num_resources_per_node (int, optional): Number of custom resources to allocate for each node.
-            See https://docs.ray.io/en/latest/ray-core/scheduling/resources.html
-    """
 
+class TrainerController:
     def __init__(
         self,
-        args,
-        num_nodes: int,
-        num_gpus_per_node: int,
-        pg: tuple[PlacementGroup, list[int], list[int]],
         *,
-        rollout_manager: object | None,
-        num_gpus_per_actor: float = 1,
-        role: str,
-        with_ref: bool,
-        with_opd_teacher: bool = False,
+        args: TrainerConfig,
+        deployment_identity: DeploymentIdentity,
+        cell_provider: BaseWorkerProvider,
+        cell_operations: BaseCellOperations,
     ) -> None:
+        self._init_once = InitOnce(type(self).__name__)
         self.args = args
-        self._rollout_manager = rollout_manager
-
-        total_gpus = num_nodes * num_gpus_per_node
-        num_cells = (total_gpus // compute_megatron_world_size_except_dp(args)) if args.indep_dp else 1
-        gpus_per_cell = total_gpus // num_cells
-        assert total_gpus % num_cells == 0, f"total_gpus ({total_gpus}) must be divisible by num_cells ({num_cells})"
+        self._deployment_identity = deployment_identity
+        self._trainer_id = args.trainer_id
+        self._role = args.trainer_role
+        self._with_ref = (args.trainer_role != CRITIC_ROLE) and (args.kl_coef != 0 or args.use_kl_loss)
+        self._with_opd_teacher = (args.trainer_role != CRITIC_ROLE) and args.use_opd and args.opd_type == "megatron"
+        self._pool_id = compute_trainer_pool_id(args.trainer_id)
+        self._provider = cell_provider
+        self._cell_operations = cell_operations
+        self._watcher_disposer: StopWatchFn | None = None
 
         self._indep_dp_quorum_id = 0
+        self._indep_dp_store: Any | None = None
+        self._indep_dp_store_addr: str | None = None
 
-        if num_cells > 1:
-            self._indep_dp_store, indep_dp_store_addr = _create_tcp_store()
-            logger.info(f"Created TCPStore for independent DP at {indep_dp_store_addr}")
-        else:
-            self._indep_dp_store, indep_dp_store_addr = None, None
+        self._health_checker_activeness = ActivenessTracker(active=True)
 
-        health_checker_config = (
-            SimpleHealthCheckerConfig.from_args(args, prefix="trainer_heartbeat_checker") if num_cells > 1 else None
+        self._cells_by_id: dict[str, TrainerCell] = {}
+        self._debug_trainer_load_state_timestamp = time.time()
+
+    @property
+    def pool_id(self) -> str:
+        return self._pool_id
+
+    @property
+    def expected_num_cells(self) -> int:
+        return self._expected_num_cells
+
+    @property
+    def _expected_num_cells(self) -> int:
+        return self.args.trainer_init_expected_num_cells
+
+    @property
+    def _cells(self) -> list[TrainerCell]:
+        return sorted(self._cells_by_id.values(), key=lambda cell: cell.cell_index)
+
+    def has_errored_cell(self) -> bool:
+        return any(cell.is_errored for cell in self._cells)
+
+    @property
+    def cell_ids(self) -> list[str]:
+        return [cell.cell_id for cell in self._cells]
+
+    async def _wait_expected_num_cells(self, timeout: float = _CELLS_READY_TIMEOUT_SECONDS) -> None:
+        async def _check(_remaining: float) -> None:
+            expected = self._expected_num_cells
+            if len(self._cells_by_id) < expected:
+                raise TimeoutError(f"only {len(self._cells_by_id)} of {expected} trainer cells observed")
+
+        await retry_until_deadline(
+            _check,
+            total_seconds=timeout,
+            retry_on=TimeoutError,
+            initial_delay=1.0,
+            max_delay=5.0,
+            log_fields=dict(tag="ft", spec=self._pool_id),
         )
 
-        def _create_cell(cell_index: int):
-            cell_pg = _slice_pg(pg, start=cell_index * gpus_per_cell, end=(cell_index + 1) * gpus_per_cell)
+    async def _reconcile(self, cell_id: str, observed: CellInfo | None) -> None:
+        actual = self._cells_by_id.get(cell_id)
+        await apply_cell_observation(
+            cell_id=cell_id,
+            observed=observed,
+            actual_workers_hash=actual.workers_hash if actual is not None else None,
+            add=self._add_cell,
+            remove=self._remove_cell,
+        )
 
-            cell = RayTrainCell(
-                args=args,
-                role=role,
-                with_ref=with_ref,
-                with_opd_teacher=with_opd_teacher,
-                cell_index=cell_index,
-                rollout_manager=rollout_manager,
-                actor_factory=lambda _pg=cell_pg, _ci=cell_index: allocate_gpus_for_actor(
-                    args=args,
-                    gpus_per_cell=gpus_per_cell,
-                    pg=_pg,
-                    num_gpus_per_actor=num_gpus_per_actor,
-                    indep_dp_store_addr=indep_dp_store_addr,
-                    role=role,
-                    cell_index=_ci,
-                ),
-                health_checker=NoopHealthChecker(),
+    async def _add_cell(self, cell_id: str, observed: CellInfo) -> None:
+        self._cells_by_id[cell_id] = self._create_cell(
+            cell_id, cell_index=observed.meta["cell_index"], workers_hash=observed.workers_hash
+        )
+
+    async def _remove_cell(self, cell_id: str) -> None:
+        cell = self._cells_by_id.pop(cell_id)
+        cell.dispose()
+
+    def _create_cell(self, cell_id: str, *, cell_index: int, workers_hash: str) -> TrainerCell:
+        cell = TrainerCell(
+            args=self.args,
+            role=self._role,
+            with_ref=self._with_ref,
+            with_opd_teacher=self._with_opd_teacher,
+            cell_id=cell_id,
+            cell_index=cell_index,
+            workers_hash=workers_hash,
+            health_checker=NoopHealthChecker(),
+            provider=self._provider,
+        )
+
+        if self._health_checker_config is not None:
+            cell.health_checker = create_trainer_cell_health_checker(
+                cell=cell,
+                config=self._health_checker_config,
+                get_activeness=self._health_checker_activeness.get,
             )
 
-            if health_checker_config is not None:
-                cell.health_checker = create_trainer_cell_health_checker(
-                    cell=cell,
-                    config=health_checker_config,
-                )
+        return cell
 
-            return cell
-
-        self._cells: list[RayTrainCell] = [_create_cell(cell_index) for cell_index in range(num_cells)]
-
-        self._witness_allocator: WitnessIdAllocator | None = (
-            WitnessIdAllocator(buffer_size=args.witness_buffer_size) if args.enable_witness else None
-        )
-        if self._witness_allocator is not None and args.save_debug_event_data is not None:
-            self._witness_allocator.resume(read_persisted_witness_counter(Path(args.save_debug_event_data)))
-
-        self._test_action_executor = FTTestActionGroupExecutor.from_args(args, group=self)
+    async def dispose(self) -> None:
+        if (disposer := self._watcher_disposer) is not None:
+            await disposer()
+            self._watcher_disposer = None
 
     # ------------------------ API :: train ------------------------
 
-    async def train(self, rollout_id: int, rollout_data_pack):
+    async def train(
+        self,
+        rollout_id: int,
+        rollout_data_pack: RolloutDataPack,
+        external_data: list[TrainStepOutput] | None = None,
+    ) -> list[TrainStepOutput]:
         """Do one rollout training"""
 
-        event_analyzer.run_analysis_from_args(self.args)
+        assert (
+            external_data is None or len(self._cells) == 1
+        ), "external_data is only supported for a single cell, i.e. without independent DP"
 
-        async def _fn(attempt: int):
+        await reach_fault_hook_async(FaultHookName.TRAINER_CONTROLLER_STEP_START, rollout_id=rollout_id)
+        await asyncio.to_thread(event_analyzer.run_analysis_from_args, self.args)
+
+        async def _fn(attempt: int) -> list[TrainStepOutput]:
             witness_info = self._allocate_witness_info(
                 rollout_id=rollout_id,
                 attempt=attempt,
-                sample_indices=rollout_data_pack["sample_indices"],
+                sample_indices=rollout_data_pack.sample_indices,
             )
 
-            log_structured(logger.info, op="train", phase="start", rollout=rollout_id, attempt=attempt)
+            log_structured(logger.info, tag="ft", op="train", phase="start", rollout=rollout_id, attempt=attempt)
             await self._refresh_cells(rollout_id=rollout_id)
-            snapshot_alive_cells, results = await self._execute_all_alive_and_catch(
-                "train",
-                rollout_id=rollout_id,
-                rollout_data_ref=rollout_data_pack["data_ref"],
-                witness_info=witness_info,
-                attempt=attempt,
+            snapshot_alive_cells, results = await self._gather_all_alive_and_catch(
+                lambda cell: cell.train(
+                    rollout_id=rollout_id,
+                    rollout_data_ref=rollout_data_pack.data_ref,
+                    witness_info=witness_info,
+                    attempt=attempt,
+                    external_data=external_data,
+                ),
+                debug_name="execute_all_alive_and_catch#train",
+                check_recoverable=False,
             )
-            self._check_train_one_attempt(snapshot_alive_cells, results)
+            worker_results = [
+                worker_result
+                for cell_results in results
+                if not isinstance(cell_results, BaseException)
+                for worker_result in cell_results
+            ]
+
+            try:
+                self._check_train_one_attempt(snapshot_alive_cells, results)
+            except Exception:
+                remove_train_output_refs(worker_results)
+                raise
 
             self._log_step_end_event(
                 rollout_id=rollout_id,
+                attempt=attempt,
                 snapshot_alive_cells=snapshot_alive_cells,
                 results=results,
             )
 
-        await retry(_fn, max_attempts=_RETRY_MAX_ATTEMPTS)
+            return worker_results
 
-        self._test_action_executor.run_after_step(rollout_id=rollout_id)
+        worker_results = await retry(_fn, max_attempts=_RETRY_MAX_ATTEMPTS)
+
+        await reach_fault_hook_async(FaultHookName.TRAINER_CONTROLLER_STEP_END, rollout_id=rollout_id)
+
+        return worker_results
 
     def _allocate_witness_info(self, *, rollout_id: int, attempt: int, sample_indices):
         if self._witness_allocator is None:
@@ -184,32 +261,60 @@ class RayTrainGroup:
 
         return witness_info
 
-    def _log_step_end_event(self, *, rollout_id: int, snapshot_alive_cells: list, results: list):
+    def _log_step_end_event(self, *, rollout_id: int, attempt: int, snapshot_alive_cells: list, results: list):
         if is_event_logger_initialized():
             cell_outcomes = {
-                cell.cell_index: ("error" if isinstance(cell_results, BaseException) else [r for r in cell_results])
+                cell.cell_index: (
+                    "error" if isinstance(cell_results, BaseException) else [r.outcome for r in cell_results]
+                )
                 for cell, cell_results in zip(snapshot_alive_cells, results, strict=True)
             }
             get_event_logger().log(
                 TrainGroupStepEndEvent,
-                dict(rollout_id=rollout_id, cell_outcomes=cell_outcomes),
+                dict(
+                    rollout_id=rollout_id,
+                    attempt=attempt,
+                    role=self._role,
+                    cell_outcomes=cell_outcomes,
+                    cell_incarnations={cell.cell_id: cell.workers_hash for cell in snapshot_alive_cells},
+                ),
             )
 
-    @staticmethod
-    def _check_train_one_attempt(snapshot_alive_cells, results):
-        outcomes = RayTrainGroup._compute_attempt_outcomes(snapshot_alive_cells, results)
+    def _check_train_one_attempt(self, snapshot_alive_cells, results):
+        outcomes = TrainerController._compute_attempt_outcomes(snapshot_alive_cells, results)
         if not outcomes["normal"] and not outcomes["discarded"]:
-            log_structured(logger.error, op="check", **outcomes, decision="retry", reason="all alive cells failed")
-            raise RuntimeError("All cells failed in this training attempt")
+            cause = _first_exception(results)
+            error = self._make_all_cells_failed_error("All cells failed in this training attempt", cause=cause)
+            log_structured(
+                logger.error,
+                tag="ft",
+                op="check",
+                **outcomes,
+                decision="give_up" if isinstance(error, NonRetryableError) else "retry",
+                reason="all alive cells failed",
+            )
+            raise error from cause
 
         # NOTE: If some cells errors + all other cells claim normal, we do *not* retry
         #       This may happen when some cells fails *after* exchanging gradients w/ others
         if outcomes["discarded"]:
-            log_structured(logger.warning, op="check", **outcomes, decision="retry", reason="discarded_should_retry")
+            log_structured(
+                logger.warning,
+                tag="ft",
+                op="check",
+                **outcomes,
+                decision="retry" if self._is_recoverable() else "give_up",
+                reason="discarded_should_retry",
+            )
             raise ValueError("Exists DISCARDED_SHOULD_RETRY, thus need retry")
 
         log_structured(
-            logger.info, op="check", **outcomes, decision="no_retry", reason="survivors normal, gradients valid"
+            logger.info,
+            tag="ft",
+            op="check",
+            **outcomes,
+            decision="no_retry",
+            reason="survivors normal, gradients valid",
         )
 
     @staticmethod
@@ -219,132 +324,369 @@ class RayTrainGroup:
         discarded = [
             c.cell_index
             for c, r in paired
-            if not isinstance(r, BaseException) and any(o == TrainStepOutcome.DISCARDED_SHOULD_RETRY for o in r)
+            if not isinstance(r, BaseException)
+            and any(o.outcome == TrainStepOutcome.DISCARDED_SHOULD_RETRY for o in r)
         ]
         normal = [c.cell_index for c, r in paired if c.cell_index not in errored and c.cell_index not in discarded]
         return {"errored": errored, "discarded": discarded, "normal": normal}
 
     # ------------------------ API :: others ------------------------
 
-    async def init(self):
+    @init_once
+    async def init(self, request: TrainerControllerInitRequest) -> list[Any]:
         """
-        Allocate GPU resourced and initialize model, optimzier, local ckpt, etc.
+        Observe the controller's cells, then allocate GPU resources and initialize
+        model, optimzier, local ckpt, etc.
         """
+        args = self.args
+        args.num_rollout = request.num_rollout
+        args.wandb_run_id = request.wandb_run_id
+        args.mlflow_run_id = request.mlflow_run_id
+        configure_logger(
+            args, source=TrainerControllerProcessIdentity(trainer_id=self._trainer_id, model_id=args.trainer_model_id)
+        )
+        object_store.init_instance(args, contribute_segment=False)
+
+        if args.indep_dp:
+            self._indep_dp_store, self._indep_dp_store_addr = create_tcp_store()
+
+        self._health_checker_config = compute_trainer_health_checker_config(args)
+
+        self._witness_allocator: WitnessIdAllocator | None = (
+            WitnessIdAllocator(buffer_size=args.witness_buffer_size) if args.enable_witness else None
+        )
+        if self._witness_allocator is not None and args.save_debug_event_data is not None:
+            self._witness_allocator.resume(read_persisted_witness_counter(Path(args.save_debug_event_data)))
+
+        fault_hook_controller.configure(
+            resources=FaultHookResources(
+                args=args,
+                controller=self,
+                cell_operations=self._cell_operations,
+                owner_loop=asyncio.get_running_loop(),
+            ),
+            owner=FaultHookOwner.TRAINER_CONTROLLER,
+        )
+
+        self._watcher_disposer = await self._provider.watch_cells(self._reconcile)
+        await self._wait_expected_num_cells()
+
+        initial_cells = self._cells
+        initial_cell_indices = [cell.cell_index for cell in initial_cells]
         cell_results = await asyncio.gather(
             *[
                 cell.init(
+                    ckpt_load_config=request.ckpt_load_config,
                     indep_dp_info=self._compute_indep_dp_info(
                         cell_index=cell.cell_index,
                         # all cells will be alive for this first initialization
-                        alive_cell_indices=list(range(len(self._cells))),
-                    )
+                        alive_cell_indices=initial_cell_indices,
+                    ),
+                    indep_dp_store_addr=self._indep_dp_store_addr,
                 )
-                for cell in self._cells
+                for cell in initial_cells
             ]
         )
         return [item for sublist in cell_results for item in sublist]
 
-    async def save_model(self, rollout_id: int, force_sync: bool = False):
+    async def is_initialized(self) -> bool:
+        return self._init_once.is_initialized()
+
+    async def load_state(self, request: TrainerControllerInitRequest) -> list[Any]:
+        assert self._init_once.is_initialized()
+
+        await self._wait_expected_num_cells(timeout=_CELLS_READY_TIMEOUT_SECONDS)
+
+        not_alive = [cell.cell_id for cell in self._cells if not cell.is_alive]
+        assert not not_alive, f"a reload does not support cells that are not alive: {not_alive}"
+
+        cell_results = await gather_and_raise_first(
+            [cell.load_state(request.ckpt_load_config) for cell in self._cells]
+        )
+        self._debug_trainer_load_state_timestamp = time.time()
+        return [item for sublist in cell_results for item in sublist]
+
+    async def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         """Save actor model. Only cell 0 saves to avoid file write conflicts."""
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         await retry(
-            lambda _: self._execute_first_alive("save_model", rollout_id, force_sync=force_sync),
+            lambda _: self._execute_first_alive("save_model", rollout_id=rollout_id, force_sync=force_sync),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
-    async def update_weights(self, rollout_id: int | None = None):
-        """Broadcast weights to rollout engines."""
-        log_structured(logger.info, op="update_weights", phase="start", rollout=rollout_id)
-        # TODO: allow using all cells to update weights (instead of first alive cell)
-        # Fetch the updatable engines + lock once (like V1 RayActorGroup) so all
-        # ranks observe a consistent engine set; the actor releases the lock itself.
-        info = await self._rollout_manager.get_updatable_engines_and_lock.remote()
-        await self._rollout_manager.health_monitoring_pause.remote()
-        # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
+    async def export_hf(self, rollout_id: int, path: str) -> None:
+        """Export current weights as an HF checkpoint. Only cell 0 exports to avoid file write conflicts."""
         await retry(
-            lambda _: self._execute_first_alive("update_weights", info=info),
+            lambda _: self._execute_first_alive("export_hf", rollout_id=rollout_id, path=path),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
-        await self._maybe_log_inference_engine_weight_checksums(rollout_id=rollout_id)
+    async def update_weights(self, info: UpdatableEngines, rollout_id: int | None = None) -> WeightUpdateOutput:
+        """Broadcast weights to rollout engines and return which of them now serve which version."""
+        log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
+        debug_weight_update_id = uuid4().hex
 
-    async def _maybe_log_inference_engine_weight_checksums(self, *, rollout_id: int | None) -> None:
-        if not is_event_logger_initialized():
-            return
-        if self.args.debug_train_only or self.args.debug_rollout_only:
-            return
+        if supports_partial_target_weight_update(self.args):
+            output = await self._update_weights_on_every_alive_cell(
+                info, debug_weight_update_id=debug_weight_update_id, rollout_id=rollout_id
+            )
+        else:
+            output = await self._update_weights_on_first_alive_cell(
+                info, debug_weight_update_id=debug_weight_update_id, rollout_id=rollout_id
+            )
+        if info.engine_cell_ids and set(output.failed_cell_ids) == set(info.engine_cell_ids):
+            raise NonRetryableError("No inference cell received the weights")
 
-        check_weights_result = await self._rollout_manager.check_weights.remote("checksum")
-        engine_checksums = flatten_inference_engine_checksums(check_weights_result)
-        get_event_logger().log(
-            InferenceEngineWeightChecksumEvent,
-            dict(rollout_id=rollout_id, engine_checksums=engine_checksums),
+        output = replace(
+            output,
+            debug_trainer_load_state_timestamp=self._debug_trainer_load_state_timestamp,
+            debug_weight_update_id=debug_weight_update_id,
         )
 
-    async def onload(self):
+        updated_cell_ids = [cell_id for cell_id in info.engine_cell_ids if cell_id not in set(output.failed_cell_ids)]
+        if is_event_logger_initialized():
+            get_event_logger().log(
+                WeightUpdateResultEvent,
+                dict(
+                    debug_weight_update_id=debug_weight_update_id,
+                    debug_trainer_load_state_timestamp=self._debug_trainer_load_state_timestamp,
+                    rollout_id=rollout_id,
+                    candidate_version=output.weight_version,
+                    published_version=output.weight_version if updated_cell_ids else None,
+                    snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes,
+                    updated_cell_ids=updated_cell_ids,
+                    failed_cell_ids=list(output.failed_cell_ids),
+                ),
+            )
+
+        return output
+
+    async def _update_weights_on_first_alive_cell(
+        self, info: UpdatableEngines, *, debug_weight_update_id: str, rollout_id: int | None
+    ) -> WeightUpdateOutput:
+        # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
+        outputs = await retry(
+            lambda _: self._execute_first_alive(
+                "update_weights",
+                timeout=self.args.update_weights_timeout,
+                info=info,
+                debug_weight_update_id=debug_weight_update_id,
+                rollout_id=rollout_id,
+            ),
+            max_attempts=_RETRY_MAX_ATTEMPTS,
+        )
+        return _unique(outputs)
+
+    async def _update_weights_on_every_alive_cell(
+        self, info: UpdatableEngines, *, debug_weight_update_id: str, rollout_id: int | None
+    ) -> WeightUpdateOutput:
+        alive_cells = [c for c in self._cells if c.is_alive]
+        if not alive_cells:
+            raise NonRetryableError("No alive cells, therefore cannot update weights")
+        splitted_infos = [info[sli] for sli in split_evenly(len(info.engine_cell_ids), len(alive_cells))]
+        cells_and_splitted_infos = [
+            (c, s) for c, s in zip(alive_cells, splitted_infos, strict=True) if s.engine_cell_ids
+        ]
+
+        outcomes = await asyncio.gather(
+            *[
+                c.execute(
+                    "update_weights",
+                    timeout=self.args.update_weights_timeout,
+                    info=s,
+                    debug_weight_update_id=debug_weight_update_id,
+                    rollout_id=rollout_id,
+                )
+                for c, s in cells_and_splitted_infos
+            ],
+            return_exceptions=True,
+        )
+        if cells_and_splitted_infos and not any(c.is_alive for c in alive_cells):
+            raise outcomes[0]
+
+        outputs = [
+            (
+                WeightUpdateOutput(weight_version=None, failed_cell_ids=tuple(s.engine_cell_ids))
+                if isinstance(outcome, BaseException)
+                else _unique(outcome)
+            )
+            for (_, s), outcome in zip(cells_and_splitted_infos, outcomes, strict=True)
+        ]
+        for (c, s), output in zip(cells_and_splitted_infos, outputs, strict=True):
+            if len(s.engine_cell_ids) >= 2 and set(output.failed_cell_ids) == set(s.engine_cell_ids):
+                logger.error(f"trainer cell {c.cell_id} reached none of its {len(s.engine_cell_ids)} targets")
+                await c.mark_errored_and_kill()
+        output = WeightUpdateOutput.merge(outputs)
+        return output
+
+    async def get_deployment_identity(self) -> DeploymentIdentity:
+        return self._deployment_identity
+
+    async def onload(self) -> None:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("wake_up")
-        for cell in self._cells:
-            cell.health_checker.resume()
+        self._health_checker_activeness.bump_active(True)
 
-    async def offload(self):
-        for cell in self._cells:
-            cell.health_checker.pause()
+    @contextmanager
+    def _paused_health_checkers(self) -> Iterator[None]:
+        self._health_checker_activeness.bump_active(False)
+        try:
+            yield
+        finally:
+            self._health_checker_activeness.bump_active(True)
+
+    async def offload(self) -> None:
+        self._health_checker_activeness.bump_active(False)
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("sleep")
 
-    async def clear_memory(self):
+    async def clear_memory(self) -> None:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("clear_memory")
 
-    async def set_rollout_manager(self):
-        await asyncio.gather(*[cell.set_rollout_manager() for cell in self._cells])
+    async def offload_grad_buffer(self) -> None:
+        # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
+        await self._execute_all_alive_and_catch("offload_grad_buffer")
 
-    def stop_cell(self, cell_index: int) -> None:
-        self._cells[cell_index].stop()
+    # ------------------------ API :: multi-LoRA slot commands ------------------------
 
-    def start_cell(self, cell_index: int) -> None:
-        """Mark a stopped cell as pending. Actual startup happens in train()."""
-        self._cells[cell_index].mark_as_pending()
+    async def _execute_slots(self, fn_name: str, **kwargs) -> list:
+        (cell,) = self._cells
+        assert cell.is_alive, "the Tinker trainer cell is unavailable"
+        return await cell.execute(fn_name, **kwargs)
+
+    async def forward_backward(self, batch_id: int, data_ref: object_store.StoreObjectRef) -> list:
+        return await self._execute_slots("forward_backward", batch_id=batch_id, rollout_data_ref=data_ref)
+
+    async def optim_step(self, adam_params_by_slot: dict[int, dict]) -> list:
+        return await self._execute_slots("optim_step", adam_params_by_slot=adam_params_by_slot)
+
+    async def forward_only(self, batch_id: int, data_ref: object_store.StoreObjectRef) -> list:
+        return await self._execute_slots("forward_only", batch_id=batch_id, rollout_data_ref=data_ref)
+
+    async def load_slot(self, slot: int, rank: int, alpha: float, source: dict | None = None) -> list:
+        return await self._execute_slots("load_slot", slot=slot, rank=rank, alpha=alpha, source=source)
+
+    async def save_slot(
+        self, slot: int, root: str, name: str, tenant_digest: str, parametrization_fields: dict
+    ) -> list:
+        return await self._execute_slots(
+            "save_slot",
+            slot=slot,
+            root=root,
+            name=name,
+            tenant_digest=tenant_digest,
+            parametrization_fields=parametrization_fields,
+        )
+
+    async def export_slot(
+        self, slot: int, root: str, name: str, tenant_digest: str, parametrization_fields: dict
+    ) -> list:
+        return await self._execute_slots(
+            "export_slot",
+            slot=slot,
+            root=root,
+            name=name,
+            tenant_digest=tenant_digest,
+            parametrization_fields=parametrization_fields,
+        )
+
+    async def export_external_slot(
+        self,
+        slot: int,
+        root: str,
+        name: str,
+        tenant_digest: str,
+        parametrization_fields: dict,
+        age_encryption_recipients: list[str],
+    ) -> list:
+        return await self._execute_slots(
+            "export_external_slot",
+            slot=slot,
+            root=root,
+            name=name,
+            tenant_digest=tenant_digest,
+            parametrization_fields=parametrization_fields,
+            age_encryption_recipients=age_encryption_recipients,
+        )
+
+    async def unload_slot(self, slot: int) -> list:
+        return await self._execute_slots("unload_slot", slot=slot)
+
+    async def get_train_parallel_config(self) -> TrainParallelConfig | None:
+        return (await self._execute_first_alive("get_train_parallel_config"))[0]
+
+    async def get_cell_statuses(self) -> dict[str, CellStatus]:
+        return {cell_id: cell.cell_status() for cell_id, cell in list(self._cells_by_id.items())}
 
     # ------------------------ utils to forward calls to cells ------------------------
 
-    async def _execute_all_alive_and_catch(self, fn_name: str, *args, **kwargs):
+    def _is_recoverable(self) -> bool:
+        return any(cell.is_alive for cell in self._cells)
+
+    def _make_all_cells_failed_error(self, message: str, *, cause: BaseException | None = None) -> Exception:
+        if isinstance(cause, NonRetryableError):
+            return NonRetryableError(message)
+        return RuntimeError(message) if self._is_recoverable() else NonRetryableError(message)
+
+    def _raise_if_no_cell_can_recover(self, *, debug_name: str, cause: BaseException | None) -> None:
+        if self._is_recoverable():
+            return
+        raise self._make_all_cells_failed_error(f"All cells failed during {debug_name}", cause=cause) from cause
+
+    async def _execute_all_alive_and_catch(self, fn_name: str, *, check_recoverable: bool = True, **kwargs):
+        return await self._gather_all_alive_and_catch(
+            lambda cell: cell.execute(fn_name, **kwargs),
+            debug_name=f"execute_all_alive_and_catch#{fn_name}",
+            check_recoverable=check_recoverable,
+        )
+
+    async def _gather_all_alive_and_catch(self, compute_coroutine, *, debug_name: str, check_recoverable: bool = True):
         snapshot_alive_cells = [c for c in self._cells if c.is_alive]
-        assert snapshot_alive_cells, "No alive cells"
+        if not snapshot_alive_cells:
+            raise NonRetryableError("No alive cells")
         # NOTE: no timeout here. If a cell hangs, the external FT controller
-        # detects stale heartbeat via cell_status(), calls cell.stop() to kill
-        # actors, which unblocks this gather with ActorDiedError.
+        # detects stale heartbeat via cell_status() and suspends the cell through
+        # the worker manager, which unblocks this gather with ActorDiedError.
         outputs = await asyncio.gather(
-            *[cell.execute(fn_name, *args, **kwargs) for cell in snapshot_alive_cells],
+            *[compute_coroutine(cell) for cell in snapshot_alive_cells],
             return_exceptions=True,
         )
-        AsyncioGatherUtils.log_error(outputs, debug_name=f"execute_all_alive_and_catch#{fn_name}")
+        AsyncioGatherUtils.log_error(outputs, debug_name=debug_name)
+        if check_recoverable:
+            self._raise_if_no_cell_can_recover(debug_name=debug_name, cause=_first_exception(outputs))
         return snapshot_alive_cells, outputs
 
-    async def _execute_first_alive(self, fn_name: str, *args, **kwargs):
+    async def _execute_first_alive(self, fn_name: str, **kwargs):
         alive_cells = [c for c in self._cells if c.is_alive]
-        assert alive_cells, "No alive cells, therefore cannot heal anymore"
-        return await alive_cells[0].execute(fn_name, *args, **kwargs)
+        if not alive_cells:
+            raise NonRetryableError("No alive cells, therefore cannot heal anymore")
+        try:
+            return await alive_cells[0].execute(fn_name, **kwargs)
+        except Exception as cause:
+            self._raise_if_no_cell_can_recover(debug_name=f"execute_first_alive#{fn_name}", cause=cause)
+            raise
 
     # ------------------------ internals for stop/start ------------------------
 
     async def _refresh_cells(self, *, rollout_id: int) -> None:
-        snapshotted_pending_indices = [c.cell_index for c in self._cells if c.is_pending]
+        snapshotted_healing_indices = [c.cell_index for c in self._cells if c.is_uninitialized]
         snapshotted_alive_indices = [c.cell_index for c in self._cells if c.is_alive]
-        will_alive_indices = sorted(list(set(snapshotted_pending_indices + snapshotted_alive_indices)))
+        will_alive_indices = sorted(list(set(snapshotted_healing_indices + snapshotted_alive_indices)))
         all_states = [(c.cell_index, c.state_name) for c in self._cells]
         log_structured(
             logger.info,
+            tag="ft",
             op="refresh",
             phase="start",
             rollout=rollout_id,
             alive=snapshotted_alive_indices,
-            pending=snapshotted_pending_indices,
+            healing=snapshotted_healing_indices,
             all_states=all_states,
             quorum=self._indep_dp_quorum_id,
         )
-        assert len(snapshotted_alive_indices) > 0, "Cannot recover when all cells are dead"
+        if not snapshotted_alive_indices:
+            raise NonRetryableError("Cannot recover when all cells are dead")
 
         # Step 0: Determine whether need to reconfigure
         exists_alive_cell_changed_config = any(
@@ -352,29 +694,31 @@ class RayTrainGroup:
             for cell in self._cells
             if cell.cell_index in snapshotted_alive_indices
         )
-        exists_pending_cell = len(snapshotted_pending_indices) != 0
-        needs_reconfigure = exists_pending_cell or exists_alive_cell_changed_config
+        exists_healing_cell = len(snapshotted_healing_indices) != 0
+        needs_reconfigure = exists_healing_cell or exists_alive_cell_changed_config
         if not needs_reconfigure:
             log_structured(
                 logger.info,
+                tag="ft",
                 op="refresh",
                 phase="decision",
                 rollout=rollout_id,
                 needs_reconfigure=False,
-                reason="alive_config_unchanged,no_pending",
+                reason="alive_config_unchanged,no_healing",
                 quorum=self._indep_dp_quorum_id,
             )
             return
         reason = "+".join(
             r
             for r, on in [
-                ("pending_cell", exists_pending_cell),
+                ("healing_cell", exists_healing_cell),
                 ("alive_config_changed", exists_alive_cell_changed_config),
             ]
             if on
         )
         log_structured(
             logger.info,
+            tag="ft",
             op="refresh",
             phase="decision",
             rollout=rollout_id,
@@ -388,18 +732,13 @@ class RayTrainGroup:
         # Step 1: Bump states
         self._indep_dp_quorum_id += 1
 
-        # Step 2: Allocate pending actors
-        # We currently do not consider this phase to have errors (because it does not touch GPUs)
-        for c in self._cells:
-            if c.cell_index in snapshotted_pending_indices:
-                c.allocate_for_pending()
-
-        # Step 3: Cooperatively prepare
+        # Step 2: Cooperatively prepare
         src_cell_index = snapshotted_alive_indices[0]  # TODO make it balanced, and support multi-src-to-one-dst
         src_alive_rank = will_alive_indices.index(src_cell_index)
-        ckpt_dst_alive_ranks = [will_alive_indices.index(x) for x in snapshotted_pending_indices]
+        ckpt_dst_alive_ranks = [will_alive_indices.index(x) for x in snapshotted_healing_indices]
 
-        with _paused_health_checkers(self._cells):
+        participating_cells = [c for c in self._cells if c.cell_index in will_alive_indices]
+        with self._paused_health_checkers():
             coop_prepare_outputs = await asyncio.gather(
                 *[
                     (
@@ -407,6 +746,7 @@ class RayTrainGroup:
                             indep_dp_info=self._compute_indep_dp_info(
                                 c.cell_index, alive_cell_indices=will_alive_indices
                             ),
+                            indep_dp_store_addr=self._indep_dp_store_addr,
                             send_ckpt_dst_ranks=ckpt_dst_alive_ranks if c.cell_index == src_cell_index else [],
                         )
                         if c.cell_index in snapshotted_alive_indices
@@ -414,11 +754,11 @@ class RayTrainGroup:
                             indep_dp_info=self._compute_indep_dp_info(
                                 c.cell_index, alive_cell_indices=will_alive_indices
                             ),
-                            recv_ckpt_src_rank=src_alive_rank if c.cell_index in snapshotted_pending_indices else None,
+                            indep_dp_store_addr=self._indep_dp_store_addr,
+                            recv_ckpt_src_rank=src_alive_rank if c.cell_index in snapshotted_healing_indices else None,
                         )
                     )
-                    for c in self._cells
-                    if c.cell_index in will_alive_indices
+                    for c in participating_cells
                 ],
                 return_exceptions=True,
             )
@@ -429,23 +769,26 @@ class RayTrainGroup:
             assert [c.cell_index for c in self._cells if c.is_alive] == will_alive_indices
             log_structured(
                 logger.info,
+                tag="ft",
                 op="refresh",
                 phase="end",
                 rollout=rollout_id,
                 quorum=self._indep_dp_quorum_id,
                 alive=will_alive_indices,
-                healed=snapshotted_pending_indices,
+                healed=snapshotted_healing_indices,
                 reconfigured=True,
             )
             self._log_reconfigure_event(
                 rollout_id=rollout_id,
-                src_cell_index=src_cell_index if snapshotted_pending_indices else None,
-                healed_cell_indices=snapshotted_pending_indices,
+                src_cell_index=src_cell_index if snapshotted_healing_indices else None,
+                healed_cell_indices=snapshotted_healing_indices,
                 alive_cell_indices_after=will_alive_indices,
+                cell_incarnations_after={cell.cell_id: cell.workers_hash for cell in participating_cells},
             )
         else:
             log_structured(
                 logger.error,
+                tag="ft",
                 op="refresh",
                 phase="end",
                 rollout=rollout_id,
@@ -461,6 +804,7 @@ class RayTrainGroup:
         src_cell_index: int | None,
         healed_cell_indices: list[int],
         alive_cell_indices_after: list[int],
+        cell_incarnations_after: dict[str, str],
     ) -> None:
         if is_event_logger_initialized():
             get_event_logger().log(
@@ -471,6 +815,7 @@ class RayTrainGroup:
                     src_cell_index=src_cell_index,
                     healed_cell_indices=healed_cell_indices,
                     alive_cell_indices_after=alive_cell_indices_after,
+                    cell_incarnations_after=cell_incarnations_after,
                 ),
             )
 
@@ -491,34 +836,10 @@ class RayTrainGroup:
         return len(self._cells)
 
 
-PGTuple = tuple[PlacementGroup, list[int], list[int]]
+def _unique(xs: Sequence[_T]) -> _T:
+    [x] = set(xs)
+    return x
 
 
-def _slice_pg(pg: PGTuple, start: int, end: int) -> PGTuple:
-    placement_group, bundle_indices, gpu_ids = pg
-    return placement_group, bundle_indices[start:end], gpu_ids[start:end]
-
-
-def _create_tcp_store() -> tuple["torch.distributed.TCPStore", str]:
-    import torch.distributed
-
-    store = torch.distributed.TCPStore(
-        host_name="0.0.0.0",
-        port=0,
-        is_master=True,
-        wait_for_workers=False,
-    )
-    host = ray.util.get_node_ip_address()
-    port = store.port
-    return store, f"{host}:{port}"
-
-
-@contextmanager
-def _paused_health_checkers(cells: Sequence[RayTrainCell]) -> Iterator[None]:
-    for c in cells:
-        c.health_checker.pause()
-    try:
-        yield
-    finally:
-        for c in cells:
-            c.health_checker.resume()
+def _first_exception(results) -> BaseException | None:
+    return next((result for result in results if isinstance(result, BaseException)), None)

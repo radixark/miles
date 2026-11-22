@@ -1,0 +1,2 @@
+tinker==0.36.0
+tinker-cookbook[math-rl]==0.5.9

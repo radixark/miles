@@ -8,23 +8,23 @@ logger = logging.getLogger(__name__)
 
 
 def clear_memory(clear_host_memory: bool = False):
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
     gc.collect()
-    torch.cuda.empty_cache()
+    torch.accelerator.empty_cache()
     if clear_host_memory:
         torch._C._host_emptyCache()
 
 
 def available_memory():
-    device = torch.cuda.current_device()
-    free, total = torch.cuda.mem_get_info(device)
+    device = torch.accelerator.current_device_index()
+    free, total = torch.accelerator.get_memory_info(device)
     return {
         "gpu": str(device),
         "total_GB": _byte_to_gb(total),
         "free_GB": _byte_to_gb(free),
         "used_GB": _byte_to_gb(total - free),
-        "allocated_GB": _byte_to_gb(torch.cuda.memory_allocated(device)),
-        "reserved_GB": _byte_to_gb(torch.cuda.memory_reserved(device)),
+        "allocated_GB": _byte_to_gb(torch.accelerator.memory_allocated(device)),
+        "reserved_GB": _byte_to_gb(torch.accelerator.memory_reserved(device)),
     }
 
 

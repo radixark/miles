@@ -1,21 +1,32 @@
+import asyncio
 import json
+import logging
+import math
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 import miles.utils.audit_utils.event_logger.logger as event_logger_module
 from miles.utils.audit_utils.event_logger.logger import (
     EventLogger,
+    EventReader,
     event_logger_context,
     get_event_logger,
+    read_events,
     set_event_logger,
 )
-from miles.utils.audit_utils.event_logger.models import MetricEvent, WitnessAllocateIdEvent
-from miles.utils.audit_utils.process_identity import MainProcessIdentity, TrainProcessIdentity
+from miles.utils.audit_utils.event_logger.models import (
+    DataSourceIssuedSamplesEvent,
+    IssuedSampleGroup,
+    MetricEvent,
+    WitnessAllocateIdEvent,
+)
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, TrainProcessIdentity
 
-_TEST_SOURCE = MainProcessIdentity()
+_TEST_SOURCE = SimpleProcessIdentity(component="main")
 
 
 def _make_logger(log_dir: Path, file_name: str = "events.jsonl") -> EventLogger:
@@ -26,6 +37,12 @@ _EVENT_CLS = WitnessAllocateIdEvent
 _EVENT_PARTIAL: dict = dict(
     rollout_id=0, attempt=0, witness_id_to_sample_index={10: 0, 11: 1, 12: 2}, counter_after=13
 )
+
+_LOGGER_MODULE_LOGGER = "miles.utils.audit_utils.event_logger.logger"
+
+
+def _structured_messages(caplog) -> list[str]:
+    return [record.getMessage() for record in caplog.records if record.name == _LOGGER_MODULE_LOGGER]
 
 
 class TestEventLoggerWritesJsonl:
@@ -44,6 +61,21 @@ class TestEventLoggerWritesJsonl:
             parsed = json.loads(line)
             assert "timestamp" in parsed
             assert "type" in parsed
+
+
+class TestEventLoggerStructuredPrint:
+    def test_printed_event_uses_audit_structured_log_tag(self, tmp_path: Path, caplog) -> None:
+        """A printed event is echoed as one audit-tagged op=event record naming the event class and its fields."""
+        logger = _make_logger(tmp_path)
+
+        with caplog.at_level(logging.INFO, logger=_LOGGER_MODULE_LOGGER):
+            logger.log(_EVENT_CLS, _EVENT_PARTIAL)
+        logger.close()
+
+        messages = _structured_messages(caplog)
+        assert len(messages) == 1
+        assert messages[0].startswith("audit op=event event=WitnessAllocateIdEvent ")
+        assert "counter_after=13" in messages[0]
 
 
 class TestEventLoggerAutoFillsMetadata:
@@ -172,6 +204,18 @@ class TestReadEvents:
         events = read_events(tmp_path)
         assert len(events) == 1
 
+    def test_malformed_line_raises_when_strict(self, tmp_path: Path) -> None:
+        """A reader that must not lose events asks for the failure instead of a warning."""
+        logger = _make_logger(tmp_path)
+        logger.log(_EVENT_CLS, _EVENT_PARTIAL)
+        logger.close()
+
+        with open(tmp_path / "events.jsonl", "a") as f:
+            f.write("this is not valid json\n")
+
+        with pytest.raises(ValidationError):
+            read_events(tmp_path, strict=True)
+
     def test_reads_multiple_jsonl_files(self, tmp_path: Path) -> None:
         from miles.utils.audit_utils.event_logger.logger import read_events
 
@@ -188,7 +232,144 @@ class TestReadEvents:
         assert len(events) == 3
 
 
+class TestEventReader:
+    @staticmethod
+    def _log(log_dir: Path, *, rollout_id: int, file_name: str = "events.jsonl") -> None:
+        _make_logger(log_dir, file_name=file_name).log(
+            _EVENT_CLS, dict(_EVENT_PARTIAL, rollout_id=rollout_id), print_log=False
+        )
+
+    @staticmethod
+    def _count_parses(monkeypatch: pytest.MonkeyPatch) -> list[bytes]:
+        parsed: list[bytes] = []
+        adapter = event_logger_module._event_adapter
+
+        class _CountingAdapter:
+            def validate_json(self, raw: bytes):
+                parsed.append(raw)
+                return adapter.validate_json(raw)
+
+        monkeypatch.setattr(event_logger_module, "_event_adapter", _CountingAdapter())
+        return parsed
+
+    def test_a_repeat_read_parses_only_the_appended_lines(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Earlier lines are parsed once; later reads still return every event in file order."""
+        reader = EventReader(tmp_path)
+        self._log(tmp_path, rollout_id=0)
+        self._log(tmp_path, rollout_id=1)
+        assert [e.rollout_id for e in reader.read()] == [0, 1]
+
+        parsed = self._count_parses(monkeypatch)
+        self._log(tmp_path, rollout_id=2)
+
+        assert [e.rollout_id for e in reader.read()] == [0, 1, 2]
+        assert len(parsed) == 1
+
+    def test_a_repeat_read_matches_a_fresh_read_across_several_files(self, tmp_path: Path) -> None:
+        """Files and lines keep the order a one-off read_events returns."""
+        reader = EventReader(tmp_path)
+        self._log(tmp_path, rollout_id=0, file_name="b.jsonl")
+        reader.read()
+        self._log(tmp_path, rollout_id=1, file_name="a.jsonl")
+        self._log(tmp_path, rollout_id=2, file_name="b.jsonl")
+
+        assert reader.read() == read_events(tmp_path)
+
+    def test_a_replaced_file_is_parsed_again_from_its_start(self, tmp_path: Path) -> None:
+        """A restore swaps in another file at the same path, so the cached events of the old one are dropped."""
+        events_dir, restored_dir = tmp_path / "events", tmp_path / "restored"
+        self._log(events_dir, rollout_id=0)
+        self._log(events_dir, rollout_id=1)
+        reader = EventReader(events_dir)
+        reader.read()
+
+        self._log(restored_dir, rollout_id=5)
+        self._log(restored_dir, rollout_id=6)
+        self._log(restored_dir, rollout_id=7)
+        (restored_dir / "events.jsonl").replace(events_dir / "events.jsonl")
+
+        assert [e.rollout_id for e in reader.read()] == [5, 6, 7]
+
+    def test_a_file_rewritten_in_place_is_parsed_again_from_its_start(self, tmp_path: Path) -> None:
+        """Keeping the inode but not the already-read bytes does not reuse the stale events."""
+        reader = EventReader(tmp_path)
+        self._log(tmp_path, rollout_id=0)
+        reader.read()
+
+        path = tmp_path / "events.jsonl"
+        path.write_text("")
+        self._log(tmp_path, rollout_id=3)
+        self._log(tmp_path, rollout_id=4)
+
+        assert [e.rollout_id for e in reader.read()] == [3, 4]
+
+    def test_a_same_size_rewrite_keeping_the_last_line_is_parsed_again(self, tmp_path: Path) -> None:
+        """The prefix check spans lines, so an unchanged trailing line cannot hide a rewritten event before it."""
+        reader = EventReader(tmp_path)
+        self._log(tmp_path, rollout_id=1)
+        path = tmp_path / "events.jsonl"
+        with open(path, "a") as f:
+            f.write("\n")
+        reader.read()
+
+        path.write_bytes(path.read_bytes().replace(b'"rollout_id":1', b'"rollout_id":2'))
+
+        assert [e.rollout_id for e in reader.read()] == [2]
+
+    def test_an_unterminated_last_line_is_parsed_again_once_complete(self, tmp_path: Path) -> None:
+        """A line still being written is not taken as read, so its completed form is returned later."""
+        reader = EventReader(tmp_path)
+        self._log(tmp_path, rollout_id=0)
+        path = tmp_path / "events.jsonl"
+        line = path.read_bytes()
+        with open(path, "ab") as f:
+            f.write(line[: len(line) // 2])
+
+        assert [e.rollout_id for e in reader.read()] == [0]
+
+        with open(path, "ab") as f:
+            f.write(line[len(line) // 2 :])
+
+        assert [e.rollout_id for e in reader.read()] == [0, 0]
+
+    def test_an_unterminated_malformed_last_line_raises_when_strict(self, tmp_path: Path) -> None:
+        """Strict reading fails on a broken last line just as a one-off read does."""
+        self._log(tmp_path, rollout_id=0)
+        with open(tmp_path / "events.jsonl", "a") as f:
+            f.write("this is not valid json")
+
+        with pytest.raises(ValidationError):
+            EventReader(tmp_path, strict=True).read()
+
+
+class TestEventLoggerKeepsNonFiniteMetrics:
+    def test_a_nan_metric_reads_back_as_a_nan(self, tmp_path: Path) -> None:
+        """Written as json null it reads back absent, so a diverged run would look like one that never reported."""
+        logger = _make_logger(tmp_path)
+        logger.log(MetricEvent, dict(rollout_id=0, attempt=0, metrics={"train/loss": math.nan}), print_log=False)
+        logger.close()
+
+        [event] = read_events(tmp_path)
+
+        assert math.isnan(event.metrics["train/loss"])
+
+
 class TestWithContext:
+    def test_issued_events_accept_their_real_call_context(self, tmp_path: Path) -> None:
+        """Issued events accept the rollout executor decorator context."""
+        logger = _make_logger(tmp_path)
+        with logger.with_context({"rollout_id": 5}):
+            logger.log(
+                DataSourceIssuedSamplesEvent,
+                {"groups": [IssuedSampleGroup(group_index=1, sample_indices=[10])]},
+                print_log=False,
+            )
+
+        [issued] = read_events(tmp_path)
+        assert issued.rollout_id == 5
+
     def test_injects_context_fields_into_logged_event(self, tmp_path: Path) -> None:
         """Fields from with_context are merged into events logged inside the scope."""
         logger = _make_logger(tmp_path)
@@ -314,3 +495,36 @@ class TestEventLoggerContextDecorator:
         assert seen == [(3, 8)]
         parsed = json.loads((tmp_path / "events.jsonl").read_text().strip())
         assert (parsed["rollout_id"], parsed["attempt"]) == (3, 8)
+
+    async def test_initialized_injects_fields_into_events_an_async_method_logs(self, tmp_path: Path) -> None:
+        """An awaited method keeps the context across its suspension points, or its events lose their identity."""
+        logger = _make_logger(tmp_path)
+        set_event_logger(logger)
+
+        class Worker:
+            @event_logger_context(lambda self, rollout_id: {"rollout_id": rollout_id})
+            async def run(self, rollout_id: int) -> None:
+                await asyncio.sleep(0)
+                get_event_logger().log(MetricEvent, dict(metrics={"ok": True}))
+
+        try:
+            await Worker().run(42)
+            logger.close()
+        finally:
+            set_event_logger(None)
+
+        parsed = json.loads((tmp_path / "events.jsonl").read_text().strip())
+        assert parsed["rollout_id"] == 42
+
+    async def test_uninitialized_awaits_an_async_method_without_context(self) -> None:
+        """Decorating a method must not make it fail wherever the event logger was never set up."""
+        set_event_logger(None)
+
+        @event_logger_context(lambda obj, x: {"rollout_id": x})
+        async def method(obj: object, x: int) -> int:
+            return x * 2
+
+        try:
+            assert await method(object(), 3) == 6
+        finally:
+            set_event_logger(None)

@@ -51,14 +51,14 @@ logger = logging.getLogger(__name__)
 
 
 # The sandbox's env server is the tbench2_env baked by the recipe, installed
-# per the README (at or after the huggingface/OpenEnv#1012 merge): canonical
+# per the README (at or after the huggingface/OpenEnv#1025 merge): canonical
 # tests/test.sh scoring built into `evaluate`, task WORKDIR resolved
 # server-side, verifier assets withheld. The launcher preflight rejects an
 # older install outright, and the shared agent loop's harness-marker guard
 # backstops it per episode.
 #
 # Providers rate-limit or run out of capacity under a fanned-out rollout; the
-# shared backend caps in-flight creates process-wide and retries throttled ones
+# shared backend caps in-flight creates per rollout and retries throttled ones
 # with jittered exponential backoff (knobs: OPENENV_E2B_CREATE_*).
 def _is_throttle_error(exc: BaseException) -> bool:
     """True when a sandbox create failed only because the provider throttled it.

@@ -1,16 +1,18 @@
+import functools
 import os
 import re
+from collections.abc import Callable
 
 import torch
 
-from miles.utils.fp8_kernel import blockwise_cast_to_fp8_triton
-
-from ...sglang import (
+from miles.backends.megatron_utils.sglang import (
+    is_layer_skipped,
     per_block_cast_to_fp8,
     quant_weight_ue8m0,
     should_deepgemm_weight_requant_ue8m0,
     transform_scale_ue8m0,
 )
+from miles.kernels.quant.fp8_blockwise import fp8_blockwise_cast
 
 
 def quantize_params_fp8(args, megatron_name, converted_named_params, quantization_config):
@@ -19,6 +21,7 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
     assert fmt == "e4m3", f"Unsupported FP8 format: {fmt}"
     assert quantization_config["activation_scheme"] == "dynamic"
     weight_block_size = quantization_config.get("weight_block_size", None)
+    is_skipped = _layer_skip_predicate(quantization_config)
 
     decoder_layers_pattern = r"module\.module\.decoder\.layers\.(\d+)\.(.+)"
     match = re.match(decoder_layers_pattern, megatron_name)
@@ -30,7 +33,7 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
         if not match:
             return converted_named_params
         layer_idx, rest = match.groups()
-        rest = rest.replace("transformer_layer.", "")
+        rest = rest.replace("transformer_layer.", "").replace("mtp_model_layer.", "")
     else:
         layer_idx, rest = match.groups()
 
@@ -49,7 +52,9 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
                 # TODO: find a clearer way.
                 if converted_name.endswith("_scale"):
                     continue
-                quantize_named_params.extend(_quantize_param(args, converted_name, param, weight_block_size))
+                quantize_named_params.extend(
+                    _quantize_param(args, converted_name, param, weight_block_size, is_skipped)
+                )
 
             return quantize_named_params
 
@@ -64,7 +69,9 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
         ]:
             quantize_named_params = []
             for converted_name, param in converted_named_params:
-                quantize_named_params.extend(_quantize_param(args, converted_name, param, weight_block_size))
+                quantize_named_params.extend(
+                    _quantize_param(args, converted_name, param, weight_block_size, is_skipped)
+                )
 
             return quantize_named_params
 
@@ -86,24 +93,24 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
         "self_attention.linear_attn.in_proj_z.weight",
         "self_attention.linear_attn.out_proj.weight",
         # DeepSeek V4 attention
-        "self_attention.wq_a.weight",
-        "self_attention.wkv.weight",
-        "self_attention.wo_b.weight",
-        "self_attention.indexer.linear_wq_b.weight",
+        "self_attention.linear_kv_proj.weight",
+        "self_attention.core_attention.indexer.linear_wq_b.weight",
     ]
-    if not getattr(args, "indexer_rope_interleave", False):
+    if not getattr(
+        args.backend, "indexer_rope_interleave", False
+    ):  # config-access-exempt: only DSA model normalization introduces the indexer flag
         # Non-interleaved indexers keep wk as a standalone FP8 parameter in SGLang.
         fp8_param_names.extend(
             [
                 "self_attention.wk.weight",
-                "self_attention.indexer.linear_wk.weight",
+                "self_attention.core_attention.indexer.linear_wk.weight",
             ]
         )
 
     if rest in fp8_param_names:
         quantize_named_params = []
         for converted_name, param in converted_named_params:
-            quantize_named_params.extend(_quantize_param(args, converted_name, param, weight_block_size))
+            quantize_named_params.extend(_quantize_param(args, converted_name, param, weight_block_size, is_skipped))
 
         return quantize_named_params
 
@@ -111,8 +118,54 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
     return converted_named_params
 
 
-def _quantize_param(args, name, weight, weight_block_size):
+def is_kept_in_high_precision(name: str, quantization_config: dict) -> bool:
+    """Whether the rollout checkpoint's exclusions keep this HF weight unquantized."""
+    return _layer_skip_predicate(quantization_config)(_skip_prefix(name))
+
+
+def _layer_skip_predicate(quantization_config: dict) -> Callable[[str], bool]:
+    return _build_layer_skip_predicate(
+        tuple(quantization_config.get("ignored_layers", quantization_config.get("modules_to_not_convert", [])) or []),
+        tuple(
+            (name, tuple(members))
+            for name, members in (quantization_config.get("packed_modules_mapping") or {}).items()
+        ),
+    )
+
+
+@functools.lru_cache(maxsize=8)
+def _build_layer_skip_predicate(
+    ignored_names: tuple[str, ...], packed_modules_mapping: tuple[tuple[str, tuple[str, ...]], ...]
+) -> Callable[[str], bool]:
+    """Matching a prefix against the checkpoint's ignore list costs one pass over it, and every sync asks again for
+    the same prefixes, so each decision is made once per quantization config."""
+    ignored_layers = []
+    for name in ignored_names:
+        name = name.removeprefix("model.")
+        ignored_layers.extend((name, f"model.{name}"))
+    fused_mapping = {name: list(members) for name, members in packed_modules_mapping}
+
+    @functools.cache
+    def is_skipped(prefix: str) -> bool:
+        return bool(ignored_layers) and is_layer_skipped(prefix, ignored_layers, fused_mapping=fused_mapping)
+
+    return is_skipped
+
+
+def _skip_prefix(name: str) -> str:
+    prefix = name.removesuffix(".weight")
+    if ".experts." in prefix:
+        # SGLang chooses one precision for the entire FusedMoE module.
+        prefix = prefix.split(".experts.", 1)[0] + ".experts"
+    return prefix
+
+
+def _quantize_param(args, name, weight, weight_block_size, is_skipped):
     assert name.endswith(".weight"), f"Expected weight parameter, got {name}"
+    # Honor the checkpoint's exclusions: rollout layers kept at their original
+    # precision must receive unquantized weights, without FP8 scales.
+    if is_skipped(_skip_prefix(name)):
+        return [(name, weight)]
     FP8_MIN = torch.finfo(torch.float8_e4m3fn).min
     FP8_MAX = torch.finfo(torch.float8_e4m3fn).max
     if weight_block_size is not None:
@@ -127,7 +180,7 @@ def _quantize_param(args, name, weight, weight_block_size):
         ):
             qweight, scale = per_block_cast_to_fp8(weight)
         else:
-            qweight, scale = blockwise_cast_to_fp8_triton(weight, weight_block_size)
+            qweight, scale = fp8_blockwise_cast(weight, weight_block_size)
         scale_name = name.replace(".weight", ".weight_scale_inv")
     else:
         # per tensor quant
@@ -139,18 +192,21 @@ def _quantize_param(args, name, weight, weight_block_size):
 
 
 def _get_scale_format(args, name, weight_block_size):
+    is_moe_expert = ".experts." in name
+    # grouped_moe mirrors SGLang's own MoE requant call: SM120 requantizes only grouped MoE scales.
     if not (
         should_deepgemm_weight_requant_ue8m0
-        and should_deepgemm_weight_requant_ue8m0(weight_block_size=weight_block_size)
+        and should_deepgemm_weight_requant_ue8m0(weight_block_size=weight_block_size, grouped_moe=is_moe_expert)
     ):
         return None  # use default fp32 scale format
 
-    if ".experts." not in name:
+    if not is_moe_expert:
         # Non-MoE linear weights: ue8m0 when deepgemm is enabled
         return "ue8m0"
 
     # MoE expert weights: only ue8m0 when runner is deep_gemm
-    is_deepgemm_moe_backend = args.sglang_moe_runner_backend == "deep_gemm" or (
-        args.sglang_moe_runner_backend == "auto" and args.sglang_moe_a2a_backend in ["deepep", "mooncake"]
+    is_deepgemm_moe_backend = args.sglang.common_value("moe_runner_backend") == "deep_gemm" or (
+        args.sglang.common_value("moe_runner_backend") == "auto"
+        and args.sglang.common_value("moe_a2a_backend") in ["deepep", "mooncake"]
     )
     return "ue8m0" if is_deepgemm_moe_backend else None

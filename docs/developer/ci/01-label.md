@@ -1,0 +1,241 @@
+---
+title: Labels
+description: The three kinds of CI label — domain labels that gate tests, scope labels that broaden selection, and bypass-fastfail.
+---
+A label is a GitHub PR label that changes what CI runs or how it fails. Three kinds:
+
+| Kind | Example | Effect |
+|---|---|---|
+| Domain label | `run-ci-megatron` | selects which tests run |
+| Dispatch label | `run-on-blackwell` | selects which GPU generation runs them |
+| Scope label | `run-ci-image` | run every enabled tag except `long`, `ft-short`, and `ft-long` |
+| Cadence/scope label | `nightly` | select nightly cadence and every enabled tag except `long` and `ft-long`, with fast-fail disabled |
+| Scope label | `run-ci-all` | run every enabled tag |
+| Behavior label | `bypass-fastfail` | opt out of CUDA cross-stage gating and within-suite stopping |
+| Behavior label | `rebuild-ci-image` | force a rebuild of an eligible PR image (one whose inputs differ from the base), also on a PR that selects no CUDA or ROCm tests; does not select tests; every run rebuilds until the label is removed (see [Docker build](/developer/ci/02-docker-build)) |
+| Opt-in label | `run-ci` (or any `run-ci*` label) | lets a PR whose base is not the default branch run `PR Test` (see [below](#labels-opt-non-main-prs-into-ci)) |
+
+Registrations declare domain labels and optionally the non-selecting `perf` marker in `labels=[...]`; scope and behavior labels are workflow inputs resolved by `tests/ci/ci_policy.py`. The separate `nightly=True` registration field is a cadence gate described below. A performance benchmark adds `perf`: its file time limit is `1.25 × est_time` without the usual 1800 s minimum, and a CPU stage runs it alone in its own `pytest`.
+
+## Domain labels: `register_*_ci(labels=...)` ↔ `run-ci-<x>`
+
+A test declares its labels: `register_cuda_ci(..., labels=["megatron"])`. The PR trigger for `<x>` is the GitHub label `run-ci-<x>`. The workflow forwards canonical CI labels to `run_suite.py --labels`; Python strips the `run-ci-` prefix and intersects with each test's labels.
+
+| Test declares | Runs when |
+|---|---|
+| CPU `labels=[]` (or omitted) | every run whose cadence admits the test (always-on within that cadence) |
+| `labels=["megatron"]` | PR has `run-ci-megatron` |
+| `labels=["sglang"]` | PR has `run-ci-sglang` |
+| `labels=["fsdp", "lora"]` | PR has `run-ci-fsdp` or `run-ci-lora` |
+
+Bare domain labels without the `run-ci-` prefix do not select domains. The workflow-only `nightly` and `bypass-fastfail` labels are handled separately as cadence and behavior inputs.
+
+CUDA and ROCm registrations must declare at least one domain label. GPU runners are scarce and expensive, so an always-on GPU test would defeat the purpose of selecting only the GPU coverage a PR requests.
+
+### The canonical label list
+
+Domain labels live in `tests/ci/labels.py` (`KNOWN_LABELS`); a `labels=[...]` value outside it, other than the non-selecting `perf` marker, is a hard error. That file is the current set, with a one-line description per label.
+
+To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<key>` repository label in GitHub. No workflow edit is needed. To expose it through PR comments, also add that exact label to `commands.add_label.allowed_labels` in `.github/workflows/policies/comment-command-access.json`.
+
+## Dispatch labels: which GPU generation runs the selection
+
+Domain labels pick *which* tests run; dispatch labels pick *where*. The two axes are independent, so `run-ci-megatron` + `run-on-blackwell` means "every megatron test that can run on Blackwell, on Blackwell, and nowhere else".
+
+Each CUDA test declares `num_gpus`, the minimum count preserving all cases, and the GPU generations its kernels and precision paths support: `register_cuda_ci(..., hardware=["hopper", "blackwell"])`. Its `suite` must name a stage on the first supported generation, so a test's home stage is also where it runs when nothing asks otherwise.
+
+| PR labels | Effect |
+|---|---|
+| *(none)* | each test runs once, at its home stage |
+| `run-on-hopper` | only the Hopper stages; Blackwell-only tests do not run at all |
+| `run-on-blackwell` | every selected test that supports Blackwell moves to a Blackwell stage; Hopper-only tests do not run at all |
+| both | a test supporting both generations runs **twice**, once per generation |
+| `run-ci-blackwell-only` | every test that can *only* run on Blackwell, across all domains |
+
+`run-on-*` is what permits a test to execute outside its home stage. Without one — a plain PR, nightly, weekly, release, or a called workflow — nothing moves, so those runs select exactly what they always did.
+
+`run-ci-blackwell-only` and `run-on-blackwell` are one preposition apart and mean different things. The first runs the Blackwell-exclusive tests; the second moves whatever it can onto Blackwell. The `-only` suffix is the reminder.
+
+The generation order `hopper, blackwell` is the default-dispatch preference: a test supporting both lands on Hopper unless asked otherwise, because one Blackwell host against four-plus Hopper hosts would otherwise saturate the Blackwell queue. Adding Blackwell capacity is a change to `tests/ci/hardware.py::CUDA_STAGES`; nothing else routes.
+
+Each generation keeps its own performance baseline, keyed on the stage that executed the run — see [Metric history & regression gate](/developer/ci/03-metric-history-gate). A test dispatched to both owns two independent series, so Blackwell numbers never regress against Hopper ones.
+
+## Manage CI from PR comments
+
+The PR-comment entrypoint is a command gateway rather than a label handler. Each recognized comment becomes a typed request, and a code-defined static registry selects its fixed handler, policy key, and token capability. The JSON policy controls only access groups and per-command resource allowlists. The registry implements exact-label additions plus `/clear-labels`, `/rerun-failed-ci`, and `/rerun-test`.
+
+After the CI App is enabled, post `/<label>` as the entire comment on an open PR to append that exact label. The label must be a supported `run-ci-*` label or `bypass-fastfail` and must be listed in `.github/workflows/policies/comment-command-access.json`; for example, `/run-ci-short` appends only `run-ci-short`, while `/bypass-fastfail` appends only `bypass-fastfail`.
+
+A label command permits leading and trailing whitespace only; it cannot include arguments, prose, or a second command. Only `/rerun-test` takes arguments: one test-file path and an optional `--hw rocm` suffix. If the label is already present, the request succeeds as a no-op and does not emit another `labeled` event or rerun CI.
+
+Who may run each command — the identity bindings, the access groups in `.github/workflows/policies/comment-command-access.json`, the tier constraints, and the fork containment rule — is specified in [Command Identity](/developer/ci/05-command-identity). One label-specific resource fact stays here: the policy's `commands.add_label.allowed_labels` array controls which exact labels can be added through comments, and adding a `KNOWN_LABELS` entry does not expose it automatically.
+
+Unrecognized comments exit after trusted parsing with capability `none`; they do not load the access policy, call the GitHub API, or mint an App token. A malformed comment containing one of the recognized command markers still fails instead of being treated as an unrelated comment.
+
+The gateway controls only the delegated comment path; it does not restrict users' existing GitHub UI/API label permissions and does not offer commands that add `run-ci-all`, `nightly`, or an arbitrary label absent from the policy.
+
+Post `/clear-labels` as the entire comment to remove every current label whose name starts with `run-ci` or `run-on-`, plus `nightly` and `bypass-fastfail`. All other PR labels are preserved. Each removal triggers the [PR workflow restart](/developer/ci/00-stage) with the remaining labels. On a PR based on the default branch, ordinary CI remains enabled; on a PR based on another branch, removing the last `run-ci*` label stops `PR Test` from starting jobs.
+
+Post `/rerun-failed-ci` as the entire comment to request failed-job reruns for the current open PR head. The handler considers only the latest run of each allowlisted PR workflow: `pre-commit.yml`, `pr-test.yml`, and `pr-test-rocm.yml`. A latest run is rerun only when it belongs to this PR and exact head SHA and has completed with conclusion `failure`.
+
+Successful, skipped, cancelled, queued, or in-progress runs are not rerun, and a newer run prevents an older failure of the same workflow from being revived. The command does not touch CodeQL, `pull_request_target`, cleanup, scheduled, manually dispatched, or other control-plane workflows.
+
+GitHub can omit `pull_requests` from fork workflow-run payloads. For a fork, the handler therefore also requires an all-state lookup by exact head owner and ref to identify only the current open PR, then binds each run to the same head ref, SHA, and repository ID. An absent, reused, or otherwise ambiguous fork head fails without a rerun.
+
+Post `/rerun-test <test-file>` as the entire comment to run one registered test file on the PR's current head, e.g. `/rerun-test tests/e2e/precision/test_hf_attention_cp_relayout.py`. Despite the name, this dispatches a fresh workflow and does not require the test to have run previously. The handler accepts only a repo-relative path under the registry scan roots (`tests/e2e`, `tests/fast`, `tests/fast-gpu`, `tests/ci`), then dispatches the fixed default-branch `.github/workflows/run-ci-file.yml` with the PR number, exact head SHA, and file path as inputs.
+
+For AMD, post the whole command with the ROCm selector:
+
+```text
+/rerun-test tests/fast-gpu/kernels/position/test_rope.py --hw rocm
+```
+
+The plain command uses the CPU/CUDA registration. With `--hw rocm`, the resolver uses the file's enabled ROCm registration, and its suite supplies the GPU count for Spur. A file with more than one enabled ROCm registration fails resolution with the suite names. ROCm file runs take their image from the PR body's `ci-rocm-image-tag:`, as ROCm PR CI does, and otherwise use its default image; `ci-image-tag:` applies to CUDA runs only. ROCm file requests use the same access group as CUDA single-file reruns. On pull requests, `run-ci-amd` also [plans file jobs for changed ROCm tests outside the selected regular suites](00-stage.md#rocm-prnightlyweekly-mirror) within the changed-file limit.
+
+Merging the PR cancels its unfinished `Rerun Test` runs, including runs waiting for a runner or queued behind another run of the same file. The trusted `cancel-merged-file-ci.yml` workflow matches the PR number in the file run's name; it leaves completed runs and other PRs alone. Closing without merging does not cancel file runs. While the PR is open, repeated requests for the same file retain their existing queue order.
+
+After GitHub confirms the workflow dispatch, the gateway reacts to the original command with 👍. When the dispatched `Rerun Test` workflow starts, that run posts a separate PR comment containing its running state, start time, and exact Actions run link:
+
+```text
+⏳ `tests/e2e/precision/test_hf_attention_cp_relayout.py` is **running** — [workflow run](https://github.com/radixark/miles/actions/runs/<run-id>)
+
+Started at <timestamp> UTC; elapsed time and the result will be recorded here when it finishes.
+```
+
+The reaction acknowledges that the request was accepted. When execution finishes, the workflow updates that same status comment—identified by the comment ID returned when it was created—to ✅ passed, ❌ failed, or ⚪ cancelled, and records the selected suite and total elapsed time. A run is reported as passed only when its CPU, CUDA, or ROCm execution job succeeds; resolver failures and runs where no execution job starts are reported as failed rather than as successful dispatches.
+
+A B200 file rerun joins the same `b200-oma` whole-host queue as PR, scheduled, and release CI, so it cannot overlap either B200 stage. ROCm file reruns share a repository-wide queue that admits one at a time, leaving a runner available for ROCm PR CI.
+
+An explicit file request is the selection: domain labels and the nightly cadence gate do not apply, while a symlinked or `disabled` test, an unregistered path, a ROCm-only registration without the ROCm selector, or a file with more than one registration eligible for the requested backend fails the resolve job instead of silently running nothing.
+
+The dispatched workflow and its reusable workflows come from the reviewed default-branch commit. A trusted resolver reads the separately checked-out PR snapshot without importing it and maps the requested registration to a fixed CPU/CUDA/ROCm suite, runner, image, and timeout. Workflow orchestration and the resolver remain on the default branch; the execution job checks out that same exact SHA, so the test and the CUDA or ROCm harness come from the PR snapshot.
+
+CPU runs use bounded `pytest`. CUDA and ROCm runs use the snapshot's `run_suite.py --test-file` harness on the resolved suite, which applies the per-file timeout to the test as in stage runs; a snapshot whose `run_suite.py` predates `--test-file` must merge the default branch first. Both GPU backends use the existing `release` cadence to admit every label and nightly registration without writing baselines; `--test-file` restricts execution to the requested file.
+
+For ROCm, the reviewed workflow revision supplies the Spur launcher and the exact PR checkout supplies the code inside the container. Fork-head file runs withhold `HF_TOKEN` and `WANDB_API_KEY` before submission. The ROCm file timeout budget reserves 15 minutes of the 3-hour Spur job for setup. The resolver reports an over-budget file before runner allocation.
+
+Same-repository CUDA runs receive `NEON_DATABASE_URL` and apply the [metric-history gate](03-metric-history-gate.md#rollout), so a gate failure also fails the file-run job and its status comment. Fork runs receive no Neon secret and explicitly skip the gate.
+
+The trust boundary ends after the resolver produces that fixed plan. The execution job intentionally installs and runs PR-controlled dependencies, configuration, imports, and test code; it is not a sandbox for hostile PR code. Same-repository and fork heads are accepted from any commenter the policy admits; a fork head's run receives no repository secrets, and the resolver derives fork-ness from the live pull request rather than a dispatch input. The command requires the fixed `run-ci-file.yml` workflow on the default branch. A later push does not change the already dispatched snapshot.
+
+A file run honors the PR body's `ci-megatron-pr`, `ci-sglang-pr`, and `ci-megatron-bridge-pr` pins; CUDA file runs also honor `ci-image-tag`, while CPU file runs use the hosted bare environment. The gateway validates these inputs and forwards the pins for the selected backend. ROCm file runs resolve those refs as CUDA ones do. Without an image pin, CUDA and ROCm comment runs use the PR's published `pr-<N>` or `pr-<N>-rocm10-mi35x` tag from `radixark/miles`; if absent, they use the released `dev` or default ROCm image. An explicit `ci-image-tag` or `ci-rocm-image-tag` pin wins for these comment runs. The run writes no perf baseline, and its result is informational: it does not appear among the PR's required checks.
+
+`/rerun-test` and `/rerun-failed-ci` work as soon as the gateway workflow is on the default branch, with no App and no repository variables. Their jobs use the workflow's own `GITHUB_TOKEN`: the command job has `actions: write` plus `pull-requests: read`; the reaction job has `issues: write` plus `pull-requests: write`; and the file run's status jobs have `issues: write` plus `pull-requests: write`, with `actions: read` added to the final status job so it can calculate elapsed time from the workflow run.
+
+GitHub's recursion guard suppresses `GITHUB_TOKEN`-triggered events with the documented exception of `workflow_dispatch` and `repository_dispatch`, which is exactly how a file run starts, and a failed-job rerun is a new attempt of an existing run rather than a new event-triggered run. The 👍 reaction and the running/final status comment are posted as `github-actions[bot]`.
+
+Label commands are the exception: a label added with `GITHUB_TOKEN` would never fire the `pull_request(labeled)` CI workflows, so they stay off until workflow owners complete the following steps and set the repository variable `CI_APP_ENABLED=true`. This switch gates label commands only; wheel publishing uses the same App credentials independently. A label command posted before that fails loudly with a pointer to this document instead of skipping silently.
+
+1. Use the `radixark-miles-ci` GitHub App installed on `radixark/miles` and `radixark/miles-wheels`, with `Issues: write`, `Pull requests: write`, and `Contents: write`. The label workflow requests only `Issues: write` and `Pull requests: write` on `radixark/miles`; [wheel publishing](/developer/ci/06-build-wheels#publish-setup) requests only `Contents: write` on `radixark/miles-wheels`. [Command Identity](/developer/ci/05-command-identity) explains the label token's permissions. The actions-capability and feedback jobs never receive an App token.
+2. Store the App client ID in the `radixark/miles` repository variable `CI_APP_CLIENT_ID` and its private key in the repository secret `CI_APP_PRIVATE_KEY`. Both workflows use these credentials.
+3. Protect the final bytes under `.github/workflows/` that implement the command gateway—its workflows, handler, and policy: require code-owner review, enable stale-review dismissal or last-push approval, and explicitly accept administrators who can still bypass the rule as external trust roots.
+4. In the target repository, compare manually adding a test label with adding the same label through the App. Confirm that both trigger the expected CUDA, ROCm, and held-run approval consumers.
+   Then run `/clear-labels`; confirm that it removes only the CI control labels and does not start another CUDA, ROCm, or held-run approval workflow.
+
+To validate the App-free commands, create a disposable failed run on the current PR head and confirm that `/rerun-failed-ci` reruns only its failed jobs and dependent jobs.
+
+Then post `/rerun-test` with one registered test file and confirm the dispatched run uses that file as the command entrypoint from the recorded PR head SHA on its registered suite's runner. The original command must receive a 👍 reaction only after dispatch succeeds, a separate comment must show the run in progress, the job logs must contain the test invocation and result, and that same comment ID must be updated with the correct final result and elapsed time.
+
+Caller evaluation points and the token identities each command executes under are specified in [Command Identity](/developer/ci/05-command-identity).
+Actions command comments for one PR are serialized in GitHub's queued concurrency mode. Up to GitHub's 100-pending limit, commands wait instead of replacing an older pending comment.
+Before each rerun request, the handler rechecks the permission, PR head, and latest run of that workflow. Each lookup is a point-in-time result, so a small race remains between the final check and the mutation request.
+
+The comment handler runs only fixed, reviewed code from the default branch and never checks out or executes PR code, dependencies, artifacts, or configuration. The file-run resolver is a separate trusted job; its execution jobs intentionally run the exact PR snapshot, receive only the test secrets required by the selected reusable workflow, and never receive the command gateway App private key.
+
+Initial authorization, PR, policy, or run-state errors fail before any mutation. A recheck error before a later rerun request stops that request, while any earlier accepted reruns remain applied.
+
+If the additive label `POST`, a label `DELETE`, a failed-job rerun `POST`, a workflow-dispatch `POST`, the later reaction `POST`, or a status-comment `POST`/`PATCH` was sent but its response timed out, was malformed, or could not be confirmed, GitHub may already have applied the change. A feedback failure after dispatch does not cancel the file run.
+
+`/clear-labels` and `/rerun-failed-ci` can issue multiple requests and are not atomic: if a later request fails, earlier changes remain applied. The handler does not retry or roll back automatically; inspect the PR's current labels, comments, or Actions runs before deciding whether to retry. Manually rerunning `announce-file-run` after an ambiguous comment-creation response can create a duplicate status comment.
+
+GitHub reruns failed jobs and their dependent jobs with the original run's `GITHUB_SHA`, `GITHUB_REF`, event payload, and triggering actor privileges. A rerun therefore does not inherit the commenter's or App token's privileges; consumers of the original event payload do not see labels changed afterward. GitHub permits reruns for up to 30 days after the original run and limits a workflow run to 50 attempts.
+
+## Megatron Bridge override
+
+Add a standalone line to the PR description:
+
+```text
+ci-megatron-bridge-pr: #41
+```
+
+The value may also be a branch, tag, or full commit SHA in `radixark/Megatron-Bridge`.
+CPU, CUDA, and ROCm jobs install the selected Bridge with `--no-deps --no-build-isolation`,
+leaving Torch, Megatron, and other runtime dependencies unchanged. CPU jobs use Python 3.12,
+matching the Miles Docker runtime. Without the directive, jobs keep their existing Bridge
+installation (the hosted CPU environment does not install Bridge by default).
+
+Manual dispatch accepts `ci_megatron_bridge_pr`, which takes precedence over the PR body.
+`/rerun-test` forwards the directive too. Jobs log the resolved SHA, installed version,
+and import path. Use a full SHA for reproducible runs; changes requiring new binary
+runtime dependencies still need a compatible image.
+
+Editing a PR description alone does not trigger CI; start a new run after updating the pin.
+The comment command support becomes available after this workflow change reaches `main`.
+
+## Cadence eligibility
+
+There are four CI cadences: `regular`, the ordinary mode; `nightly`, which admits `nightly=True` tests and broadens scope; `weekly`, which admits those tests and selects every enabled tag; and `release`, an explicit called-workflow cadence with weekly's selection but no rolling performance-baseline writes. Nightly, weekly, and release all bypass fast-fail.
+
+`register_*_ci(nightly=True)` means the test is eligible under nightly, weekly, and release cadence, but not regular cadence. It does not create a separate suite inventory and does not replace domain-label filtering. A regular run selects regular registrations only; nightly, weekly, and release select regular plus `nightly=True` registrations, then apply their own domain-label scopes. For example, a `nightly=True` test carrying only `ft-long` remains outside the nightly scope unless `run-ci-ft-long` or `run-ci-all` explicitly includes it, while weekly and release include it automatically.
+
+## Broad CI scopes
+
+The workflow's `resolve-ci-policy` job forwards trigger-specific facts or a called workflow's explicit cadence override to `tests/ci/ci_policy.py`; that module adapts them into cadence and label inputs, then its shared `resolve_policy` maps those inputs to one effective include-label set and fast-fail policy. `run_suite.py` consumes the same resolved-policy function and never derives policy from `schedule`, `workflow_dispatch`, or the caller's inherited event name. A broad scope is just a large include set (every registered label minus the scope's subtractions).
+
+| Scope | Explicit source | Runs | Subtracts | Fast-fail |
+|---|---|---|---|---|
+| all | `run-ci-all` label | every enabled tag | — | determined by cadence |
+| weekly | exact weekly cron | every enabled tag | — | disabled on both levels |
+| release | `release-branch-cut.yml` calling with `cadence=release` | every enabled tag | — | disabled on both levels |
+| nightly | resolved nightly cadence from the PR label, exact nightly cron, or local `--nightly` | every enabled tag except `long` and `ft-long`, incl. `ft-short` | `long`, `ft-long` | disabled on both levels (within-stage only for local runs) |
+| image | `run-ci-image` label | every enabled tag except `long` and FT tags | `long`, `ft-short`, `ft-long` | determined by cadence |
+
+Release and weekly have the same selection and fast-fail policy. Release is separate because frozen release refs must never write the rolling performance baseline; see [Metric history & regression gate](/developer/ci/03-metric-history-gate#trust-cleanup-who-writes).
+
+Rows are in precedence order: when scope signals overlap, the higher row wins (`run-ci-all` > weekly/release full scope > nightly > `run-ci-image`, the branch order of `resolve_policy`). `run-ci-all` widens only the domain scope; regular cadence still does not admit `nightly=True` registrations.
+
+The generic triggers carry no policy. All scheduled runs use UTC: nightly is identified by the exact cron `0 15 * * 0-5`, and weekly by `0 15 * * 6`. Saturday weekly replaces that day's nightly rather than starting alongside it. A manual dispatch uses regular cadence and no PR labels; the GPU workflow commands explicitly add `--match-all-labels` so that operation runs the full regular GPU suites without changing cadence. A called workflow instead supplies its cadence explicitly, which is how `release-branch-cut.yml` selects release.
+
+A subtraction is not a per-test veto — it only stops that label from granting inclusion. A test carrying a subtracted label still runs when another of its labels is in the set, so a test that must stay outside the standard nightly scope must carry only labels that nightly subtracts.
+
+A domain label explicitly requested on the PR wins over a scope subtraction: `run-ci-image` plus `run-ci-long` or `run-ci-ft-short`, and nightly plus `run-ci-long`, add the explicitly requested tests back rather than silently dropping the request.
+
+## Registration and scan scope
+
+The registration parser in `tests/ci/ci_register.py` requires domain labels for GPU registrations and CPU registrations above the fast-test budget (`est_time > 30` seconds); those CPU files must use `stage-b-cpu`. Shorter CPU registrations may omit labels. The runner scans `tests/fast`, `tests/fast-gpu`, `tests/e2e`, `tests/ci` recursively for `test_*.py`. Every file must resolve to a registration or collection fails:
+
+- A file outside `tests/fast/` with no `register_*_ci()` call → `No CI registry found`.
+- A registration requiring domain labels with missing, `None`, or empty `labels` → `labels ... must contain at least one domain label`.
+- A `labels=[...]` value other than `perf` and not in `KNOWN_LABELS` → `unknown labels [...]`.
+
+## `tests/fast/` auto-registers as CPU
+
+Each `test_*.py` under `tests/fast/` without an explicit registration is auto-registered as a CPU test (backend CPU, suite `stage-a-cpu`, `labels=[]`), and runs on the GitHub-hosted `ubuntu-latest` runner. Files exceeding the budget above need an explicit `register_cpu_ci(...)` with their estimate, suite, and domain labels. Here "CPU" is the hardware backend, not a label. A `register_cuda_ci()` under `tests/fast/` is a hard error — move it to `tests/fast-gpu/`.
+
+## `bypass-fastfail`: opt out of fast-fail
+
+By default CI fails fast on two levels:
+
+- Cross-stage: CUDA GPU stages run only when `stage-a-cpu` succeeds — the `if` requires `needs.stage-a-cpu.result == 'success'`.
+- Within-stage: each suite stops at the first failure (`pytest -x` for CPU; `run_unittest_files` breaks on the first failing file for CUDA).
+
+The `bypass-fastfail` PR label disables CUDA cross-stage gating and within-suite stopping:
+
+- Cross-stage: each CUDA GPU stage consumes the shared `bypass_fastfail` policy output, so CUDA GPU stages run even after `stage-a-cpu` fails.
+- Within-stage: `run_suite.py` derives continue-on-error from the same resolved policy (drops `pytest -x`; sets `continue_on_error=True` for CUDA). The stage still ends red — it changes coverage, not the verdict.
+
+The ROCm workflow has no CPU cross-stage gate, so `bypass-fastfail` changes only its within-stage behavior.
+
+A resolved nightly, weekly, or release cadence applies the same bypass. For nightly this applies equally whether the cadence came from the PR `nightly` label or the explicitly mapped nightly cron; release comes from the called workflow's explicit override. Local `--nightly` applies the same nightly selection and within-stage behavior; cross-stage gating does not exist in a local invocation.
+
+These cross-stage exceptions apply to CUDA stages; [Stage B CPU still requires Stage A success](00-stage.md).
+
+Like the scope labels, `bypass-fastfail` is a workflow-only input and is not in `KNOWN_LABELS`.
+
+## Labels double as fork-PR CI approval
+
+GitHub holds a first-time contributor's fork-PR CI at "Approve and run" after every push. Any maintainer-applied or comment-gateway-authorized `run-ci*` label is already that human decision, so the `Approve Trusted CI` workflow (on `pull_request_target`) auto-approves those held runs while such a label is present. Removing the labels restores manual approval. This automation covers the first-time-contributor hold only; GitHub may separately hold a workflow it identifies as potentially malicious, and that hold requires approval through an authenticated web session.
+
+## Labels opt non-main PRs into CI
+
+`PR Test` starts automatically only on PRs based on the default branch. A PR based on another branch, typically a stacked PR, runs it only while it carries a `run-ci*` label; the bare `run-ci` label opts in without selecting extra tests, and adding a label starts a run. Labeling the top PR of a stack tests the whole stack once. Retargeting a PR to `main` does not start a run; push or add a label to run it there.

@@ -16,8 +16,9 @@ NCCL_DETERMINISTIC=1
 CUBLAS_WORKSPACE_CONFIG=:4096:8
 ```
 
-NCCL reads its variable at `init_process_group` and cuBLAS at the first matmul — both before the
-actor body executes, so setting them from Python would be too late. Both are `setdefault`, so an
+NCCL reads its variable at `init_process_group`, which runs in the base actor's `init` before the
+deterministic setup below, and cuBLAS at the first matmul — so both go into the spawn environment rather
+than being set from Python. Both are `setdefault`, so an
 explicit value in `--train-env-vars` wins.
 
 `:4096:8` rather than `:16:8`: both are deterministic, but the larger workspace keeps cuBLASLt
@@ -52,7 +53,9 @@ classified explicitly:
 The check runs **driver-side, before any actor launches** (`validate_attention_args`), so a
 misconfiguration fails in seconds instead of after a multi-node startup.
 
-A flash backend that is installed but exposes no `deterministic` parameter is also rejected, with a message naming which kernels were found.
+A flash backend is also rejected when no diffusers flash entry point exposes a `deterministic` parameter (driver-side,
+same check). Native model packages (LTX) additionally check their own kernel at actor init and fail with a message
+listing which kernels were patched.
 
 ### How the flash patch works
 
@@ -86,10 +89,11 @@ metric series — reward statistics, old/new log-probs, grad norm — **bit for 
 `tests/ci/fixtures/e2e_standards/` (strict unless the test registers a per-metric tolerance).
 Determinism is what makes strict comparison viable: a tolerance wide enough to absorb run-to-run
 noise would also absorb small regressions. Standards are re-recorded by the PR author
-(`python tests/ci/e2e_metrics_registry.py record --test <test-file>`), never by CI.
+(`python tests/ci/e2e_metrics_registry.py record --test <test-file>`, or the `record-e2e-standards` workflow, which
+uploads the result as an artifact) and never committed by CI.
 
 Because reward metrics are compared too, the CI recipes also pin the engine side — e.g.
-`--sglang-dit-precision fp16`, plus the batch-invariant-op environment above — matching the
+`--sglang-dit-precision fp16` — matching the
 "what it does not cover" list: bit-stable curves need both halves.
 
 ## Related

@@ -7,7 +7,8 @@ These cover the Python-side policy and label pipeline:
 * `resolve_policy`: explicit cadence + raw labels -> selection and fast-fail.
 * The PR workflow seams: one adapter resolves trigger facts and every CUDA/ROCm stage consumes its outputs.
 * `filter_tests`: include-set selection, including CPU always-on coverage and
-  GPU domain labels; a scope subtraction is not a per-test veto.
+  GPU domain labels; a scope subtraction is not a per-test veto; `perf` selects nothing.
+* `run_cpu_tests`: one pytest per CPU suite, each `perf` file alone within its timeout.
 * `CI_SUITES`: locked to the current hardware taxonomy.
 
 We build `CIRegistry` instances directly via a small factory rather than
@@ -15,6 +16,7 @@ parsing fixture files -- the AST-side validation lives in
 `test_ci_register.py`; this module exercises the runtime filter.
 """
 
+import itertools
 import os
 import re
 import subprocess
@@ -34,7 +36,7 @@ from tests.ci.ci_policy import (
     resolve_policy,
     strip_run_ci_prefix,
 )
-from tests.ci.ci_register import CIRegistry, HWBackend, discover_ci_files, register_cpu_ci
+from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests, discover_ci_files, register_cpu_ci
 from tests.ci.labels import KNOWN_LABELS
 from tests.ci.run_suite import CI_SUITES, build_cpu_pytest_cmd, filter_tests
 from tests.ci.stage_selection import PR_GPU_STAGES
@@ -51,20 +53,24 @@ def _make(
     est_time: float = 60.0,
     nightly: bool = False,
     disabled: str | None = None,
+    hardware: list[str] | None = None,
 ) -> CIRegistry:
     """Minimal `CIRegistry` factory for filter tests.
 
-    CUDA fixtures default to the `megatron` domain; CPU fixtures default to
-    the always-on empty label set.
+    CUDA fixtures default to the `megatron` domain and to Hopper-only support;
+    CPU fixtures default to the always-on empty label set and no arch.
     """
     if labels is None:
         labels = [] if backend == HWBackend.CPU else ["megatron"]
+    if hardware is None:
+        hardware = ["hopper"] if backend == HWBackend.CUDA else []
     return CIRegistry(
         backend=backend,
         filename=filename,
         est_time=est_time,
         suite=suite,
         labels=list(labels),
+        hardware=list(hardware),
         nightly=nightly,
         disabled=disabled,
         implicit=False,
@@ -87,6 +93,67 @@ class TestBuildCpuPytestCmd:
         assert cmd[0] == "pytest"
         assert "tests/fast/a.py" in cmd and "tests/fast/b.py" in cmd
 
+    def test_a_directory_is_never_returned_to_after_its_parent(self):
+        """pytest loads a directory's conftest when it first reaches it. Naming that directory again
+        after its parent leaves the second visit's tests without their own conftest's fixtures, which
+        reads as `fixture ... not found` on tests that have always had one."""
+        cmd = build_cpu_pytest_cmd(
+            [
+                "tests/fast/backends/megatron_utils/test_actor.py",
+                "tests/fast/backends/test_fsdp_routing_replay.py",
+                "tests/fast/backends/megatron_utils/test_model.py",
+            ],
+            continue_on_error=True,
+        )
+
+        directories = [name.rsplit("/", 1)[0] for name in cmd if name.endswith(".py")]
+        assert len(set(directories)) == len(list(itertools.groupby(directories)))
+
+
+# --- run_cpu_tests: each perf file runs alone within its timeout ------------
+
+
+def _bench(filename: str, *, labels: list[str]) -> CIRegistry:
+    return _make(filename, backend=HWBackend.CPU, suite="stage-b-cpu", labels=labels, est_time=400)
+
+
+class TestRunCpuTests:
+    BENCH = "tests/fast/rollout/test_bench.py"
+    OTHER = "tests/fast/rollout/test_other.py"
+    BOUNDED_BENCH = ["timeout", "--signal=TERM", "--kill-after=30s", "500s", "pytest", BENCH, "-v", "-x"]
+
+    @staticmethod
+    def _record_calls(monkeypatch, returncodes):
+        calls = []
+
+        def fake_call(cmd):
+            calls.append(cmd)
+            return returncodes[len(calls) - 1]
+
+        monkeypatch.setattr(run_suite_module.subprocess, "call", fake_call)
+        return calls
+
+    def _tests(self):
+        return [_bench(self.BENCH, labels=["rollout", "perf"]), _bench(self.OTHER, labels=["rollout"])]
+
+    def test_perf_file_runs_alone_within_its_estimate(self, monkeypatch):
+        calls = self._record_calls(monkeypatch, [0, 0])
+        assert run_suite_module.run_cpu_tests(self._tests(), 1800, continue_on_error=False) == 0
+        assert calls == [["pytest", self.OTHER, "-v", "-x"], self.BOUNDED_BENCH]
+
+    @pytest.mark.parametrize(("continue_on_error", "runs"), [(False, 1), (True, 2)])
+    def test_earlier_failure_keeps_fast_fail(self, monkeypatch, continue_on_error, runs):
+        calls = self._record_calls(monkeypatch, [1, 0])
+        assert run_suite_module.run_cpu_tests(self._tests(), 1800, continue_on_error) == 1
+        assert len(calls) == runs
+
+    def test_expired_estimate_fails_the_suite(self, monkeypatch, capsys):
+        calls = self._record_calls(monkeypatch, [124])
+        tests = [_bench(self.BENCH, labels=["rollout", "perf"])]
+        assert run_suite_module.run_cpu_tests(tests, 1800, continue_on_error=False) == 124
+        assert calls == [self.BOUNDED_BENCH]
+        assert f"TIMEOUT: {self.BENCH} after 500 seconds" in capsys.readouterr().out
+
 
 # --- CI_SUITES locked to the stage taxonomy ---------------------------------
 
@@ -102,7 +169,13 @@ class TestCISuites:
             "stage-c-8-gpu-h200",
             "stage-c-4-gpu-h200",
             "stage-c-2-gpu-h200",
+            "stage-c-4-gpu-b200",
+            "stage-c-8-gpu-b200",
         ]
+
+    def test_rocm_suites_include_the_pr_stage(self):
+        """The trusted ROCm PR workflow can request the suite its stage runs."""
+        assert "stage-c-4-gpu-mi350" in CI_SUITES[HWBackend.ROCM]
 
     def test_no_legacy_suite_names_remain(self):
         legacy = {
@@ -210,6 +283,39 @@ class TestResolvePolicy:
         # never write the rolling perf baseline.
         assert policy.write_baseline is scheduled_cadence
 
+    @pytest.mark.parametrize(
+        ("labels", "dispatch", "absorb"),
+        [
+            (set(), frozenset(), False),
+            ({"run-ci-megatron"}, frozenset(), False),
+            ({"nightly"}, frozenset(), False),
+            ({"run-on-hopper"}, frozenset({"hopper"}), True),
+            ({"run-on-blackwell"}, frozenset({"blackwell"}), True),
+            ({"run-on-hopper", "run-on-blackwell"}, frozenset({"hopper", "blackwell"}), True),
+            # An arch without permission to leave home: the Blackwell-exclusive set.
+            ({"run-ci-blackwell-only"}, frozenset({"blackwell"}), False),
+            # An explicit `run-on-*` outranks it and re-enables routing.
+            ({"run-ci-blackwell-only", "run-on-blackwell"}, frozenset({"blackwell"}), True),
+        ],
+    )
+    def test_dispatch_resolution(self, labels, dispatch, absorb):
+        cadence = NIGHTLY_CADENCE if "nightly" in labels else REGULAR_CADENCE
+        policy = resolve_policy(cadence, labels)
+        assert policy.dispatch_arches == dispatch
+        assert policy.absorb is absorb
+
+    def test_blackwell_only_selects_every_domain(self):
+        # The arch is the selection, so no domain label may narrow it away.
+        assert resolve_policy(REGULAR_CADENCE, {"run-ci-blackwell-only"}).include_labels == _ALL
+
+    def test_scheduled_cadences_never_absorb(self):
+        # Cron runs carry no labels, so nightly and weekly keep every test on
+        # its home stage no matter how widely it is tagged.
+        for cadence in (NIGHTLY_CADENCE, WEEKLY_CADENCE, RELEASE_CADENCE):
+            policy = resolve_policy(cadence, set())
+            assert policy.absorb is False
+            assert policy.dispatch_arches == frozenset()
+
     def test_unknown_cadence_rejected(self):
         with pytest.raises(ValueError, match="Unknown CI cadence 'hourly'"):
             resolve_policy("hourly", set())
@@ -276,32 +382,56 @@ class TestWorkflowScopeSeam:
             assert "--event-name" not in cmd
             assert "--continue-on-error" not in cmd
 
-    def test_cpu_stages_only_require_policy(self):
+        b200_workflow = self._reusable_workflow("_run-ci-b200.yml")
+        assert "cadence: ${{ inputs.cadence }}" in b200_workflow
+        assert "raw_labels: ${{ inputs.raw_labels }}" in b200_workflow
+        b200_commands = self._reusable_workflow("_run-ci-b200-batch.yml").split("execute_command:")[1:]
+        assert len(b200_commands) == 1
+        for block in b200_commands:
+            cmd = block.split("secrets:")[0]
+            assert "--cadence ${{ inputs.cadence }}" in cmd
+            assert "--labels ${{ inputs.raw_labels }}" in cmd
+            assert "--event-name" not in cmd
+            assert "--continue-on-error" not in cmd
+
+    def test_stage_b_cpu_waits_for_stage_a_without_requiring_an_image(self):
         workflow = self._workflow()
         stage_a = workflow.split("  stage-a-cpu:", 1)[1].split("  stage-b-cpu:", 1)[0]
         stage_b = workflow.split("  stage-b-cpu:", 1)[1].split("  stage-b-2-gpu-h200:", 1)[0]
 
-        expected = "needs: [resolve-ci-policy]"
-        assert expected in stage_a
-        assert expected in stage_b
+        assert "needs: [resolve-ci-policy]" in stage_a
+        assert "needs: [resolve-ci-policy, stage-a-cpu]" in stage_b
+        assert "    if:" not in stage_b
         assert "resolve-ci-image" not in stage_a
         assert "resolve-ci-image" not in stage_b
+
+    def test_non_default_base_pr_needs_run_ci_label(self):
+        policy_gate = self._workflow().split("  resolve-ci-policy:", 1)[1].split("    runs-on:", 1)[0]
+
+        assert "github.event.pull_request.base.ref == github.event.repository.default_branch" in policy_gate
+        assert "contains(toJSON(github.event.pull_request.labels.*.name), '\"run-ci')" in policy_gate
+        assert "github.event_name != 'pull_request'" in policy_gate
 
     def test_cpu_and_gpu_stages_use_dedicated_reusable_workflows(self):
         workflow = self._workflow()
         assert workflow.count("uses: ./.github/workflows/_run-cpu-ci.yml") == 2
         assert workflow.count("uses: ./.github/workflows/_run-ci.yml") == 5
-        assert workflow.count("uses: ./.github/workflows/_build-pr-ci-image.yml") == 1
+        assert workflow.count("uses: ./.github/workflows/_run-ci-b200.yml") == 1
+        # One call per PR image architecture.
+        assert workflow.count("uses: ./.github/workflows/_build-pr-ci-image.yml") == 2
         assert "cpu_runner" not in workflow
 
         gpu_workflow = self._reusable_workflow("_run-ci.yml")
+        b200_workflow = self._reusable_workflow("_run-ci-b200.yml")
         cpu_workflow = self._reusable_workflow("_run-cpu-ci.yml")
         docker_workflow = self._reusable_workflow("_build-pr-ci-image.yml")
         job_id_pattern = r"^  ([A-Za-z_][A-Za-z0-9_-]*):$"
         gpu_jobs = re.findall(job_id_pattern, gpu_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
         cpu_jobs = re.findall(job_id_pattern, cpu_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
         docker_jobs = re.findall(job_id_pattern, docker_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
-        assert gpu_jobs == ["run"]
+        assert gpu_jobs == ["plan", "run"]
+        assert b200_workflow.count("uses: ./.github/workflows/_run-ci-b200-batch.yml") == 1
+        assert self._reusable_workflow("_run-ci-b200-batch.yml").count("uses: ./.github/workflows/_run-ci.yml") == 1
         assert cpu_jobs == ["run-cpu"]
         assert docker_jobs == ["docker-decide", "docker-build"]
         assert "cpu_runner" not in gpu_workflow
@@ -309,7 +439,7 @@ class TestWorkflowScopeSeam:
 
     def test_docker_build_waits_for_cpu_gate_and_preserves_bypass(self):
         workflow = self._workflow()
-        caller = workflow.split("  docker-build:", 1)[1].split("  resolve-ci-image:", 1)[0]
+        caller = workflow.split("  docker-build-amd64:", 1)[1].split("  resolve-ci-image-amd64:", 1)[0]
 
         assert "needs: [resolve-ci-policy, stage-a-cpu]" in caller
         assert "always() && !cancelled()" in caller
@@ -331,22 +461,27 @@ class TestWorkflowScopeSeam:
         assert "value: ${{ jobs.docker-build.outputs.tag_available }}" in reusable
         assert "needs: [docker-decide]" in reusable
         # Rebuilds follow the build inputs, not whether the PR diff touched them.
-        assert "python3 docker/image_inputs.py --rev HEAD^1" in reusable
+        assert 'python3 docker/image_inputs.py --variant "$VARIANT" --rev HEAD^1' in reusable
         assert "python3 docker/image_inputs.py --read-label" in reusable
         assert "github.event.pull_request.head.repo.full_name == github.repository" in reusable
-        assert "python3 docker/build.py --variant cu13 --image-tag custom" in reusable
+        # The architecture picks the variant and tag from docker/image_inputs.py.
+        assert 'python3 docker/image_inputs.py --pr "$PR_NUMBER" --arch "$ARCH"' in reusable
+        assert (
+            'python3 docker/build.py --variant "$VARIANT" --image-tag custom --custom-tag "$TAG" --image-repo "$GITHUB_REPOSITORY" --push'
+            in reusable
+        )
 
     def test_docker_decision_logs_in_only_for_tag_inspection(self):
         reusable = self._reusable_workflow("_build-pr-ci-image.yml")
         decide_job = reusable.split("  docker-decide:", 1)[1].split("  docker-build:", 1)[0]
 
-        compare = decide_job.index("python3 docker/image_inputs.py --rev HEAD^1")
+        compare = decide_job.index('python3 docker/image_inputs.py --variant "$VARIANT" --rev HEAD^1')
         login = decide_job.index("- name: Login to Docker Hub")
         inspect = decide_job.index("docker buildx imagetools inspect")
         assert compare < login < inspect
         assert "if: steps.prepare.outputs.inspect_tag == 'true'" in decide_job
 
-    def test_docker_force_rebuild_uses_live_label_for_decision_and_consumption(self):
+    def test_docker_force_rebuild_reads_the_live_label_and_leaves_it(self):
         reusable = self._reusable_workflow("_build-pr-ci-image.yml")
         decide_job = reusable.split("  docker-decide:", 1)[1].split("  docker-build:", 1)[0]
 
@@ -355,12 +490,12 @@ class TestWorkflowScopeSeam:
         assert decide_job.index(live_labels) < decide_job.index("- name: Login to Docker Hub")
         assert "LABELS=$(gh api --paginate" in decide_job
         assert 'grep -Fxq "rebuild-ci-image" <<< "$LABELS"' in decide_job
-        assert "github.event.pull_request.labels.*.name" not in reusable
-        assert "needs.docker-decide.outputs.force_rebuild == 'true'" in reusable
+        assert "github.event.pull_request.labels.*.name" not in decide_job
+        assert "labels/rebuild-ci-image" not in reusable
 
     def test_policy_job_is_a_thin_python_adapter(self):
         workflow = self._workflow()
-        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("  docker-build:", 1)[0]
+        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("  docker-build-amd64:", 1)[0]
         assert "uses: actions/checkout@v4" in policy_block
         assert "persist-credentials: false" in policy_block
         assert "run: python -m tests.ci.ci_policy" in policy_block
@@ -376,7 +511,7 @@ class TestWorkflowScopeSeam:
 
     def test_policy_job_passes_trigger_facts(self):
         workflow = self._workflow()
-        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("  docker-build:", 1)[0]
+        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("  docker-build-amd64:", 1)[0]
         assert "EVENT_NAME: ${{ github.event_name }}" in policy_block
         assert "SCHEDULE: ${{ github.event.schedule || '' }}" in policy_block
         assert "PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}" in policy_block
@@ -393,21 +528,63 @@ class TestWorkflowScopeSeam:
         assert "    - cron: '0 15 * * 6'" in workflow
         assert "timezone:" not in workflow
 
-    def test_weekly_serializes_each_gpu_matrix(self):
+    def test_hopper_shards_are_not_throttled_before_runner_queue(self):
+        assert "max-parallel:" not in self._workflow()
+
+    @pytest.mark.parametrize("cadence", [REGULAR_CADENCE, NIGHTLY_CADENCE])
+    @pytest.mark.parametrize("suite", ["stage-c-8-gpu-h100", "stage-c-8-gpu-h200"])
+    def test_eight_gpu_hopper_shards_fit_runtime_budget(self, cadence, suite):
         workflow = self._workflow()
-        normal_parallelism = {
-            "stage-c-8-gpu-h100": 2,
-            "stage-c-8-gpu-h200": 2,
-            "stage-c-4-gpu-h200": 3,
-            "stage-c-2-gpu-h200": 2,
-        }
-        for job, default in normal_parallelism.items():
-            block = workflow.split(f"  {job}:", 1)[1]
-            block = re.split(r"^  [A-Za-z_][A-Za-z0-9_-]*:\s*$", block, maxsplit=1, flags=re.MULTILINE)[0]
-            expected = (
-                "max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' " f"&& 1 || {default} }}}}"
-            )
-            assert expected in block
+        job = workflow.split(f"\n  {suite}:", 1)[1].split("\n  stage-", 1)[0]
+        if suite == "stage-c-8-gpu-h100":
+            assert (
+                "partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' "
+                "&& '[0,1]' || '[0,1,2]') }}"
+            ) in job
+            shard_count = 2 if cadence == REGULAR_CADENCE else 3
+        else:
+            assert (
+                "partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' "
+                "&& '[0,1,2,3]' || '[0,1,2,3,4]') }}"
+            ) in job
+            shard_count = 4 if cadence == REGULAR_CADENCE else 5
+        policy = resolve_policy(cadence, {"run-ci-image"} if cadence == REGULAR_CADENCE else set())
+        tests, _ = filter_tests(
+            collect_tests(discover_ci_files()),
+            HWBackend.CUDA,
+            suite,
+            policy.admit_nightly_tests,
+            labels=set(policy.include_labels),
+            dispatch_arches=policy.dispatch_arches,
+            absorb=policy.absorb,
+        )
+        loads = [
+            sum(test.est_time for test in run_suite_module.auto_partition(tests, rank, shard_count))
+            for rank in range(shard_count)
+        ]
+        assert all(load > 0 for load in loads)
+        assert max(loads) <= 7200 if cadence == REGULAR_CADENCE else max(loads) < 7200
+
+    def test_b200_jobs_share_one_cross_pr_host_lease(self):
+        workflow = self._workflow()
+        b200_workflow = self._reusable_workflow("_run-ci-b200.yml")
+        caller = workflow.split("  stage-c-b200:", 1)[1]
+
+        assert "group: b200-oma" in b200_workflow
+        assert "cancel-in-progress: false" in b200_workflow
+        assert "queue: max" in b200_workflow
+        assert "needs: plan" in b200_workflow
+        assert "matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}" in b200_workflow
+        assert "fail-fast: false" in b200_workflow
+        assert "max-parallel: 1" in b200_workflow
+        batch_workflow = self._reusable_workflow("_run-ci-b200-batch.yml")
+        assert "concurrency:" not in batch_workflow
+        assert "max-parallel:" not in batch_workflow
+        assert "--test-file ${{ matrix.shell_file }}" in batch_workflow
+        assert "num_gpus: ${{ matrix.num_gpus }}" in batch_workflow
+        assert "--auto-partition" not in batch_workflow
+        assert "run_8_gpu:" in caller
+        assert "run_4_gpu:" in caller
 
     def test_dispatch_has_no_scope_input_but_runs_all_cuda_domains(self):
         workflow = self._workflow()
@@ -417,26 +594,35 @@ class TestWorkflowScopeSeam:
         manual_scope = "${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}"
         cuda_stages = workflow.split("  stage-b-2-gpu-h200:", 1)[1]
         assert cuda_stages.count(manual_scope) == 5
+        assert "match_all_labels: ${{ github.event_name == 'workflow_dispatch' }}" in cuda_stages
+        assert "match_all_labels: ${{ inputs.match_all_labels }}" in self._reusable_workflow("_run-ci-b200.yml")
+        assert "${{ inputs.match_all_labels && '--match-all-labels' || '' }}" in self._reusable_workflow(
+            "_run-ci-b200-batch.yml"
+        )
 
     def test_gpu_gates_consume_shared_bypass_output(self):
         workflow = self._workflow()
         gpu_stages = workflow.split("  stage-b-2-gpu-h200:", 1)[1]
         bypass_gate = "needs.resolve-ci-policy.outputs.bypass_fastfail == 'true'"
-        assert gpu_stages.count(bypass_gate) == 5
-        assert gpu_stages.count("needs.resolve-ci-policy.result == 'success'") == 5
-        assert gpu_stages.count("needs.resolve-ci-image.result == 'success'") == 5
+        assert gpu_stages.count(bypass_gate) == 6
+        assert gpu_stages.count("needs.resolve-ci-policy.result == 'success'") == 6
+        assert gpu_stages.count("needs.resolve-ci-image-amd64.result == 'success'") == 6
         assert "needs.stage-a-cpu.result == 'failure'" not in gpu_stages
 
     def test_each_cuda_stage_consumes_the_fail_open_skip_list(self):
         workflow = self._workflow()
-        cuda_stages = PR_GPU_STAGES - {"stage-c-4-gpu-mi350"}
+        b200_stages = {"stage-c-4-gpu-b200", "stage-c-8-gpu-b200"}
+        cuda_stages = {stage for stage in PR_GPU_STAGES if not stage.endswith("-mi350")} - b200_stages
         for stage_name in cuda_stages:
             block = workflow.split(f"  {stage_name}:", 1)[1]
             block = re.split(r"^  [A-Za-z_][A-Za-z0-9_-]*:\s*$", block, maxsplit=1, flags=re.MULTILINE)[0]
             expected = f"!contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), '{stage_name}')"
             assert expected in block
 
-        assert workflow.count("outputs.skipped_stages || '[]'") == len(cuda_stages)
+        b200_caller = workflow.split("  stage-c-b200:", 1)[1]
+        for stage_name in b200_stages:
+            expected = f"!contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), '{stage_name}')"
+            assert expected in b200_caller
 
     def test_non_pr_concurrency_does_not_collapse_to_ref(self):
         workflow = self._workflow()
@@ -447,14 +633,14 @@ class TestWorkflowScopeSeam:
 
     def test_closed_pr_only_cancels_existing_run(self):
         workflow = self._workflow()
-        assert "types: [opened, synchronize, reopened, ready_for_review, labeled, closed]" in workflow
+        assert "types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, closed]" in workflow
         assert (
             "group: pr-test-${{ github.event.number || github.event.schedule || inputs.ref || github.run_id }}"
             in workflow
         )
 
         policy_header = workflow.split("  resolve-ci-policy:", 1)[1].split("    runs-on:", 1)[0]
-        docker_caller = workflow.split("  docker-build:", 1)[1].split("  resolve-ci-image:", 1)[0]
+        docker_caller = workflow.split("  docker-build-amd64:", 1)[1].split("  resolve-ci-image-amd64:", 1)[0]
         reusable = self._reusable_workflow("_build-pr-ci-image.yml")
 
         assert "github.event.action != 'closed'" in policy_header
@@ -467,14 +653,34 @@ class TestRocmWorkflowScopeSeam:
     def _workflow() -> str:
         return (Path(__file__).resolve().parents[3] / ".github" / "workflows" / "pr-test-rocm.yml").read_text()
 
+    def test_closed_pr_cancels_without_starting_resolvers_or_gpu_jobs(self):
+        workflow = self._workflow()
+        assert (
+            "group: pr-test-rocm-${{ github.event.number || github.event.schedule || inputs.ref || github.run_id }}"
+            in workflow
+        )
+        assert "cancel-in-progress: true" in workflow
+        header = workflow.split("  resolve-ci-policy:\n", 1)[1].split("    runs-on:", 1)[0]
+        assert "if: github.repository == 'radixark/miles' && github.event.action != 'closed'" in header
+        image = workflow.split("  resolve-ci-image:\n", 1)[1].split("    runs-on:", 1)[0]
+        build = workflow.split("  docker-build-rocm10-mi35x:\n", 1)[1].split("  resolve-ci-image:\n", 1)[0]
+        assert "github.event.action != 'closed'" in build
+        assert "needs: [resolve-ci-policy]" in build
+        assert "arch: rocm10-mi35x" in build
+        assert "needs: [resolve-ci-policy, docker-build-rocm10-mi35x]" in image
+        assert "needs.docker-build-rocm10-mi35x.result == 'success'" in image
+        stage = workflow.split("  stage-c-4-gpu-mi350:\n", 1)[1]
+        assert "needs.resolve-ci-policy.result == 'success'" in stage
+
     def test_pr_schedules_and_dispatch_share_policy(self):
         workflow = self._workflow()
-        assert "pull_request:\n    types: [opened, synchronize, reopened, ready_for_review, labeled]" in workflow
+        assert (
+            "pull_request:\n    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, closed]"
+            in workflow
+        )
         assert "pull_request_target:" not in workflow
         configured = set(re.findall(r"^\s+- cron: ['\"]([^'\"]+)['\"]\s*$", workflow, flags=re.MULTILINE))
-        assert configured == set(SCHEDULE_POLICIES)
-        assert "    - cron: '0 15 * * 0-5'" in workflow
-        assert "    - cron: '0 15 * * 6'" in workflow
+        assert configured <= set(SCHEDULE_POLICIES)
         assert "timezone:" not in workflow
 
         policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("resolve-ci-image:", 1)[0]
@@ -495,16 +701,22 @@ class TestRocmWorkflowScopeSeam:
 
         assert "needs: [resolve-ci-policy, resolve-ci-image]" in stage
         assert "allow_self_hosted" not in stage
-        assert "partition_id: [0, 1]" in stage
-        assert "max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' && 1 || 2 }}" in stage
-        assert "--auto-partition-size 2" in command
+        assert (
+            "partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1,2,3]' || '[0,1,2,3,4,5]') }}"
+            in stage
+        )
+        assert "max-parallel:" not in stage
+        assert "--auto-partition-size ${{ strategy.job-total }}" in command
         assert "checkout_ref:" not in stage
         assert "--cadence ${{ needs.resolve-ci-policy.outputs.cadence }}" in command
         assert "--labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}" in command
         assert "${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}" in command
-        assert "WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}" in stage
+        assert workflow.count("AMD_WANDB_API_KEY: ${{ secrets.AMD_WANDB_API_KEY }}") == 4
+        assert "secrets.WANDB_API_KEY" not in workflow
         assert "needs.resolve-ci-policy.result == 'success'" in stage
         assert "needs.resolve-ci-image.result == 'success'" in stage
+        assert "resolve-ci-deps" not in workflow
+        assert "skip_dependency_install:" not in stage
         assert (
             "!contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350')"
             in stage
@@ -517,6 +729,18 @@ class TestRocmWorkflowScopeSeam:
         assert "persist-credentials: false" in reusable
         assert "allow-unsafe-pr-checkout" not in reusable
         assert "MILES_HARDWARE_PLATFORM: rocm" in reusable
+
+    def test_megatron_override_installs_the_checked_out_ref_unpatched(self):
+        steps = (
+            Path(__file__).resolve().parents[3] / ".github" / "workflows" / "scripts" / "spur" / "container_steps.sh"
+        ).read_text()
+        override = steps.split("cd /root/Megatron-LM\n", 1)[1].split('cd "$GITHUB_WORKSPACE"', 1)[0]
+
+        checkout = override.index("git checkout -f FETCH_HEAD")
+        install = override.index("pip install -e . --no-deps --break-system-packages")
+
+        assert checkout < install
+        assert "amd_patch" not in override
 
 
 # --- CLI seam: local nightly alias and invalid-suite exit behavior -----------
@@ -578,12 +802,26 @@ class TestRunSuiteCLI:
         assert "Unknown suite stage-c-unknown" in result.stderr
         assert "No tests to run. Exiting with success." not in result.stdout
 
+    def test_legacy_rocm_nightly_suite_name_runs_the_renamed_stage(self):
+        result = self._run(
+            "--hw",
+            "rocm",
+            "--suite",
+            "nightly-stage-c-4-gpu-mi350",
+            "--cadence",
+            "nightly",
+            "--list-only",
+        )
+        assert result.returncode == 0, result.stderr
+        assert "Suite: stage-c-4-gpu-mi350" in result.stdout
+
 
 # --- run_a_suite: resolved policy reaches cadence and runner behavior --------
 
 
 def _run_args(*, hw: str, suite: str, cadence: str, labels: list[str] | None = None):
     return SimpleNamespace(
+        test_file=None,
         hw=hw,
         suite=suite,
         cadence=cadence,
@@ -593,6 +831,7 @@ def _run_args(*, hw: str, suite: str, cadence: str, labels: list[str] | None = N
         auto_partition_id=None,
         auto_partition_size=None,
         list_only=False,
+        github_output=None,
         timeout_per_file=1800,
         enable_retry=False,
         retry_timeout_increase=600,
@@ -739,6 +978,13 @@ def _names(tests: list[CIRegistry]) -> set[str]:
 
 
 class TestFilterTestsLabels:
+    def test_perf_label_selects_nothing(self):
+        bench = _bench("tests/fast/rollout/test_bench.py", labels=["rollout", "perf"])
+        fast = _make("tests/fast/test_fast.py", backend=HWBackend.CPU, suite="stage-a-cpu", labels=["perf"])
+        assert filter_tests([bench], HWBackend.CPU, "stage-b-cpu", labels=set())[0] == []
+        assert filter_tests([bench], HWBackend.CPU, "stage-b-cpu", labels={"rollout"})[0] == [bench]
+        assert filter_tests([fast], HWBackend.CPU, "stage-a-cpu", labels=set())[0] == [fast]
+
     def test_case1_no_labels_selects_no_gpu_tests(self, cuda_h100_tests):
         # Every GPU registration has a domain, so an empty include set selects
         # no GPU tests.
@@ -1010,3 +1256,57 @@ class TestFilterTestsBaseDimensions:
             labels={"precision"},
         )
         assert _names(enabled) == {"tests/fast/q.py"}
+
+
+@pytest.mark.skip(reason="Snapshot testing is disabled by op48-277")
+class TestSnapshotHardware:
+    def test_blackwell_dispatch_does_not_use_the_test_home_hardware(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A Hopper registration dispatched to Blackwell selects the executing hardware baseline."""
+        registration = _make(
+            "tests/e2e/test_dispatch.py", suite="stage-c-2-gpu-h200", hardware=["hopper", "blackwell"]
+        )
+        TestRunSuitePolicyIntegration._stub_collection(monkeypatch, [registration])
+        observed = {}
+
+        def run_files(files: list[CIRegistry], **kwargs) -> int:
+            observed.update(kwargs)
+            assert files == [registration]
+            return 0
+
+        monkeypatch.setattr(run_suite_module, "run_unittest_files", run_files)
+        result = run_suite_module.run_a_suite(
+            _run_args(
+                hw="cuda",
+                suite="stage-c-4-gpu-b200",
+                cadence=REGULAR_CADENCE,
+                labels=["run-ci-megatron", "run-on-blackwell"],
+            )
+        )
+
+        assert result == 0
+        assert observed["snapshot_hardware"] == "b200"
+
+    @pytest.mark.parametrize(
+        ("suite", "hardware"),
+        [
+            ("stage-a-cpu", "cpu"),
+            ("stage-b-cpu", "cpu"),
+            ("stage-c-8-gpu-h100", "h100"),
+            ("stage-c-2-gpu-h200", "h200"),
+            ("stage-c-4-gpu-b200", "b200"),
+            ("stage-c-2-gpu-mi350", "mi350"),
+        ],
+    )
+    def test_execution_suite_selects_the_snapshot_hardware(self, suite: str, hardware: str) -> None:
+        """Snapshot selection distinguishes GPU SKUs even within one architecture."""
+        from tests.ci.run_suite import snapshot_hardware
+
+        assert snapshot_hardware(suite) == hardware
+
+    @pytest.mark.parametrize("suite", ["", "stage-c-4-gpu-unknown", "unknown-h200"])
+    def test_unknown_suite_cannot_guess_a_snapshot_hardware(self, suite: str) -> None:
+        """Only registered execution suites can select runtime baselines."""
+        from tests.ci.run_suite import snapshot_hardware
+
+        with pytest.raises(ValueError, match="Unknown snapshot execution suite"):
+            snapshot_hardware(suite)

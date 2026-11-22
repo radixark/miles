@@ -2,12 +2,13 @@
 weights from the optimizer's master weights instead of a pinned CPU copy."""
 
 import logging
-from argparse import Namespace
 from collections.abc import Callable, Iterator, Sequence
 
 import torch
 
 from miles.backends.megatron_utils.misc_utils import strip_param_name_prefix
+from miles.utils.args.runtime import TrainerConfig
+from miles.utils.bf16_stochastic_rounding import is_bf16_stochastic_rounding_enabled, replay_stochastic_round_copy_back
 from miles.utils.tensor_backper import MainCastContext
 
 logger = logging.getLogger(__name__)
@@ -20,11 +21,11 @@ def _named_restore_extras(model: Sequence[torch.nn.Module]) -> Iterator[tuple[st
             if "expert_bias" in name:
                 yield f"vp_stages.{vp_stage}.{strip_param_name_prefix(name)}", buffer
         for name, param in model_module.named_parameters():
-            if param.dtype == torch.float32:
+            if param.dtype == torch.float32 or not param.requires_grad:
                 yield f"vp_stages.{vp_stage}.{strip_param_name_prefix(name)}", param
 
 
-def build_main_cast_context(args: Namespace, *, model: Sequence[torch.nn.Module], optimizer) -> MainCastContext:
+def build_main_cast_context(args: TrainerConfig, *, model: Sequence[torch.nn.Module], optimizer) -> MainCastContext:
     extras = list(_named_restore_extras(model))
     extras_bytes = sum(t.numel() * t.element_size() for _, t in extras)
     logger.info(
@@ -34,7 +35,7 @@ def build_main_cast_context(args: Namespace, *, model: Sequence[torch.nn.Module]
     )
     return MainCastContext(
         cast_main_to_params=_build_cast_main_to_params_fn(
-            optimizer, precision_aware=args.use_precision_aware_optimizer
+            optimizer, precision_aware=args.backend.use_precision_aware_optimizer
         ),
         model_chunks=model,
         extras_getter=lambda: _named_restore_extras(model),
@@ -71,6 +72,10 @@ def _build_cast_main_to_params_fn(optimizer, *, precision_aware: bool) -> Callab
 @torch.no_grad()
 def _replay_hybrid_device_copy_back(hdo) -> None:
     """Replay HDO's two step post-hooks, which wrote this shard at step end."""
+    if is_bf16_stochastic_rounding_enabled():
+        # The step hook rounded stochastically; rebuild the same BF16 bits it wrote.
+        replay_stochastic_round_copy_back(hdo)
+        return
     for shard_view, cpu_master in hdo.gpu_params_map_cpu_copy.items():
         shard_view.data.copy_(cpu_master.data)
     # The CPU pass above already covered the params present in both maps.

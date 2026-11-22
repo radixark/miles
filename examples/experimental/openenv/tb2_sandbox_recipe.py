@@ -158,29 +158,6 @@ def sandbox_labels(task_dir: Path) -> dict[str, str]:
     return labels
 
 
-def resolve_api_key(env_var: str, file_env_var: str, default_path: str) -> str:
-    """A provider API key: *env_var*, else the key file.
-
-    The file indirection (*file_env_var*, default *default_path*) exists so
-    launchers can hand rollout workers a PATH instead of the secret itself:
-    anything a launcher forwards rides ray's runtime_env, which is echoed into
-    driver logs and persisted in job metadata in plaintext. Env vars the
-    worker already has (platform-injected, single-host inheritance) never pass
-    through ray, so *env_var* is checked first.
-    """
-    key = os.environ.get(env_var, "").strip()
-    if key:
-        return key
-    key_file = Path(os.environ.get(file_env_var, "").strip() or default_path).expanduser()
-    try:
-        key = key_file.read_text(encoding="utf-8").strip()
-    except OSError:
-        key = ""
-    if not key:
-        raise RuntimeError(f"no API key: {env_var} is unset and {key_file} is missing or empty")
-    return key
-
-
 def start_keepalive(beat, thread_name: str, *, interval_s: float, max_consecutive_failures: int) -> None:
     """Run *beat* every *interval_s* for as long as THIS process lives.
 
@@ -384,7 +361,11 @@ def server_layer_commands(task_dir: Path) -> list[str]:
         # package: local fixes (canonical evaluate, TB2_COMMAND_TIMEOUT_S)
         # ship with the image. Deps (openenv, camel-ai, ...) come from PyPI.
         f"mkdir -p /opt/src && echo {_env_src_tar_b64()} | base64 -d | tar xz -C /opt/src",
-        "/opt/uv/uv pip install --python /opt/envserver/bin/python /opt/src/tbench2_env_src uvicorn gradio",
+        # mcp is pinned below 2: camel-ai constrains only mcp>=1.3, mcp 2.0
+        # (2026-07-28) dropped the `from mcp.server import FastMCP` re-export
+        # its TerminalToolkit imports, and every episode then fails with
+        # "camel-ai (TerminalToolkit) is required for TB2".
+        "/opt/uv/uv pip install --python /opt/envserver/bin/python /opt/src/tbench2_env_src uvicorn gradio 'mcp<2'",
         # Task directory for reset(task_id) via TB2_TASKS_DIR (pinned-SHA
         # GitHub tarball; see _task_layer_command).
         _task_layer_command(task_dir),

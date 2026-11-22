@@ -4,23 +4,24 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 WANDB_PROJECT = "miles-dev-retool-v2"
 WANDB_GROUP = "sft-multi-turn-batch-32"
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
-    run_id: str = field(default_factory=U.create_run_id)
-    hardware: Literal["H100", "GB200", "GB300"] = "H100"
+    run_id: str = field(default_factory=command_utils.create_run_id)
+    hardware: Literal["auto", "H100", "GB200", "GB300"] = "auto"
     num_gpus_per_node: int | None = None
     use_sft_model: bool = True
     save_path: str = "/root/Qwen3-4B_miles/retool_v2_multi_turn"
     prompt_data: str = "/root/dapo-math-17k/dapo-math-17k.jsonl"
     generate_max_turns: int = 16
     rollout_num_gpus_per_engine: int = 2
+    fully_async: bool = False
     extra_args: str = ""
 
     # resolved in __post_init__, not set by user
@@ -28,7 +29,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     ref_load: str = field(init=False)
 
     def __post_init__(self):
-        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
+        self.hardware = command_utils.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or command_utils.NUM_GPUS_OF_HARDWARE[self.hardware]
+        self.rollout_num_gpus_per_engine = min(self.rollout_num_gpus_per_engine, self.num_gpus_per_node)
         if self.use_sft_model:
             self.hf_checkpoint = "/root/font-info/qwen3-4b-sft"
             self.ref_load = "/root/font-info/qwen3-4b-sft_torch_dist"
@@ -48,6 +51,7 @@ def _get_wandb_args() -> str:
 
 
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu("mkdir -p /root/dapo-math-17k /root/aime-2024")
     U.exec_command_cpu("hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k")
     U.exec_command_cpu("hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/aime-2024")
@@ -74,6 +78,7 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     megatron_model_type = "qwen3-4B"
 
     ckpt_args = (
@@ -120,6 +125,8 @@ def execute(args: ScriptArgs):
             "--eval-top-p 1 "
         )
 
+    async_args = "--fully-async " if args.fully_async else ""
+
     grpo_args = (
         "--advantage-estimator grpo "
         "--use-kl-loss "
@@ -144,7 +151,7 @@ def execute(args: ScriptArgs):
     )
 
     perf_args = (
-        "--tensor-model-parallel-size 2 "
+        f"--tensor-model-parallel-size {args.rollout_num_gpus_per_engine} "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
@@ -160,6 +167,7 @@ def execute(args: ScriptArgs):
     misc_args = (
         f"--actor-num-nodes {args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
+        f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
         # default dropout in megatron is 0.1
         "--attention-dropout 0.0 "
@@ -183,21 +191,22 @@ def execute(args: ScriptArgs):
         f"{sglang_args} "
         f"{misc_args} "
         f"{custom_args} "
+        f"{async_args} "
         f"{args.extra_args} "
     )
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=megatron_model_type,
+        train_script="train_async.py" if args.fully_async else "train.py",
         extra_env_vars={
             "PYTHONPATH": "/root/Megatron-LM/:/root/miles",
         },
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     prepare(args)
     execute(args)

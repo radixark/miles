@@ -1,0 +1,115 @@
+"""Transfer protocol contract and factory."""
+
+from abc import ABC, abstractmethod
+from argparse import Namespace
+from collections.abc import Callable, Iterator, Sequence
+from typing import TYPE_CHECKING, ClassVar
+
+import torch
+
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.training_utils.parallel import ParallelState
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+
+if TYPE_CHECKING:
+    from miles.backends.training_utils.weight_update.rollout_cell_updater import _RolloutCellUpdater
+
+
+class WeightTransferProtocol(ABC):
+    """Moves HF-named weight buckets from training ranks to rollout engines.
+
+    ``connect`` makes every pairing decision once: it sets ``is_sender`` and
+    whatever send channels the protocol needs. The updater then drives
+    ``send_bucket`` on sender ranks only; streamed adapter tensors are ordinary
+    bucket entries (``{lora_name}:{hf_key}`` names).
+    """
+
+    required_placement: ClassVar[WeightUpdatePlacement] = WeightUpdatePlacement(gather_pp=False)
+    supports_lora: ClassVar[bool] = False
+    # Opt in only when separate instances own independent transfer state.
+    supports_receiver_pools: ClassVar[bool] = False
+    use_weight_update_session: ClassVar[bool] = True
+    needs_base_resync_for_lora: bool = False
+
+    def __init__(self, args: Namespace) -> None:
+        self.args = args
+        self.rollout_engines: Sequence[SGLangApiClient] | None = None
+        self.is_sender: bool | None = None
+        self.group_name = "miles"
+        self.update_weight_metrics: dict[str, float] = {}
+        self.cell_updaters_of_cell_id: dict[str, _RolloutCellUpdater] = {}
+
+    @abstractmethod
+    def connect(
+        self,
+        rollout_engines: Sequence[SGLangApiClient],
+        engine_gpu_counts: Sequence[int] | None,
+        engine_gpu_offsets: Sequence[int] | None,
+        engine_cell_ids: Sequence[str],
+        parallel_state: ParallelState,
+        placement: WeightUpdatePlacement,
+        selector: str,
+    ) -> None: ...
+
+    def begin_sync(
+        self,
+        weight_version: int,
+        iter_buckets: Callable[..., Iterator[list[tuple[str, torch.Tensor]]]],
+    ) -> bool:
+        """Hook before the session frame; return False to skip this round.
+        The return value must be identical on every rank."""
+        return True
+
+    @abstractmethod
+    def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None: ...
+
+    def after_base_weights(self) -> None:  # noqa: B027 — optional hook
+        """Hook after the base-weight stream completes (e.g. await in-flight writes)."""
+
+    def finalize(self, weight_version: int) -> None:  # noqa: B027 — optional hook
+        """Hook after all sends (e.g. publish + engine reload)."""
+
+    def after_engines_resumed(self) -> None:  # noqa: B027 — optional hook
+        """Hook once the engines have applied every bucket and resumed generation."""
+
+    def pop_metrics(self) -> dict[str, float]:
+        metrics, self.update_weight_metrics = self.update_weight_metrics, {}
+        return metrics
+
+
+def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
+    mode = args.update_weight_transfer_mode
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "ici", "http-lora"):
+        raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
+    if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
+        raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
+    if args.colocate:
+        from miles.backends.training_utils.weight_update.protocols.cuda_ipc import UpdateWeightFromTensor
+
+        return UpdateWeightFromTensor(args)
+    if mode in ("broadcast", "broadcast_packed"):
+        from miles.backends.training_utils.weight_update.protocols.broadcast import UpdateWeightFromDistributed
+
+        return UpdateWeightFromDistributed(args)
+    if mode == "disk-delta":
+        from miles.backends.training_utils.weight_update.protocols.delta import UpdateWeightFromDiskDelta
+
+        return UpdateWeightFromDiskDelta(args)
+    if mode == "ici":
+        from miles.backends.training_utils.weight_update.protocols.ici import UpdateWeightFromIci
+
+        return UpdateWeightFromIci(args)
+    if mode == "p2p":
+        from miles.backends.training_utils.weight_update.protocols.p2p import UpdateWeightP2P
+
+        return UpdateWeightP2P(args)
+    if mode == "http-lora":
+        from miles.backends.training_utils.weight_update.protocols.http_lora import (
+            UpdateWeightHttpLoraPath,
+            UpdateWeightHttpLoraTensors,
+        )
+
+        if args.http_lora_ship == "tensors":
+            return UpdateWeightHttpLoraTensors(args)
+        return UpdateWeightHttpLoraPath(args)
+    raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")

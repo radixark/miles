@@ -13,7 +13,7 @@ from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel
 from megatron.core.transformer.attention import SelfAttention
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.mlp import MLP
-from megatron.core.transformer.module import MegatronModule
+from megatron.core.transformer.module import MegatronModule, mark_keep_in_fp32
 from megatron.core.transformer.moe.moe_layer import MoELayer
 from megatron.core.transformer.moe.router import TopKRouter
 
@@ -382,7 +382,10 @@ class InklingSelfAttention(SelfAttention):
                 key = f"{prefix}{sub}.weight"
                 if key in sd:
                     sd[key] = make_tp_sharded_tensor_for_checkpoint(
-                        getattr(self, sub).weight, key, tp_axis=0, prepend_offsets=sharded_offsets
+                        getattr(self, sub).weight,
+                        key,
+                        tp_axis=0,
+                        prepend_offsets=sharded_offsets,  # config-access-exempt: projection names come from the sharded checkpoint mapping
                     )
         return sd
 
@@ -393,14 +396,12 @@ class InklingRouter(TopKRouter):
         H = self.config.hidden_size
         ns = self.config.inkling.n_shared_experts
         self.shared_gate = nn.Parameter(torch.zeros(ns, H, dtype=self.config.params_dtype))
-        _gs_dtype = torch.float32
-        self.global_scale = nn.Parameter(torch.ones(1, dtype=_gs_dtype))
-        if _gs_dtype == torch.float32:
-            self.global_scale._keep_fp32 = True
+        self.global_scale = nn.Parameter(torch.ones(1, dtype=torch.float32))
+        mark_keep_in_fp32(self.global_scale)
         self._cache_key = None
         self._cache = None
 
-    def forward(self, input, padding_mask=None, input_ids=None):
+    def forward(self, input, padding_mask=None, input_ids=None, packed_seq_params=None):
         key = (input.data_ptr(), tuple(input.shape))
         if self._cache_key == key and self._cache is not None:
             probs, routing_map = self._cache
@@ -433,7 +434,7 @@ class InklingRouter(TopKRouter):
 
 
 class InklingSharedExperts(MegatronModule):
-    def __init__(self, config, submodules=None, gate=False, pg_collection=None):
+    def __init__(self, config, submodules=None, gate=False, pg_collection=None, name=None):
         super().__init__(config=config)
         ns = config.inkling.n_shared_experts
         inter = config.inkling.intermediate_size
@@ -443,7 +444,16 @@ class InklingSharedExperts(MegatronModule):
         shared_cfg = _copy.copy(config)
         shared_cfg.ffn_hidden_size = inter
         self.experts = nn.ModuleList(
-            [MLP(config=shared_cfg, submodules=submodules, ffn_hidden_size=inter, tp_group=tp) for _ in range(ns)]
+            [
+                MLP(
+                    config=shared_cfg,
+                    submodules=submodules,
+                    ffn_hidden_size=inter,
+                    tp_group=tp,
+                    name=f"{name}.experts.{i}" if name is not None else None,
+                )
+                for i in range(ns)
+            ]
         )
 
     def forward(self, hidden_states):
@@ -510,7 +520,9 @@ class InklingMoELayer(MoELayer):
             hidden_states = hidden_states.to(self.config.params_dtype)
         out, bias = super().forward(hidden_states, *args, **kw)
         if self.mlp_sconv is not None:
-            seqlens = getattr(self.config.inkling, "_seqlens", None)
+            seqlens = getattr(
+                self.config.inkling, "_seqlens", None
+            )  # config-access-exempt: sequence lengths are attached only for variable-length attention
             out = _sp_residual_conv(self.config, self.mlp_sconv, out, seqlens)
         return out, bias
 
@@ -532,7 +544,9 @@ class InklingDenseMLP(MLP):
         )
         self.global_scale = (
             nn.Parameter(torch.ones(1, dtype=self.config.params_dtype))
-            if getattr(t, "use_global_scale", False)
+            if getattr(
+                t, "use_global_scale", False
+            )  # config-access-exempt: global scaling is an optional Inkling checkpoint feature
             else None
         )
 
@@ -545,7 +559,9 @@ class InklingDenseMLP(MLP):
         if self.global_scale is not None:
             out = out * self.global_scale.to(out.dtype)
         if self.mlp_sconv is not None:
-            seqlens = getattr(self.config.inkling, "_seqlens", None)
+            seqlens = getattr(
+                self.config.inkling, "_seqlens", None
+            )  # config-access-exempt: sequence lengths are attached only for variable-length attention
             out = _sp_residual_conv(self.config, self.mlp_sconv, out, seqlens)
         return out, bias
 

@@ -36,7 +36,7 @@ class TritonAttnFunction(torch.autograd.Function):
         Returns:
             o: [total, num_heads, D], bf16
         """
-        from sglang.srt.layers.attention.triton_ops.extend_attention import extend_attention_fwd_unified
+        from sglang.kernels.ops.attention.extend_attention import extend_attention_fwd_unified
 
         total = B * S
         device = q.device
@@ -52,10 +52,12 @@ class TritonAttnFunction(torch.autograd.Function):
             o,
             k,
             v,
-            qo_indptr,
-            kv_indptr,
-            kv_indices,
-            prefix_lens,
+            k_scale=1.0,
+            v_scale=1.0,
+            qo_indptr=qo_indptr,
+            kv_indptr=kv_indptr,
+            kv_indices=kv_indices,
+            prefix_lens=prefix_lens,
             max_len_extend=S,
             is_causal=True,
         )
@@ -68,12 +70,12 @@ class TritonAttnFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         """Memory-efficient Triton backward for causal self-attention."""
-        from .triton_attn_bwd import triton_attention_backward
+        from miles.kernels.attention.dense.backward import dense_attention_backward
 
         q, k, v, o = ctx.saved_tensors
         B, S = ctx.B, ctx.S
 
-        dq, dk, dv = triton_attention_backward(q, k, v, o, grad_output, B, S)
+        dq, dk, dv = dense_attention_backward(q, k, v, o, grad_output, B, S)
         return dq, dk, dv, None, None
 
 
@@ -121,5 +123,7 @@ def apply_sglang_triton_attention_patch(model):
     ALL_ATTENTION_FUNCTIONS["triton"] = _sglang_triton_attention
     model.config._attn_implementation = "triton"
 
-    patched = sum(1 for _, m in model.named_modules() if hasattr(m, "q_proj") and hasattr(m, "o_proj"))
+    patched = sum(
+        1 for _, m in model.named_modules() if hasattr(m, "q_proj") and hasattr(m, "o_proj")
+    )  # config-access-exempt: identify attention modules by their projection capabilities
     return patched

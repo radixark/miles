@@ -1,12 +1,20 @@
+from . import patch  # noqa: F401
+from .deepseek_v4 import DeepseekV4Bridge
+from .deepseek_v4_1 import DeepseekV41Bridge
 from .deepseek_v32 import DeepseekV32Bridge
-from .deepseekv4 import DeepseekV4Bridge
 from .glm4 import GLM4Bridge
 from .glm4moe import GLM4MoEBridge
 from .glm4moe_lite import GLM4MoELiteBridge
+from .glm5_next import Glm5NextBridge
 from .inkling import InklingBridge
 from .joyai_llm_flash import JoyAILLMFlashBridge
+from .kimi_k3 import KimiK3Bridge
+from .kimi_k25 import KimiK25Bridge
 from .mimo import MimoBridge
+from .minimax_m3 import MiniMaxM3Bridge
+from .muse_spark import MuseSpark1xBridge
 from .qwen3_5 import Qwen3_5Bridge
+from .qwen3_8_next import Qwen38NextBridge
 from .qwen3_next import Qwen3NextBridge
 
 __all__ = [
@@ -15,9 +23,16 @@ __all__ = [
     "GLM4MoELiteBridge",
     "Qwen3NextBridge",
     "Qwen3_5Bridge",
+    "Qwen38NextBridge",
     "MimoBridge",
+    "MiniMaxM3Bridge",
+    "MuseSpark1xBridge",
     "DeepseekV32Bridge",
+    "Glm5NextBridge",
     "DeepseekV4Bridge",
+    "DeepseekV41Bridge",
     "JoyAILLMFlashBridge",
     "InklingBridge",
+    "KimiK3Bridge",
+    "KimiK25Bridge",
 ]

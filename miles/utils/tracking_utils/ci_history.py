@@ -2,7 +2,10 @@
 
 * Captures the fixed :data:`TARGET_METRIC_KEYS` whitelist of training/rollout
   metrics from the live process into one JSONL record file; keys outside the
-  whitelist are never recorded.
+  whitelist are never recorded. A whitelisted key is matched by suffix, and the
+  record keeps the key as it was logged, prefix included, so the policies of a
+  multi-policy run stay separate series instead of one series with a repeated
+  step. A gate spec therefore names the prefixed key of the policy it judges.
 * Collection is on only when the harness sets :data:`RECORD_DIR_ENV`
   (`MILES_CI_GATE_RECORD_DIR`); without it `init()` leaves the backend a
   no-op.
@@ -43,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 # Metric keys captured for the history gate, plus the step key carried alongside
 # each. The training keys are logged from the Ray training actor with step_key
-# "train/step"; rollout metrics use step_key "rollout/step". Keys
+# "train/step"; rollout and perf metrics use step_key "rollout/step". Keys
 # are the actor (role="actor") form with no role prefix.
 TARGET_METRIC_KEYS: tuple[str, ...] = (
     "train/grad_norm",
@@ -53,10 +56,18 @@ TARGET_METRIC_KEYS: tuple[str, ...] = (
     "rollout/raw_reward",
     "rollout/tito_session_mismatch_rate/v1/assistant_text",
     "rollout/tito_session_mismatch_rate/v2/assistant_text",
+    "perf/actor_train_mfu",
 )
 
 # Env var naming the directory the harness assigns for this run's records.
 RECORD_DIR_ENV = "MILES_CI_GATE_RECORD_DIR"
+
+
+def _compute_logged_key(metrics: dict[str, Any], key: str) -> str | None:
+    if key in metrics:
+        return key
+    suffix = f"/{key}"
+    return next((logged for logged in metrics if logged.endswith(suffix)), None)
 
 
 def _encode_value(value: float) -> float | str:
@@ -104,14 +115,14 @@ class CiHistoryBackend(TrackingBackend):
         with self._lock:
             captured: list[tuple[str, float]] = []
             for key in TARGET_METRIC_KEYS:
-                if key not in metrics:
+                if (logged_key := _compute_logged_key(metrics, key)) is None:
                     continue
-                value = metrics[key]
+                value = metrics[logged_key]
                 if not isinstance(value, (int, float)) or isinstance(value, bool):
                     message = f"CI history metric {key!r} must be int or float, got {type(value).__name__}"
                     logger.error("%s", message)
                     raise TypeError(message)
-                captured.append((key, float(value)))
+                captured.append((logged_key, float(value)))
             for key, value in captured:
                 self._series.setdefault(key, []).append((step, value))
             if captured:

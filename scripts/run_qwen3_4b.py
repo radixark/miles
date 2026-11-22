@@ -3,22 +3,24 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
 from miles.true_on_policy import (
     apply_true_on_policy_script_defaults,
     build_true_on_policy_launch_plan,
     get_megatron_model_type,
 )
+from miles.utils.external_utils import command_utils
+
+app = typer.Typer()
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal", "debug_one_sample"] = "normal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     model_name: str = "Qwen3-4B"
     megatron_model_type: str | None = None
     num_gpus_per_node: int | None = None
-    hardware: Literal["H100", "GB200", "GB300"] = "H100"
+    hardware: Literal["auto", "H100", "GB200", "GB300"] = "auto"
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
@@ -38,10 +40,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     tis_use_rs: bool = True
 
     def __post_init__(self):
+        self.hardware = command_utils.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or command_utils.NUM_GPUS_OF_HARDWARE[self.hardware]
         if self.train_backend == "megatron":
             self.megatron_model_type = get_megatron_model_type(self.model_name)
-
-        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
 
         # Derived parallelism defaults for Qwen3 dense models
         self.tensor_model_parallel_size = 1 if self.model_name == "Qwen3-0.6B" else 2
@@ -61,7 +63,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
             )
 
 
-def prepare(args: ScriptArgs):
+def _prepare_download(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     U.exec_command_cpu(f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
@@ -76,6 +79,9 @@ def prepare(args: ScriptArgs):
             f"hf download Qwen/{args.model_name}-FP8 --local-dir {args.model_dir}/{args.model_name}-FP8"
         )
 
+
+def _prepare_megatron_ckpt(args: ScriptArgs):
+    U = args.create_backend()
     if (args.train_backend == "megatron") and not args.enable_megatron_bridge:
         U.convert_checkpoint(
             model_name=args.model_name,
@@ -87,7 +93,8 @@ def prepare(args: ScriptArgs):
         )
 
 
-def execute(args: ScriptArgs):
+def _execute_train(args: ScriptArgs):
+    U = args.create_backend()
     is_debug_mode = args.mode != "normal"
     is_debug_one_sample = args.mode == "debug_one_sample"
     model_parallel_size = (
@@ -166,7 +173,7 @@ eval:
       rm_type: ifbench
       n_samples_per_eval_prompt: 1
 """.strip()
-            eval_args += f"--eval-config {U.encode_pseudo_file(eval_config_text)} "
+            eval_args += f"--eval-config {command_utils.encode_pseudo_file(eval_config_text)} "
         else:
             eval_args += (
                 f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
@@ -181,7 +188,7 @@ eval:
 
     optimizer_args = (
         "--optimizer adam "
-        # "--fsdp-cpu-offload "
+        # "--optimizer-cpu-offload "
         "--lr 1e-6 "
         "--lr-decay-style constant "
         "--weight-decay 0.1 "
@@ -200,6 +207,7 @@ eval:
         case "fsdp":
             train_backend_args = (
                 "--train-backend fsdp "
+                "--no-enable-sample-ownership-checker "
                 "--attn-implementation flash_attention_2 "
                 "--gradient-checkpointing "
                 f"--update-weight-buffer-size {512 * 1024 * 1024} "  # 512MB
@@ -242,7 +250,6 @@ eval:
         f"--actor-num-gpus-per-node {actor_num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
-        f"{'--use-fault-tolerance ' if not is_debug_mode else ''}"
         f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
     )
     misc_env_vars = {}
@@ -269,21 +276,16 @@ eval:
         misc_args += "--megatron-to-hf-mode bridge "
 
     if args.enable_mis:
-        config_text = f"""
-use_tis: true
-use_rs: {"true" if args.tis_use_rs else "false"}
-tis_level: "token"
-rs_level: "token"
-tis_mode: "truncate"
-tis_lower_bound: 0.5
-tis_upper_bound: 2.0
-rs_lower_bound: null
-rs_upper_bound: null
-rs_veto_threshold: 1.0e-4
-tis_batch_normalize: true
-""".strip()
         misc_args += (
-            f"--custom-config-path {U.encode_pseudo_file(config_text)} "
+            "--use-tis "
+            f"{'--use-rs ' if args.tis_use_rs else ''}"
+            "--tis-level token "
+            "--rs-level token "
+            "--tis-mode truncate "
+            "--tis-lower-bound 0.5 "
+            "--tis-upper-bound 2.0 "
+            "--rs-veto-threshold 1.0e-4 "
+            "--tis-batch-normalize "
             "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 
@@ -296,7 +298,7 @@ tis_batch_normalize: true
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{ci_args} "
@@ -309,7 +311,6 @@ tis_batch_normalize: true
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         # TODO may get it from `config`
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
@@ -321,11 +322,31 @@ tis_batch_normalize: true
     )
 
 
-@U.dataclass_cli
-def main(args: ScriptArgs):
-    prepare(args)
-    execute(args)
+@app.command()
+@command_utils.dataclass_cli
+def full_train(args: ScriptArgs) -> None:
+    _prepare_download(args)
+    _prepare_megatron_ckpt(args)
+    _execute_train(args)
+
+
+@app.command()
+@command_utils.dataclass_cli
+def prepare(args: ScriptArgs) -> None:
+    _prepare_download(args)
+    _prepare_megatron_ckpt(args)
+
+
+@app.command()
+@command_utils.dataclass_cli
+def train(args: ScriptArgs) -> None:
+    _execute_train(args)
+
+
+@app.callback()
+def _callback() -> None:
+    pass
 
 
 if __name__ == "__main__":
-    typer.run(main)
+    app()

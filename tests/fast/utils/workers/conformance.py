@@ -1,0 +1,149 @@
+from __future__ import annotations
+
+import os
+from collections.abc import Awaitable, Callable
+from pathlib import Path
+from typing import Any, ClassVar, Self
+
+import pytest
+from pydantic import ValidationError
+
+from miles.utils.args.configs.scaling import ScalingConfig
+from miles.utils.args.runtime_base import BaseLeafConfig
+from miles.utils.workers.rpc.client.misc import RpcWorkerCallError
+from miles.utils.workers.worker_handle import BaseWorkerHandle
+from miles.utils.workers.worker_spec import (
+    RPC_PORT_NAME,
+    BaseServeSpec,
+    PortInfo,
+    SchedulingSpec,
+    WorkerCtorContext,
+    WorkerLaunchContext,
+)
+
+POOL_ID = "e2e-pool"
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
+
+READY_TIMEOUT_SECONDS = 120.0
+
+
+class ConformanceWorker:
+    def __init__(self, *, tag: str) -> None:
+        self._tag = tag
+
+    def add(self, a: int, b: int) -> int:
+        return a + b
+
+    async def add_async(self, *, a: int, b: int) -> int:
+        return a + b
+
+    def report_tag(self) -> str:
+        return self._tag
+
+    def report_pid(self) -> int:
+        return os.getpid()
+
+    def report_ray_actor_id(self) -> str | None:
+        import ray
+
+        return ray.get_runtime_context().get_actor_id() if ray.is_initialized() else None
+
+    def boom(self, *, message: str) -> None:
+        raise RuntimeError(message)
+
+
+class ConformanceWorkerConfig(BaseLeafConfig):
+    rpc_port: int
+
+
+class ConformanceServeSpec(BaseServeSpec):
+    worker_type: ClassVar[str] = "conformance"
+    config_class: ClassVar[type[BaseLeafConfig]] = ConformanceWorkerConfig
+    args: ConformanceWorkerConfig
+    name: str = POOL_ID
+    worker_class: str = f"{__name__}.ConformanceWorker"
+
+    @classmethod
+    def create(cls, config: ConformanceWorkerConfig) -> Self:
+        port_info = PortInfo(name=RPC_PORT_NAME, static_port=config.rpc_port, allow_dynamic=config.rpc_port == 0)
+        return cls(args=config, port_infos=[port_info])
+
+    def scheduling(self, scaling: ScalingConfig) -> SchedulingSpec:
+        return SchedulingSpec(num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0)
+
+    def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
+        # prepend rather than replace: the inherited path is what carries sglang and megatron,
+        # which the worker's own imports reach through miles.utils.arguments
+        return {"PYTHONPATH": os.pathsep.join([str(REPO_ROOT), os.environ.get("PYTHONPATH", "")])}
+
+    def ctor_kwargs(self, ctx: WorkerCtorContext) -> dict[str, Any]:
+        return dict(tag=f"cell-{ctx.cell_index}-worker-{ctx.worker_in_cell_index}")
+
+
+def compute_spec(*, rpc_port: int) -> BaseServeSpec:
+    return ConformanceServeSpec.create(ConformanceWorkerConfig(rpc_port=rpc_port))
+
+
+async def _call_returns_declared_type(handle: BaseWorkerHandle) -> None:
+    result = await handle.add(a=3, b=4)
+    assert result == 7 and isinstance(result, int)
+
+
+async def _positional_arguments_reach_worker(handle: BaseWorkerHandle) -> None:
+    assert await handle.add(3, 4) == 7
+
+
+async def _async_method_answers(handle: BaseWorkerHandle) -> None:
+    assert await handle.add_async(a=1, b=2) == 3
+
+
+async def _worker_keeps_constructed_state(handle: BaseWorkerHandle) -> None:
+    assert await handle.report_tag() == "cell-0-worker-0"
+
+
+async def _call_runs_outside_caller(handle: BaseWorkerHandle) -> None:
+    assert await handle.report_pid() != os.getpid()
+
+
+async def _remote_failure_reaches_caller(handle: BaseWorkerHandle) -> None:
+    with pytest.raises(RpcWorkerCallError, match="deliberate"):
+        await handle.boom(message="deliberate")
+
+
+async def _unknown_method_refused_before_wire(handle: BaseWorkerHandle) -> None:
+    with pytest.raises(AttributeError):
+        await handle.add_typo(a=1, b=2)
+
+
+async def _wrong_argument_type_refused(handle: BaseWorkerHandle) -> None:
+    with pytest.raises(ValidationError):
+        await handle.add(a="three", b=4)
+
+
+async def _readiness_is_answered(handle: BaseWorkerHandle) -> None:
+    await handle.wait_ready(timeout=READY_TIMEOUT_SECONDS)
+
+
+HandleCheck = Callable[[BaseWorkerHandle], Awaitable[None]]
+
+SHARED_CHECKS: list[HandleCheck] = [
+    _call_returns_declared_type,
+    _positional_arguments_reach_worker,
+    _async_method_answers,
+    _worker_keeps_constructed_state,
+    _call_runs_outside_caller,
+    _unknown_method_refused_before_wire,
+    _readiness_is_answered,
+]
+
+RPC_ONLY_CHECKS: list[HandleCheck] = [
+    _remote_failure_reaches_caller,
+    _wrong_argument_type_refused,
+]
+
+CHECKS: list[HandleCheck] = [*SHARED_CHECKS, *RPC_ONLY_CHECKS]
+
+SHARED_CHECK_IDS = [check.__name__.lstrip("_") for check in SHARED_CHECKS]
+
+CHECK_IDS = [check.__name__.lstrip("_") for check in CHECKS]

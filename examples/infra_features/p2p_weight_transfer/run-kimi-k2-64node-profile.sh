@@ -190,7 +190,7 @@ run_mode() {
         --sglang-enable-dp-attention
         --sglang-enable-dp-lm-head
         --sglang-server-concurrency 1024
-        --sglang-cuda-graph-bs 1 2 4 8 16
+        --sglang-cuda-graph-bs-decode 1 2 4 8 16
         --sglang-moe-runner-backend triton
         --sglang-fp8-gemm-backend triton
     )

@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import re
 import socket
 import uuid
 from contextlib import contextmanager
@@ -13,17 +12,23 @@ import httpx
 import pytest
 import requests
 from fastapi.responses import JSONResponse
+from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.session.server import SessionServer
 from miles.utils.chat_template_utils import strict_message_matches
+from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.openai_stream_client import stream_chat_completions
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
 
-def _create_session(url: str) -> str:
-    return requests.post(f"{url}/sessions", timeout=5.0).json()["session_id"]
+_INSTANCE_ID = "0123456789abcdef-0"
+
+
+def _create_session(url: str, *, extra_key: str | None = None) -> str:
+    body = {} if extra_key is None else {"extra_key": extra_key}
+    return requests.post(f"{url}/sessions", json=body, timeout=5.0).json()["session_id"]
 
 
 def _post_chat(url: str, session_id: str, payload: dict) -> requests.Response:
@@ -54,8 +59,7 @@ def router_env():
         choice["meta_info"] = {
             "output_token_logprobs": output_token_logprobs,
             "completion_tokens": len(output_token_logprobs),
-            # R3 replay payloads: must reach the session record but never the
-            # client-facing chat response (see _strip_replay_payloads).
+            # Replay payloads stay in the record along with the rest of meta_info.
             "routed_experts": [[0, 1], [2, 3]],
             "indexer_topk": [[4], [5]],
         }
@@ -63,18 +67,15 @@ def router_env():
 
     with patch.object(MockSGLangServer, "_compute_chat_completions_response", new=patched_chat_response):
         with with_mock_server(process_fn=process_fn) as backend:
-            args = SimpleNamespace(
-                miles_router_timeout=30,
+            config = make_session_server_config(
+                backend_url=backend.url,
                 hf_checkpoint="Qwen/Qwen3-0.6B",
-                chat_template_path=None,
                 apply_chat_template_kwargs={"enable_thinking": False},
                 tito_model="default",
-                sglang_speculative_algorithm=None,
-                trajectory_manager="linear_trajectory",
-                session_server_instance_id=uuid.uuid4().hex,
-                save_debug_trajectory_data=None,
+                instance_id=_INSTANCE_ID,
+                pause_generation_mode="retract",
             )
-            server_obj = SessionServer(args, backend_url=backend.url)
+            server_obj = SessionServer(config)
 
             port = find_available_port(31000)
             server = UvicornThreadServer(server_obj.app, host="127.0.0.1", port=port)
@@ -99,7 +100,7 @@ class TestSessionRoutes:
         second_body = second.json()
         assert first_body["status"] == "ok"
         assert second_body["status"] == "ok"
-        assert re.fullmatch(r"[0-9a-f]{32}", first_body["session_server_instance_id"])
+        assert first_body["session_server_instance_id"] == _INSTANCE_ID
         assert second_body["session_server_instance_id"] == first_body["session_server_instance_id"]
 
     def test_create_session(self, router_env):
@@ -164,6 +165,34 @@ class TestSessionProxy:
         record = records[0]
         assert record["path"] == "/v1/chat/completions"
         assert record["status_code"] == 200
+
+    def test_proxy_chat_postprocesses_completion_once(self, router_env, monkeypatch):
+        calls = []
+        original = TITOTokenizer.postprocess_completion
+
+        def tracked_postprocess(self, *, choice, assistant_message, completion_token_ids):
+            calls.append((choice, assistant_message, completion_token_ids))
+            return original(
+                self,
+                choice=choice,
+                assistant_message=assistant_message,
+                completion_token_ids=completion_token_ids,
+            )
+
+        monkeypatch.setattr(TITOTokenizer, "postprocess_completion", tracked_postprocess)
+        session_id = _create_session(router_env.url)
+
+        response = _post_chat(
+            router_env.url,
+            session_id,
+            {"messages": [{"role": "user", "content": "hook once"}]},
+        )
+
+        assert response.status_code == 200
+        assert len(calls) == 1
+        choice, assistant_message, completion_token_ids = calls[0]
+        assert choice["message"] is assistant_message
+        assert completion_token_ids
 
     def test_proxy_chat_response_has_no_duplicate_server_or_date_header(self, router_env):
         # Both the backend and this server run under uvicorn, so each emits its own
@@ -253,12 +282,13 @@ class TestSessionProxy:
         assert resp.status_code == 502
         assert "assistant message content is None" in resp.json()["error"]
 
-    def test_chat_response_strips_replay_payloads_but_record_keeps_them(self, router_env):
+    def test_chat_response_omits_meta_info_but_record_keeps_it(self, router_env):
         session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
 
         payload = {
             "messages": [{"role": "user", "content": "What is 2+2?"}],
-            "return_logprob": True,
+            "logprobs": True,
+            "return_meta_info": True,
         }
         resp = requests.post(
             f"{router_env.url}/sessions/{session_id}/v1/chat/completions",
@@ -266,16 +296,39 @@ class TestSessionProxy:
             timeout=10.0,
         )
         assert resp.status_code == 200
-        client_meta = resp.json()["choices"][0]["meta_info"]
-        assert "routed_experts" not in client_meta
-        assert "indexer_topk" not in client_meta
-        # Stripping must not swallow the rest of meta_info.
-        assert "output_token_logprobs" in client_meta
+        client_response = resp.json()
+        client_choice = client_response["choices"][0]
+        assert "meta_info" not in client_choice
 
         record = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"][0]
         record_meta = record["response"]["choices"][0]["meta_info"]
         assert record_meta["routed_experts"] == [[0, 1], [2, 3]]
         assert record_meta["indexer_topk"] == [[4], [5]]
+        assert record_meta["output_token_logprobs"]
+        assert record_meta["completion_tokens"] == len(record_meta["output_token_logprobs"])
+        assert client_choice["message"] == record["response"]["choices"][0]["message"]
+        assert client_choice["logprobs"] == record["response"]["choices"][0]["logprobs"]
+        assert client_response["usage"] == record["response"]["usage"]
+
+    @pytest.mark.parametrize(
+        "client_flags, expect_logprobs",
+        [({}, False), ({"logprobs": True}, True), ({"logprobs": False}, False)],
+        ids=["omitted", "asked", "explicit-false"],
+    )
+    def test_chat_response_carries_logprobs_only_when_the_client_asked(
+        self, router_env, client_flags, expect_logprobs
+    ):
+        session_id = _create_session(router_env.url)
+
+        resp = _post_chat(
+            router_env.url, session_id, {"messages": [{"role": "user", "content": "What is 3+3?"}], **client_flags}
+        )
+
+        assert resp.status_code == 200
+        assert ("logprobs" in resp.json()["choices"][0]) is expect_logprobs
+        # The record keeps logprobs for TITO and training, whatever the client asked for.
+        record = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"][0]
+        assert record["response"]["choices"][0]["logprobs"]["content"]
 
 
 class TestChatFakeStreaming:
@@ -578,7 +631,7 @@ class TestChatFakeStreaming:
         assert finish_reason == "stop"
 
 
-# ── additional R3 (in-place weight updates): derivation and request offsets ──
+# ── additional R3 (non-retract pause modes): derivation and request offsets ──
 
 
 @contextmanager
@@ -590,19 +643,21 @@ def _serve_router(extra_args: dict | None = None):
         return ProcessResult(text="ok", finish_reason="stop")
 
     with with_mock_server(process_fn=process_fn) as backend:
-        args = SimpleNamespace(
-            miles_router_timeout=30,
-            hf_checkpoint="Qwen/Qwen3-0.6B",
-            chat_template_path=None,
-            apply_chat_template_kwargs={"enable_thinking": False},
-            tito_model="default",
-            sglang_speculative_algorithm=None,
-            trajectory_manager="linear_trajectory",
-            session_server_instance_id=uuid.uuid4().hex,
-            save_debug_trajectory_data=None,
-            **(extra_args or {}),
+        defaults = {
+            "hf_checkpoint": "Qwen/Qwen3-0.6B",
+            "apply_chat_template_kwargs": {"enable_thinking": False},
+            "tito_model": "default",
+            "allow_stop_token_replace": False,
+            "allow_truncated_continuation": False,
+            "pause_generation_mode": "retract",
+        }
+        config = make_session_server_config(
+            backend_url=backend.url,
+            timeout=30,
+            instance_id=uuid.uuid4().hex,
+            **(defaults | (extra_args or {})),
         )
-        server_obj = SessionServer(args, backend_url=backend.url)
+        server_obj = SessionServer(config)
         port = find_available_port(31000)
         server = UvicornThreadServer(server_obj.app, host="127.0.0.1", port=port)
         server.start()
@@ -616,14 +671,10 @@ class TestUseAdditionR3Derivation:
     """use_addition_r3 is derived once at server bootstrap from
     pause_generation_mode; it is not independently configurable."""
 
-    @pytest.mark.parametrize(("mode", "expected"), [("in_place", True), ("retract", False)])
+    @pytest.mark.parametrize(("mode", "expected"), [("abort", True), ("in_place", True), ("retract", False)])
     def test_mode_mapping(self, mode, expected):
-        args = SimpleNamespace(hf_checkpoint=None, pause_generation_mode=mode)
-        assert SessionServer(args, backend_url="http://127.0.0.1:9").use_addition_r3 is expected
-
-    def test_absent_mode_keeps_full_r3(self):
-        args = SimpleNamespace(hf_checkpoint=None)
-        assert SessionServer(args, backend_url="http://127.0.0.1:9").use_addition_r3 is False
+        config = make_session_server_config(hf_checkpoint=None, pause_generation_mode=mode)
+        assert SessionServer(config).use_addition_r3 is expected
 
 
 class TestAdditionR3RequestOffset:
@@ -640,8 +691,9 @@ class TestAdditionR3RequestOffset:
             {"role": "tool", "content": tool_content, "tool_call_id": "t0"},
         ]
 
-    def test_in_place_offsets_across_turns_and_rollback(self):
-        with _serve_router({"use_rollout_routing_replay": True, "pause_generation_mode": "in_place"}) as env:
+    @pytest.mark.parametrize("mode", ["abort", "in_place"])
+    def test_incremental_offsets_across_turns_and_rollback(self, mode):
+        with _serve_router({"use_rollout_routing_replay": True, "pause_generation_mode": mode}) as env:
             session_id = _create_session(env.url)
 
             first = _post_chat(env.url, session_id, {"messages": self.MESSAGES})
@@ -678,10 +730,43 @@ class TestAdditionR3RequestOffset:
             assert body["return_routed_experts"] is True
             assert "routed_experts_start_len" not in body
 
-    def test_in_place_without_replay_sends_neither_field(self):
+    def test_in_place_without_replay_sends_false_flag_and_no_start_len(self):
         with _serve_router({"pause_generation_mode": "in_place"}) as env:
             session_id = _create_session(env.url)
             assert _post_chat(env.url, session_id, {"messages": self.MESSAGES}).status_code == 200
             body = env.backend.request_log[-1]
-            assert "return_routed_experts" not in body
+            # The launch flag is authoritative: off means an explicit False, never a client-provided value.
+            assert body["return_routed_experts"] is False
             assert "routed_experts_start_len" not in body
+
+
+class TestSessionExtraKey:
+    MESSAGES = [{"role": "user", "content": "partition me"}]
+    KEY = "train:-:7"
+
+    def test_v1_refuses_a_session_carrying_a_kv_cache_namespace(self, router_env):
+        """Only session server v2 stamps the namespace, so v1 must refuse it rather than silently drop it."""
+        response = requests.post(f"{router_env.url}/sessions", json={"extra_key": self.KEY}, timeout=5.0)
+
+        assert response.status_code == 500
+
+    @pytest.mark.parametrize(
+        ("client_body", "expected_extra_key"),
+        [({"extra_key": "mine"}, "mine"), ({}, None)],
+        ids=["client_key_untouched", "nothing_injected"],
+    )
+    def test_an_unkeyed_session_proxies_the_client_key_as_is(self, router_env, client_body, expected_extra_key):
+        """With the partition off the session is unkeyed, so the server neither rewrites nor injects extra_key."""
+        session_id = _create_session(router_env.url)
+
+        response = _post_chat(router_env.url, session_id, {"messages": self.MESSAGES, **client_body})
+
+        assert response.status_code == 200
+        assert router_env.backend.request_log[-1].get("extra_key") == expected_extra_key
+
+    def test_an_empty_body_still_creates_a_session(self, router_env):
+        """POST /sessions with no body at all is the unkeyed create."""
+        response = requests.post(f"{router_env.url}/sessions", data=b"", timeout=5.0)
+
+        assert response.status_code == 200
+        assert len(response.json()["session_id"]) == 32

@@ -1,0 +1,602 @@
+import asyncio
+import logging
+from argparse import Namespace
+from collections.abc import Awaitable, Callable, Iterator
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from tests.fast.ray.checksum_fixtures import make_checksum_controller
+from tests.fast.ray.rollout.conftest import make_args
+
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
+from miles.ray.rollout.inference_controller import InferenceController
+from miles.ray.rollout.server_cell import ServerCellMetadata
+from miles.ray.train_actor import WeightUpdateOutput
+from miles.utils.audit_utils.checksum_utils import InferenceEngineChecksumSnapshot
+from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
+from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.context_lock import ContextLock
+from miles.utils.ft_utils.health_checker import ActivenessTracker
+
+
+class _OrderRecordingInferenceController:
+    def __init__(self, order: list[str]):
+        self._order = order
+        self.calls: list[tuple[str, tuple, dict]] = []
+        self.results: dict[str, MagicMock] = {}
+
+    def __getattr__(self, name: str):
+        recorder = self
+
+        async def _method(*args, **kwargs):
+            recorder._order.append(name)
+            recorder.calls.append((name, args, kwargs))
+            result = MagicMock()
+            recorder.results[name] = result
+            return result
+
+        return _method
+
+
+def _assert_the_snapshot_is_handed_back_unchanged(controller: _OrderRecordingInferenceController) -> None:
+    end_kwargs: list[dict] = [kwargs for name, _args, kwargs in controller.calls if name == "end_update_weights"]
+
+    assert len(end_kwargs) == 1
+    assert (
+        end_kwargs[0]["snapshot_cell_id_to_hashes"]
+        is controller.results["start_update_weights"].snapshot_cell_id_to_hashes
+    )
+
+
+class _ColocatedCellStub:
+    def __init__(self) -> None:
+        self.init_count = 0
+        self.ready = False
+        self.is_errored = False
+
+    async def init(self) -> None:
+        self.init_count += 1
+        self.ready = True
+
+    @property
+    def is_uninitialized(self) -> bool:
+        return not self.ready
+
+    @property
+    def is_pending_weights_or_serving(self) -> bool:
+        return self.ready
+
+
+class _ServerStub:
+    def __init__(self, all_server_cells: dict[str, _ColocatedCellStub]) -> None:
+        self.all_server_cells = all_server_cells
+        self.health_checker_activeness = ActivenessTracker(active=True)
+
+    @property
+    def normal_server_cells(self) -> dict[str, _ColocatedCellStub]:
+        return {cell_id: cell for cell_id, cell in self.all_server_cells.items() if not cell.is_errored}
+
+
+def _make_inference_controller(**arg_overrides: object) -> InferenceController:
+    return InferenceController(make_args(**arg_overrides), engine_provider=None, router_providers=[])
+
+
+@pytest.mark.asyncio
+async def test_controller_pauses_health_checks_before_snapshotting_the_engines():
+    """``start_update_weights`` pauses the health monitor, then readies the cells, then reads the engine set."""
+    order: list[str] = []
+    controller = _make_inference_controller()
+
+    async def _record_pause(model_id: str | None = None) -> None:
+        order.append("health_monitoring_pause")
+
+    async def _record_ensure_cells_ready(model_id: str | None = None) -> None:
+        order.append("ensure_cells_ready")
+
+    def _record_snapshot(model_id: str | None = None, receiver_pool: str = "rollout") -> None:
+        order.append("get_updatable_server")
+        return None
+
+    controller.context_lock = ContextLock("InferenceController")
+    controller.args = Namespace(colocate=False)
+    controller.servers = {}
+    controller._health_monitoring_pause = _record_pause
+    controller._ensure_cells_ready = _record_ensure_cells_ready
+    controller._get_updatable_server = _record_snapshot
+
+    await controller.start_update_weights()
+
+    assert order == ["health_monitoring_pause", "ensure_cells_ready", "get_updatable_server"]
+
+
+@pytest.mark.asyncio
+async def test_start_update_weights_initializes_colocated_cells_before_snapshotting_the_engines():
+    """A colocated cell is initialized inside the weight update window, before the engine snapshot is taken."""
+    controller = _make_inference_controller(colocate=True)
+    cell = _ColocatedCellStub()
+    controller.servers = {"default": _ServerStub({"a": cell})}
+    init_counts_at_snapshot: list[int] = []
+
+    def _record_snapshot(model_id: str | None = None, receiver_pool: str = "rollout") -> None:
+        init_counts_at_snapshot.append(cell.init_count)
+        return None
+
+    controller._get_updatable_server = _record_snapshot
+
+    await controller.start_update_weights()
+
+    assert cell.init_count == 1
+    assert init_counts_at_snapshot == [1]
+
+
+def _orchestration_args(**overrides) -> Namespace:
+    values = dict(
+        debug_train_only=False,
+        debug_rollout_only=False,
+        start_rollout_id=0,
+        ci_fault_hooks=None,
+        ci_fault_hooks_path=None,
+        mini_ft_controller_enable=True,
+        mini_ft_controller_poll_interval=0.01,
+        log_inference_engine_weight_checksums=True,
+        update_weight_engine_request_timeout=5.0,
+    )
+    values.update(overrides)
+    return Namespace(**values)
+
+
+def _actor_model(order: list[str]) -> MagicMock:
+    async def _record_update_weights(*, info: object, rollout_id: int | None = None) -> WeightUpdateOutput:
+        order.append("trainer_update_weights")
+        return WeightUpdateOutput(weight_version=11, failed_cell_ids=())
+
+    actor_model = MagicMock()
+    actor_model.update_weights = AsyncMock(side_effect=_record_update_weights)
+    return actor_model
+
+
+@pytest.mark.asyncio
+async def test_the_script_brackets_the_broadcast_with_start_and_end_update_weights():
+    """The fault-tolerant trainer runs the actual update RPC strictly inside the update window."""
+    from miles.ray.placement_group import update_weights
+
+    order: list[str] = []
+    inference_controller = _OrderRecordingInferenceController(order)
+
+    await update_weights(
+        _orchestration_args(), _actor_model(order), MagicMock(set_weight_version=AsyncMock()), inference_controller
+    )
+
+    assert order[:3] == ["start_update_weights", "trainer_update_weights", "end_update_weights"]
+
+
+@pytest.mark.asyncio
+async def test_the_script_hands_end_update_weights_the_snapshot_start_returned():
+    """The snapshot start_update_weights returned is handed back to end_update_weights unchanged."""
+    from miles.ray.placement_group import update_weights
+
+    order: list[str] = []
+    inference_controller = _OrderRecordingInferenceController(order)
+
+    await update_weights(
+        _orchestration_args(), _actor_model(order), MagicMock(set_weight_version=AsyncMock()), inference_controller
+    )
+
+    _assert_the_snapshot_is_handed_back_unchanged(inference_controller)
+
+
+@pytest.mark.asyncio
+async def test_the_window_is_scoped_to_the_policy_the_script_is_publishing():
+    """Without the scope, one policy's trainer broadcasts its weights into another policy's engines."""
+    from miles.ray.placement_group import update_weights
+
+    order: list[str] = []
+    inference_controller = _OrderRecordingInferenceController(order)
+
+    with patch("miles.ray.placement_group.is_event_logger_initialized", return_value=True), patch(
+        "miles.ray.placement_group.get_event_logger"
+    ):
+        await update_weights(
+            _orchestration_args(),
+            _actor_model(order),
+            MagicMock(set_weight_version=AsyncMock()),
+            inference_controller,
+            rollout_id=3,
+            trainer_model_id="alpha",
+        )
+
+    calls = {name: kwargs for name, _args, kwargs in inference_controller.calls}
+    assert calls["start_update_weights"] == dict(model_id="alpha")
+    assert calls["end_update_weights"]["checksum_model_id"] == "alpha"
+    assert calls["end_update_weights"]["collect_checksums"] is True
+
+
+def _checksum_response(engine_checksums: list[dict[str, str]]) -> list[tuple[ServerCellMetadata, dict[str, Any]]]:
+    """Build a per-engine check_weights response with each cell incarnation."""
+    return [
+        (
+            ServerCellMetadata(
+                model_id="default",
+                worker_type=WorkerType.REGULAR,
+                cell_id=f"cell-{index}",
+                num_gpus_per_engine=1,
+                gpu_offset=index,
+                sglang_api_key=None,
+                worker_name=f"engine-{index}",
+                needs_offload=False,
+                update_weights=True,
+                health_check_timeout_seconds=20,
+                workers_hash=f"incarnation-{index}",
+            ),
+            {
+                "success": True,
+                "message": "ok",
+                "ranks": [{"checksums": cs, "parallelism_info": [{"role": "target", "rank": 0}]}],
+            },
+        )
+        for index, cs in enumerate(engine_checksums)
+    ]
+
+
+class TestTheScriptLogsTheChecksumsTheEnginesNowServe:
+    @staticmethod
+    async def _log(
+        args: Namespace, *, response=None, initialized: bool = True, trainer_model_id: str | None = None
+    ) -> tuple[MagicMock, MagicMock]:
+        from miles.ray.placement_group import update_weights
+
+        check_weights = AsyncMock(return_value=response or [])
+        controller = make_checksum_controller(
+            args=args,
+            snapshot={meta.cell_id: meta.workers_hash for meta, _body in response or []},
+            check_weights=check_weights,
+            model_id=trainer_model_id,
+        )
+        actor = SimpleNamespace(
+            update_weights=AsyncMock(
+                return_value=WeightUpdateOutput(
+                    weight_version=11,
+                    failed_cell_ids=(),
+                    debug_trainer_load_state_timestamp=1.0,
+                    debug_weight_update_id="update-11",
+                )
+            )
+        )
+        event_logger = MagicMock()
+        with patch("miles.ray.placement_group.is_event_logger_initialized", return_value=initialized), patch(
+            "miles.ray.placement_group.get_event_logger", return_value=event_logger
+        ):
+            await update_weights(
+                args,
+                actor,
+                SimpleNamespace(set_weight_version=AsyncMock()),
+                controller,
+                rollout_id=0,
+                trainer_model_id=trainer_model_id,
+            )
+        return SimpleNamespace(check_weights=check_weights), event_logger
+
+    async def test_checksums_not_requested_does_not_call_check_weights(self):
+        """Without the explicit opt-in, no check_weights request is issued even with an event logger."""
+        inference_controller, _ = await self._log(
+            _orchestration_args(log_inference_engine_weight_checksums=False), initialized=True
+        )
+
+        inference_controller.check_weights.assert_not_called()
+
+    async def test_no_event_logger_does_not_call_check_weights(self):
+        """Without an initialized event logger, no check_weights request is issued."""
+        inference_controller, _ = await self._log(_orchestration_args(), initialized=False)
+
+        inference_controller.check_weights.assert_not_called()
+
+    async def test_debug_train_only_skips_collection(self):
+        """Without real rollout engines (debug_train_only), no check_weights request is issued."""
+        inference_controller, _ = await self._log(_orchestration_args(debug_train_only=True))
+
+        inference_controller.check_weights.assert_not_called()
+
+    async def test_debug_rollout_only_skips_collection(self):
+        """Without real train engines pushing weights (debug_rollout_only), no check_weights request is issued."""
+        inference_controller, _ = await self._log(_orchestration_args(debug_rollout_only=True))
+
+        inference_controller.check_weights.assert_not_called()
+
+    async def test_enabled_logs_one_event_per_rollout(self):
+        """With event logger on and real engines, one event holds every engine's checksums."""
+        response = _checksum_response([{"w": "e0"}, {"w": "e1"}])
+
+        inference_controller, event_logger = await self._log(_orchestration_args(), response=response)
+
+        inference_controller.check_weights.assert_awaited_once_with(action="checksum", cell_ids=["cell-0", "cell-1"])
+        event_logger.log.assert_called_once()
+        assert event_logger.log.call_args.args[1] == dict(
+            rollout_id=0,
+            trainer_model_id=None,
+            weight_version=11,
+            debug_trainer_load_state_timestamp=1.0,
+            debug_weight_update_id="update-11",
+            engine_snapshots=[
+                InferenceEngineChecksumSnapshot(
+                    cell_id="cell-0", workers_hash="incarnation-0", tensor_checksums={"rank0/w": "e0"}
+                ),
+                InferenceEngineChecksumSnapshot(
+                    cell_id="cell-1", workers_hash="incarnation-1", tensor_checksums={"rank0/w": "e1"}
+                ),
+            ],
+        )
+
+    async def test_a_named_policy_stamps_its_own_id_on_the_event(self):
+        """A multi policy run's event names the policy, so the comparator can tell two policies apart."""
+        response = _checksum_response([{"w": "e0"}])
+
+        inference_controller, event_logger = await self._log(
+            _orchestration_args(), response=response, trainer_model_id="solver"
+        )
+
+        inference_controller.check_weights.assert_awaited_once_with(action="checksum", cell_ids=["cell-0"])
+        assert event_logger.log.call_args.args[1] == dict(
+            rollout_id=0,
+            trainer_model_id="solver",
+            weight_version=11,
+            debug_trainer_load_state_timestamp=1.0,
+            debug_weight_update_id="update-11",
+            engine_snapshots=[
+                InferenceEngineChecksumSnapshot(
+                    cell_id="cell-0", workers_hash="incarnation-0", tensor_checksums={"rank0/w": "e0"}
+                ),
+            ],
+        )
+
+
+class TestTheChecksumRecordKeepsOnlyThisPublication:
+    @pytest.fixture
+    def event_log_dir(self, tmp_path: Path) -> Iterator[Path]:
+        set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main")))
+        try:
+            yield tmp_path
+        finally:
+            set_event_logger(None)
+
+    @staticmethod
+    async def _log(
+        *,
+        check_weights: Callable[..., Awaitable[Any]],
+        snapshot: dict[str, str],
+        failed: tuple[str, ...] = (),
+        weight_version: int | None = 11,
+        **arg_overrides: object,
+    ) -> None:
+        from miles.ray.placement_group import update_weights
+
+        args = _orchestration_args(**arg_overrides)
+        controller = make_checksum_controller(args=args, snapshot=snapshot, check_weights=check_weights)
+        actor = SimpleNamespace(
+            update_weights=AsyncMock(
+                return_value=WeightUpdateOutput(
+                    weight_version=weight_version,
+                    failed_cell_ids=failed,
+                    debug_trainer_load_state_timestamp=1.0,
+                    debug_weight_update_id="update-11",
+                )
+            )
+        )
+        await update_weights(
+            args,
+            actor,
+            SimpleNamespace(set_weight_version=AsyncMock()),
+            controller,
+            rollout_id=0,
+        )
+        assert not controller.context_lock.locked
+
+    @staticmethod
+    def _answering(response: list[tuple[ServerCellMetadata, dict[str, Any]]]) -> Callable[..., Awaitable[Any]]:
+        async def _check_weights(**_kwargs: object) -> list[tuple[ServerCellMetadata, dict[str, Any]]]:
+            return response
+
+        return _check_weights
+
+    @staticmethod
+    def _recorded(log_dir: Path) -> list[InferenceEngineWeightChecksumEvent]:
+        return [e for e in read_events(log_dir) if isinstance(e, InferenceEngineWeightChecksumEvent)]
+
+    async def test_a_cell_the_update_failed_on_is_left_out(self, event_log_dir: Path) -> None:
+        """A failed cell still serves the previous version, so its checksum would be charged to this one."""
+        response = _checksum_response([{"w": "new"}, {"w": "old"}])
+
+        await self._log(
+            check_weights=self._answering(response),
+            snapshot={"cell-0": "incarnation-0", "cell-1": "incarnation-1"},
+            failed=("cell-1",),
+        )
+
+        [event] = self._recorded(event_log_dir)
+        assert [snapshot.cell_id for snapshot in event.engine_snapshots] == ["cell-0"]
+
+    async def test_only_the_cells_the_update_published_to_are_asked(self, event_log_dir: Path) -> None:
+        """A cell outside the update, e.g. one a fault is hanging, must not stall the checksum of the others."""
+        asked: list[object] = []
+
+        async def _check_weights(**kwargs: object) -> list[tuple[ServerCellMetadata, dict[str, Any]]]:
+            asked.append(kwargs["cell_ids"])
+            return _checksum_response([{"w": "new"}])
+
+        await self._log(
+            check_weights=_check_weights,
+            snapshot={"cell-0": "incarnation-0", "cell-1": "incarnation-1"},
+            failed=("cell-1",),
+        )
+
+        assert asked == [["cell-0"]]
+
+    async def test_a_cell_replaced_since_the_snapshot_is_left_out(self, event_log_dir: Path) -> None:
+        """A same-named cell with a new incarnation never received this update."""
+        response = _checksum_response([{"w": "new"}, {"w": "fresh"}])
+
+        await self._log(
+            check_weights=self._answering(response),
+            snapshot={"cell-0": "incarnation-0", "cell-1": "incarnation-before-restart"},
+        )
+
+        [event] = self._recorded(event_log_dir)
+        assert [(s.cell_id, s.workers_hash) for s in event.engine_snapshots] == [("cell-0", "incarnation-0")]
+
+    async def test_a_cell_outside_the_snapshot_is_left_out(self, event_log_dir: Path) -> None:
+        """A cell that joined after the window opened was never a target of this update."""
+        response = _checksum_response([{"w": "new"}, {"w": "joined-late"}])
+
+        await self._log(check_weights=self._answering(response), snapshot={"cell-0": "incarnation-0"})
+
+        [event] = self._recorded(event_log_dir)
+        assert [snapshot.cell_id for snapshot in event.engine_snapshots] == ["cell-0"]
+
+    async def test_an_unpublished_update_asks_no_engine(self, event_log_dir: Path) -> None:
+        """Without a published version there is no version the checksums could be attributed to."""
+        asked: list[dict[str, object]] = []
+
+        async def _check_weights(**kwargs: object) -> list[tuple[ServerCellMetadata, dict[str, Any]]]:
+            asked.append(kwargs)
+            return _checksum_response([{"w": "x"}])
+
+        await self._log(check_weights=_check_weights, snapshot={"cell-0": "incarnation-0"}, weight_version=None)
+
+        assert asked == []
+        assert self._recorded(event_log_dir) == []
+
+    async def test_the_checksum_waits_as_long_as_a_weight_update_request(
+        self, event_log_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Checksum collection uses the configured engine request budget."""
+        timeouts: list[float] = []
+        timeout_context = asyncio.timeout
+
+        def _recording_timeout(delay: float) -> asyncio.Timeout:
+            timeouts.append(delay)
+            return timeout_context(delay)
+
+        monkeypatch.setattr("miles.ray.rollout.inference_controller.asyncio.timeout", _recording_timeout)
+
+        await self._log(
+            check_weights=self._answering(_checksum_response([{"w": "new"}])),
+            snapshot={"cell-0": "incarnation-0"},
+            update_weight_engine_request_timeout=60.0,
+        )
+
+        assert timeouts == [60.0]
+        assert len(self._recorded(event_log_dir)) == 1
+
+    async def test_a_transient_engine_error_is_retried_until_the_checksums_arrive(
+        self, event_log_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An engine that stalls for a moment and resets one checksum call must not cost the publication its record."""
+        calls: list[int] = []
+
+        async def _reset_once(**_kwargs: object) -> list[tuple[ServerCellMetadata, dict[str, Any]]]:
+            calls.append(len(calls))
+            if len(calls) == 1:
+                raise ConnectionResetError("engine stalled")
+            return _checksum_response([{"w": "new"}])
+
+        await self._log(check_weights=_reset_once, snapshot={"cell-0": "incarnation-0"})
+
+        assert len(calls) == 2
+        assert len(self._recorded(event_log_dir)) == 1
+
+    async def test_an_engine_that_keeps_failing_is_deadlined_without_a_record(
+        self, event_log_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Retries stay within the request budget, so a dead engine leaves the missing record for the analyzer."""
+
+        async def _always_fail(**_kwargs: object) -> None:
+            raise ConnectionResetError("engine gone")
+
+        await self._log(
+            check_weights=_always_fail, snapshot={"cell-0": "incarnation-0"}, update_weight_engine_request_timeout=0.05
+        )
+
+        assert self._recorded(event_log_dir) == []
+
+    async def test_a_hanging_engine_is_deadlined_without_failing_the_update(self, event_log_dir: Path) -> None:
+        """Evidence collection is best effort, so a stuck engine must not block or fail publication."""
+
+        async def _hang(**_kwargs: object) -> None:
+            await asyncio.Event().wait()
+
+        await self._log(
+            check_weights=_hang, snapshot={"cell-0": "incarnation-0"}, update_weight_engine_request_timeout=0.01
+        )
+
+        assert self._recorded(event_log_dir) == []
+
+    async def test_a_failed_engine_body_is_logged_instead_of_raised(
+        self, event_log_dir: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A malformed check_weights answer must not turn a published update into a failed one."""
+        [(meta, body)] = _checksum_response([{"w": "x"}])
+
+        with caplog.at_level(logging.ERROR, logger="miles.ray.placement_group"):
+            await self._log(
+                check_weights=self._answering([(meta, {**body, "success": False})]),
+                snapshot={"cell-0": "incarnation-0"},
+            )
+
+        assert self._recorded(event_log_dir) == []
+        assert "Could not record inference engine checksum observation" in caplog.text
+
+
+class TestChecksumCollectionOwnsTheUpdateWindow:
+    async def test_reconciliation_waits_until_checksum_collection_finishes(self) -> None:
+        """A competing controller operation must not replace cells before their checksums are collected."""
+        from miles.ray.placement_group import update_weights
+
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        reconciled = asyncio.Event()
+        args = _orchestration_args()
+
+        async def check_weights(**kwargs: object) -> list[tuple[ServerCellMetadata, dict[str, Any]]]:
+            entered.set()
+            await release.wait()
+            return _checksum_response([{"w": "current"}])
+
+        controller = make_checksum_controller(
+            args=args, snapshot={"cell-0": "incarnation-0"}, check_weights=check_weights
+        )
+
+        async def reconcile() -> None:
+            async with controller.context_lock:
+                reconciled.set()
+
+        with patch("miles.ray.placement_group.is_event_logger_initialized", return_value=True), patch(
+            "miles.ray.placement_group.get_event_logger"
+        ):
+            async with asyncio.timeout(5):
+                update = asyncio.create_task(
+                    update_weights(
+                        args,
+                        _actor_model([]),
+                        SimpleNamespace(set_weight_version=AsyncMock()),
+                        controller,
+                    )
+                )
+                contender = None
+                try:
+                    await entered.wait()
+                    contender = asyncio.create_task(reconcile())
+                    await asyncio.sleep(0)
+                    assert not reconciled.is_set()
+                    assert controller.servers["default"].all_server_cells["cell-0"].is_pending_weights
+                finally:
+                    release.set()
+                    await update
+                    if contender is not None:
+                        await contender
+
+        assert reconciled.is_set()
+        assert not controller.context_lock.locked
+        assert not controller.servers["default"].all_server_cells["cell-0"].is_pending_weights

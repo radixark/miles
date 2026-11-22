@@ -188,7 +188,7 @@
 "8"
 "--sglang-mem-fraction-static"
 "0.6"
-"--sglang-cuda-graph-bs"
+"--sglang-cuda-graph-bs-decode"
 "1"
 "2"
 "4"

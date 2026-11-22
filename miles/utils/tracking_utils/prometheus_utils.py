@@ -40,7 +40,7 @@ def init_prometheus(args, start_server: bool = False):
                     soft=False,
                 ),
             )
-            .remote(args)
+            .remote(args=args)
         )
         ray.get(_collector_handle.ping.remote())
         logger.info("Prometheus collector actor created")
@@ -74,14 +74,12 @@ class _PrometheusCollector:
     Ray handles the RPC transparently.
     """
 
-    def __init__(self, args):
+    def __init__(self, *, args):
         from prometheus_client import Gauge, start_http_server
 
         self._Gauge = Gauge
         self._gauges: dict = {}
-        self._run_name = (
-            getattr(args, "prometheus_run_name", None) or getattr(args, "wandb_group", None) or "miles_training"
-        )
+        self._run_name = args.prometheus_run_name or args.wandb_group or "miles_training"
         self._label_keys = ["run_name"]
         self._label_vals = [self._run_name]
 

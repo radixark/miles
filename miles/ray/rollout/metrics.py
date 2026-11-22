@@ -1,8 +1,13 @@
 import logging
+from collections.abc import Callable
+from numbers import Number
 from typing import Any
 
 import numpy as np
 
+from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
+from miles.utils.args.custom_view import compute_custom_function_config
+from miles.utils.function_registry import load_function
 from miles.utils.iter_utils import group_by
 from miles.utils.metric_utils import (
     compute_pass_rate,
@@ -10,10 +15,10 @@ from miles.utils.metric_utils import (
     compute_statistics,
     dict_add_prefix,
     has_repetition,
+    namespace_metrics,
 )
-from miles.utils.misc import load_function
 from miles.utils.tracking_utils import tracking
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionSpan, compute_numeric_versions_of_spans
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +26,8 @@ logger = logging.getLogger(__name__)
 def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] | None = None):
     if (x := args.custom_eval_rollout_log_function_path) is not None:
         custom_log_func = load_function(x)
-        if custom_log_func(rollout_id, args, data, extra_metrics):
+        fn_args = compute_custom_function_config(args, x)
+        if custom_log_func(rollout_id, fn_args, data, extra_metrics):
             return
 
     log_dict = extra_metrics or {}
@@ -31,8 +37,7 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
         log_dict[f"eval/{key}-none_reward_ratio"] = num_none / len(rewards) if len(rewards) > 0 else 0.0
         if num_none:
             logger.warning(
-                f"eval/{key}: {num_none}/{len(rewards)} samples have reward=None "
-                "(likely errored/aborted trials); treating as 0.0 for metrics."
+                f"eval/{key}: {num_none}/{len(rewards)} samples have reward=None (likely errored/aborted trials); treating as 0.0 for metrics."
             )
             rewards = [0.0 if r is None else r for r in rewards]
         log_dict[f"eval/{key}"] = sum(rewards) / len(rewards) if len(rewards) > 0 else 0.0
@@ -69,10 +74,13 @@ def log_eval_skip(rollout_id, args, reason: str):
     tracking.log(args, log_dict, step_key="eval/step")
 
 
-def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
+def log_rollout_data(
+    rollout_id, args, samples, rollout_extra_metrics, rollout_time, trainer_model_id: str | None = None
+):
     if (x := args.custom_rollout_log_function_path) is not None:
         custom_log_func = load_function(x)
-        if custom_log_func(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
+        fn_args = compute_custom_function_config(args, x)
+        if custom_log_func(rollout_id, fn_args, samples, rollout_extra_metrics, rollout_time):
             return
 
     if args.load_debug_rollout_data:
@@ -80,6 +88,8 @@ def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_t
 
     log_dict = {**(rollout_extra_metrics or {})}
     log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples), "rollout/")
+    # training only: an eval jsonl may carry its own `dataset_name` field
+    log_dict |= dict_add_prefix(_compute_dataset_metrics(args, samples), "rollout/")
     log_dict |= dict_add_prefix(_compute_perf_metrics_from_samples(args, samples, rollout_time), "perf/")
     if args.log_passrate:
         log_dict |= dict_add_prefix(
@@ -87,15 +97,21 @@ def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_t
             "passrate/",
         )
     logger.info(f"perf {rollout_id}: {log_dict}")
-    step = compute_rollout_step(args, rollout_id)
-    log_dict["rollout/step"] = step
-    tracking.log(args, log_dict, step_key="rollout/step")
+    log_dict, step_key = namespace_metrics(
+        log_dict,
+        trainer_model_id=trainer_model_id,
+        step_name="rollout/step",
+        step=compute_rollout_step(args, rollout_id),
+    )
+    tracking.log(args, log_dict, step_key=step_key)
 
 
 def _compute_metrics_from_samples(args, samples):
     response_lengths = [sample.effective_response_length for sample in samples]
 
     log_dict = {}
+    log_dict |= _compute_training_sample_metrics(args, samples)
+    log_dict |= _compute_episode_response_length_metrics(samples)
     log_dict |= dict_add_prefix(compute_statistics(response_lengths), "response_len/")
     log_dict |= _compute_zero_std_metrics(args, samples)
     log_dict |= _compute_spec_metrics(args, samples)
@@ -104,11 +120,19 @@ def _compute_metrics_from_samples(args, samples):
     log_dict["repetition_frac"] = np.mean([int(has_repetition(s.response)) for s in samples]).item()
     log_dict["truncated_ratio"] = np.mean([int(s.status == Sample.Status.TRUNCATED) for s in samples]).item()
 
-    oldest_versions = [s.oldest_weight_version for s in samples if s.oldest_weight_version is not None]
-    if oldest_versions:
-        log_dict |= dict_add_prefix(compute_statistics(oldest_versions), "weight_version/")
-        mixed = sum(1 for s in samples if len(set(s.weight_versions)) > 1)
-        log_dict["weight_version/mixed_version_ratio"] = mixed / len(samples)
+    log_dict |= _compute_weight_version_span_metrics(
+        samples,
+        spans_of_sample=lambda sample: sample.all_weight_version_spans,
+        prefix="weight_version/",
+    )
+    log_dict |= _compute_weight_version_span_metrics(
+        samples,
+        spans_of_sample=lambda sample: sample.all_prefill_weight_version_spans,
+        prefix="weight_version/prefill_",
+    )
+    log_dict |= _compute_prefill_lag_metrics(samples)
+    if args.ci_test and args.ci_assert_prefill_lag_max is not None:
+        _assert_prefill_lag_metrics(metrics=log_dict, bound=args.ci_assert_prefill_lag_max)
 
     tito_vals = [s.metadata.get("tito_session_mismatch") for s in samples]
     tito_vals = [v for v in tito_vals if v is not None]
@@ -122,17 +146,133 @@ def _compute_metrics_from_samples(args, samples):
                 [any(m.get("type") == mtype for m in v) for v in tito_vals]
             ).item()
         if args.ci_test:
-            for strict_type in ("special_token_count", "special_token_type", "non_assistant_text"):
+            strict_thresholds = {
+                "special_token_count": args.ci_tito_special_token_count_threshold,
+                "special_token_type": 0,
+                "non_assistant_text": 0,
+            }
+            for strict_type, threshold in strict_thresholds.items():
                 rate = log_dict.get(f"{metric_prefix}/{strict_type}", 0)
-                assert rate == 0, (
-                    f"{metric_prefix}/{strict_type}={rate:.4f} must be 0 — "
-                    "this indicates a bug in the TITO algorithm or chat template. "
-                    "Please check your tito model and chat template."
-                )
+                assert (
+                    rate <= threshold
+                ), f"{metric_prefix}/{strict_type}={rate:.4f} exceeds {threshold} — this indicates a bug in the TITO algorithm or chat template. Please check your tito model and chat template."
             # assistant_text mismatch is non-critical: assistant tokens are inherited
             # from the pretokenized prefix and may differ from canonical tokenization.
 
     return log_dict
+
+
+def _get_rollout_key(sample: Sample, position: int) -> tuple[str, int | None, int]:
+    if sample.rollout_id is not None:
+        return ("rollout", sample.group_index, sample.rollout_id)
+    if sample.index is not None:
+        return ("sample", sample.group_index, sample.index)
+    return ("position", sample.group_index, position)
+
+
+def _compute_episode_response_length_metrics(samples: list[Sample]) -> dict[str, float]:
+    """Aggregate trainable and total response tokens per original rollout.
+
+    Session compaction can split one rollout into several training samples.
+    Sibling samples share a rollout ID, so their lengths are summed before
+    computing batch-level statistics. Effective lengths count only trainable
+    tokens; total lengths count both masked and unmasked tokens in every sample.
+    """
+    effective_lengths_by_rollout: dict[tuple[str, int | None, int], int] = {}
+    total_lengths_by_rollout: dict[tuple[str, int | None, int], int] = {}
+    for position, sample in enumerate(samples):
+        rollout_key = _get_rollout_key(sample, position)
+        effective_response_length = 0 if sample.remove_sample else sample.effective_response_length
+        effective_lengths_by_rollout[rollout_key] = (
+            effective_lengths_by_rollout.get(rollout_key, 0) + effective_response_length
+        )
+        total_lengths_by_rollout[rollout_key] = total_lengths_by_rollout.get(rollout_key, 0) + sample.response_length
+
+    if not effective_lengths_by_rollout:
+        return {}
+
+    log_dict = dict_add_prefix(
+        compute_statistics(list(effective_lengths_by_rollout.values())),
+        "episode_response_length/",
+    )
+    log_dict["episode_total_response_length/mean"] = np.mean(list(total_lengths_by_rollout.values())).item()
+    return log_dict
+
+
+def _compute_weight_version_span_metrics(
+    samples: list[Sample],
+    *,
+    spans_of_sample: Callable[[Sample], list[WeightVersionSpan]],
+    prefix: str,
+) -> dict[str, float]:
+    spans_by_sample = [spans_of_sample(sample) for sample in samples]
+    oldest_versions = [
+        version
+        for spans in spans_by_sample
+        if (version := min(compute_numeric_versions_of_spans(spans), default=None)) is not None
+    ]
+    if not oldest_versions:
+        return {}
+
+    log_dict = dict_add_prefix(compute_statistics(oldest_versions), prefix)
+    mixed = sum(1 for spans in spans_by_sample if len({span.version for span in spans}) > 1)
+    log_dict[f"{prefix}mixed_version_ratio"] = mixed / len(samples)
+    return log_dict
+
+
+def _compute_prefill_lag_metrics(samples: list[Sample]) -> dict[str, float]:
+    comparable = [
+        (call, lag) for sample in samples for call in sample.weight_versions if (lag := call.prefill_lag) is not None
+    ]
+    if not comparable:
+        return {}
+
+    prompt_tokens = sum(
+        prefill_span.abs_end - prefill_span.abs_start for call, _ in comparable for prefill_span in call.prefill_spans
+    )
+    stale_tokens = sum(
+        prefill_span.abs_end - prefill_span.abs_start
+        for call, _ in comparable
+        for prefill_span in call.prefill_spans
+        if int(prefill_span.version) < call.max_decode_version
+    )
+    return {
+        "weight_version/prefill_stale_token_ratio": stale_tokens / prompt_tokens,
+        "weight_version/prefill_lag_max": max(lag for _, lag in comparable),
+    }
+
+
+def _assert_prefill_lag_metrics(*, metrics: dict[str, float], bound: int) -> None:
+    lag = metrics.get("weight_version/prefill_lag_max")
+    stale_ratio = metrics.get("weight_version/prefill_stale_token_ratio")
+    assert lag is not None and stale_ratio is not None, f"CI requires prompt KV lag and stale-token metrics: {metrics}"
+    assert 0 <= lag <= bound, f"prompt KV lag metric {lag} exceeds the expected range [0, {bound}]"
+    assert 0 <= stale_ratio <= 1, f"prompt KV stale-token ratio {stale_ratio} is outside [0, 1]"
+    assert lag != 0 or stale_ratio == 0, f"zero prompt KV lag must have zero stale-token ratio, got {stale_ratio}"
+
+
+def _compute_training_sample_metrics(args: Any, samples: list[Sample]) -> dict[str, float | int]:
+    """Count training rows and average raw reward with equal weight per rollout.
+
+    Session compaction can turn one rollout into several training samples. The
+    sample count includes every resulting row, while the reward first averages
+    sibling rows that share a rollout ID so long rollouts do not receive more
+    metric weight merely because they produced more samples.
+    """
+    rewards_by_rollout: dict[tuple[str, int | None, int], list[float]] = {}
+    use_metadata_reward = bool(samples and samples[0].metadata and "raw_reward" in samples[0].metadata)
+    for position, sample in enumerate(samples):
+        rollout_key = _get_rollout_key(sample, position)
+
+        raw_reward = sample.metadata["raw_reward"] if use_metadata_reward else sample.get_reward_value(args)
+        if isinstance(raw_reward, Number):
+            rewards_by_rollout.setdefault(rollout_key, []).append(raw_reward)
+
+    rollout_rewards = [sum(rewards) / len(rewards) for rewards in rewards_by_rollout.values()]
+    return {
+        "num_training_samples": len(samples),
+        "episode_raw_reward": sum(rollout_rewards) / len(rollout_rewards) if rollout_rewards else 0.0,
+    }
 
 
 def _compute_perf_metrics_from_samples(args, samples, rollout_time):
@@ -145,8 +285,10 @@ def _compute_perf_metrics_from_samples(args, samples, rollout_time):
 
     def token_perf(response_lengths, non_generation_time, key=""):
         max_response_length = max(response_lengths)
-        if args.rollout_num_gpus:
-            log_dict[f"{key}tokens_per_gpu_per_sec"] = sum(response_lengths) / rollout_time / args.rollout_num_gpus
+        if args.inference_runtime_mut_state.gpu_count:
+            log_dict[f"{key}tokens_per_gpu_per_sec"] = (
+                sum(response_lengths) / rollout_time / args.inference_runtime_mut_state.gpu_count
+            )
         log_dict[f"longest_{key}sample_tokens_per_sec"] = max_response_length / rollout_time
 
         if max(non_generation_time) == 0:
@@ -180,7 +322,8 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
     all_sample_groups = group_by(all_samples, lambda s: s.group_index)
     interesting_sample_groups = [g for g in all_sample_groups.values() if _is_zero_std(g)]
 
-    interesting_rewards = [str(round(g[0].get_reward_value(args), 1)) for g in interesting_sample_groups]
+    uniform_rewards = [g[0].get_reward_value(args) for g in interesting_sample_groups]
+    interesting_rewards = [str(round(reward, 1)) for reward in uniform_rewards if reward is not None]
 
     counts = {reward: len(items) for reward, items in group_by(interesting_rewards).items()}
     log_dict = {f"zero_std/count_{reward}": count for reward, count in counts.items()}
@@ -190,20 +333,33 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
     # rollout batch size.
     total_groups = len(all_sample_groups)
     if total_groups > 0:
-        log_dict["zero_std/all_zero_percentage"] = counts.get("0.0", 0) / total_groups
-        log_dict["zero_std/all_one_percentage"] = counts.get("1.0", 0) / total_groups
+        log_dict["zero_std/all_zero_percentage"] = sum(1 for reward in uniform_rewards if reward == 0) / total_groups
+        log_dict["zero_std/all_one_percentage"] = sum(1 for reward in uniform_rewards if reward == 1) / total_groups
+        log_dict["zero_std/percentage"] = len(uniform_rewards) / total_groups
 
     return log_dict
 
 
 def _compute_spec_metrics(args, all_samples: list[Sample]):
-    if args.sglang_speculative_algorithm is None:
+    if args.sglang.common_value("speculative_algorithm") is None:
         return {}
-    num_samples = len(all_samples)
-    metrics = {}
-    metrics["spec_accept_rate"] = sum(sample.spec_info.spec_accept_rate for sample in all_samples) / num_samples
-    metrics["spec_accept_length"] = sum(sample.spec_info.spec_accept_length for sample in all_samples) / num_samples
-    return metrics
+    carriers = {}
+    spec_infos = []
+    for sample in all_samples:
+        carrier = sample.metadata.get(SESSION_ROLLOUT_METRICS_KEY)
+        if carrier is None:
+            spec_infos.append(sample.spec_info)
+        else:
+            carriers[carrier["session_id"]] = carrier
+    spec_infos.extend(Sample.SpecInfo.from_dict(carrier["metrics"]["spec_info"]) for carrier in carriers.values())
+    num_correct_drafts = sum(info.spec_num_correct_drafts for info in spec_infos)
+    num_proposed_drafts = sum(info.spec_num_proposed_drafts for info in spec_infos)
+    spec_verify_ct = sum(info.spec_verify_ct for info in spec_infos)
+    completion_tokens = sum(info.completion_tokens for info in spec_infos)
+    return {
+        "spec_accept_rate": num_correct_drafts / num_proposed_drafts if num_proposed_drafts > 0 else 0.0,
+        "spec_accept_length": completion_tokens / spec_verify_ct if spec_verify_ct > 0 else 0.0,
+    }
 
 
 def _compute_prefix_cache_metrics(args, all_samples: list[Sample]):
@@ -215,6 +371,27 @@ def _compute_prefix_cache_metrics(args, all_samples: list[Sample]):
     metrics["prefix_cache_hit_rate"] = total_cached_tokens / total_prompt_tokens if total_prompt_tokens > 0 else 0.0
     metrics["avg_cached_tokens_per_sample"] = total_cached_tokens / num_samples
     return metrics
+
+
+def _compute_dataset_metrics(args, all_samples: list[Sample]) -> dict[str, float | int]:
+    """Reward, length and truncation per `--rollout-data-yaml-config` dataset."""
+    # only the mixer's own tag counts; a single-dataset row may carry an arbitrary `dataset_name` field
+    if args.rollout_data_yaml_config is None:
+        return {}
+    log_dict = {}
+    samples_of_dataset = group_by(
+        [s for s in all_samples if isinstance(s.metadata, dict) and "dataset_name" in s.metadata],
+        lambda s: s.metadata["dataset_name"],
+    )
+    for name, samples in samples_of_dataset.items():
+        dataset_metrics = _compute_training_sample_metrics(args, samples)
+        dataset_metrics["response_len/mean"] = np.mean([s.effective_response_length for s in samples]).item()
+        # status, not a length cap: a sample stopped by a lower per-sample budget counts too
+        dataset_metrics["truncated_ratio"] = np.mean(
+            [int(s.status == Sample.Status.TRUNCATED) for s in samples]
+        ).item()
+        log_dict |= dict_add_prefix(dataset_metrics, f"dataset/{name}/")
+    return log_dict
 
 
 def _compute_reward_cat_metrics(args, all_samples: list[Sample]):
@@ -248,8 +425,7 @@ def _compute_passrate_from_samples(args, all_samples: list[Sample]) -> dict[str,
     completed_groups = [g for g in groups.values() if len(g) == group_size]
     if len(completed_groups) < len(groups):
         logger.warning(
-            f"pass@k: excluding {len(groups) - len(completed_groups)}/{len(groups)} incomplete "
-            f"groups (fewer than n_samples_per_prompt={group_size} samples)."
+            f"pass@k: excluding {len(groups) - len(completed_groups)}/{len(groups)} incomplete groups (fewer than n_samples_per_prompt={group_size} samples)."
         )
     if not completed_groups:
         return {}

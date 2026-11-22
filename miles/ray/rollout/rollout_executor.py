@@ -1,0 +1,593 @@
+import asyncio
+import logging
+import time
+from collections import defaultdict
+from collections.abc import Iterable, Sequence
+from contextlib import nullcontext
+from pathlib import Path
+from typing import Any, TypeVar
+
+from miles.ray.rollout.debug_data import (
+    RolloutDataInjectionUtil,
+    drop_conversations_not_dumped,
+    load_debug_rollout_data,
+    save_debug_rollout_data,
+)
+from miles.ray.rollout.eval_fleet import EvalFleetInfo, RolloutExecutorEvalFleet
+from miles.ray.rollout.metrics import log_eval_rollout_data, log_eval_skip, log_rollout_data
+from miles.ray.rollout.output_snapshotter import _RolloutExecutorOutputSnapshotter
+from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
+from miles.ray.rollout.rollout_sample_reporter import report_rollout_samples
+from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
+from miles.ray.rollout.train_data_conversion import (
+    ROLLOUT_DATA_VALUE_SPEC,
+    convert_samples_to_train_data,
+    split_train_data_by_dp,
+)
+from miles.ray.specs.inference import inference_controller_worker_name
+from miles.rollout.base_types import (
+    RolloutFnConstructorInput,
+    RolloutFnEvalInput,
+    RolloutFnTrainInput,
+    call_rollout_fn,
+)
+from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
+from miles.rollout.data_source import RolloutDataResumeMismatch
+from miles.rollout.fully_async_data_buffer import Group
+from miles.rollout.inference_rollout.compatibility import load_rollout_function
+from miles.utils import object_store, observers
+from miles.utils.args.custom_function import CustomFunctionConfig
+from miles.utils.args.custom_view import ImmutableNamespace, compute_custom_function_config
+from miles.utils.args.runtime_base import BaseLeafConfig
+from miles.utils.async_utils import maybe_await
+from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
+from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
+from miles.utils.audit_utils.event_logger.logger import event_logger_context
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
+from miles.utils.data import RolloutDataPack
+from miles.utils.dp_schedule import TrainParallelConfig
+from miles.utils.environ import use_legacy_rollout_v1
+from miles.utils.function_registry import load_function
+from miles.utils.hf_utils.config import is_complete_hf_export
+from miles.utils.http_utils import init_http_client
+from miles.utils.init_once import InitOnce, InitState, init_once
+from miles.utils.logging_utils import configure_logger
+from miles.utils.metric_checker import MetricChecker
+from miles.utils.misc import call_agent_preflight_hook
+from miles.utils.output_store.config import connect_output_store, output_store_backend_config, sweep_output_store
+from miles.utils.output_store.dropped import store_refs_of, take_dropped_refs
+from miles.utils.output_store.plan import StorePlanError
+from miles.utils.simple_checkpointer import atomic_save_folder
+from miles.utils.timer import timer
+from miles.utils.tracking_utils.tracking import init_tracking
+from miles.utils.weight_version import assert_samples_weight_version_sane, assert_weight_version_is_published
+from miles.utils.workers.rpc.common.metadata import DedicatedRpcLoopWorker
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+logger = logging.getLogger(__name__)
+
+_DATA_SOURCE_DIRNAME = "data_source"
+_GENERATE_ROLLOUT_DIRNAME = "generate_rollout"
+_EVAL_GENERATE_ROLLOUT_DIRNAME = "eval_generate_rollout"
+_EXECUTOR_DIRNAME = "executor"
+
+
+class RolloutExecutor(DedicatedRpcLoopWorker):
+    """The class to run rollout and convert rollout data to training data."""
+
+    def __init__(
+        self,
+        *,
+        args,
+        router_providers: Sequence[BaseWorkerProvider],
+        session_server_provider: BaseWorkerProvider | None,
+        inference_controller_provider: BaseWorkerProvider,
+    ):
+        self._init_once = InitOnce(type(self).__name__)
+        self._disposed = False
+
+        configure_logger(args, source=SimpleProcessIdentity(component="rollout_executor"))
+
+        self.args = args
+        # set by the training actor after each weight update, keyed by trainer model id (None for one policy)
+        self._weight_versions_of_model_id: dict[str | None, int] = {}
+        self.last_get_rollout_id_of_model_id: dict[str | None, int] = {}
+        self._rollouts_since_publish_of_model_id: dict[str | None, int] = defaultdict(int)
+        self._train_parallel_configs_of_model_id: dict[str | None, TrainParallelConfig | None] = {}
+        self._router_providers = router_providers
+        self._session_server_provider = session_server_provider
+        self._inference_controller_provider = inference_controller_provider
+        self._output_snapshotter = _RolloutExecutorOutputSnapshotter(args=args)
+        # Output store refs of each rollout's trained and dropped samples, deleted once it has trained.
+        # Every rollout get() began is here until its release, so one left at dispose was never trained.
+        self._unreleased_store_refs: dict[int, dict[str, Any]] = {}
+        self._delete_store_refs = None
+        self.data_source = None
+        self.generate_rollout = None
+        self.eval_generate_rollout = None
+        self._metric_checker = None
+
+    async def check_agent_setup(self) -> None:
+        """Run the agent functions' ``preflight`` hooks. Needs nothing from ``init``, so it runs before the engine wait."""
+        if self.args.load_debug_rollout_data is None:  # replayed rollouts call no agent function
+            await call_agent_preflight_hook(self.args)
+
+    @init_once
+    async def init(self) -> None:
+        args = self.args
+        observers.start_process("rollout_manager")
+        if args.starts_inference_engines:
+            await resolve_router_addrs(args, router_providers=self._router_providers)
+            await wait_session_server_ready(args, provider=self._session_server_provider)
+        await self._refresh_inference_runtime_mut_state()
+
+        # TODO make args immutable
+        init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
+        object_store.init_instance(args, contribute_segment=False)
+        if args.use_output_store:
+            store = connect_output_store(output_store_backend_config(args))
+            self._delete_store_refs = store.delete_many
+
+        init_http_client(args)
+
+        data_source_cls = load_function(self.args.data_source_path)
+        fn_args = compute_custom_function_config(args, self.args.data_source_path)
+        self.data_source = data_source_cls(fn_args)
+        SampleOwnershipRecorder.install(
+            args=args,
+            data_source=self.data_source,
+            current_rollout_id=lambda: _single_or_none(self.last_get_rollout_id_of_model_id.values()),
+        )
+
+        self.use_legacy_rollout_v1 = use_legacy_rollout_v1()
+        if not self.use_legacy_rollout_v1:
+            if self.args.load_debug_rollout_data is not None:
+                self.generate_rollout = None
+                self.eval_generate_rollout = None
+            else:
+                fn_args = _compute_rollout_function_config(args, self.args.rollout_function_path)
+                rollout_input = RolloutFnConstructorInput(args=fn_args, data_source=self.data_source)
+                self.generate_rollout = load_rollout_function(rollout_input, self.args.rollout_function_path)
+                if self.args.eval_function_path == self.args.rollout_function_path:
+                    # Reuse the instance so train and eval share one state (and stateful
+                    # rollout fns like FullyAsyncRolloutFn are not constructed twice).
+                    self.eval_generate_rollout = self.generate_rollout
+                else:
+                    fn_args = _compute_rollout_function_config(args, self.args.eval_function_path)
+                    eval_input = RolloutFnConstructorInput(args=fn_args, data_source=self.data_source)
+                    self.eval_generate_rollout = load_rollout_function(eval_input, self.args.eval_function_path)
+        else:
+            self.generate_rollout = load_function(self.args.rollout_function_path)
+            self.eval_generate_rollout = load_function(self.args.eval_function_path)
+        self.custom_reward_post_process_func = None
+        if (x := self.args.custom_reward_post_process_path) is not None:
+            self.custom_reward_post_process_func = load_function(x)
+        self.custom_convert_samples_to_train_data_func = None
+        if (x := self.args.custom_convert_samples_to_train_data_path) is not None:
+            self.custom_convert_samples_to_train_data_func = load_function(x)
+        if self.generate_rollout is not None:
+            logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
+            logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
+
+        self._eval_lock = asyncio.Lock()
+        self._eval_fleet: RolloutExecutorEvalFleet | None = None
+
+        self._metric_checker = MetricChecker.maybe_create(args)
+
+    async def get_init_state(self) -> str:
+        return self._init_once.state.value
+
+    # -------------------------- lifecycle -----------------------------
+
+    async def dispose(self) -> None:
+        # the driver may dispose an executor whose init never started; a partial init still tears down what it built
+        if self._disposed or self._init_once.state is InitState.NOT_INITED:
+            return
+        self._disposed = True
+
+        if self.generate_rollout is not None and not self.use_legacy_rollout_v1:
+            await maybe_await(self.generate_rollout.dispose())
+        if (
+            close := getattr(self.data_source, "close", None)
+        ) is not None:  # config-access-exempt: custom data sources may omit this lifecycle method
+            close()
+        event_analyzer.run_sample_ownership_analysis(args=self.args)
+        event_analyzer.run_analysis_from_args(self.args)
+        if self._metric_checker is not None:
+            self._metric_checker.dispose()
+        if isinstance(self.eval_generate_rollout, CheckpointEvalFn):
+            await maybe_await(self.eval_generate_rollout.dispose())
+        # Last, so a failed CI check raises after the rest of this dispose; only once init reached the store.
+        if self._delete_store_refs is not None:
+            await asyncio.to_thread(self._sweep_output_store)
+
+    def _sweep_output_store(self) -> None:
+        """Remove what the run left in the output store, which nothing reads once it ends."""
+        # Only a run that trained every rollout it generated answers to CI: one that stopped early (a crash, a debug
+        # exit) still holds that rollout's objects, and a crash already has its own error.
+        strict = self.args.ci_test and not self._unreleased_store_refs
+        try:
+            left = sweep_output_store(self.args)
+        except Exception:
+            if strict:
+                raise
+            # Like a failed delete, a failed sweep only leaks objects nothing reads.
+            logger.exception("Failed to sweep the output store; the run's objects stay in Mooncake")
+            return
+        if not left:
+            return
+        message = f"Swept {left} output store keys the run left behind"
+        # A fully-async run ends with groups buffered or in flight, a partial rollout with aborted groups back in
+        # the data buffer; any other run that trained every rollout it generated has released them all.
+        if strict and not (self.args.fully_async or self.args.partial_rollout):
+            raise AssertionError(f"{message}: a retried request, a failed delete or a missed release")
+        logger.warning(message)
+
+    # -------------------------- data generation -----------------------------
+
+    @event_logger_context(lambda _self, rollout_id, trainer_model_id=None: dict(rollout_id=rollout_id))
+    async def get(self, rollout_id: int, trainer_model_id: str | None = None) -> RolloutDataPack:
+        self.last_get_rollout_id_of_model_id[trainer_model_id] = rollout_id
+        self._unreleased_store_refs[rollout_id] = {}
+        event_analyzer.run_sample_ownership_analysis(args=self.args)
+        replay = self._output_snapshotter.get(trainer_model_id=trainer_model_id, rollout_id=rollout_id)
+        if replay is None:
+            generated = await self._generate_rollout_data(rollout_id=rollout_id, trainer_model_id=trainer_model_id)
+            if generated is None:
+                return RolloutDataPack(empty_batch_timeout=True)
+            data, metadata = generated
+            # No await may sit between the generated batch arriving and its capture: a save in that window
+            self._output_snapshotter.capture(
+                trainer_model_id=trainer_model_id, rollout_id=rollout_id, data=data, metadata=metadata
+            )
+        else:
+            data, metadata = replay.data, replay.metadata
+        # The dp schedule and a custom convert may leave rows out of the train data: collect from the samples.
+        self._unreleased_store_refs[rollout_id] = store_refs_of(data) | take_dropped_refs()
+
+        with SampleOwnershipRecorder.suppress_drop_logging() if replay is not None else nullcontext():
+            train_data = convert_samples_to_train_data(
+                self.args,
+                data,
+                metadata=metadata,
+                custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
+                custom_reward_post_process_func=self.custom_reward_post_process_func,
+            )
+            sample_indices = train_data.get("sample_indices")
+            if self.args.delay_split_train_data_by_dp:
+                data_ref = object_store.get_instance().put(value=train_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
+            else:
+                shards = split_train_data_by_dp(
+                    self.args, train_data, self._train_parallel_configs_of_model_id[trainer_model_id]
+                )
+                store = object_store.get_instance()
+                data_ref = [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
+            return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
+
+    async def release(self, rollout_id: int) -> None:
+        """Delete the output store objects of rollout ``rollout_id``, which has trained."""
+        if not (refs := self._unreleased_store_refs.pop(rollout_id, None)):
+            return
+        if self._delete_store_refs is None:
+            raise StorePlanError(f"rollout {rollout_id} holds {len(refs)} output store refs, but no store client")
+        # Off the loop: the fully-async producer keeps generating on it.
+        await asyncio.to_thread(self._try_delete_store_refs, list(refs.values()))
+
+    def _try_delete_store_refs(self, refs: list) -> None:
+        try:
+            self._delete_store_refs(refs)
+        except Exception:
+            # Nothing reads these objects any more, so a failed delete only leaks them.
+            logger.exception(f"Failed to delete {len(refs)} output store refs; their objects stay in Mooncake")
+
+    async def _generate_rollout_data(
+        self, *, rollout_id: int, trainer_model_id: str | None
+    ) -> tuple[list[Group], dict[str, Any]] | None:
+        await self._refresh_inference_runtime_mut_state()
+        start_time = time.time()
+        self._rollouts_since_publish_of_model_id[trainer_model_id] += 1
+        assert_weight_version_is_published(
+            self.args, rollouts_since_publish=self._rollouts_since_publish_of_model_id[trainer_model_id]
+        )
+        if (
+            get_buffer_length := getattr(self.data_source, "get_buffer_length", None)
+        ) is not None:  # config-access-exempt: custom data sources may omit this lifecycle method
+            if (buffer_length := get_buffer_length()) is not None:
+                observers.Observers().data_buffer(buffer_length)
+        with timer("rollout" if trainer_model_id is None else f"{trainer_model_id}/rollout"):
+            data, metadata, metrics = await self._get_rollout_data(
+                rollout_id=rollout_id, trainer_model_id=trainer_model_id
+            )
+        # before the dump, which moves recorded conversations out of the samples
+        report_rollout_samples(data, rollout_id=rollout_id, evaluation=False)
+        drop_conversations_not_dumped(self.args, data, evaluation=False)
+        save_debug_rollout_data(
+            self.args,
+            data,
+            rollout_id=rollout_id,
+            evaluation=False,
+            metadata=metadata,
+            trainer_model_id=trainer_model_id,
+        )
+        log_rollout_data(
+            rollout_id, self.args, data, metrics, time.time() - start_time, trainer_model_id=trainer_model_id
+        )
+        return data, metadata
+
+    async def eval(
+        self,
+        rollout_id: int,
+        hf_dir: str | None = None,
+        export_time_seconds: float | None = None,
+        require_marker: bool = True,
+        weight_version: str | None = None,
+    ) -> None:
+        if weight_version is not None or self.args.eval_uses_snapshots:
+            return await self._eval_checkpoint(
+                rollout_id, hf_dir, export_time_seconds, require_marker, weight_version=weight_version
+            )
+
+        if self.args.debug_train_only:
+            return
+
+        await self._refresh_inference_runtime_mut_state()
+        with timer("eval_rollout"):
+            if not self.use_legacy_rollout_v1:
+                result = await maybe_await(self.eval_generate_rollout(RolloutFnEvalInput(rollout_id=rollout_id)))
+            else:
+                fn_args = _compute_rollout_function_config(self.args, self.args.eval_function_path)
+                result = await asyncio.to_thread(
+                    call_rollout_fn,
+                    self.eval_generate_rollout,
+                    fn_args,
+                    rollout_id,
+                    self.data_source,
+                    evaluation=True,
+                )
+        data = result.data
+        report_rollout_samples(data, rollout_id=rollout_id, evaluation=True)
+        drop_conversations_not_dumped(self.args, data, evaluation=True)
+        save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
+        metrics = log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
+        if self._metric_checker is not None:
+            self._metric_checker.on_eval(metrics)
+
+    async def _eval_checkpoint(
+        self,
+        rollout_id: int,
+        hf_dir: str | None,
+        export_time_seconds: float | None,
+        require_marker: bool,
+        weight_version: str | None = None,
+    ):
+        """Evaluate a snapshot or an already-synchronized fleet version.
+
+        Log at ``rollout_id``; the lock serializes pins against a single backend.
+        A live version never loads or inspects a checkpoint. The caller must keep
+        that version stable until evaluation finishes.
+        """
+        if weight_version is None:
+            assert hf_dir is not None, "checkpoint eval requires an HF snapshot dir"
+        elif self._eval_fleet is None:
+            raise ValueError("A live eval version requires a dedicated synchronized fleet")
+        start_time = time.time()
+        async with self._eval_lock:
+            if weight_version is None and require_marker and not is_complete_hf_export(hf_dir):
+                logger.warning(f"Eval snapshot {hf_dir} missing or incomplete, skipping eval {rollout_id}")
+                return self.report_eval_skip(rollout_id, "ckpt_missing")
+
+            version = str(rollout_id) if weight_version is None else weight_version
+            try:
+                if weight_version is not None:
+                    state = await self._eval_fleet.current(version)
+                else:
+                    state = await self._eval_fleet.pin(hf_dir, version) if self._eval_fleet else None
+                eval_input = RolloutFnEvalInput(
+                    rollout_id=rollout_id, weight_version=version, hf_dir=hf_dir, generate_state=state
+                )
+                result = await maybe_await(self.eval_generate_rollout(eval_input))
+            except EvalSkip as e:
+                return self.report_eval_skip(rollout_id, e.reason)
+
+            data = result.data
+            report_rollout_samples(data, rollout_id=rollout_id, evaluation=True)
+            drop_conversations_not_dumped(self.args, data, evaluation=True)
+            save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
+            extra_metrics = dict(result.metrics or {})
+            if (last_get_rollout_id := _single_or_none(self.last_get_rollout_id_of_model_id.values())) is not None:
+                extra_metrics["eval/lag_steps"] = max(last_get_rollout_id - rollout_id, 0)
+            extra_metrics["eval/duration_seconds"] = time.time() - start_time
+            if export_time_seconds is not None:
+                extra_metrics["eval/export_time_seconds"] = export_time_seconds
+            metrics = log_eval_rollout_data(rollout_id, self.args, data, extra_metrics)
+            if self._metric_checker is not None:
+                self._metric_checker.on_eval(metrics)
+
+    def report_eval_skip(self, rollout_id: int, reason: str) -> None:
+        log_eval_skip(rollout_id, self.args, reason)
+        if self.args.ci_test:
+            raise RuntimeError(f"CI eval {rollout_id} skipped: {reason}")
+
+    async def _get_rollout_data(self, rollout_id, trainer_model_id: str | None = None):
+        if self.args.load_debug_rollout_data is not None:
+            data, metadata = load_debug_rollout_data(self.args, rollout_id=rollout_id)
+            metrics = None
+        else:
+            if not self.use_legacy_rollout_v1:
+                input = RolloutFnTrainInput(
+                    rollout_id=rollout_id,
+                    weight_version=self._weight_versions_of_model_id.get(trainer_model_id),
+                    trainer_model_id=trainer_model_id,
+                )
+                data = await maybe_await(self.generate_rollout(input))
+            else:
+                fn_args = _compute_rollout_function_config(self.args, self.args.rollout_function_path)
+                data = await asyncio.to_thread(
+                    call_rollout_fn, self.generate_rollout, fn_args, rollout_id, self.data_source, evaluation=False
+                )
+            metrics = data.metrics
+            data = data.samples
+            data, metadata = postprocess_rollout_data(
+                self.args, data, train_parallel_config=self._train_parallel_configs_of_model_id[trainer_model_id]
+            )
+            assert_samples_weight_version_sane(self.args, samples=data)
+            if RolloutDataInjectionUtil.should_inject(self.args, rollout_id):
+                generated_data = data
+                data, metadata = RolloutDataInjectionUtil.load(self.args, rollout_id=rollout_id)
+                RolloutDataInjectionUtil.assert_matches_generated(
+                    self.args, generated=generated_data, injected=data, rollout_id=rollout_id
+                )
+                metrics = None
+
+        return data, metadata, metrics
+
+    # -------------------------- checkpointing -----------------------------
+
+    # TODO the train and eval rollout functions will become one object, so one save/load is enough here
+    # async but never awaits: the RPC layer runs sync methods on a thread, and an await-free coroutine is atomic against the rollout coroutines on this loop
+    async def save(self, rollout_id: int, completed_rollout_ids: dict[str, int] | None = None) -> None:
+        assert self.args.save is not None, "the orchestration only saves when --save is set"
+
+        self._output_snapshotter.discard_completed(
+            completed_rollout_ids={None: rollout_id} if completed_rollout_ids is None else completed_rollout_ids
+        )
+        target = compute_rollout_checkpoint_dir(self.args.save, rollout_id=rollout_id)
+        with atomic_save_folder(target) as dir_temp:
+            self.data_source.save(dir_temp / _DATA_SOURCE_DIRNAME)
+            if not self.use_legacy_rollout_v1:
+                if self.generate_rollout is not None:
+                    self.generate_rollout.save(dir_temp / _GENERATE_ROLLOUT_DIRNAME)
+                if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
+                    eval_fn.save(dir_temp / _EVAL_GENERATE_ROLLOUT_DIRNAME)
+            event_logger_checkpoint.snapshot(self.args, directory=dir_temp / event_logger_checkpoint.SNAPSHOT_DIRNAME)
+            self._output_snapshotter.save(dir_temp / _EXECUTOR_DIRNAME)
+
+    # async but never awaits, for the same reason as save
+    async def load(
+        self, rollout_id: int, completed_rollout_ids: dict[str, int] | None = None, *, load: str | None
+    ) -> None:
+        assert not hasattr(  # config-access-exempt: reject checkpoint load paths in immutable rollout config
+            self.args, "load"
+        ), "Rollout checkpoint load path must be a runtime input"
+        if load is None:
+            logger.warning("no --load: the rollout side starts fresh")
+            return
+        assert rollout_id >= 0, f"rollout {rollout_id} is not a trained step"
+
+        directory = compute_rollout_checkpoint_dir(load, rollout_id=rollout_id)
+        assert directory.is_dir(), (
+            f"the trainer restored rollout {rollout_id}, but {directory} does not exist; a run saved before the "
+            f"rollout-side state moved into one directory per rollout cannot resume that state"
+        )
+
+        self._output_snapshotter.load(directory / _EXECUTOR_DIRNAME)
+        self._output_snapshotter.discard_completed(
+            completed_rollout_ids={None: rollout_id} if completed_rollout_ids is None else completed_rollout_ids
+        )
+        reset_data = self._load_data_source(directory / _DATA_SOURCE_DIRNAME)
+        if reset_data:
+            self._output_snapshotter.drop_loaded(reason="data_reset_on_load")
+        if not self.use_legacy_rollout_v1:
+            if self.generate_rollout is not None:
+                # in-flight prompt groups came from the saved data source, so a data reset drops them too
+                if reset_data:
+                    self.generate_rollout.drop_saved_in_flight(directory / _GENERATE_ROLLOUT_DIRNAME)
+                else:
+                    self.generate_rollout.load(directory / _GENERATE_ROLLOUT_DIRNAME)
+            if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
+                eval_fn.load(directory / _EVAL_GENERATE_ROLLOUT_DIRNAME)
+        # The loads dropped every batch that carried these refs, so nothing reads them; their objects
+        # still exist only if the store outlived the run (a hot restart, a reused master).
+        if restored := take_dropped_refs():
+            if self._delete_store_refs is None:
+                logger.warning(
+                    f"Not deleting {len(restored)} restored output store refs: this run has no store client"
+                )
+            else:
+                self._try_delete_store_refs(list(restored.values()))
+
+    def _load_data_source(self, directory: Path) -> bool:
+        """Restore the data source; True when it had to start over instead.
+
+        Only a checkpoint the current data configuration cannot resume is reset, so a run that keeps
+        --rollout-data-reset-on-load still resumes its own later checkpoints in place. A reset the data source
+        marks as needing no flag (a mix resumed under --prompt-data) happens without it.
+        """
+        try:
+            self.data_source.load(directory)
+            return False
+        except RolloutDataResumeMismatch as mismatch:
+            if mismatch.needs_flag and not self.args.rollout_data_reset_on_load:
+                raise
+            logger.warning(f"The training data starts over, as {mismatch}")
+        self.data_source.load_sample_ids(directory)
+        return True
+
+    # -------------------------- misc APIs -----------------------------
+
+    async def _refresh_inference_runtime_mut_state(self) -> None:
+        if not self.args.starts_inference_engines:
+            return
+        controller = self._inference_controller_provider.get_handle(inference_controller_worker_name())
+        self.args.inference_runtime_mut_state.set_(await controller.get_inference_runtime_immut_state())
+
+    def get_num_rollout_per_epoch(self) -> int:
+        assert self.args.rollout_global_dataset
+        return len(self.data_source.dataset) // self.args.rollout_batch_size
+
+    def set_weight_version(self, weight_version: int, trainer_model_id: str | None = None) -> None:
+        # warning instead of assert when use indep_dp ft
+        previous = self._weight_versions_of_model_id.get(trainer_model_id)
+        if previous is not None and weight_version < previous:
+            message = f"Engine weight version went backwards: {previous} -> {weight_version}"
+            assert self.args.indep_dp, message
+            logger.warning(message)
+        self._weight_versions_of_model_id[trainer_model_id] = weight_version
+        self._rollouts_since_publish_of_model_id[trainer_model_id] = 0
+
+    def set_train_parallel_config(
+        self, config: TrainParallelConfig | None, trainer_model_id: str | None = None
+    ) -> None:
+        self._train_parallel_configs_of_model_id[trainer_model_id] = config
+
+    async def set_eval_fleet_info(self, eval_fleet_info: EvalFleetInfo | None) -> None:
+        if eval_fleet_info is None:
+            self._eval_fleet = None
+            return
+
+        fn_args = _compute_rollout_function_config(self.args, self.args.eval_function_path)
+        self._eval_fleet = RolloutExecutorEvalFleet(
+            fn_args, info=eval_fleet_info, inference_controller_provider=self._inference_controller_provider
+        )
+
+
+def compute_rollout_checkpoint_dir(directory: str | Path, *, rollout_id: int) -> Path:
+    return Path(directory) / "rollout" / str(rollout_id)
+
+
+_T = TypeVar("_T")
+
+
+def _compute_rollout_function_config(args: BaseLeafConfig, function: CustomFunctionConfig) -> ImmutableNamespace:
+    return compute_custom_function_config(
+        args,
+        function,
+        nested_functions=(
+            args.custom_generate_function_path,
+            args.custom_agent_function_path,
+            args.custom_rm_path,
+            *(dataset.custom_generate_function_path for dataset in args.eval_datasets),
+            *args.rollout_dataset_functions.values(),
+        ),
+    )
+
+
+def _single_or_none(xs: Iterable[_T]) -> _T | None:
+    xs = list(xs)
+    assert len(xs) <= 1, xs
+    return xs[0] if xs else None

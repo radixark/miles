@@ -233,9 +233,11 @@ def test_fsdp_true_on_policy_uses_fsdp_attention_without_megatron_backend_flags(
 def test_fsdp_e2e_uses_current_true_on_policy_contract(monkeypatch):
     from tests.e2e.fsdp import test_qwen3_4B_fsdp_true_on_policy as fsdp_e2e
 
+    from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
+
     captured = {}
-    monkeypatch.setattr(fsdp_e2e.U, "get_default_wandb_args", lambda *args, **kwargs: "")
-    monkeypatch.setattr(fsdp_e2e.U, "execute_train", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setattr(fsdp_e2e.command_utils, "get_default_wandb_args", lambda *args, **kwargs: "")
+    monkeypatch.setattr(BaseCommandBackend, "execute_train", lambda _self, **kwargs: captured.update(kwargs))
 
     fsdp_e2e.execute()
 

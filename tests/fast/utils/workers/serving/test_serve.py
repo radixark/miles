@@ -1,0 +1,257 @@
+import contextlib
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+from types import ModuleType
+
+import httpx
+import pytest
+from tests.fast.utils.workers.serving.registered_serve import REGISTERED_SERVE_MODULE, pod_env, serve_config_argv
+from tests.fast.utils.workers.serving.serve_smoke_worker import (
+    POOL_ID,
+    SMOKE_EXTRA_ENV_VAR,
+    SmokeServeSpec,
+    SmokeWorker,
+    SmokeWorkerConfig,
+)
+
+from miles.ray.specs.entrypoint import SERVE_SPEC_CLASSES
+from miles.utils.http_utils import find_available_port
+from miles.utils.workers.env_vars import SUBPROCESS_INDEX_ENV_VAR
+from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
+from miles.utils.workers.rpc.client.misc import ServerRestartedError
+from miles.utils.workers.serving import serve as serve_module
+from miles.utils.workers.serving import serve_inner
+from miles.utils.workers.serving.utils import split_worker_argv
+from miles.utils.workers.worker_handle import WorkerUnreachableError
+
+_REPO_ROOT = Path(__file__).resolve().parents[5]
+
+
+def _smoke_own_argv(monkeypatch: pytest.MonkeyPatch, *, worker_argv: list[str]) -> list[str]:
+    config = SmokeWorkerConfig(rpc_port=9000, worker_argv=worker_argv)
+    monkeypatch.setitem(SERVE_SPEC_CLASSES, SmokeServeSpec.worker_type, SmokeServeSpec)
+    for name, value in pod_env(SmokeServeSpec.create(config)).items():
+        monkeypatch.setenv(name, value)
+    return serve_config_argv(spec_class=SmokeServeSpec, config=config)
+
+
+class TestSplitWorkerArgv:
+    def test_splits_on_the_separator(self):
+        """Everything after -- is worker argv, everything before belongs to the entrypoint."""
+        assert split_worker_argv(["--pool-id", "p", "--", "--greeting", "hi"]) == (
+            ["--pool-id", "p"],
+            ["--greeting", "hi"],
+        )
+
+    def test_no_separator_means_no_worker_argv(self):
+        """Without a separator the whole argv belongs to the entrypoint."""
+        assert split_worker_argv(["--pool-id", "p"]) == (["--pool-id", "p"], [])
+
+    def test_later_separators_stay_with_the_worker(self):
+        """Only the first separator splits, so worker argv may contain its own --."""
+        assert split_worker_argv(["--", "a", "--", "b"]) == ([], ["a", "--", "b"])
+
+
+class TestOuterServeForwarding:
+    def test_forwards_its_own_argv_and_the_env_the_spec_computed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """serve exists to put the spec's env on the exec'd image; anything it swallowed would never arrive."""
+        captured: dict[str, object] = {}
+
+        def fake_execve(path: str, argv: list[str], env: dict[str, str]) -> None:
+            captured.update(path=path, argv=argv, env=env)
+
+        monkeypatch.setattr(serve_module.os, "execve", fake_execve)
+        worker_argv = ["--flag", "value"]
+        own_argv = _smoke_own_argv(monkeypatch, worker_argv=worker_argv)
+        monkeypatch.setattr(sys, "orig_argv", [sys.executable, "serve.py", *own_argv])
+        monkeypatch.setattr(sys, "argv", ["serve.py", *own_argv])
+
+        serve_module.main()
+
+        assert captured["argv"] == [sys.executable, "-m", "miles.utils.workers.serving.serve_inner", *own_argv]
+        assert captured["env"]["MILES_SERVE_SMOKE_ENV"] == ",".join(worker_argv)
+        assert captured["env"]["MILES_SERVE_SMOKE_POOL_ID"] == POOL_ID
+
+    def test_computed_env_overrides_the_parent_without_dropping_unrelated_variables(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A computed variable replaces its parent value while unrelated inherited variables survive."""
+        captured: dict[str, object] = {}
+
+        def fake_execve(path: str, argv: list[str], env: dict[str, str]) -> None:
+            captured.update(path=path, argv=argv, env=env)
+
+        computed_name = "MILES_TEST_COMPUTED_ENV"
+        inherited_name = "MILES_TEST_INHERITED_ENV"
+        monkeypatch.setattr(serve_module.os, "execve", fake_execve)
+        monkeypatch.setenv(SMOKE_EXTRA_ENV_VAR, computed_name)
+        monkeypatch.setenv(computed_name, "from-parent")
+        monkeypatch.setenv(inherited_name, "kept")
+        own_argv = _smoke_own_argv(monkeypatch, worker_argv=[])
+        monkeypatch.setattr(sys, "argv", ["serve.py", *own_argv])
+
+        serve_module.main()
+
+        env = captured["env"]
+        assert isinstance(env, dict)
+        assert env[computed_name] == "0"
+        assert env[inherited_name] == "kept"
+
+    def test_refuses_a_spec_that_overwrites_the_identity_the_platform_gave_the_pod(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """--train-env-vars is unrestricted json, and one of these keys makes every rank claim worker zero."""
+        monkeypatch.setattr(serve_module.os, "execve", _refuse_exec)
+        monkeypatch.setenv(SMOKE_EXTRA_ENV_VAR, SUBPROCESS_INDEX_ENV_VAR)
+        own_argv = _smoke_own_argv(monkeypatch, worker_argv=[])
+        monkeypatch.setattr(sys, "argv", ["serve.py", *own_argv])
+
+        with pytest.raises(AssertionError, match=SUBPROCESS_INDEX_ENV_VAR):
+            serve_module.main()
+
+
+def _refuse_exec(path: str, argv: list[str], env: dict[str, str]) -> None:
+    raise AssertionError("a spec that overwrites the pod's identity must not reach exec")
+
+
+class TestOuterServeInterpreterFlags:
+    def test_the_parent_interpreter_flags_are_carried_into_the_inner_process(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An -O parent that re-execs a bare interpreter silently switches assertions back on inside the worker."""
+        captured: dict[str, object] = {}
+
+        def fake_execve(path: str, argv: list[str], env: dict[str, str]) -> None:
+            captured.update(path=path, argv=argv, env=env)
+
+        monkeypatch.setattr(serve_module.os, "execve", fake_execve)
+        own_argv = _smoke_own_argv(monkeypatch, worker_argv=[])
+        monkeypatch.setattr(
+            sys,
+            "orig_argv",
+            [
+                sys.executable,
+                "-O",
+                "-X",
+                "faulthandler",
+                "-m",
+                "miles.utils.workers.serving.serve",
+                *own_argv,
+            ],
+        )
+        monkeypatch.setattr(sys, "argv", ["serve.py", *own_argv])
+
+        serve_module.main()
+
+        assert captured["argv"] == [
+            sys.executable,
+            "-O",
+            "-X",
+            "faulthandler",
+            "-m",
+            "miles.utils.workers.serving.serve_inner",
+            *own_argv,
+        ]
+        assert captured["path"] == sys.executable
+
+
+def _spawn_serve(port: int) -> subprocess.Popen:
+    config = SmokeWorkerConfig(rpc_port=port, worker_argv=["--greeting", "hello"])
+    env = dict(os.environ) | pod_env(SmokeServeSpec.create(config))
+    env["PYTHONPATH"] = f"{_REPO_ROOT}{os.pathsep}{env.get('PYTHONPATH', '')}"
+
+    return subprocess.Popen(
+        [sys.executable, "-m", REGISTERED_SERVE_MODULE, *serve_config_argv(spec_class=SmokeServeSpec, config=config)],
+        cwd=_REPO_ROOT,
+        env=env,
+    )
+
+
+async def _wait_ready_or_die(handle, process: subprocess.Popen, timeout: float = 60.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        assert process.poll() is None, f"serve subprocess exited early with code {process.returncode}"
+        with contextlib.suppress(WorkerUnreachableError):
+            await handle.wait_ready(timeout=2.0)
+            return
+    raise AssertionError("serve subprocess never became ready")
+
+
+def _stop(process: subprocess.Popen) -> None:
+    process.terminate()
+    try:
+        process.wait(timeout=10.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=10.0)
+
+
+class TestServeEndToEnd:
+    async def test_serve_call_config_and_env(self):
+        """serve.py boots a worker subprocess that answers typed calls with its config and env applied."""
+        port = find_available_port(20000 + os.getpid() % 10000)
+        process = _spawn_serve(port)
+
+        async with httpx.AsyncClient(trust_env=False) as client:
+            handle = RpcWorkerHandle(
+                SmokeWorker,
+                server_url=f"http://127.0.0.1:{port}",
+                http_client=client,
+            )
+            try:
+                await _wait_ready_or_die(handle, process)
+                assert await handle.demo_sync(a=3, b=4) == 7
+                assert (await handle.report_argv())[-2:] == ["--greeting", "hello"]
+                assert await handle.report_env(name="MILES_SERVE_SMOKE_ENV") == "--greeting,hello"
+                assert await handle.report_env(name="MILES_SERVE_SMOKE_POOL_ID") == POOL_ID
+            finally:
+                _stop(process)
+
+    async def test_restart_detected_by_stable_boot_uuid_client(self):
+        """A stable-boot-uuid client notices when the serve subprocess is restarted."""
+        port = find_available_port(21000 + os.getpid() % 10000)
+        first_process = _spawn_serve(port)
+        second_process: subprocess.Popen | None = None
+
+        async with httpx.AsyncClient(trust_env=False) as client:
+            handle = RpcWorkerHandle(
+                SmokeWorker,
+                server_url=f"http://127.0.0.1:{port}",
+                require_stable_boot_uuid=True,
+                http_client=client,
+            )
+            try:
+                await _wait_ready_or_die(handle, first_process)
+                assert await handle.demo_sync(a=1, b=1) == 2
+
+                _stop(first_process)
+                second_process = _spawn_serve(port)
+                fresh_handle = RpcWorkerHandle(
+                    SmokeWorker,
+                    server_url=f"http://127.0.0.1:{port}",
+                    http_client=client,
+                )
+                await _wait_ready_or_die(fresh_handle, second_process)
+
+                with pytest.raises(ServerRestartedError):
+                    await handle.demo_sync(a=1, b=1)
+            finally:
+                if second_process is not None:
+                    _stop(second_process)
+                _stop(first_process)
+
+
+class TestCompleteWorkerPayload:
+    @pytest.mark.parametrize("entrypoint", [serve_module, serve_inner])
+    def test_worker_defaults_cannot_fill_missing_serialized_fields(
+        self, monkeypatch: pytest.MonkeyPatch, incomplete_worker_argv: list[str], entrypoint: ModuleType
+    ) -> None:
+        """Both serving entrypoints reject omitted worker fields before creating the worker spec."""
+        monkeypatch.setattr(sys, "argv", [entrypoint.__name__, *incomplete_worker_argv])
+
+        with pytest.raises(ValueError, match="worker_argv"):
+            entrypoint.main()

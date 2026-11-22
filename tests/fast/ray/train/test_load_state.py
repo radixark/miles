@@ -1,0 +1,151 @@
+from types import SimpleNamespace
+
+import pytest
+import ray
+from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell
+
+from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
+from miles.ray.specs.train import compute_trainer_pool_id
+from miles.ray.train import group as group_module
+from miles.ray.train.group import TrainerController
+from miles.ray.train.init_request import TrainerControllerInitRequest
+from miles.utils.init_once import InitOnce
+
+pytestmark = pytest.mark.asyncio
+
+
+class _FakeCell:
+    def __init__(self, *, cell_index: int, restored: list[int], is_alive: bool = True) -> None:
+        self.cell_index = cell_index
+        self.restored = restored
+        self.is_alive = is_alive
+        self.cell_id = f"trainer-engine-actor-{cell_index}"
+        self.load_state_calls = 0
+        self.ckpt_load_configs: list[object] = []
+
+    async def load_state(self, ckpt_load_config: object) -> list[int]:
+        self.load_state_calls += 1
+        self.ckpt_load_configs.append(ckpt_load_config)
+        return self.restored
+
+
+def _guard(*, initialized: bool) -> InitOnce:
+    guard = InitOnce("TrainerController")
+    if initialized:
+        with guard.guarding():
+            pass
+    return guard
+
+
+def _make_controller(
+    cells: list[_FakeCell], *, initialized: bool, expected_num_cells: int | None = None
+) -> TrainerController:
+    controller = object.__new__(TrainerController)
+    controller._cells_by_id = {f"trainer-engine-actor-{cell.cell_index}": cell for cell in cells}
+    controller._init_once = _guard(initialized=initialized)
+    controller._role = "actor"
+    controller._pool_id = compute_trainer_pool_id("actor")
+    controller.args = SimpleNamespace(
+        trainer_init_expected_num_cells=len(cells) if expected_num_cells is None else expected_num_cells
+    )
+    return controller
+
+
+class TestTrainerControllerLoadState:
+    async def test_every_cell_reloads_and_its_positions_reach_the_caller_in_cell_order(self):
+        """Independent DP ranks are positional, so a reordered position list misreads which cell resumed where."""
+        cells = [_FakeCell(cell_index=1, restored=[4, 4]), _FakeCell(cell_index=0, restored=[3, 3])]
+        controller = _make_controller(cells, initialized=True)
+
+        load = MegatronCkptLoadConfig(
+            load="checkpoint",
+            resume_from_ckpt=True,
+            no_load_optim=False,
+            no_load_rng=False,
+            finetune=False,
+            ckpt_step=None,
+        )
+        request = TrainerControllerInitRequest(
+            num_rollout=None,
+            wandb_run_id=None,
+            mlflow_run_id=None,
+            ckpt_load_config=load,
+        )
+        assert await controller.load_state(request) == [3, 3, 4, 4]
+        assert [cell.load_state_calls for cell in cells] == [1, 1]
+        assert all(cell.ckpt_load_configs == [load] for cell in cells)
+        assert not hasattr(controller, "_ckpt_load_config")
+
+    async def test_a_controller_whose_cell_is_not_alive_refuses_to_reload_anything(self):
+        """A take-over adopts the fleet a previous script left running; healing one is a different job."""
+        cells = [_FakeCell(cell_index=0, restored=[3]), _FakeCell(cell_index=1, restored=[3], is_alive=False)]
+        controller = _make_controller(cells, initialized=True)
+
+        with pytest.raises(AssertionError, match="not alive"):
+            await controller.load_state(
+                TrainerControllerInitRequest(num_rollout=None, wandb_run_id=None, mlflow_run_id=None)
+            )
+
+        assert [cell.load_state_calls for cell in cells] == [0, 0]
+
+    async def test_a_controller_that_never_built_its_model_refuses_to_reload_it(self):
+        """Loading a checkpoint into a model that was never built would read as a successful take-over."""
+        controller = _make_controller([_FakeCell(cell_index=0, restored=[3])], initialized=False)
+
+        with pytest.raises(AssertionError):
+            await controller.load_state(
+                TrainerControllerInitRequest(num_rollout=None, wandb_run_id=None, mlflow_run_id=None)
+            )
+
+
+class TestTrainerCellLoadState:
+    async def test_the_reload_reaches_every_worker_of_the_cell(self):
+        """A worker left on its old weights would train a model the other ranks already rolled back."""
+        cell = make_alive_cell(0, alive_cell_indices=[0])
+
+        load = MegatronCkptLoadConfig(
+            load="checkpoint",
+            resume_from_ckpt=True,
+            no_load_optim=False,
+            no_load_rng=False,
+            finetune=False,
+            ckpt_step=None,
+        )
+        assert await cell.load_state(load) == [7, 7]
+
+        for handle in get_raw_actor_handles(cell):
+            [(method, _args, kwargs)] = ray.get(handle.get_calls.remote())
+            assert method == "load_state"
+            assert kwargs["ckpt_load_config"] == load
+        assert not hasattr(cell, "_ckpt_load_config")
+
+
+class TestAFailedReloadRecyclesTheCell:
+    async def test_a_rank_that_refuses_the_reload_errors_the_cell_and_kills_every_rank(self):
+        """A surviving rank would still be in the checkpoint collective while the take-over reports the failure."""
+        cell = make_alive_cell(0, alive_cell_indices=[0])
+        handles = get_raw_actor_handles(cell)
+        ray.get(handles[0].set_fail_methods.remote(["load_state"]))
+
+        with pytest.raises(RuntimeError, match="Injected failure"):
+            await cell.load_state(None)
+
+        assert cell.is_errored
+        for handle in handles:
+            with pytest.raises(ray.exceptions.RayActorError):
+                ray.get(handle.get_calls.remote())
+
+
+class TestAReloadWaitsForTheWholeFleet:
+    async def test_a_controller_still_short_of_a_cell_waits_rather_than_reloading_what_it_has(self, monkeypatch):
+        """Reloading half a fleet would leave the missing cell holding the state the run has moved off."""
+        monkeypatch.setattr(group_module, "_CELLS_READY_TIMEOUT_SECONDS", 0.05)
+        cells = [_FakeCell(cell_index=0, restored=[3, 3])]
+        controller = _make_controller(cells, initialized=True, expected_num_cells=2)
+
+        with pytest.raises(TimeoutError, match="of 2 trainer cells observed"):
+            await controller.load_state(
+                TrainerControllerInitRequest(num_rollout=None, wandb_run_id=None, mlflow_run_id=None)
+            )
+
+        assert [cell.load_state_calls for cell in cells] == [0]

@@ -5,10 +5,16 @@ from megatron.core.models.gpt.gpt_layer_specs import get_gpt_mtp_block_spec
 
 from mbridge.core import register_model
 from mbridge.models import Qwen2MoEBridge
+from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import (
+    gdn_heads,
+    qkv_flat_to_group_major,
+    qkv_group_major_to_flat,
+)
+from miles_plugins.mbridge.linear_attn import LinearAttentionBridgeMixin
 
 
 @register_model(["qwen3_5", "qwen3_5_moe", "qwen3_6", "qwen3_6_moe"])
-class Qwen3_5Bridge(Qwen2MoEBridge):
+class Qwen3_5Bridge(LinearAttentionBridgeMixin, Qwen2MoEBridge):
     """
     Bridge for Qwen3.5 / Qwen3.6 models (both dense and MoE variants).
     These share the ``qwen3_5_moe`` HF config schema: VLM layout under
@@ -20,6 +26,12 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
     per-expert ``.weight`` files used by Qwen3.5 — which
     ``_mtp_experts_fused()`` autodetects from the safetensor index.
     """
+
+    # the head-sharded layer holds these group-major; HF keeps them flat
+    _GDN_GROUP_MAJOR = (
+        "self_attention.linear_attn.in_proj_qkv.weight",
+        "self_attention.linear_attn.conv1d.weight",
+    )
 
     _DIRECT_MAPPING = {
         "embedding.word_embeddings.weight": "model.language_model.embed_tokens.weight",
@@ -141,14 +153,22 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
 
     def _get_text_config(self):
         """Get the text config, handling VLM nesting."""
-        if hasattr(self.hf_config, "text_config"):
+        if hasattr(
+            self.hf_config, "text_config"
+        ):  # config-access-exempt: HF configs may wrap text_config for multimodal checkpoints
             return self.hf_config.text_config
         return self.hf_config
 
     def _is_tied_word_embeddings(self) -> bool:
-        tie_word_embeddings = getattr(self.hf_config, "tie_word_embeddings", None)
-        if tie_word_embeddings is None and hasattr(self.hf_config, "text_config"):
-            tie_word_embeddings = getattr(self.hf_config.text_config, "tie_word_embeddings", None)
+        tie_word_embeddings = getattr(
+            self.hf_config, "tie_word_embeddings", None
+        )  # config-access-exempt: embedding tying may live on outer or text HF config
+        if tie_word_embeddings is None and hasattr(
+            self.hf_config, "text_config"
+        ):  # config-access-exempt: only multimodal HF configs wrap text_config
+            tie_word_embeddings = getattr(
+                self.hf_config.text_config, "tie_word_embeddings", None
+            )  # config-access-exempt: embedding tying may be absent from nested HF config
         return bool(tie_word_embeddings)
 
     def _adjust_mapping_for_shared_weights(self):
@@ -164,11 +184,15 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
 
     def _supports_transformer_config_kwarg(self, kwarg_name: str) -> bool:
         """Check whether the current TransformerConfig accepts a given kwarg."""
-        transformer_config_class = getattr(self, "TransformerConfigClass", None)
+        transformer_config_class = getattr(
+            self, "TransformerConfigClass", None
+        )  # config-access-exempt: mbridge versions expose different TransformerConfig classes
         if transformer_config_class is None:
             return True
 
-        dataclass_fields = getattr(transformer_config_class, "__dataclass_fields__", None)
+        dataclass_fields = getattr(
+            transformer_config_class, "__dataclass_fields__", None
+        )  # config-access-exempt: upstream configuration classes are not always dataclasses
         if dataclass_fields is not None:
             return kwarg_name in dataclass_fields
 
@@ -187,8 +211,12 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
         """Override to add MTP block spec if needed."""
         ret = super()._get_gptmodel_args()
         text_config = self._get_text_config()
-        if getattr(text_config, "mtp_num_hidden_layers", None) is not None:
-            transformer_layer_spec = getattr(self, "_last_transformer_layer_spec", None)
+        if (
+            getattr(text_config, "mtp_num_hidden_layers", None) is not None
+        ):  # config-access-exempt: only MTP checkpoints declare MTP depth
+            transformer_layer_spec = getattr(
+                self, "_last_transformer_layer_spec", None
+            )  # config-access-exempt: the layer spec is cached after its first construction
             if transformer_layer_spec is None:
                 transformer_layer_spec = self._get_transformer_layer_spec()
             mtp_block_spec = get_gpt_mtp_block_spec(self.config, transformer_layer_spec, use_transformer_engine=True)
@@ -204,11 +232,17 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
         ``_mtp_experts_fused()``; defaults to fused when the index is unavailable
         so pre-init access keeps the historical behaviour.
         """
-        cached = getattr(self, "_experts_fused_cached", None)
+        cached = getattr(
+            self, "_experts_fused_cached", None
+        )  # config-access-exempt: expert-layout detection is cached lazily
         if cached is not None:
             return cached
-        io = getattr(self, "safetensor_io", None)
-        index = getattr(io, "index", None) if io is not None else None
+        io = getattr(
+            self, "safetensor_io", None
+        )  # config-access-exempt: safetensor IO is optional before checkpoint loading
+        index = (
+            getattr(io, "index", None) if io is not None else None
+        )  # config-access-exempt: checkpoint IO implementations may omit the tensor index
         if not index:
             return True
         fused = any("model.language_model.layers." in k and k.endswith("mlp.experts.gate_up_proj") for k in index)
@@ -246,11 +280,17 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
         (e.g. from tests that instantiate via ``__new__``) does not lock in
         a wrong answer.
         """
-        cached = getattr(self, "_mtp_experts_fused_cached", None)
+        cached = getattr(
+            self, "_mtp_experts_fused_cached", None
+        )  # config-access-exempt: MTP expert-layout detection is cached lazily
         if cached is not None:
             return cached
-        io = getattr(self, "safetensor_io", None)
-        index = getattr(io, "index", None) if io is not None else None
+        io = getattr(
+            self, "safetensor_io", None
+        )  # config-access-exempt: safetensor IO is optional before checkpoint loading
+        index = (
+            getattr(io, "index", None) if io is not None else None
+        )  # config-access-exempt: checkpoint IO implementations may omit the tensor index
         if not index:
             return False
         fused = any(
@@ -307,9 +347,10 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
         if name in direct_name_mapping:
             return [direct_name_mapping[name]]
 
-        if "transformer_layer" in name:
+        _mtp_inner = next((p for p in ("transformer_layer", "mtp_model_layer") if p in name), None)
+        if _mtp_inner is not None:
             proxy_name = name.replace(
-                f"mtp.layers.{mtp_layer_idx}.transformer_layer",
+                f"mtp.layers.{mtp_layer_idx}.{_mtp_inner}",
                 f"decoder.layers.{mtp_layer_idx}",
             )
 
@@ -339,6 +380,9 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
             # from Bridge's global pre-cast to self.dtype.
             return hf_weights[0].to(dtype=torch.float32).contiguous()
 
+        if mcore_weights_name.endswith(self._GDN_GROUP_MAJOR):
+            return qkv_flat_to_group_major(hf_weights[0], gdn_heads(self._get_text_config()))
+
         if "self_attention.linear_qkv." in mcore_weights_name and "layer_norm" not in mcore_weights_name:
             # merge qkv
             assert len(hf_weights) == 3
@@ -347,7 +391,9 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
             hidden_dim = text_config.hidden_size
             num_attention_heads = text_config.num_attention_heads
             num_querys_per_group = num_attention_heads // text_config.num_key_value_heads
-            head_dim = getattr(text_config, "head_dim", hidden_dim // num_attention_heads)
+            head_dim = getattr(
+                text_config, "head_dim", hidden_dim // num_attention_heads
+            )  # config-access-exempt: HF checkpoints may omit explicit head dimension
             group_dim = head_dim * num_attention_heads // num_key_value_heads
             q, k, v = hf_weights
             # q k v might be tp split
@@ -377,7 +423,9 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
             w = hf_weights[0]
             if w.dim() == 3:
                 # Extract expert_id from name like "...linear_fc1.weight42"
-                expert_id = int(mcore_weights_name.split("weight")[-1])
+                local_expert_id = int(mcore_weights_name.split("weight")[-1])
+                experts_per_rank = self._get_text_config().num_experts // self.mpu.ep_size
+                expert_id = self.mpu.ep_rank * experts_per_rank + local_expert_id
                 expert_w = w[expert_id]  # (out_features, in_features)
                 return expert_w.contiguous()
 
@@ -386,17 +434,22 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
     def _weight_to_hf_format(
         self, mcore_weights_name: str, mcore_weights: torch.Tensor
     ) -> tuple[list[str], list[torch.Tensor]]:
-        return super()._weight_to_hf_format(mcore_weights_name, mcore_weights)
+        names, weights = super()._weight_to_hf_format(mcore_weights_name, mcore_weights)
+        if mcore_weights_name.endswith(self._GDN_GROUP_MAJOR):
+            weights = [qkv_group_major_to_flat(weights[0], gdn_heads(self._get_text_config()))]
+        return names, weights
 
     def _build_config(self):
         text_config = self._get_text_config()
 
         mtp_args = {}
-        if hasattr(text_config, "mtp_num_hidden_layers"):
+        if hasattr(text_config, "mtp_num_hidden_layers"):  # config-access-exempt: HF checkpoints may omit MTP depth
             mtp_args["mtp_num_layers"] = text_config.mtp_num_hidden_layers
 
         base_kwargs = dict(
-            text_config_key="text_config" if hasattr(self.hf_config, "text_config") else None,
+            text_config_key=(
+                "text_config" if hasattr(self.hf_config, "text_config") else None
+            ),  # config-access-exempt: HF configs may wrap text_config for multimodal checkpoints
             use_cpu_initialization=False,
             # Other optimizations
             persist_layer_norm=True,
@@ -410,10 +463,14 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
         )
 
         # Handle MoE-specific config
-        if hasattr(text_config, "num_experts"):
+        if hasattr(
+            text_config, "num_experts"
+        ):  # config-access-exempt: dense and MoE HF configs expose different expert fields
             base_kwargs.update(
                 moe_ffn_hidden_size=text_config.moe_intermediate_size,
-                moe_shared_expert_intermediate_size=getattr(text_config, "shared_expert_intermediate_size", None),
+                moe_shared_expert_intermediate_size=getattr(
+                    text_config, "shared_expert_intermediate_size", None
+                ),  # config-access-exempt: HF checkpoints may omit shared expert width
                 moe_router_bias_update_rate=0.001,
                 moe_router_topk=text_config.num_experts_per_tok,
                 num_moe_experts=text_config.num_experts,
@@ -424,7 +481,9 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
                 moe_shared_expert_gate=True,
             )
             # For MoE models without intermediate_size, use shared_expert_intermediate_size
-            if not hasattr(text_config, "intermediate_size"):
+            if not hasattr(
+                text_config, "intermediate_size"
+            ):  # config-access-exempt: MoE HF variants may omit dense intermediate size
                 base_kwargs["ffn_hidden_size"] = text_config.shared_expert_intermediate_size
 
         return self._build_base_config(**base_kwargs)

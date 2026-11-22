@@ -17,10 +17,14 @@ up a new model architecture.
 
 | Format | Block layout | Hardware | Models tested | Maturity |
 |---|---|---|---|---|
-| **BF16** | — | All NVIDIA + AMD MI300X / MI325 / MI350 / MI355X | All | Baseline |
-| **FP8 block-wise** (DeepSeek-style) | 128×128, FP32 scales | Hopper (H100 / H200), Blackwell (B200+) | Qwen3-4B, Qwen3-30B-A3B | Generally available |
+| **BF16** | — | All NVIDIA + AMD MI300X / MI325X / MI350X / MI355X | All | Baseline |
+| **FP8 block-wise** (DeepSeek-style) | 128×128, FP32 scales | Hopper (H100 / H200), Blackwell (B200+), AMD MI350X / MI355X | Qwen3-4B, Qwen3-30B-A3B, DeepSeek-V4-Flash | Generally available |
 | **MXFP8** | 1×32, UE8M0 scales | Blackwell only (B200, B300, GB200, GB300) | Qwen3-30B-A3B, DeepSeek-V3.2 | Beta |
 | **NVFP4** (E2M1) | 1×16, two-level (FP8 + FP32) scales | Blackwell only (B200, B300, GB200, GB300) | Qwen3-30B-A3B | Beta |
+| **MXFP4** (E2M1) | 1×32, UE8M0 scales | Blackwell only (B200, B300, GB200, GB300) | DeepSeek-V4-Flash (routed experts, inference only) | Experimental |
+
+MXFP4 is not a standalone choice: rollout uses it only for the routed experts of
+releases that ship them in MXFP4 ([mode 5](#5-mxfp4-routed-experts-blackwell)).
 
 ## Rollout × training compatibility
 
@@ -30,13 +34,15 @@ forward precision. ✅ = supported; ✗ = not supported.
 | Rollout \ Train | BF16 | FP8 block-wise | MXFP8 | NVFP4 |
 |---|---|---|---|---|
 | **BF16**           | ✅ baseline | ✗ | ✗ | ✗ |
-| **FP8 block-wise** | ✅ | ✅ Hopper + Blackwell | ✗ | ✗ |
+| **FP8 block-wise** | ✅ | ✅ Hopper + Blackwell + MI350X / MI355X | ✗ | ✗ |
 | **MXFP8**          | ✅ | ✗ | ✅ Blackwell | ✗ |
 | **NVFP4**          | ✗ | ✗ | ✗ | ✅ Blackwell |
+| **MXFP4**          | ✗ | ✗ | ✅ Blackwell, optional MXFP4 QAT | ✗ |
 
 The reference script (`scripts/run_qwen3_30b_a3b.py`) allows only one rollout
 precision and one training precision at a time. Use paired rollout and training
-flags for the end-to-end MXFP8 and NVFP4 recipes below.
+flags for the end-to-end MXFP8 and NVFP4 recipes below. MXFP4 rollout keeps the
+weights other than the routed experts in block-wise FP8.
 
 ## Unified training recipe
 
@@ -202,8 +208,10 @@ python scripts/run_qwen3_30b_a3b.py execute \
 
 The launcher selects per-token activation scaling, disables the incompatible
 2D quantization, RHT, and stochastic-rounding paths, and loads the matching
-tensor-level precision configuration. Unmatched tensors stay in BF16, and
-rollout uses a BF16 KV cache.
+tensor-level precision configuration. NVFP4 applies only to the routed-expert
+FC1 and FC2 GEMMs; shared experts and all other unmatched tensors stay in BF16
+across checkpoint conversion, training, and live weight export. Rollout uses a
+BF16 KV cache.
 
 The training path uses:
 
@@ -246,6 +254,16 @@ python tools/convert_hf_to_nvfp4.py \
   --save-dir /root/models/Qwen3-30B-A3B-NVFP4
 ```
 
+Checkpoint conversion and live weight export quantize only routed experts in
+the main language decoder. MTP weights (including appended decoder layers),
+vision/audio components, shared experts, and dense layers keep their source
+precision. The HF converter uses the language `num_hidden_layers` from
+`text_config` when present, otherwise the top-level config, and recognizes
+`model.layers`, `language_model.model.layers`, `model.language_model.layers`,
+and `language_model.layers`. First/last-layer BF16 controls apply to those
+language layers. Unsupported namespaces remain unquantized. Training-time
+precision is still controlled separately by `--te-precision-config-file`.
+
 #### Advanced: dequantized backward
 
 Dequantized backward keeps the backward GEMMs in BF16 but uses BF16
@@ -284,6 +302,79 @@ export NVTE_NVFP4_4OVER6_ERR_USE_FAST_MATH=0
 export FLASHINFER_NVFP4_4OVER6_ERR_USE_FAST_MATH=0
 ```
 
+### 5. MXFP4 routed experts (Blackwell)
+
+DeepSeek-V4 and Kimi K3 release their routed experts in MXFP4 — E2M1 values in
+32-value blocks with one UE8M0 scale per block — and keep their other weights in
+higher precision. Both reach these weights through MXFP4 quantization-aware
+training (QAT) in post-training ([DeepSeek-V4](https://arxiv.org/abs/2606.19348),
+[Kimi K3](https://arxiv.org/abs/2607.24653)).
+
+Miles implements this for DeepSeek-V4 by changing only the routed experts on top
+of FP8 training and rollout. In rollout, the routed experts run MXFP4 weights ×
+MXFP8 activations (W4A8), as in the release. Three DeepSeek-V4 configurations
+change one thing at a time:
+
+| `--train-precision` | `--rollout-precision` | Routed experts in training | Routed experts in rollout |
+|---|---|---|---|
+| `mxfp8` | `mxfp8` | MXFP8 | MXFP8 |
+| `mxfp8` | `mxfp8-mxfp4-routed-expert` | MXFP8 | MXFP4 × MXFP8 |
+| `mxfp8-mxfp4-routed-expert` | `mxfp8-mxfp4-routed-expert` | MXFP4 grid × MXFP8 | MXFP4 × MXFP8 |
+
+The first and last align the routed experts between training and rollout. The
+second serves the MXFP4 experts without QAT, so the routed experts carry a
+train–rollout mismatch, as in mode 1. In all three, the other layers use the
+MXFP8 recipe in training and block-wise FP8 in rollout.
+
+**MXFP4 QAT.** Training has no MXFP4 GEMM. On the first microbatch of each
+forward-backward pass, the trainer rounds the routed-expert BF16 weights onto the
+MXFP4 grid in place, with the block layout and rounding of the rollout encoder
+(round to nearest, ties to even). MXFP4 and MXFP8 share the 1×32 block, so the
+MXFP8 GEMMs receive the rounded weights unchanged, which are the weights rollout
+serves. The optimizer updates the fp32 master weights and overwrites the BF16
+weights after every step, so the weight gradient reaches the master weights
+unchanged, as with a straight-through estimator, and no rounded copy is kept.
+Master weights and optimizer state keep their precision, and nothing outside the
+routed-expert weights is rounded to MXFP4.
+
+![Routed-expert MXFP4 QAT on the MXFP8 recipe](/assets/images/low-precision/mxfp4-qat.png)
+
+The MXFP8 recipe also matches the 1×32 activation scaling of the W4A8 rollout
+kernel, so both GEMM operands agree with rollout.
+
+**Hardware:** Blackwell. QAT also requires initializing the trainer from the
+Hugging Face checkpoint (`--init-model-source hf`).
+
+```bash
+python scripts/run_deepseek_v4.py full-train \
+   --model-name DeepSeek-V4-Flash --hardware GB300 \
+   --num-nodes 8 --num-gpus-per-node 4 \
+   --init-model-source hf --rollout-weight-source trainer \
+   --train-precision mxfp8-mxfp4-routed-expert \
+   --rollout-precision mxfp8-mxfp4-routed-expert
+```
+
+On top of the MXFP8 training path of mode 3, this passes:
+
+```bash
+--megatron-to-hf-mode bridge
+--routed-expert-qat mxfp4
+--rollout-routed-expert-format mxfp4
+```
+
+On the rollout side, the launcher sets `SGLANG_DSV4_FP4_EXPERTS=1` and the
+`flashinfer_mxfp4` MoE runner. Without `--colocate`, MXFP4 routed experts also
+need `--update-weight-transfer-mode broadcast_packed`, which sends their UE8M0
+scales as bytes.
+
+`--routed-expert-qat` supports DeepSeek-V4 through the Megatron-Bridge provider.
+It requires `--bf16` or `--fp16` with fp32 master weights and a Megatron-LM whose
+`TransformerConfig` has the `moe_expert_fake_quant` field. It does not support
+Megatron FSDP, the Transformer Engine op fuser, or CUDA graphs.
+
+See [Training and rollout precision](/models/deepseek/deepseek-v4-flash#35-training-and-rollout-precision)
+for the option values and their constraints.
+
 ## Fine-grained BF16 exceptions
 
 Miles supports per-layer precision configuration across checkpoint
@@ -298,9 +389,33 @@ conversion, Megatron training, SGLang rollout, and live weight export.
 | `--extra-high-precision-layers-megatron` | Exclude matching Megatron tensor names during training and live export. |
 | `--te-precision-config-file` | Select Transformer Engine recipes by Megatron tensor name. |
 
-Use equivalent Hugging Face and Megatron name matchers. Common exceptions
-include final transformer layers, shared experts, and MLA projections whose
-contraction axis does not match a one-dimensional scaling layout.
+Use equivalent Hugging Face and Megatron name matchers for exceptions beyond a
+recipe's default scope. NVFP4 checkpoint conversion and live export exclude
+shared experts, MTP, and non-language components automatically. Common
+additional exceptions include final transformer layers and MLA projections
+whose contraction axis does not match a one-dimensional scaling layout.
+
+## Stochastic rounding of BF16 weights
+
+At RL learning rates, many updates to the FP32 master weights are smaller than
+half a BF16 spacing, so rounding the masters to nearest leaves those BF16 weights
+unchanged ([arXiv:2611.13545](https://arxiv.org/abs/2611.13545)). Setting
+`OPEN_TRAINING_BF16_STOCHASTIC_ROUNDING_FLAG=1` in the trainer environment (for
+example `--train-env-vars '{"OPEN_TRAINING_BF16_STOCHASTIC_ROUNDING_FLAG": "1"}'`)
+rounds the masters into the BF16 weights stochastically after every optimizer
+step; rollout and training both use the rounded weights. It applies to `--bf16`
+training with the distributed optimizer, on the GPU or with
+`--optimizer-cpu-offload`. Miles refuses `--use-precision-aware-optimizer`
+without `--optimizer-cpu-offload` at startup, since TE FusedAdam then keeps the
+master weights and casts them itself.
+
+The random bits are Transformer Engine's NVFP4 stochastic-rounding generator
+(Philox4x32-10) and depend only on the seed, the optimizer step, and the
+parameter shard, so `--rematerialize-param-from-master-weight` and resumed runs
+rebuild the same weights. See
+[`miles/kernels/quant/stochastic_round.py`](https://github.com/radixark/miles/blob/main/miles/kernels/quant/stochastic_round.py)
+and
+[`miles/utils/bf16_stochastic_rounding.py`](https://github.com/radixark/miles/blob/main/miles/utils/bf16_stochastic_rounding.py).
 
 ## Hardware support
 
@@ -309,13 +424,14 @@ contraction axis does not match a one-dimensional scaling layout.
 | NVIDIA H100 / H200 | ✅ | ✅ | ✗ | ✗ |
 | NVIDIA B200 / B300 / GB200 / GB300 | ✅ | ✅ | ✅ | ✅ |
 | NVIDIA A100 | ✅ | ✗ | ✗ | ✗ |
-| AMD MI300X / MI325 / MI350 / MI355X | ✅ | ✗ | ✗ | ✗ |
+| AMD MI350X / MI355X | ✅ | ✅ | ✗ | ✗ |
+| AMD MI300X / MI325X | ✅ | ✗ | ✗ | ✗ |
 
 ## When BF16 is enough
 
 * Dense models below ~30 B.
 * A100 hardware (no FP8 GEMM).
-* AMD hardware today.
+* AMD MI300X / MI325X (no FP8 block-wise path).
 * Bring-up of a new model architecture, where clean BF16 numerics simplify
   debugging.
 
@@ -324,3 +440,4 @@ contraction axis does not match a one-dimensional scaling layout.
 * [Blackwell MXFP8 and NVFP4 RL roadmap](https://github.com/radixark/miles/issues/615)
 * [Towards Blackwell-Native 8-bit and 4-bit RL: End-to-End MXFP8 and NVFP4 RL in Miles](https://www.lmsys.org/blog/2026-07-29-mxfp8-nvfp4-rl)
 * [The 4-bitter Lesson](https://humansand.ai/blog/nvfp4-rl)
+* [Faster-than-light NVFP4 decode—with precision](https://humansand.ai/blog/faster-than-light-nvfp4-decode)

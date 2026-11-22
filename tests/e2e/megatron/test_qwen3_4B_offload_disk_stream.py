@@ -15,7 +15,8 @@ import os
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
+from miles.utils.workers.naming import format_name_index
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
@@ -23,9 +24,7 @@ NUM_GPUS = 4
 OFFLOAD_DIR = "/root/train_offload_disk_stream"
 
 register_cuda_ci(
-    est_time=600,
-    suite="stage-c-4-gpu-h200",
-    labels=["miles-plugin"],
+    est_time=600, suite="stage-c-4-gpu-h200", labels=["miles-plugin"], hardware=["hopper", "blackwell"], num_gpus=4
 )
 register_rocm_ci(
     est_time=600,
@@ -38,9 +37,11 @@ register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
@@ -59,7 +60,10 @@ def _assert_offloaded_to_disk():
                 if "Train disk-offload reclaim armed" in line:
                     armed.add(line.split("reclaim armed for ")[1].split()[0])
 
-    expected = {os.path.join(OFFLOAD_DIR, f"cell0_rank{rank}") for rank in range(NUM_GPUS)}
+    expected = {
+        os.path.join(OFFLOAD_DIR, f"cell{format_name_index(0)}_rank{format_name_index(rank)}")
+        for rank in range(NUM_GPUS)
+    }
     assert armed == expected, f"expected disk offload armed for {sorted(expected)}, saw {sorted(armed)}"
     print(f"disk offload armed for {len(armed)} ranks under {OFFLOAD_DIR}")
 
@@ -74,12 +78,20 @@ def _assert_streamed():
     logs = glob.glob("/tmp/ray/session_latest/logs/worker-*")
     assert logs, "no Ray worker logs to check for the streaming path"
 
+    initialized = set()
     streamed = set()
     for path in logs:
         with open(path, errors="ignore") as f:
-            if any("NVMe streaming step:" in line for line in f):
+            text = f.read()
+            if "NVMe optimizer main-param initialization:" in text:
+                initialized.add(path)
+            if "NVMe streaming step:" in text:
                 streamed.add(path)
 
+    assert len(initialized) == NUM_GPUS, (
+        f"expected {NUM_GPUS} ranks to initialize main params through NVMe, "
+        f"saw {len(initialized)}: {sorted(initialized)}"
+    )
     assert (
         len(streamed) == NUM_GPUS
     ), f"expected {NUM_GPUS} ranks to log streaming steps, saw {len(streamed)}: {sorted(streamed)}"
@@ -87,7 +99,8 @@ def _assert_streamed():
 
 
 def execute():
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/{MODEL_NAME}_torch_dist "
+    U = command_utils.default_config().create_backend()
+    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
         "--prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl "
@@ -167,7 +180,7 @@ def execute():
         f"{optimizer_args} "
         f"{grpo_args} "
         f"{offload_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{command_utils.get_default_wandb_args(__file__)} "
         f"{perf_args} "
         f"{sglang_args} "
         f"{ci_args} "
