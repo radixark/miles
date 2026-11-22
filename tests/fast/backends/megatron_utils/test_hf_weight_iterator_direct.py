@@ -332,3 +332,123 @@ class TestExpertParallelGatherFaultHook:
 
         assert [name for name, _ in _materialize_experts(direct_module)] == _EXPERT_NAMES
         assert gather_log.log == []
+
+
+class TestExpertBatchConversion:
+    def test_fp8_expert_batch_matches_scalar_and_honors_exclusions(
+        self, direct_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import miles.backends.megatron_utils.megatron_to_hf as m2h
+        from miles.backends.megatron_utils.megatron_to_hf.processors import quantizer_fp8
+
+        monkeypatch.setattr(
+            quantizer_fp8,
+            "is_layer_skipped",
+            lambda name, ignored, *_a, **_kw: any(p in name for p in (ignored or [])),
+        )
+        args = Namespace(
+            backend=Namespace(vocab_size=128, kv_channels=64, num_attention_heads=4, num_query_groups=4, num_layers=2)
+        )
+        qcfg = {
+            "quant_method": "fp8",
+            "activation_scheme": "dynamic",
+            "ignored_layers": ["model.layers.1.mlp.experts"],
+        }
+        torch.manual_seed(0)
+        dec, mtp = "module.module.decoder.layers", "module.module.mtp.layers.0.transformer_layer"
+        named_params = [
+            (f"{dec}.0.mlp.experts.linear_fc1.weight0", torch.randn(16, 8, dtype=torch.bfloat16)),
+            (f"{dec}.0.mlp.experts.linear_fc1.weight1", torch.zeros(16, 8, dtype=torch.bfloat16)),
+            (f"{dec}.0.mlp.experts.linear_fc2.weight0", torch.randn(8, 8, dtype=torch.bfloat16)),
+            (f"{dec}.0.mlp.experts.linear_fc2.weight1", torch.randn(8, 8, dtype=torch.bfloat16)),
+            (f"{dec}.1.mlp.experts.linear_fc2.weight0", torch.randn(8, 8, dtype=torch.bfloat16)),
+            (f"{mtp}.mlp.experts.linear_fc2.weight0", torch.randn(8, 8, dtype=torch.bfloat16)),
+        ]
+
+        expected = [list(m2h.convert_to_hf(args, "deepseekv3", name, param, qcfg)) for name, param in named_params]
+        actual = list(m2h.convert_experts_to_hf(args, "deepseekv3", iter(named_params), qcfg))
+
+        for a_unit, e_unit in zip(actual, expected, strict=True):
+            assert [n for n, _ in a_unit] == [n for n, _ in e_unit]
+            for (_, a_t), (_, e_t) in zip(a_unit, e_unit, strict=True):
+                assert a_t.stride() == e_t.stride()
+                assert torch.equal(
+                    a_t.contiguous().reshape(-1).view(torch.uint8), e_t.contiguous().reshape(-1).view(torch.uint8)
+                )
+        assert [n for n, _ in actual[4]] == ["model.layers.1.mlp.experts.0.down_proj.weight"]
+        assert actual[4][0][1].data_ptr() == named_params[4][1].data_ptr()
+
+    @pytest.mark.parametrize(
+        ("qcfg", "routed_fmt"),
+        [
+            (None, None),
+            ({"quant_method": "nvfp4"}, None),
+            ({"quant_method": "compressed-tensors"}, None),
+            ({"quant_method": "fp8", "fmt": "e4m3", "activation_scheme": "dynamic"}, "mxfp8"),
+        ],
+    )
+    def test_non_fp8_or_routed_expert_formats_remain_lazy(
+        self, direct_module, qcfg, routed_fmt, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import miles.backends.megatron_utils.megatron_to_hf as m2h
+
+        consumed, packed_names = [], {"model.layers.0.mlp.experts.0.down_proj"}
+        args = Namespace(**({"rollout_routed_expert_format": routed_fmt} if routed_fmt else {}))
+
+        def _convert_one(a, model_name, name, param, cfg, packed):
+            assert a is args and cfg is qcfg and packed is packed_names
+            return [(name, param)]
+
+        monkeypatch.setattr(m2h, "convert_to_hf", _convert_one)
+        source = ((consumed.append(i) or f"expert{i}", torch.ones(2, 2)) for i in range(3))
+        stream = m2h.convert_experts_to_hf(args, "qwen3moe", source, qcfg, packed_names)
+        assert consumed == []
+        assert next(stream)[0][0] == "expert0" and consumed == [0]
+        assert [u[0][0] for u in stream] == ["expert1", "expert2"]
+
+    @pytest.mark.parametrize("before_gather", [True, False])
+    @pytest.mark.parametrize("materialize", [True, False])
+    def test_direct_iterator_routes_expert_batches_and_respects_materialize(
+        self,
+        direct_module,
+        expert_parallel: None,
+        before_gather: bool,
+        materialize: bool,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        events: list[str] = []
+        cpu_device = torch.device("cpu")
+
+        def _gather_source(_a, infos, weights, **_kw):
+            events.append("gather_source")
+            return [(i.name, weights[i.name]) for i in infos]
+
+        def _convert_experts(_a, _m, params, *_r):
+            events.append("convert_experts")
+            return [[(f"hf.{n}", t)] for n, t in params]
+
+        monkeypatch.setattr(direct_module.torch, "device", lambda *_a, **_kw: cpu_device)
+        monkeypatch.setattr(direct_module, "_gather_megatron_expert_batch", _gather_source)
+        monkeypatch.setattr(direct_module, "convert_experts_to_hf", _convert_experts)
+
+        it = object.__new__(direct_module.HfWeightIteratorDirect)
+        it.args = Namespace(custom_model_provider_path=None)
+        it.model_name, it.quantization_config, it.packed_weight_basenames = "qwen3moe", {"quant_method": "fp8"}, None
+        it.placement = SimpleNamespace(gather_pp=False)
+        it._convert_experts_before_gather = before_gather
+        it._non_expert_batches = []
+        it._expert_batches = [
+            direct_module._ExpertBatch(
+                param_infos=[_expert_info(n) for n in _EXPERT_NAMES],
+                gathers=(lambda units, device: (events.append("gather_hf"), units)[1],),
+            )
+        ]
+
+        emitted = list(it._iter_hf_param_units({n: torch.ones(2) for n in _EXPERT_NAMES}, materialize=materialize))
+        expected = (
+            ["convert_experts", "gather_hf"]
+            if before_gather
+            else ["gather_source", *(["convert_experts"] if materialize else [])]
+        )
+        assert events == expected
+        assert [u[0][0] for u in emitted] == ([f"hf.{n}" for n in _EXPERT_NAMES] if materialize else [])
