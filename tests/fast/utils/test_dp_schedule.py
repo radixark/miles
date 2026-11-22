@@ -18,7 +18,7 @@ import pytest
 
 from miles.utils import dp_schedule
 from miles.utils.args.runtime import RolloutConfig, TrainerConfig
-from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule
+from miles.utils.dp_schedule import TrainParallelConfig, build_dp_schedule, check_dynamic_batch_alignment
 from miles.utils.flops_utils import KeyTerm, LayerFlops, ModelFlops
 
 
@@ -30,6 +30,7 @@ def make_args(
     balance_data=False,
     balance_by_flops=False,
     allow_partial_train_step=False,
+    global_batch_size=None,
 ):
     return RolloutConfig.model_construct(
         micro_batch_size=micro_batch_size,
@@ -39,6 +40,8 @@ def make_args(
         balance_by_flops=balance_by_flops,
         hf_checkpoint="unused",
         allow_partial_train_step=allow_partial_train_step,
+        global_batch_size=global_batch_size,
+        use_dynamic_global_batch_size=False,
         train_backend="megatron",
     )
 
@@ -345,6 +348,25 @@ def test_static_misaligned_micro_batch_count_asserts():
     tp = make_tp(dp_size=2)
     with pytest.raises(AssertionError, match="static path"):
         build_dp_schedule(args, tp, [10] * 8, global_batch_size=8, rollout_indices=list(range(8)))
+
+
+@pytest.mark.parametrize("dp_size", [6, 8])
+def test_dynamic_batch_alignment_checked_at_startup(dp_size):
+    """256 samples that cannot share a micro-batch align on dp 8 but not on dp 6 (24 GPUs at cp 4):
+    the startup check rejects exactly what the schedule would reject after the rollout."""
+    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=32768, global_batch_size=256)
+    tp = make_tp(dp_size=dp_size, cp_size=4)
+    schedule = lambda: build_dp_schedule(  # noqa: E731
+        args, tp, [100_000] * 256, global_batch_size=256, rollout_indices=list(range(256))
+    )
+    if dp_size == 8:
+        check_dynamic_batch_alignment(args, tp)
+        schedule()
+    else:
+        with pytest.raises(AssertionError, match="not a multiple of dp_size"):
+            check_dynamic_batch_alignment(args, tp)
+        with pytest.raises(AssertionError, match="maximal splitting"):
+            schedule()
 
 
 def test_randomized_invariants_dynamic():

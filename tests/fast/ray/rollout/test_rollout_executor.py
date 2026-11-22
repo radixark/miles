@@ -749,3 +749,18 @@ class TestRolloutCheckpointDir:
     def test_every_rollout_gets_its_own_directory(self, tmp_path: Path) -> None:
         """The rollout id names the directory, so two checkpoints never share one."""
         assert compute_rollout_checkpoint_dir(tmp_path, rollout_id=3) == tmp_path / "rollout" / "3"
+
+
+def test_set_train_parallel_config_rejects_misaligned_dynamic_batch():
+    executor = RolloutExecutor.__new__(RolloutExecutor)
+    executor.args = make_args(
+        global_batch_size=256, use_dynamic_batch_size=True, max_tokens_per_gpu=32768, multi_lora=False
+    )
+    executor._train_parallel_configs_of_model_id = {}
+    with pytest.raises(AssertionError, match="not a multiple of dp_size"):
+        executor.set_train_parallel_config(
+            make_train_parallel_config(dp_size=6, cp_size=4, supports_precomputed_schedule=True)
+        )
+    executor.set_train_parallel_config(
+        make_train_parallel_config(dp_size=8, cp_size=4, supports_precomputed_schedule=True)
+    )

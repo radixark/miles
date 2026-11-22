@@ -53,6 +53,30 @@ def _calculate_workloads(step_lengths: list[int], args: TrainerConfig | RolloutC
     return [model_flops.fwd_flops([sl]) for sl in step_lengths]
 
 
+def _micro_batch_alignment(train_parallel_config: TrainParallelConfig) -> int:
+    """Every step's micro-batch count must divide evenly across dp and vpp."""
+    vpp_size = train_parallel_config.vpp_size or 1
+    mb_group = train_parallel_config.microbatch_group_size_per_vp_stage
+    return train_parallel_config.dp_size * (mb_group if vpp_size > 1 else 1)
+
+
+def check_dynamic_batch_alignment(args: RolloutConfig, train_parallel_config: TrainParallelConfig) -> None:
+    """Reject at startup a step size that ``build_dp_schedule`` can only reject after a rollout.
+
+    Splitting yields at most one micro-batch per sample, so a step of samples too long to share a
+    micro-batch can be aligned only if its sample count is a multiple of the alignment.
+    """
+    if not args.use_dynamic_batch_size or args.use_dynamic_global_batch_size:
+        return
+    align_to = _micro_batch_alignment(train_parallel_config)
+    assert args.global_batch_size % align_to == 0, (
+        f"--global-batch-size {args.global_batch_size} is not a multiple of dp_size * mb_group ({align_to}); "
+        f"a step whose samples each exceed max_tokens_per_gpu * cp_size / 2 "
+        f"({args.max_tokens_per_gpu * train_parallel_config.cp_size // 2} tokens) cannot be split into an "
+        f"aligned micro-batch count and fails at its first train step. Use a multiple of {align_to}."
+    )
+
+
 def build_dp_schedule(
     args: TrainerConfig | RolloutConfig,
     train_parallel_config: TrainParallelConfig,
@@ -67,9 +91,7 @@ def build_dp_schedule(
     cp_size = train_parallel_config.cp_size
     vpp_size = train_parallel_config.vpp_size or 1
     mb_group = train_parallel_config.microbatch_group_size_per_vp_stage
-
-    # micro-batch size per step must divide evenly across dp and vpp
-    align_to = dp_size * (mb_group if vpp_size > 1 else 1)
+    align_to = _micro_batch_alignment(train_parallel_config)
 
     max_per_bin = None
     if args.use_dynamic_batch_size:
