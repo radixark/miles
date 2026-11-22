@@ -450,6 +450,8 @@ class PublicationWriter:
             os.fsync(self._file.fileno())
             size = self._file.tell()
             self._file.close()
+            entries = sorted(self._entries.values(), key=lambda entry: entry["name"])
+            self._entries.clear()
             return {
                 "metadata": self.metadata,
                 "files": [
@@ -459,7 +461,8 @@ class PublicationWriter:
                         "sha256": self._hash.hexdigest() if self._hash is not None else None,
                     }
                 ],
-                "tensors": list(self._entries.values()),
+                "tensors": [catalog_entry(entry) for entry in entries],
+                "columns": _owner_columns(entries, self._filename),
             }
 
     def finish(self) -> dict:
@@ -479,12 +482,22 @@ def seal_publication(directory, shards: Iterable[Mapping]) -> dict:
     if any(s["metadata"] != metadata for s in shards):
         raise ValueError("Owner publication identities differ")
     tensors = [t for shard in shards for t in shard["tensors"]]
-    if len({t["name"] for t in tensors}) != len(tensors):
+    names = [tensor["name"] for tensor in tensors]
+    if len(set(names)) != len(names):
         raise ValueError("Duplicate canonical tensor ownership")
     files = [f for shard in shards for f in shard["files"]]
     if len({f["name"] for f in files}) != len(files):
         raise ValueError("Duplicate owner payload path")
-    return write_publication_metadata(directory, metadata | {"tensors": tensors, "files": files})
+    files.sort(key=lambda entry: entry["name"])
+    if len(shards) == 1:
+        columns = shards[0]["columns"]
+    else:
+        order = sorted(range(len(names)), key=names.__getitem__)
+        tensors = [tensors[index] for index in order]
+        file_ids = {entry["name"]: index for index, entry in enumerate(files)}
+        columns = _merge_columns(shards, file_ids, np.asarray(order, dtype=np.intp))
+    catalog = {"plan_digest": metadata["plan_digest"], "tensors": tensors}
+    return _write_publication_metadata(Path(directory), metadata, files, catalog, columns)
 
 
 _CATALOG_FIELDS = ("name", "dtype", "shape", "nbytes", "encoding", "byte_order", "format", "checkpoint_dtype")
@@ -505,16 +518,9 @@ def catalog_entry(metadata):
     return {key: metadata[key] for key in _CATALOG_FIELDS if key in metadata}
 
 
-def write_publication_metadata(directory, manifest):
-    """Seal readable static catalog and named numeric columns, then the manifest; payload files already exist."""
-    directory = Path(directory)
-    entries = sorted(manifest["tensors"], key=lambda entry: entry["name"])
-    files = sorted(manifest["files"], key=lambda entry: entry["name"])
-    file_ids = {entry["name"]: i for i, entry in enumerate(files)}
-    catalog = {
-        "plan_digest": manifest["plan_digest"],
-        "tensors": [catalog_entry(entry) for entry in entries],
-    }
+def _owner_columns(entries, filename):
+    """Build the numeric columns in catalog order while the owner's frame records are local."""
+    file_ids = {filename: 0}
     columns = {
         "tensors." + key: []
         for key in (
@@ -561,15 +567,47 @@ def write_publication_metadata(directory, manifest):
                 columns["gaps.offset"].append(cursor)
                 columns["gaps.nbytes"].append(entry["nbytes"] - cursor)
         columns["tensors.gap_end"].append(len(columns["gaps.offset"]))
-    header = {key: value for key, value in manifest.items() if key not in {"tensors", "files"}}
+    return {key: np.asarray(values, dtype="<i8") for key, values in columns.items()}
+
+
+def _merge_columns(shards, file_ids, order):
+    """Interleave owner rows in global name order and keep each tensor's variable-length runs together."""
+    owners = [shard["columns"] for shard in shards]
+    merged = {}
+    for key in ("changed_bytes", "payload_offset", "payload_nbytes", "inner_nbytes"):
+        column = "tensors." + key
+        merged[column] = np.concatenate([owner[column] for owner in owners])[order]
+    # An owner writes one payload file. Only occupied rows take its global index.
+    merged["tensors.payload_file"] = np.concatenate(
+        [
+            np.where(shard["columns"]["tensors.payload_file"] >= 0, file_ids[shard["files"][0]["name"]], -1)
+            for shard in shards
+        ]
+    )[order]
+    for end, group, fields in (
+        ("tensors.frame_end", "frames.", _FRAME_FIELDS),
+        ("tensors.outer_end", "outer_frames.", _FRAME_FIELDS),
+        ("tensors.gap_end", "gaps.", ("offset", "nbytes")),
+    ):
+        counts = np.concatenate([np.diff(owner[end], prepend=0) for owner in owners])
+        starts = np.cumsum(counts) - counts
+        counts = counts[order]
+        ends = merged[end] = np.cumsum(counts)
+        # Each output run is a contiguous slice from the concatenated owner rows.
+        source_offsets = starts[order] - (ends - counts)
+        indices = np.arange(counts.sum()) + np.repeat(source_offsets, counts)
+        for key in fields:
+            column = group + key
+            merged[column] = np.concatenate([owner[column] for owner in owners])[indices]
+    return merged
+
+
+def _write_publication_metadata(directory, header, files, catalog, columns):
+    """Seal the catalog and numeric columns, then link the manifest into place."""
     records = {}
     for kind, filename, content in (
         ("catalog", "catalog.json", orjson.dumps(catalog, option=orjson.OPT_SORT_KEYS)),
-        (
-            "metadata",
-            "metadata.safetensors",
-            save_columns({key: np.asarray(values, dtype="<i8") for key, values in columns.items()}),
-        ),
+        ("metadata", "metadata.safetensors", save_columns(columns)),
     ):
         _write_exclusive(directory / filename, content)
         records[kind] = {"file": filename, "nbytes": len(content), "sha256": sha256(content)}

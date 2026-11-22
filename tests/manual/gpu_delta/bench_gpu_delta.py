@@ -27,6 +27,7 @@ from pathlib import Path
 
 import httpx
 import numpy as np
+import orjson
 import zstandard
 
 from miles.backends.training_utils.weight_update.protocols.gpu_delta.client import (
@@ -520,7 +521,9 @@ def _encode_owner(args, owner, index, metadata):
         )
         for version in range(1, args.versions + 1):
             result = _encode_version(args, owner, index, encoder, metadata, version)
-            _save(args.output / f"owner-{owner['owner']:05d}-v{version}.json", result)
+            (args.output / f"owner-{owner['owner']:05d}-v{version}.json").write_bytes(
+                orjson.dumps(result, option=orjson.OPT_SERIALIZE_NUMPY | orjson.OPT_APPEND_NEWLINE)
+            )
             results.append(result)
         return results
     except BaseException as error:

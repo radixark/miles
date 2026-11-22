@@ -129,15 +129,42 @@ def test_framed_publication_preserves_payload_ranges_and_final_file_hash(tmp_pat
     assert unhashed == hashed
 
 
-def test_concurrent_shards_and_raw_targets_have_exclusive_ownership(tmp_path):
-    writers = [_writer(tmp_path, i) for i in range(2)]
+def test_concurrent_shards_merge_interleaved_tensor_and_frame_rows(tmp_path):
+    first, empty, last = [_writer(tmp_path, i) for i in range(3)]
+    size = publication.FRAME_BYTES
+    frame = dict(decoded_offset=0, decoded_bytes=size, encoded_offset=0, encoded_bytes=3)
+    outer = dict(
+        decoded_bytes=3,
+        encoded_bytes=4,
+        frames=[dict(decoded_offset=0, decoded_bytes=3, encoded_offset=0, encoded_bytes=4)],
+    )
     with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = [pool.submit(_add, writers[i % 2], str(i)) for i in range(8)]
-        for future in futures:
-            future.result()
-    shards = [writer.finish_shard() for writer in writers]
+        futures = [
+            pool.submit(_add, last, "a.two_frames"),
+            pool.submit(first.add_encoded_tensor, "e.unchanged", [], b"", None, 0, {"dtype": "U8", "shape": [2, 3]}),
+            pool.submit(
+                first.add_encoded_tensor,
+                "c.one_frame",
+                [frame],
+                b"wrap",
+                outer,
+                2,
+                {"dtype": "U8", "shape": [1, size + 11]},
+            ),
+            pool.submit(last.add_raw_xor_tensor, "d.unchanged", bytes(2), {"dtype": "U8", "shape": [2]}),
+            pool.submit(first.add_raw_xor_tensor, "b.raw", b"ab", {"dtype": "U8", "shape": [2]}),
+        ]
+        expected = sorted((future.result() for future in futures), key=lambda tensor: tensor["name"])
+    shards = [writer.finish_shard() for writer in (last, empty, first)]
     descriptor = publication.seal_publication(tmp_path, shards)
-    assert len(publication.read_publication_metadata(tmp_path / "manifest.json")["tensors"]) == 8
+    manifest = publication.read_publication_metadata(tmp_path / "manifest.json")
+    assert manifest["tensors"] == expected
+    assert [entry["name"] for entry in manifest["files"]] == [f"owner-{i:05d}.bin" for i in range(3)]
+    # The expanded manifest omits gap columns, which receivers use to zero omitted frame ranges.
+    columns = safetensors.numpy.load_file(tmp_path / "metadata.safetensors")
+    np.testing.assert_array_equal(columns["tensors.gap_end"], [1, 1, 2, 2, 3])
+    np.testing.assert_array_equal(columns["gaps.offset"], [size, size, 0])
+    np.testing.assert_array_equal(columns["gaps.nbytes"], [size, 11, 6])
     assert descriptor["target_version"] == 1
     with pytest.raises(FileExistsError):
         publication.seal_publication(tmp_path, shards)
@@ -177,7 +204,7 @@ def test_conflicting_owner_shards_cannot_publish(tmp_path, conflict, message):
     if conflict == "metadata":
         duplicate["metadata"]["target_version"] += 1
     elif conflict == "file":
-        duplicate["tensors"] = []
+        duplicate = _writer(tmp_path / "duplicate").finish_shard()
     elif conflict == "checksum-policy":
         duplicate["metadata"]["payload_checksum_format"] = "none"
         duplicate["files"][0]["sha256"] = None

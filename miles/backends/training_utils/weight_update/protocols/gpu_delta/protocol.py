@@ -852,15 +852,18 @@ class UpdateWeightFromGpuDelta(WeightTransferProtocol):
         seal_started = time.monotonic()
         with _collective_phase("payload sealing"):
             shard = self._writer.finish_shard()
+            columns = shard["columns"]
+            raw = np.fromiter((t["encoding"] == "xor_raw_bytes" for t in shard["tensors"]), dtype=bool)
+            raw_bytes = columns["tensors.payload_nbytes"][raw]
         shard["producer_metrics"] = {
             "owner_rank": dist.get_rank(),
             "codec": self.codec,
             "tensor_count": len(shard["tensors"]),
             "canonical_bytes": sum(t["nbytes"] for t in shard["tensors"]),
-            "changed_bytes": sum(t["changed_bytes"] for t in shard["tensors"]),
-            "raw_tensor_count": sum(t["encoding"] == "xor_raw_bytes" for t in shard["tensors"]),
-            "raw_changed_tensors": sum("raw" in t for t in shard["tensors"]),
-            "raw_bytes": sum(t["raw"]["encoded_bytes"] for t in shard["tensors"] if "raw" in t),
+            "changed_bytes": int(columns["tensors.changed_bytes"].sum()),
+            "raw_tensor_count": raw_bytes.size,
+            "raw_changed_tensors": int(np.count_nonzero(raw_bytes)),
+            "raw_bytes": int(raw_bytes.sum()),
             "wire_bytes": sum(f["nbytes"] for f in shard["files"]),
             "producer_wall_s": time.monotonic() - self._started,
             "encode_tensor_wall_sum_s": self._encode_wall_s,
