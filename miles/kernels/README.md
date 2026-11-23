@@ -16,10 +16,14 @@ position/          rope: apply_rotary_emb
 quant/             fp8_blockwise_cast · act_quant · fake_quant_{fp8,fp4,compressed_kv} · fused_nvfp4_qdq · int4_fake/ (CUDA) ·
                    stochastic_round_to_bf16
 softmax/           token_log_softmax
+neuron/            flash_attention (causal within each packed segment; nkilib attention_cte / attention_bwd) ·
+                   routed_experts (SwiGLU experts; NKI blockwise MoE kernels from torchtitan-neuron)
 tpu/               flash_attention (causal within each segment; JAX's Pallas splash kernel through torch_tpu) · gated_delta_rule (Qwen3.5's gated delta-net per segment; plain torch)
 ```
 
 - Only kernels we write (Triton, TileLang, CuTe, CUDA). A third-party kernel we merely call stays with its caller.
+- Kernels for torch-neuronx (nkilib / NKI, through torch_neuronx's custom ops) live under `neuron/`, named by op inside
+  it; only Neuron code paths import them. Their tests are in `tests/manual/neuron/` (on a trn host).
 - Kernels for torch_tpu (Pallas, through torch_tpu's JAX bridge) live under `tpu/`, named by op inside it; they need
   jax and torch_tpu, so only TPU code paths import them. Their tests are in `tests/manual/tpu/` (on a TPU host) and
   `tests/fast/kernels/` (CPU, Pallas interpret mode).

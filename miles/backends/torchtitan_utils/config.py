@@ -4,7 +4,7 @@ import inspect
 import logging
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from types import ModuleType
 
@@ -22,6 +22,7 @@ from torchtitan.distributed.activation_remat import FullActivationRematConfig
 from torchtitan.distributed.parallelism_context import MeshAxisName
 from torchtitan.distributed.spmd_types import spmd_mesh_group
 from torchtitan.models.base import BaseModel
+from torchtitan.models.common.activation import SwiGLU
 from torchtitan.models.common.attention import FlexInnerAttention, GQAttention, InnerAttention, MLAAttention
 from torchtitan.models.common.attention.cp_attention import AllGatherKVFlexInnerAttention, Ulysses
 from torchtitan.models.common.attention.gdn import InnerGDN
@@ -75,7 +76,7 @@ def build_model_config(
     model = builder(args.backend.titan_model_flavor, **kwargs)
     _disable_load_balancing(model)
     if not platforms.current_platform.grouped_mm:
-        _use_nki_routed_experts(model)
+        _use_neuron_routed_experts(model)
     if not platforms.current_platform.flex_attention:
         _replace_inner_attention(model)
         _check_gated_delta_runs_without_tp(model, tp=parallelism.tensor_parallel_degree)
@@ -164,7 +165,7 @@ class NeuronFlashInnerAttention(InnerAttention):
     def __init__(self, config: Config) -> None:
         super().__init__()
         # imported here, eagerly and on neuron only: it needs nkilib and torch_neuronx
-        from miles.backends.torchtitan_utils.neuron_attention import packed_causal_attention
+        from miles.kernels.neuron.flash_attention import packed_causal_attention
 
         self.packed_causal_attention = packed_causal_attention
 
@@ -299,13 +300,64 @@ class TpuGatedDeltaInnerAttention(InnerAttention):
         )
 
 
-def _use_nki_routed_experts(model: BaseModel.Config) -> None:
-    # imported here: it loads the NKI kernels, which exist on neuron only
-    from miles.backends.torchtitan_utils.neuron_moe import NkiRoutedExperts
+class NeuronRoutedExperts(RoutedExperts):
+    """`RoutedExperts` on the NKI blockwise kernels (miles.kernels.neuron); the token dispatcher is not used.
 
+    Keeps torchtitan's `w13` [E, 2, F, D] / `w2` [E, D, F], so checkpoints, the HF adapter and weight sync are
+    unchanged; each forward copies them into the kernel's layout.
+    """
+
+    @dataclass(kw_only=True, slots=True)
+    class Config(RoutedExperts.Config):
+        def __post_init__(self) -> None:
+            RoutedExperts.Config.__post_init__(self)
+            if not isinstance(self.activation_fn, SwiGLU.Config) or self.output_postprocess is not None:
+                raise NotImplementedError("the NKI MoE kernels compute SwiGLU experts with no output postprocess")
+
+        @classmethod
+        def from_routed_experts(cls, config: RoutedExperts.Config) -> "NeuronRoutedExperts.Config":
+            return cls(
+                **{
+                    field.name: getattr(config, field.name)  # config-access-exempt: copies every dataclass field
+                    for field in fields(config)
+                }
+            )
+
+    def __init__(self, config: Config) -> None:
+        super().__init__(config)
+        # imported here, eagerly and on neuron only: it needs nkilib and torch_neuronx
+        from miles.kernels.neuron.routed_experts import routed_experts
+
+        self.routed_experts = routed_experts
+
+    def forward(
+        self,
+        x_TD: torch.Tensor,
+        topk_scores_TK: torch.Tensor,
+        topk_expert_ids_TK: torch.Tensor,
+        num_local_tokens_per_expert_E: torch.Tensor,
+        *,
+        padding_mask_T: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        # padding rows are computed like real tokens, as RoutedExperts does
+        del num_local_tokens_per_expert_E, padding_mask_T
+        masked_scores_TE = torch.zeros(
+            x_TD.shape[0], self.w13.weight.shape[0], dtype=topk_scores_TK.dtype, device=topk_scores_TK.device
+        ).scatter(1, topk_expert_ids_TK.to(torch.int64), topk_scores_TK)
+        output_TD = self.routed_experts(
+            x_TD.bfloat16(),
+            masked_scores_TE,
+            self.w13.weight.bfloat16().permute(0, 3, 1, 2).contiguous(),
+            self.w2.weight.bfloat16().transpose(1, 2).contiguous(),
+            topk_expert_ids_TK.shape[1],
+        )
+        return output_TD.type_as(x_TD)
+
+
+def _use_neuron_routed_experts(model: BaseModel.Config) -> None:
     for layer in model.layers:
         for _, experts, parent, field_name in layer.traverse(RoutedExperts.Config, recurse=True):
-            setattr(parent, field_name, NkiRoutedExperts.Config.from_routed_experts(experts))
+            setattr(parent, field_name, NeuronRoutedExperts.Config.from_routed_experts(experts))
 
 
 def _replace_inner_attention(model: BaseModel.Config) -> None:

@@ -1,10 +1,4 @@
-"""Routed experts on the NKI blockwise MoE kernels, for Neuron, whose compiler cannot lower `torch._grouped_mm`.
-
-`NkiRoutedExperts` keeps torchtitan's parameters (`w13` [E, 2, F, D], `w2` [E, D, F]), so checkpoints, the HF adapter and
-weight sync are unchanged; each forward hands the kernel a permuted view, copied once per call.
-"""
-
-from dataclasses import dataclass, fields
+"""Routed experts on the NKI blockwise MoE kernels, for Neuron, whose compiler cannot lower `torch._grouped_mm`."""
 
 import nki.language as nl
 import torch
@@ -19,8 +13,6 @@ from nkilib.experimental.moe.forward.bwmm_shard_on_H import blockwise_mm_baselin
 from torch_neuronx import nki_op
 from torch_neuronx.nki_hop import wrap_nki
 from torch_neuronx.utils import get_logical_neuron_cores
-from torchtitan.models.common.activation import SwiGLU
-from torchtitan.models.common.moe import RoutedExperts
 
 # copied from aws-neuron/torchtitan-neuron release_2.33.0 models/qwen3/nki_moe.py (nki_fwd, nki_bwd, their autograd)
 # (BSD-3, Copyright Amazon.com, Inc. or its affiliates)
@@ -297,46 +289,16 @@ def _backward(ctx, *grad_outputs):
 nki_fwd.register_autograd(_backward, setup_context=_setup_context)
 
 
-class NkiRoutedExperts(RoutedExperts):
-    """`RoutedExperts` computed by the NKI blockwise kernels; the token dispatcher is not used."""
+def routed_experts(
+    x_TD: torch.Tensor,
+    masked_scores_TE: torch.Tensor,
+    gate_up_EDTF: torch.Tensor,
+    down_EFD: torch.Tensor,
+    top_k: int,
+) -> torch.Tensor:
+    """SwiGLU experts of `x_TD` weighted by `masked_scores_TE` (zero off each token's top-k), summed per token.
 
-    @dataclass(kw_only=True, slots=True)
-    class Config(RoutedExperts.Config):
-        def __post_init__(self) -> None:
-            RoutedExperts.Config.__post_init__(self)
-            if not isinstance(self.activation_fn, SwiGLU.Config) or self.output_postprocess is not None:
-                raise NotImplementedError("the NKI MoE kernels compute SwiGLU experts with no output postprocess")
-
-        @classmethod
-        def from_routed_experts(cls, config: RoutedExperts.Config) -> "NkiRoutedExperts.Config":
-            return cls(
-                **{
-                    field.name: getattr(config, field.name)  # config-access-exempt: copies every dataclass field
-                    for field in fields(config)
-                }
-            )
-
-    def __init__(self, config: Config) -> None:
-        super().__init__(config)
-
-    def forward(
-        self,
-        x_TD: torch.Tensor,
-        topk_scores_TK: torch.Tensor,
-        topk_expert_ids_TK: torch.Tensor,
-        num_local_tokens_per_expert_E: torch.Tensor,
-        *,
-        padding_mask_T: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        # padding rows are computed like real tokens, as RoutedExperts does
-        del num_local_tokens_per_expert_E, padding_mask_T
-        num_tokens = x_TD.shape[0]
-        num_experts, top_k = self.w13.weight.shape[0], topk_expert_ids_TK.shape[1]
-        masked_scores_TE = torch.zeros(
-            num_tokens, num_experts, dtype=topk_scores_TK.dtype, device=topk_scores_TK.device
-        ).scatter(1, topk_expert_ids_TK.to(torch.int64), topk_scores_TK)
-        # the kernels take gate/up as [E, D, 2, F] and down as [E, F, D]
-        gate_up_EDTF = self.w13.weight.bfloat16().permute(0, 3, 1, 2).contiguous()
-        down_EFD = self.w2.weight.bfloat16().transpose(1, 2).contiguous()
-        *_, output_TD = nki_fwd(x_TD.bfloat16(), masked_scores_TE, gate_up_EDTF, down_EFD, top_k, BLOCK_SIZE)
-        return output_TD[:num_tokens].type_as(x_TD)
+    Takes a multiple of 8192 tokens; gate/up as [E, D, 2, F], down as [E, F, D].
+    """
+    *_, output_TD = nki_fwd(x_TD, masked_scores_TE, gate_up_EDTF, down_EFD, top_k, BLOCK_SIZE)
+    return output_TD[: x_TD.shape[0]]

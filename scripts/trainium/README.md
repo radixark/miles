@@ -43,9 +43,9 @@ trainer compiles each decoder block on its first step (about 6 minutes for Qwen3
 
 `MILES_ACCELERATOR=neuron` selects `miles/platforms/neuron.py`, whose capabilities route the trainer:
 
-- Attention runs on the nkilib flash kernels with sequence-packing bounds (`neuron_attention.py`): each token
+- Attention runs on the nkilib flash kernels with sequence-packing bounds (`miles/kernels/neuron/flash_attention.py`): each token
   attends to the earlier tokens of its own packed sequence, with no `[T, T]` score matrix.
-- Routed experts run on the NKI blockwise MoE kernels (`neuron_moe.py`): neuronx-cc cannot lower
+- Routed experts run on the NKI blockwise MoE kernels (`miles/kernels/neuron/routed_experts.py`): neuronx-cc cannot lower
   `torch._grouped_mm`. The kernels take a multiple of 8192 tokens per call, and every microbatch pads to
   `--seq-length`, so MoE models train at `--seq-length 8192`.
 - Static shapes: each decoder block compiles once with the `neuron` backend.
