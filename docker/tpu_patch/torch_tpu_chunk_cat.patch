@@ -1,0 +1,323 @@
+From 6e40eb8cd9be06c5c0799b60a45d765eb0f97873 Mon Sep 17 00:00:00 2001
+From: Hejian Sang <sanghj0923@gmail.com>
+Date: Tue, 17 Nov 2026 10:43:34 -0800
+Subject: [PATCH] Add a TPU kernel for _chunk_cat.out (FSDP2's reduce-scatter
+ copy-in)
+
+Kernel part of google-pytorch/torch_tpu#6728 (head 7eedc94f6, tests left out)
+applied on torch_tpu main e8468781a + torch_tpu_job_local_worlds.patch.
+---
+ csrc/eager/BUILD                             |   1 +
+ csrc/eager/tpu_aten_kernels.cc               |   2 +
+ csrc/ops/chunk_cat/BUILD                     |  47 ++++++
+ csrc/ops/chunk_cat/chunk_cat_aten_kernels.cc | 150 +++++++++++++++++++
+ csrc/ops/chunk_cat/chunk_cat_aten_kernels.h  |  32 ++++
+ csrc/ops/op_names.h                          |   3 +
+ 6 files changed, 235 insertions(+)
+ create mode 100644 csrc/ops/chunk_cat/BUILD
+ create mode 100644 csrc/ops/chunk_cat/chunk_cat_aten_kernels.cc
+ create mode 100644 csrc/ops/chunk_cat/chunk_cat_aten_kernels.h
+
+diff --git a/csrc/eager/BUILD b/csrc/eager/BUILD
+index 10f2b002d..beba13fc8 100644
+--- a/csrc/eager/BUILD
++++ b/csrc/eager/BUILD
+@@ -767,6 +767,7 @@ torch_tpu_cc_library(
+         "//csrc/ops/bucketize:bucketize_aten_kernels",
+         "//csrc/ops/cat:cat_aten_kernels",
+         "//csrc/ops/channel_shuffle:channel_shuffle_aten_kernels",
++        "//csrc/ops/chunk_cat:chunk_cat_aten_kernels",
+         "//csrc/ops/clamp:clamp_aten_kernels",
+         "//csrc/ops/col2im:col2im_aten_kernels",
+         "//csrc/ops/constant_pad:constant_pad_aten_kernels",
+diff --git a/csrc/eager/tpu_aten_kernels.cc b/csrc/eager/tpu_aten_kernels.cc
+index 67551f7c7..b2edf4dac 100644
+--- a/csrc/eager/tpu_aten_kernels.cc
++++ b/csrc/eager/tpu_aten_kernels.cc
+@@ -65,6 +65,7 @@
+ #include "csrc/ops/bucketize/bucketize_aten_kernels.h"
+ #include "csrc/ops/cat/cat_aten_kernels.h"
+ #include "csrc/ops/channel_shuffle/channel_shuffle_aten_kernels.h"
++#include "csrc/ops/chunk_cat/chunk_cat_aten_kernels.h"
+ #include "csrc/ops/clamp/clamp_aten_kernels.h"
+ #include "csrc/ops/col2im/col2im_aten_kernels.h"
+ #include "csrc/ops/constant_pad/constant_pad_aten_kernels.h"
+@@ -459,6 +460,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
+   ImplStable<OpName::kCdistForward>(m, AtenCdistForward);
+   ImplStable<OpName::kCeilOut>(m, AtenCeilOut);
+   ImplStable<OpName::kChannelShuffle>(m, AtenChannelShuffle);
++  ImplStable<OpName::kChunkCatOut>(m, AtenChunkCatOut);
+   ImplStable<OpName::kClampMaxOut>(m, AtenClampMaxOut);
+   ImplStable<OpName::kClampMaxTensorOut>(m, AtenClampMaxTensorOut);
+   ImplStable<OpName::kClampMinOut>(m, AtenClampMinOut);
+diff --git a/csrc/ops/chunk_cat/BUILD b/csrc/ops/chunk_cat/BUILD
+new file mode 100644
+index 000000000..9a0cec16e
+--- /dev/null
++++ b/csrc/ops/chunk_cat/BUILD
+@@ -0,0 +1,47 @@
++# Copyright 2026 Google LLC
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++load("//build_files:build_defs.bzl", "torch_tpu_cc_library", "torch_tpu_package_end")
++
++package(
++    default_applicable_licenses = ["//:license"],
++    default_visibility = ["//:__subpackages__"],
++)
++
++torch_tpu_cc_library(
++    name = "chunk_cat_aten_kernels",
++    srcs = ["chunk_cat_aten_kernels.cc"],
++    hdrs = ["chunk_cat_aten_kernels.h"],
++    deps = [
++        "//csrc/common:aten_utils",
++        "//csrc/common:dimension_types",
++        "//csrc/common:dtype",
++        "//csrc/common:error_utils",
++        "//csrc/common:utils",
++        "//csrc/eager:device_buffer",
++        "//csrc/eager:op_dispatcher",
++        "//csrc/eager:tensor_to_buffer",
++        "//csrc/ops:op_builder_utils",
++        "//csrc/ops:op_names",
++        "//csrc/ops/macros:kernel",
++        "//csrc/ops/resize:resize_aten_kernels",
++        "//shims/torch:aten_headers",
++        "//shims/torch:torch_headers",
++        "@com_google_absl//absl/types:span",
++        "@stablehlo//stablehlo/integrations/cpp/builder:mlir_builder",
++        "@stablehlo//stablehlo/integrations/cpp/builder:stablehlo_builder",
++    ],
++)
++
++torch_tpu_package_end()
+diff --git a/csrc/ops/chunk_cat/chunk_cat_aten_kernels.cc b/csrc/ops/chunk_cat/chunk_cat_aten_kernels.cc
+new file mode 100644
+index 000000000..d703d5a8c
+--- /dev/null
++++ b/csrc/ops/chunk_cat/chunk_cat_aten_kernels.cc
+@@ -0,0 +1,150 @@
++/*
++ * Copyright 2026 Google LLC
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include "csrc/ops/chunk_cat/chunk_cat_aten_kernels.h"
++
++#include <cstddef>
++#include <cstdint>
++#include <utility>
++#include <vector>
++
++#include "ATen/core/ATen_fwd.h"
++#include "ATen/core/TensorBody.h"
++#include "ATen/native/TensorShape.h"
++#include "absl/types/span.h"
++#include "c10/util/accumulate.h"
++#include "csrc/common/aten_utils.h"
++#include "csrc/common/dimension_types.h"
++#include "csrc/common/dtype.h"
++#include "csrc/common/error_utils.h"
++#include "csrc/common/utils.h"
++#include "csrc/eager/device_buffer.h"
++#include "csrc/eager/op_dispatcher.h"
++#include "csrc/eager/tensor_to_buffer.h"
++#include "csrc/ops/macros/kernel.h"
++#include "csrc/ops/op_builder_utils.h"
++#include "csrc/ops/op_names.h"
++#include "csrc/ops/resize/resize_aten_kernels.h"
++#include "stablehlo/integrations/cpp/builder/MlirBuilder.h"
++#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
++
++namespace torch_tpu {
++
++at::Tensor& AtenChunkCatOut(at::TensorList tensors, int64_t dim,
++                            int64_t num_chunks, at::Tensor& out) {
++  TT_KERNEL(OpName::kChunkCatOut, param_keys, (tensors, dim, num_chunks, out), {
++    // PyTorch's own checks, so that errors match the CPU.
++    const int64_t wrapped_dim =
++        at::native::preprocess_chunk_cat_inputs(tensors, dim, num_chunks);
++    TT_THROW_IF_ERROR(ValidateOutDtype(out, tensors[0].scalar_type()));
++    // FSDP2's reduce-scatter copy-in calls _chunk_cat with dim 0 and
++    // out = flat_buffer.view(num_chunks, -1). The default decomposition
++    // reshapes every input to (num_chunks, -1) and concatenates along dim
++    // 1, and XLA takes minutes to compile that for a vocabulary-sized
++    // gradient. This kernel builds out as one flat array instead, with
++    // slices and a concatenation, so that neither the compile time nor
++    // the host work grows with num_chunks * tensors.size().
++    //
++    // Each input is viewed as (num_rows, -1), num_rows being the product
++    // of the dims before wrapped_dim (the same for all inputs). Zero-
++    // padding wrapped_dim to a multiple of num_chunks then appends zeros
++    // to every row, and out's row is the concatenation, over the chunks
++    // and then the inputs, of each input's chunk.
++    const int64_t num_rows =
++        c10::multiply_integers(tensors[0].sizes().slice(0, wrapped_dim));
++    Indices chunk_numels;
++    chunk_numels.reserve(tensors.size());
++    int64_t chunk_row_numel = 0;
++    for (const at::Tensor& tensor : tensors) {
++      const int64_t size = tensor.size(wrapped_dim);
++      const int64_t inner_numel = tensor.numel() / (num_rows * size);
++      chunk_numels.push_back((size + num_chunks - 1) / num_chunks *
++                             inner_numel);
++      chunk_row_numel += chunk_numels.back();
++    }
++    Dimensions out_shape =
++        CopyIntVector(tensors[0].sizes().slice(0, wrapped_dim));
++    out_shape.push_back(num_chunks);
++    out_shape.push_back(chunk_row_numel);
++    TT_THROW_IF_ERROR(ResizeTensorIfShapeDiffers(out, out_shape));
++    // When out covers its whole storage contiguously (FSDP2's flat
++    // buffer), the flat result becomes its storage directly. Otherwise
++    // the result takes out's shape, so that it can be written through
++    // out's view.
++    const int64_t out_numel = c10::multiply_integers(out_shape);
++    const bool flat_result = out.is_contiguous() && out.storage_offset() == 0 &&
++                             out.storage().nbytes() == out.nbytes();
++    Dimensions result_dims = flat_result ? Dimensions{out_numel} : out_shape;
++    TT_ASSIGN_OR_THROW(const mlir::ElementType out_dtype,
++                       ConvertTo<mlir::ElementType>(out.scalar_type()));
++    auto op_builder = [num_rows, num_chunks, chunk_numels, result_dims](
++                          absl::Span<mlir::MlirOp> inputs,
++                          mlir::MlirBuilder& builder) {
++      // A single row (dim 0, as FSDP2 calls it) is kept 1-D: a (1, N) array
++      // makes the copy slower on TPU.
++      const int64_t axis = num_rows == 1 ? 0 : 1;
++      const auto row_shape = [num_rows](int64_t row_numel) {
++        return num_rows == 1 ? Dimensions{row_numel}
++                             : Dimensions{num_rows, row_numel};
++      };
++      const Indices stride(axis + 1, 1);
++      const Dimensions no_padding(axis + 1, 0);
++      std::vector<mlir::MlirOp> rows;
++      rows.reserve(inputs.size());
++      for (size_t i = 0; i < inputs.size(); ++i) {
++        const mlir::RankedTensorType type = GetTensorTypeOrDie(inputs[i]);
++        const int64_t row_numel = type.getNumElements() / num_rows;
++        mlir::MlirOp row =
++            mlir::stablehlo::Reshape(inputs[i], row_shape(row_numel));
++        Dimensions padding = no_padding;
++        padding[axis] = num_chunks * chunk_numels[i] - row_numel;
++        if (padding[axis] > 0) {
++          mlir::MlirOp zero =
++              MakeScalarConstant(builder, 0, type.getElementType());
++          row = mlir::stablehlo::Pad(row, zero, /*edge_padding_low=*/no_padding,
++                                     /*edge_padding_high=*/padding,
++                                     /*interior_padding=*/no_padding);
++        }
++        rows.push_back(row);
++      }
++      std::vector<mlir::MlirOp> chunks;
++      chunks.reserve(num_chunks * inputs.size());
++      for (int64_t chunk = 0; chunk < num_chunks; ++chunk) {
++        for (size_t i = 0; i < inputs.size(); ++i) {
++          Indices begin(axis + 1, 0);
++          begin[axis] = chunk * chunk_numels[i];
++          const Indices limit = row_shape((chunk + 1) * chunk_numels[i]);
++          chunks.push_back(
++              mlir::stablehlo::Slice(rows[i], begin, limit, stride));
++        }
++      }
++      mlir::MlirOp result = mlir::stablehlo::Concatenate(builder, chunks, axis);
++      return mlir::stablehlo::Reshape(result, result_dims);
++    };
++    TT_ASSIGN_OR_THROW(DeviceBufferRef result_buf,
++                       DispatchOp<kDynamicSize>(
++                           std::move(op_builder),
++                           tensors.vec(),  // VEC_OK
++                           {.out_dtype = out_dtype,
++                            .out_dims = result_dims,
++                            .computation_dtype = out_dtype,
++                            .op_param_cache_keys = std::move(param_keys)}));
++    TT_THROW_IF_ERROR(AssignBufferToAtTensor(std::move(result_buf), out));
++    return out;
++  });
++}
++
++}  // namespace torch_tpu
+diff --git a/csrc/ops/chunk_cat/chunk_cat_aten_kernels.h b/csrc/ops/chunk_cat/chunk_cat_aten_kernels.h
+new file mode 100644
+index 000000000..5439090db
+--- /dev/null
++++ b/csrc/ops/chunk_cat/chunk_cat_aten_kernels.h
+@@ -0,0 +1,32 @@
++/*
++ * Copyright 2026 Google LLC
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#ifndef TORCH_TPU_CSRC_OPS_CHUNK_CAT_CHUNK_CAT_ATEN_KERNELS_H_
++#define TORCH_TPU_CSRC_OPS_CHUNK_CAT_CHUNK_CAT_ATEN_KERNELS_H_
++
++#include <cstdint>
++
++#include "ATen/core/ATen_fwd.h"
++#include "ATen/core/TensorBody.h"
++
++namespace torch_tpu {
++
++at::Tensor& AtenChunkCatOut(at::TensorList tensors, int64_t dim,
++                            int64_t num_chunks, at::Tensor& out);
++
++}  // namespace torch_tpu
++
++#endif  // TORCH_TPU_CSRC_OPS_CHUNK_CAT_CHUNK_CAT_ATEN_KERNELS_H_
+diff --git a/csrc/ops/op_names.h b/csrc/ops/op_names.h
+index 8718bbac5..6bd00a879 100644
+--- a/csrc/ops/op_names.h
++++ b/csrc/ops/op_names.h
+@@ -125,6 +125,7 @@ enum class OpName {
+   kCdistForward,
+   kCeilOut,
+   kChannelShuffle,
++  kChunkCatOut,
+   kClampMaxOut,
+   kClampMaxTensorOut,
+   kClampMinOut,
+@@ -1098,6 +1099,8 @@ ToString(  // NOLINT(google-readability-function-size)
+       return "ceil.out";
+     case OpName::kChannelShuffle:
+       return "channel_shuffle";
++    case OpName::kChunkCatOut:
++      return "_chunk_cat.out";
+     case OpName::kClampMaxOut:
+       return "clamp_max.out";
+     case OpName::kClampMaxTensorOut:
+-- 
+2.50.1 (Apple Git-155)
+

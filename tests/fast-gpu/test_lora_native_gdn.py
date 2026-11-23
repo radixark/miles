@@ -21,7 +21,7 @@ from megatron.core import parallel_state
 from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
 from megatron.core.transformer.transformer_config import TransformerConfig
 from safetensors.torch import save_file
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.fast.backends.megatron_utils.lora.native.naming_stub import FixedPrefixNaming
 
 from miles.backends.megatron_utils.lora.native.config import LoRAConfig
@@ -43,6 +43,7 @@ from linear_attn_reference import ReplicatedGDN, build_layer, packed, rel_err, s
 register_cuda_ci(
     est_time=120, suite="stage-b-2-gpu-h200", labels=["lora"], hardware=["hopper", "blackwell"], num_gpus=2
 )
+register_rocm_ci(est_time=300, suite="stage-c-2-gpu-mi350", labels=["lora"], nightly=True)
 
 HIDDEN = 256
 HEADS = LinearAttnHeads(num_k_heads=4, num_v_heads=8, head_k_dim=64, head_v_dim=64)

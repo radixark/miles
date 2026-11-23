@@ -1,15 +1,69 @@
 """Unit tests for `tests/ci/file_run.py`, the /rerun-test resolve step."""
 
 import json
+import os
+import shlex
+import shutil
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import yaml
 from tests.ci.ci_register import CIRegistry, HWBackend, register_cpu_ci
 from tests.ci.file_run import CPU_SUITES, CUDA_SUITE_RUNS_ON, FileRunError, main, plan_file_run, resolve_file_run
+from tests.ci.rocm import main as rocm_main
 from tests.ci.run_suite import CI_SUITES
 
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
+
+
+@pytest.mark.parametrize("hw", ["cuda", "rocm"])
+@pytest.mark.parametrize("published", [False, True])
+@pytest.mark.parametrize("pin", ["", "debug"])
+def test_comment_file_run_uses_a_pin_or_its_published_pr_image(tmp_path, hw, published, pin):
+    root = Path(__file__).resolve().parents[3]
+    workflow = yaml.safe_load((root / ".github/workflows/run-ci-file.yml").read_text())
+    steps = workflow["jobs"]["resolve-file-run"]["steps"]
+    step = next(step for step in steps if step.get("id") == "image")
+    calls, output = tmp_path / "calls", tmp_path / "output"
+    binary = tmp_path / "docker"
+    binary.write_text('#!/bin/sh\nprintf "%s\\n" "$*" > "$CALLS"\n' + f"exit {0 if published else 1}\n")
+    binary.chmod(0o755)
+    # Exercise the real workflow branch; the public HTTP helper has its own
+    # status/error tests, so stub only its CLI here.
+    python = tmp_path / "python3"
+    python.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" > "$CALLS"\n'
+        + ('printf "pr-42-rocm10-mi35x\\n"\n' if published else 'printf "\\n"\n')
+    )
+    python.chmod(0o755)
+    subprocess.run(
+        ["bash", "-c", step["run"]],
+        check=True,
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "CI_HW": hw,
+            "CI_IMAGE_TAG": pin,
+            "PULL_NUMBER": "42",
+            "GITHUB_REPOSITORY": "example/miles-copy",
+            "CALLS": str(calls),
+            "GITHUB_OUTPUT": str(output),
+        },
+    )
+    tag = "pr-42-rocm10-mi35x" if hw == "rocm" else "pr-42"
+    expected = pin or (tag if published else ("" if hw == "rocm" else "dev"))
+    assert output.read_text() == f"tag={expected}\n"
+    if pin:
+        assert not calls.exists()
+    else:
+        if hw == "rocm":
+            assert ".github/workflows/scripts/rocm_pr_image.py 42" in calls.read_text()
+        else:
+            assert f"example/miles-copy:{tag}" in calls.read_text()
+    resolver = next(step for step in steps if step.get("id") == "resolve")
+    assert resolver["env"]["CI_IMAGE_TAG"] == "${{ steps.image.outputs.tag }}"
 
 
 def _make(
@@ -39,6 +93,13 @@ def test_every_cuda_suite_has_a_runner_mapping():
 
 def test_every_cpu_suite_is_allowed():
     assert set(CPU_SUITES) == set(CI_SUITES[HWBackend.CPU])
+
+
+def test_cuda_file_image_comes_from_the_given_repository():
+    plan = plan_file_run(
+        [_make("tests/e2e/x/test_a.py")], "tests/e2e/x/test_a.py", "pr-7", image_repo="example/miles-copy"
+    )
+    assert plan["container_image"] == "example/miles-copy:pr-7"
 
 
 @pytest.mark.parametrize(
@@ -108,10 +169,92 @@ def test_unregistered_file_is_a_hard_error():
         plan_file_run([_make("tests/e2e/x/test_a.py")], "tests/e2e/x/test_missing.py", "dev")
 
 
-def test_rocm_only_file_is_a_hard_error():
+def test_rocm_only_file_suggests_explicit_hardware():
     tests = [_make("tests/e2e/x/test_a.py", backend=HWBackend.ROCM, suite="stage-c-8-gpu-mi350")]
-    with pytest.raises(FileRunError, match="/rerun-test supports CPU and CUDA"):
+    with pytest.raises(FileRunError, match="use /rerun-test .* --hw rocm"):
         plan_file_run(tests, "tests/e2e/x/test_a.py", "dev")
+
+
+@pytest.mark.parametrize(
+    ("suite", "num_gpus"),
+    [
+        ("stage-c-2-gpu-mi350", 2),
+        ("stage-c-4-gpu-mi350", 4),
+        ("stage-c-8-gpu-mi350", 8),
+    ],
+)
+def test_explicit_rocm_selects_one_registration_and_its_spur_allocation(suite, num_gpus):
+    path = "tests/e2e/x/test_a.py"
+    rocm = _make(path, backend=HWBackend.ROCM, suite=suite, est_time=2400, nightly=True)
+    plan = plan_file_run([_make(path), rocm], path, "", hw="rocm")
+    command = shlex.split(plan.pop("execute_command"))
+    assert command == [
+        "python3",
+        "tests/ci/run_suite.py",
+        "--hw",
+        "rocm",
+        "--suite",
+        suite,
+        "--test-file",
+        path,
+        "--cadence",
+        "release",
+        "--timeout-per-file",
+        "3000",
+    ]
+    assert plan == {
+        "hw": "rocm",
+        "suite": suite,
+        "num_gpus": str(num_gpus),
+        "runs_on": '["linux-miles-mi35x-spur"]',
+        "container_image": "rocm/sgl-dev:miles-rocm10-mi35x",
+        "timeout_seconds": "3000",
+    }
+
+
+def test_rocm_uses_the_enabled_registration_and_requested_image():
+    path = "tests/e2e/x/test_a.py"
+    two = _make(path, backend=HWBackend.ROCM, suite="stage-c-2-gpu-mi350", nightly=True)
+    plan = plan_file_run([two], path, "debug", hw="rocm")
+    assert plan["suite"] == two.suite
+    assert plan["num_gpus"] == "2"
+    assert plan["container_image"] == "rocm/sgl-dev:debug"
+    four = _make(path, backend=HWBackend.ROCM, suite="stage-c-4-gpu-mi350")
+    plan = plan_file_run([four, replace(two, disabled="see #1")], path, "", hw="rocm")
+    assert plan["suite"] == four.suite
+
+
+@pytest.mark.parametrize(
+    ("suites", "disabled", "message"),
+    [
+        (["stage-c-2-gpu-mi350", "stage-c-4-gpu-mi350"], None, "multiple ROCM registrations"),
+        (["stage-c-2-gpu-mi350"], "see #1", "disabled: see #1"),
+        (["stage-c-4-gpu-unknown"], None, "has no runner mapping"),
+    ],
+)
+def test_invalid_rocm_registration_fails_before_runner_allocation(suites, disabled, message):
+    path = "tests/e2e/x/test_a.py"
+    tests = [_make(path, backend=HWBackend.ROCM, suite=suite, disabled=disabled) for suite in suites]
+    with pytest.raises(FileRunError, match=message):
+        plan_file_run(tests, path, "", hw="rocm")
+
+
+def test_explicit_rocm_requires_a_rocm_registration_and_valid_image():
+    path = "tests/e2e/x/test_a.py"
+    with pytest.raises(FileRunError, match="has no ROCM CI registration"):
+        plan_file_run([_make(path)], path, "", hw="rocm")
+    with pytest.raises(FileRunError, match="invalid ROCm CI image tag"):
+        plan_file_run([_make(path)], path, "rocm/sgl-dev:tag", hw="rocm")
+
+
+def test_rocm_all_disabled_registrations_report_the_first_reason():
+    path = "tests/e2e/x/test_a.py"
+    registrations = [
+        _make(path, backend=HWBackend.ROCM, suite="stage-c-4-gpu-mi350", disabled="waiting for #1"),
+        _make(path, backend=HWBackend.ROCM, suite="stage-c-2-gpu-mi350", disabled="waiting for #2"),
+    ]
+    with pytest.raises(FileRunError, match="disabled: waiting for #1"):
+        plan_file_run(registrations, path, "", hw="rocm")
 
 
 def test_multiple_cpu_cuda_registrations_are_a_hard_error():
@@ -171,17 +314,61 @@ def test_main_writes_github_outputs(monkeypatch, tmp_path):
     monkeypatch.setenv("TEST_FILE", "tests/ci/test/test_file_run.py")
     monkeypatch.setenv("CI_IMAGE_TAG", "")
     monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    monkeypatch.setenv("GITHUB_REPOSITORY", "example/miles-copy")
 
     assert main() == 0
     lines = output_path.read_text().splitlines()
     assert "hw=cpu" in lines
     assert "suite=stage-a-cpu" in lines
     assert "runs_on=" in lines
-    assert "container_image=radixark/miles:dev" in lines
+    assert "container_image=example/miles-copy:dev" in lines
     assert "timeout_seconds=1800" in lines
 
 
+def test_main_rejects_rocm_file_over_spur_budget_and_reports_the_limit(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("GITHUB_REPOSITORY", "radixark/miles")
+    output_path = tmp_path / "github-output"
+    source = tmp_path / "source"
+    test_file = source / "tests" / "e2e" / "long" / "test_over_budget.py"
+    test_file.parent.mkdir(parents=True)
+    test_file.write_text(
+        'register_rocm_ci(est_time=24000, suite="stage-c-4-gpu-mi350", labels=["long"], nightly=True)\n'
+    )
+    (source / "tests" / "ci").mkdir()
+    shutil.copy(Path(__file__).parents[1] / "labels.py", source / "tests" / "ci" / "labels.py")
+    monkeypatch.setenv("TEST_FILE", "tests/e2e/long/test_over_budget.py")
+    monkeypatch.setenv("CI_SOURCE_ROOT", str(source))
+    monkeypatch.setenv("CI_HW", "rocm")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+
+    assert main() == 1
+    assert output_path.read_text() == "rocm_timeout=30000/9900\n"
+    assert "beyond the 9900s ROCm file budget" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("input_tag", "pr_body", "image"),
+    [
+        ("", "", "rocm/sgl-dev:miles-rocm10-mi35x"),
+        (
+            "",
+            "ci-image-tag: pr-1\nci-rocm-image-tag: miles-rocm10-mi35x-20261113",
+            "rocm/sgl-dev:miles-rocm10-mi35x-20261113",
+        ),
+        ("release-tag", "ci-rocm-image-tag: miles-rocm10-mi35x-20261113", "rocm/sgl-dev:release-tag"),
+    ],
+)
+def test_rocm_image_resolver_follows_the_cuda_order(monkeypatch, tmp_path, input_tag, pr_body, image):
+    output_path = tmp_path / "github-output"
+    monkeypatch.setenv("INPUT_CI_IMAGE_TAG", input_tag)
+    monkeypatch.setenv("PR_BODY", pr_body)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    assert rocm_main() == 0
+    assert output_path.read_text() == f"container_image={image}\n"
+
+
 def test_main_fails_closed_on_an_unregistered_file(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("GITHUB_REPOSITORY", "radixark/miles")
     output_path = tmp_path / "github-output"
     monkeypatch.setenv("TEST_FILE", "tests/e2e/test_does_not_exist.py")
     monkeypatch.setenv("CI_IMAGE_TAG", "")
@@ -203,8 +390,8 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
     assert "name: Rerun Test" in workflow
     assert 'run-name: "/rerun-test ' in workflow
     assert workflow.count("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683") == 4
-    assert workflow.count("ref: ${{ inputs.head_sha }}") == 3
-    assert workflow.count("plan_already_resolved: true") == 2
+    assert workflow.count("ref: ${{ inputs.head_sha }}") == 4
+    assert workflow.count("plan_already_resolved: true") == 3
     assert "path: pr-source" in workflow
     assert "CI_SOURCE_ROOT: ${{ github.workspace }}/pr-source" in workflow
     assert "run: python3 -S -m tests.ci.file_run" in workflow
@@ -222,6 +409,11 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
     assert (
         "WANDB_API_KEY: ${{ needs.resolve-file-run.outputs.head_is_fork != 'true' && secrets.WANDB_API_KEY || '' }}"
     ) in workflow
+    rocm = workflow.split("  run-rocm-file:\n", 1)[1].split("  run-cpu-file:\n", 1)[0]
+    assert (
+        "AMD_WANDB_API_KEY: ${{ needs.resolve-file-run.outputs.head_is_fork != 'true' && secrets.AMD_WANDB_API_KEY || '' }}"
+    ) in rocm
+    assert "secrets.WANDB_API_KEY" not in rocm
     assert (
         "HF_TOKEN: ${{ needs.resolve-file-run.outputs.head_is_fork != 'true' && secrets.HF_TOKEN || '' }}"
     ) in workflow
@@ -242,14 +434,26 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
     assert workflow.count("pull-requests: write") == 2
     report_job = workflow.split("  report-file-run:", 1)[1]
     assert "actions: read" in report_job
-    assert "needs: [announce-file-run, resolve-file-run, run-cuda-file, run-cpu-file]" in report_job
+    assert "needs: [announce-file-run, resolve-file-run, run-cuda-file, run-cpu-file, run-rocm-file]" in report_job
+    assert "FILE_RUN_ROCM_RESULT: ${{ needs.run-rocm-file.result }}" in report_job
+    rocm_job = workflow.split("  run-rocm-file:", 1)[1].split("  run-cpu-file:", 1)[0]
+    assert "uses: ./.github/workflows/_run-ci-rocm.yml" in rocm_job
+    assert "group: rocm-file-run" in rocm_job
+    assert "cancel-in-progress: false" in rocm_job
+    assert "queue: max" in rocm_job
+    assert "inputs.hw == 'rocm' && '-rocm' || ''" in workflow
+    assert "FILE_RUN_ROCM_TIMEOUT: ${{ needs.resolve-file-run.outputs.rocm_timeout }}" in report_job
+    assert "withhold_runner_secrets: ${{ needs.resolve-file-run.outputs.head_is_fork == 'true' }}" in rocm_job
+    assert "num_gpus: ${{ fromJSON(needs.resolve-file-run.outputs.num_gpus) }}" in rocm_job
+    assert "execute_command: ${{ needs.resolve-file-run.outputs.execute_command }}" in rocm_job
+    assert "execute_command: ${{ steps.resolve.outputs.execute_command }}" in workflow
     assert "if: always()" in report_job
     assert "python3 tests/ci/run_suite.py --hw cuda" in workflow
     assert "pytest '${{ inputs.test_file }}' -v -x" in workflow
     assert "--test-file '${{ inputs.test_file }}'" in workflow
     # CPU wraps pytest in the file timeout; CUDA hands it to run_suite, whose
     # per-file timer covers only the test, as in stage runs.
-    cuda_job = workflow.split("  run-cuda-file:", 1)[1].split("  run-cpu-file:", 1)[0]
+    cuda_job = workflow.split("  run-cuda-file:", 1)[1].split("  run-rocm-file:", 1)[0]
     assert "timeout --signal" not in cuda_job
     assert "--timeout-per-file '${{ needs.resolve-file-run.outputs.timeout_seconds }}'" in cuda_job
     assert workflow.count("timeout --signal=TERM --kill-after=30s") == 1

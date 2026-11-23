@@ -4,7 +4,7 @@ import logging
 import os
 import random
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -13,12 +13,14 @@ from miles.ray.rollout.train_data_conversion import split_train_data_by_dp
 from miles.utils import object_store
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.dp_schedule import TrainParallelConfig
-from miles.utils.output_store.trainer_columns import materialize_store_columns
+from miles.utils.output_store.trainer_columns import maybe_materialize_store_plans
 from miles.utils.pydantic_utils import StrictBaseModel
 
 from .audit_utils.witness.allocator import WitnessInfo
 
 if TYPE_CHECKING:
+    from radix_transfer_plugins import OutputStore
+
     from miles.backends.training_utils.types import TrainStepOutput
 
 try:
@@ -27,6 +29,7 @@ except ImportError:
     pq = None
 
 from miles.utils import chat_template_utils
+from miles.utils.media_refs import collect_media_refs
 from miles.utils.types import MultimodalTypes, Sample
 
 __all__ = ["Dataset"]
@@ -208,6 +211,8 @@ class Dataset:
         seed=42,
         apply_chat_template=False,
         apply_chat_template_kwargs=None,
+        media_dir=None,
+        token_space_processing=False,
     ):
         origin_samples = []
         for data in read_file(path):
@@ -238,7 +243,11 @@ class Dataset:
             else:
                 output_prompt = prompt
 
-            if processor and isinstance(prompt, list):
+            if token_space_processing and isinstance(prompt, list):
+                # Collected before the chat template turns the messages into text. SGLang expands the media
+                # placeholders and the trainer rebuilds the processor tensors from these references.
+                multimodal_inputs = collect_media_refs(prompt, media_dir)
+            elif processor and isinstance(prompt, list):
                 from miles.utils.processing_utils import process_vision_info
 
                 multimodal_inputs = process_vision_info(prompt, processor)
@@ -280,6 +289,11 @@ class Dataset:
         return len(self.samples)
 
 
+def padded_token_count(num_tokens: int, pad_size: int) -> int:
+    """The length a packed microbatch of `num_tokens` tokens is padded to (get_batch)."""
+    return -(-num_tokens // pad_size) * pad_size
+
+
 def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
     # use first fit to get the number of micro batches
     batches = []
@@ -301,7 +315,7 @@ def process_rollout_data(
     train_parallel_config: TrainParallelConfig,
     witness_info: WitnessInfo | None,
     *,
-    output_store_read: Callable | None = None,
+    output_store: "OutputStore | None" = None,
 ) -> tuple[dict, object_store.ObjectStoreGetResult]:
     from miles.ray.rollout.train_data_conversion import process_rollout_data_shard
 
@@ -329,7 +343,7 @@ def process_rollout_data(
 
     try:
         # In place on this shard's own dict: get_result.value stays as stored.
-        materialize_store_columns(args, rollout_data, read=output_store_read)
+        maybe_materialize_store_plans(args, rollout_data, store=output_store)
         return process_rollout_data_shard(args, rollout_data), get_result
     except BaseException as e:
         # The caller releases get_result only once it is returned: an FT retry would leak a buffer per attempt.

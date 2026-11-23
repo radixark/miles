@@ -16,3 +16,11 @@ class TestInklingMultimodalProviderConfig:
             inkling_model.inkling_mm_model_provider(pre_process=False, post_process=True, vp_stage=1, args=args)
 
         assert args.model_dump() == original
+
+    def test_multimodal_provider_refuses_to_build_without_token_space(self, inkling_model: ModuleType) -> None:
+        """Inkling's multimodal recipes run in token space only, so a launch without it stops at the provider
+        instead of training towers on a path no recipe exercises."""
+        args = make_trainer_config(context_parallel_size=1)
+
+        with pytest.raises(ValueError, match="--multimodal-token-space-processing"):
+            inkling_model.inkling_mm_model_provider(pre_process=False, post_process=True, vp_stage=1, args=args)

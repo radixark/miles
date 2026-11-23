@@ -1,9 +1,9 @@
 """An agent function that reports its sandbox, kept apart from ``agent_function_stubs``
-so the other ``subproc`` tests do not import the dashboard in every child process."""
+so the other ``subproc`` tests do not import the run observers in every child process."""
 
 import asyncio
 
-from miles.dashboard.hooks import report_sandbox
+from miles.rollout.agentic.sandbox_reporter import report_sandbox
 
 
 async def report_sandbox_health(sandbox_key: str, **kwargs) -> str:
