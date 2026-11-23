@@ -36,6 +36,8 @@ class Platform:
     nvml_numa_affinity = True
     # gather's backward (scatter_add) is ordered with the collectives around it
     gather_backward = True
+    # torch._grouped_mm compiles here; elsewhere routed experts run on the platform's own MoE kernels
+    grouped_mm = True
     # the rollout engines' KV cache dtype when --sglang-kv-cache-dtype is left at "auto"; None keeps the engine's choice
     rollout_kv_cache_dtype: str | None = None
 

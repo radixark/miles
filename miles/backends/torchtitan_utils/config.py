@@ -26,7 +26,7 @@ from torchtitan.models.common.attention import FlexInnerAttention, GQAttention, 
 from torchtitan.models.common.attention.cp_attention import AllGatherKVFlexInnerAttention, Ulysses
 from torchtitan.models.common.attention.gdn import InnerGDN
 from torchtitan.models.common.linear import Linear
-from torchtitan.models.common.moe import MoE
+from torchtitan.models.common.moe import MoE, RoutedExperts
 from torchtitan.models.common.multimodal import MultimodalModel
 
 from miles import platforms
@@ -74,6 +74,8 @@ def build_model_config(
         kwargs["hf_config"] = load_hf_config(hf_assets_path)
     model = builder(args.backend.titan_model_flavor, **kwargs)
     _disable_load_balancing(model)
+    if not platforms.current_platform.grouped_mm:
+        _use_nki_routed_experts(model)
     if not platforms.current_platform.flex_attention:
         _replace_inner_attention(model)
         _check_gated_delta_runs_without_tp(model, tp=parallelism.tensor_parallel_degree)
@@ -295,6 +297,15 @@ class TpuGatedDeltaInnerAttention(InnerAttention):
             torch.sigmoid(b_TH),
             segment_ids=attention_metadata,
         )
+
+
+def _use_nki_routed_experts(model: BaseModel.Config) -> None:
+    # imported here: it loads the NKI kernels, which exist on neuron only
+    from miles.backends.torchtitan_utils.neuron_moe import NkiRoutedExperts
+
+    for layer in model.layers:
+        for _, experts, parent, field_name in layer.traverse(RoutedExperts.Config, recurse=True):
+            setattr(parent, field_name, NkiRoutedExperts.Config.from_routed_experts(experts))
 
 
 def _replace_inner_attention(model: BaseModel.Config) -> None:

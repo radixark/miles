@@ -22,6 +22,8 @@ class NeuronPlatform(Platform):
     flex_attention = False
     # gather's scatter_add backward races the collectives and reads out of bounds
     gather_backward = False
+    # neuronx-cc cannot lower torch._grouped_mm; routed experts run on the NKI blockwise kernels (neuron_moe)
+    grouped_mm = False
     # sglang-neuron reloads a checkpoint from disk into its compiled graphs; it takes no tensor or NCCL updates
     weight_transfer_modes = frozenset({"disk-delta"})
     # upstream SGLang, which sglang-neuron plugs into, has no --enable-prefill-weight-versions
