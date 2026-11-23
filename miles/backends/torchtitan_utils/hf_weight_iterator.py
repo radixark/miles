@@ -172,9 +172,17 @@ def _maybe_merged(
     if lora_a is None:
         return gather_full_param(weight) if _GROUPED_EXPERTS in key else weight
     lora_b = adapters[f"{projection}.lora_b.weight"]
-    return lora_names.merged_weight(
-        gather_full_param(weight), gather_full_param(lora_a), gather_full_param(lora_b), scale=scale
-    )
+    base = gather_full_param(weight)
+    merged = lora_names.merged_weight(base, gather_full_param(lora_a), gather_full_param(lora_b), scale=scale)
+    if os.environ.get("MILES_LORA_MERGE_DIAG"):
+        # how much of the adapter survives the cast back to the base dtype
+        changed = int((merged != base).sum())
+        print(
+            f"[merge_diag] {projection} changed={changed}/{merged.numel()} "
+            f"lora_b_absmax={float(gather_full_param(lora_b).abs().max()):.3e}",
+            flush=True,
+        )
+    return merged
 
 
 def _local_experts(sd_adapter, state, keys: list[str]) -> Iterator[tuple[str, torch.Tensor]]:

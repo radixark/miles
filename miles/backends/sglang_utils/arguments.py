@@ -152,12 +152,14 @@ def validate_args(args):
         args.sglang_enable_prefill_only_deterministic_inference = True
         args.sglang_enable_deterministic_inference = True
 
-    if args.sglang_dp_size > 1:
+    # SGLang main dropped --enable-dp-attention: attention DP there is attn_dp_size > 1 alone
+    has_dp_attention_flag = hasattr(args, "sglang_enable_dp_attention")
+    if args.sglang_dp_size > 1 and has_dp_attention_flag:
         assert args.sglang_enable_dp_attention
 
     if sglang_attention_dp_enabled(
         attn_dp_size=args.sglang_attn_dp_size,
-        enable_dp_attention=args.sglang_enable_dp_attention,
+        enable_dp_attention=getattr(args, "sglang_enable_dp_attention", False),
         dp_size=args.sglang_dp_size,
     ):
         args.router_dp_aware = True
