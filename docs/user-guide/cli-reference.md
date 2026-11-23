@@ -261,7 +261,8 @@ Sections mirror the launch-script argument groups.
 | `--use-rollout-routing-replay` | flag | off | R3 — capture inference-side expert routing and replay it during training. |
 | `--calculate-per-token-loss` | flag | off | Per-token loss reduction. |
 | `--no-check-for-nan-in-loss-and-grad` | flag | off | Skip NaN/Inf guard (Megatron flag, debug only). |
-| `--true-on-policy-mode` | flag | off | Strict on-policy: reject samples from a prior policy. |
+| `--true-on-policy-mode` | flag | off | True on-policy: trainer log-probs bitwise equal to the rollout's (Megatron only). Selects `true_on_policy_v1` and the TOP `--spec`. |
+| `--true-on-policy-contract` | str | – | The trainer and serving contract (`true_on_policy_v1`, the default under `--true-on-policy-mode`); also selects `--sglang-true-on-policy-contract`. |
 
 ### Optimizer
 

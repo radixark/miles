@@ -36,6 +36,7 @@ data and weights around.
 - **[split_deployment](./infra_features/split_deployment)**: Installs one run as several helm releases — trainer, engines and orchestration script apart.
 - **[train_infer_mismatch_helper](./infra_features/train_infer_mismatch_helper)**: Algorithmic methods for rollout correction (e.g., TIS, MIS).
 - **[true_on_policy](./infra_features/true_on_policy)**: Ensures strictly equal log probabilities between inference (SGLang) and training engines.
+- **[true_on_policy/recipes](./infra_features/true_on_policy/recipes)**: Full-scale TOP and standard + R3 + TIS launchers for DeepSeek-V4-Flash and GLM-5.2 math RL and Qwen3.6 async text-to-SQL.
 
 ## [Experimental](./experimental)
 

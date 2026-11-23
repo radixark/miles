@@ -1,0 +1,13 @@
+### 0
+hf download
+  --repo-type dataset zhuzilin/dapo-math-17k
+  --local-dir /root/datasets/dapo-math-17k
+
+### 1
+wget -nc -O /root/datasets/aime-2024.parquet https://huggingface.co/datasets/BytedTsinghua-SIA/AIME-2024/resolve/main/data/aime-2024.parquet
+
+### 2
+python <REPO_ROOT>/examples/infra_features/true_on_policy/recipes/math_data.py aime /root/datasets/aime-2024.parquet /root/datasets/dapo-math-17k/aime-2024-boxed.jsonl
+
+### 3
+python <REPO_ROOT>/examples/infra_features/true_on_policy/recipes/math_data.py glm-eval-config /root/datasets/dapo-math-17k/aime-2024-boxed.jsonl /root/datasets/dapo-math-17k/glm5_2_aime_eval.yaml

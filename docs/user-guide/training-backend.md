@@ -457,9 +457,8 @@ make a native implementation that ignores boundaries safe for packed training.
 
 </Note>
 
-Hub kernels are rejected together with `--true-on-policy-mode` and `--deterministic-mode`: those
-modes require the training kernel to match SGLang's build exactly, and that equivalence has not been
-established per kernel yet.
+Hub kernels are rejected together with `--deterministic-mode`: that mode requires the training
+kernel to match SGLang's build exactly, and that equivalence has not been established per kernel yet.
 
 This loader requires access to Hub metadata even when the kernel binaries are already cached.
 It does **not** consume `kernels.lock`, and `kernels lock . && kernels download .` does not make

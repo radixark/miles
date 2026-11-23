@@ -1,0 +1,189 @@
+### 0
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 1
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 2
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 3
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "OVERLONG_BUFFER": "4096", "OVERLONG_FACTOR": "0.5", "NCCL_ALGO": "Ring", "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0", "CUBLAS_WORKSPACE_CONFIG": ":4096:8", "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False", "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true", "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": "256", "SGLANG_DG_CACHE_DIR_PER_PROCESS": "0", "SGLANG_DSV4_FP4_EXPERTS": "0", "NVSHMEM_QP_DEPTH": "2048", "OMP_NUM_THREADS": "4", "TOKENIZERS_PARALLELISM": "false", "SGLANG_OPT_DSV4_NONPAGED_INDEXER": "0", "SGLANG_OPT_FUSE_MHC_POST_PRE": "0", "SGLANG_OPT_FP8_WO_A_GEMM": "1", "TOP_TRANSPORT_CHECKS": "0", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --disable-bias-linear
+  --num-layers 43
+  --hidden-size 4096
+  --ffn-hidden-size 2048
+  --num-attention-heads 64
+  --normalization RMSNorm
+  --position-embedding-type rope
+  --norm-epsilon 1e-6
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 129280
+  --hidden-dropout 0.0
+  --attention-dropout 0.0
+  --multi-latent-attention
+  --q-lora-rank 1024
+  --kv-lora-rank 512
+  --qk-head-dim 512
+  --qk-pos-emb-head-dim 64
+  --v-head-dim 512
+  --qk-layernorm
+  --rotary-scaling-factor 16
+  --rotary-base 10000
+  --original-max-position-embeddings 65536
+  --beta-fast 32
+  --beta-slow 1
+  --attention-softmax-in-fp32
+  --no-rope-fusion
+  --num-experts 256
+  --moe-layer-freq '[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]'
+  --moe-ffn-hidden-size 2048
+  --moe-router-topk 6
+  --moe-shared-expert-intermediate-size 2048
+  --moe-router-pre-softmax
+  --moe-router-score-function sqrtsoftplus
+  --moe-router-enable-expert-bias
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-token-dispatcher-type alltoall
+  --moe-aux-loss-coeff 0
+  --moe-router-topk-scaling-factor 1.5
+  --num-residual-streams 4
+  --mhc-sinkhorn-iterations 20
+  --csa-compress-ratios '[0,0,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,0]'
+  --csa-compress-rotary-base 160000
+  --o-groups 8
+  --o-lora-rank 1024
+  --moe-n-hash-layers 3
+  --csa-window-size 128
+  --dsa-indexer-n-heads 64
+  --dsa-indexer-head-dim 128
+  --dsa-indexer-topk 512
+  --spec miles_plugins.models.deepseek_v4.deepseek_v4 get_dsv4_spec
+  --activation-func-clamp-value 10
+  --no-bias-swiglu-fusion
+  --no-activation-func-clamp-shared-expert
+  --hf-checkpoint /root/models/DeepSeek-V4-Flash-Base
+  --ref-load /root/models/DeepSeek-V4-Flash-Base
+  --load /root/shared_data/ds4-flash-math-top
+  --start-rollout-id 0
+  --save /root/shared_data/ds4-flash-math-top
+  --save-interval 20
+  --no-save-optim 
+  --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
+  --input-key prompt
+  --label-key label
+  --apply-chat-template
+  --apply-chat-template-kwargs '{"thinking_mode":"thinking"}'
+  --rollout-shuffle
+  --rm-type math
+  --seed 42
+  --custom-rm-path examples.infra_features.true_on_policy.recipes.math_rewards.overlong_score
+  --reward-key score
+  --num-rollout 100
+  --rollout-batch-size 128
+  --n-samples-per-prompt 8
+  --global-batch-size 1024
+  --num-steps-per-rollout 1
+  --balance-data
+  --rollout-max-response-len 14000
+  --rollout-max-prompt-len 512
+  --rollout-temperature 1.0
+  --rollout-top-k -1
+  --rollout-top-p 1 
+  --eval-prompt-data aime /root/datasets/dapo-math-17k/aime-2024-boxed.jsonl
+  --eval-interval 10
+  --eval-reward-key acc
+  --n-samples-per-eval-prompt 8
+  --eval-max-response-len 14000
+  --eval-temperature 1.0 
+  --advantage-estimator grpo
+  --kl-loss-coef 0
+  --kl-loss-type low_var_kl
+  --entropy-coef 0
+  --eps-clip 0.2
+  --eps-clip-high 0.28
+  --calculate-per-token-loss
+  --optimizer adam
+  --lr 1e-6
+  --lr-decay-style constant
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.95
+  --optimizer-cpu-offload
+  --use-precision-aware-optimizer
+  --overlap-cpu-optimizer-d2h-h2d
+  --offload-train
+  --offload-rollout
+  --offload-train-target disk
+  --offload-train-disk-dir /tmp/miles-optimizer-offload 
+  --colocate
+  --actor-num-nodes 8
+  --actor-num-gpus-per-node 8
+  --num-gpus-per-node 8
+  --rollout-num-gpus-per-engine 8
+  --decoder-first-pipeline-num-layers 11
+  --decoder-last-pipeline-num-layers 10
+  --context-parallel-size 1
+  --expert-tensor-parallel-size 1
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --use-dynamic-batch-size
+  --train-memory-margin-bytes 2147483648
+  --attention-dropout 0
+  --hidden-dropout 0
+  --attention-softmax-in-fp32
+  --no-log-inference-engine-weight-checksums
+  --deterministic-mode
+  --tensor-model-parallel-size 1
+  --pipeline-model-parallel-size 4
+  --expert-model-parallel-size 16
+  --moe-token-dispatcher-type flex
+  --moe-flex-dispatcher-backend deepep
+  --max-tokens-per-gpu 14512
+  --true-on-policy-mode
+  --true-on-policy-contract true_on_policy_v1
+  --spec miles_plugins.top.spec get_top_spec
+  --transformer-impl local
+  --use-cpu-initialization
+  --no-bias-swiglu-fusion
+  --attention-backend flash
+  --use-rollout-logprobs 
+  --sglang-ep-size 8
+  --sglang-dp-size 8
+  --sglang-enable-dp-attention
+  --sglang-moe-a2a-backend deepep
+  --sglang-context-length 16384
+  --sglang-max-running-requests 512
+  --sglang-grammar-backend none
+  --sglang-disable-radix-cache
+  --sglang-router-policy round_robin
+  --sglang-sampling-defaults openai
+  --update-weight-buffer-size 1073741824
+  --sglang-watchdog-timeout 1800
+  --sglang-speculative-algorithm EAGLE
+  --sglang-speculative-num-steps 1
+  --sglang-speculative-eagle-topk 1
+  --sglang-speculative-num-draft-tokens 2
+  --sglang-speculative-draft-model-path /root/models/DeepSeek-V4-Flash-Base
+  --sglang-mem-fraction-static 0.7
+  --sglang-enable-dp-lm-head
+  --sglang-moe-dense-tp-size 1
+  --sglang-deepep-mode auto
+  --sglang-deepep-dispatcher-output-dtype bf16
+  --sglang-moe-runner-backend deep_gemm
+  --sglang-disable-shared-experts-fusion
+  --sglang-kv-cache-dtype fp8_e4m3
+  --sglang-chunked-prefill-size 8192
+  --sglang-cuda-graph-max-bs-decode 64
+  --sglang-enable-deterministic-inference 
+  --deploy-component all
