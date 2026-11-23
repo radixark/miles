@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 
@@ -9,6 +9,7 @@ from miles.platforms import current_platform, tpu_shared_slice
 from miles.utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 
 _FSDP_REDUCE_DTYPES = ("float32", "bfloat16")
+TITAN_FP8_RECIPES = ("rowwise", "rowwise_with_gw_hp")
 
 
 @dataclass
@@ -28,6 +29,10 @@ class TorchtitanArgs(FSDPArgs):
     titan_fsdp_gather_once: bool = False
     # FSDP's gradient reduce dtype: bfloat16 halves the reduce-scatter buffers and bytes
     titan_fsdp_reduce_dtype: str = "float32"
+    # dynamic rowwise W8A8 FP8 GEMMs on transformer block projections ("rowwise" or "rowwise_with_gw_hp")
+    titan_fp8_recipe: str | None = None
+    # module FQN substrings kept in BF16 when --titan-fp8-recipe is set
+    titan_fp8_filter_fqns: list[str] = field(default_factory=list)
 
 
 def build_torchtitan_parser(extra_args_provider=None):
@@ -67,6 +72,10 @@ def validate_torchtitan_args(args) -> None:
         raise ValueError(
             f"--titan-fsdp-reduce-dtype {args.titan_fsdp_reduce_dtype!r}: expected one of {_FSDP_REDUCE_DTYPES}"
         )
+    if args.titan_fp8_recipe is not None and args.titan_fp8_recipe not in TITAN_FP8_RECIPES:
+        raise ValueError(f"--titan-fp8-recipe {args.titan_fp8_recipe!r}: expected one of {TITAN_FP8_RECIPES}")
+    if args.titan_fp8_filter_fqns and args.titan_fp8_recipe is None:
+        raise ValueError("--titan-fp8-filter-fqns requires --titan-fp8-recipe")
     _validate_platform_args(args)
     if args.update_weight_transfer_mode == "ici" and tpu_shared_slice.spec() is None:
         raise ValueError(
@@ -154,6 +163,11 @@ def _validate_platform_args(args) -> None:
     if args.log_probs_backend == "fused" and not platform.triton_kernels:
         raise ValueError(
             f"--log-probs-backend fused is a Triton kernel; on {platform.device_type} use --log-probs-backend torch"
+        )
+    if args.titan_fp8_recipe is not None and not platform.titan_fp8_rowwise:
+        raise ValueError(
+            f"--titan-fp8-recipe is not supported on {platform.device_type}; "
+            "use the megatron backend's --fp8-recipe on CUDA or run on TPU"
         )
     # colocate syncs through CUDA IPC, outside the transfer modes
     modes = platform.weight_transfer_modes

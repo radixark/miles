@@ -92,7 +92,9 @@ checkpoint it serves, and the Qwen3.5 launcher's adds dapo-math's "Answer:" inst
    at full shapes without eval, for timing. `--compile-cache-dir <dir>` reuses compiled programs across runs.
    Pass extra `train.py` flags through `--extra-args`.
 
-wandb is on when `WANDB_API_KEY` is set.
+wandb is on when `WANDB_API_KEY` is set. On `sglang-torchtpu` builds that include upstream SGLang's admin-endpoint
+gate (`sgl-project/sglang#49896`), export a shared `SGLANG_ADMIN_API_KEY` in both the `sglang` and `train` shells so
+weight-update endpoints (`/init_weights_update_group`, `/update_weights_from_distributed`) are enabled.
 
 CI runs each launcher's smoke recipe this way on a v7x host (`.github/workflows/pr-test-tpu.yml`, label
 `run-ci-tpu`; `.github/tpu-ci/README.md`).
@@ -101,6 +103,33 @@ CI runs each launcher's smoke recipe this way on a v7x host (`.github/workflows/
 gradients in bfloat16, halving the reduce buffers and the bytes over ICI. The Qwen3-4B launcher passes
 `--titan-fsdp-gather-once`, which reduces once per step and would accumulate microbatch gradients in the
 reduce dtype, so the two are refused together.
+
+## FP8 rollout and training
+
+Every TPU launcher supports channelwise W8A8 FP8 (`float8_e4m3fn` forward GEMMs, `float8_e5m2` backward
+activation gradients, BF16 parameters and FP32 Adam master states) from the same BF16 Hugging Face checkpoint:
+
+```bash
+# Mode 1: BF16 trainer + channelwise FP8 rollout
+python3 scripts/tpu/run_qwen3_4b_torchtitan.py sglang --rollout-fp8
+python3 scripts/tpu/run_qwen3_4b_torchtitan.py train --rollout-fp8 --recipe full
+
+# Mode 2: Unified channelwise W8A8 FP8 across rollout and training
+python3 scripts/tpu/run_qwen3_4b_torchtitan.py sglang --rollout-fp8
+python3 scripts/tpu/run_qwen3_4b_torchtitan.py train --rollout-fp8 --train-fp8 --recipe full
+```
+
+- `--rollout-fp8` passes `--quantization fp8 --tpu-fp8-runtime channelwise` to `sglang-torchtpu`, which quantizes
+  the BF16 checkpoint online per output channel (`amax / 448.0`) and re-quantizes each ICI weight update in place
+  without reallocating `direct_compile` parameter wrappers.
+- `--train-fp8` passes `--titan-fp8-recipe rowwise_with_gw_hp` (default; `--titan-fp8-recipe rowwise` is also
+  available for dense models) to `train.py`. Forward projections quantize activations per token row and weights per
+  output channel via `torch._scaled_mm` (dense) and `torch._scaled_grouped_mm` (MoE routed experts), matching the
+  rollout engine's forward quantization contract. Embeddings, `lm_head`, and MoE `router.gate` (`HiMidLoLinear`) stay
+  in high precision; `--titan-fp8-filter-fqns <substr> ...` excludes additional module FQNs.
+- On one v7x 2x2x1 host (`Qwen3-4B`, `--rollout-fp8 --train-fp8 --recipe smoke`, sequence length 8192), `sglang`
+  serves batch-32 rollouts at ~5,500 decode tokens/s, GRPO steps 1-2 run in 3.9-4.0 s with 0.5 s inter-step ICI weight
+  syncs (zero `direct_compile` recompiles), and `train/train_rollout_kl` stays at 0.003-0.004 (`abs_diff` 0.023-0.032).
 
 ## Notes
 

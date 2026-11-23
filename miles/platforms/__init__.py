@@ -35,6 +35,8 @@ class Platform:
     nvml_numa_affinity = True
     # the rollout engines' KV cache dtype when --sglang-kv-cache-dtype is left at "auto"; None keeps the engine's choice
     rollout_kv_cache_dtype: str | None = None
+    # torch_tpu lowers rowwise torch._scaled_mm and 2D x 3D torch._scaled_grouped_mm (--titan-fp8-recipe)
+    titan_fp8_rowwise = False
 
     def bind_device_before_process_group(self, local_rank: int) -> None:
         torch.cuda.set_device(f"cuda:{local_rank}")
@@ -49,6 +51,10 @@ class Platform:
     def device_name(self) -> str | None:
         """The CUDA device's marketing name (for peak-FLOPs lookup); None without a CUDA device."""
         return torch.cuda.get_device_name() if torch.cuda.is_available() else None
+
+    def optimization_barrier(self, tensor: torch.Tensor) -> torch.Tensor:
+        """Keep the compiler from fusing producer/consumer layouts across `tensor` where needed."""
+        return tensor
 
 
 def _select_platform() -> Platform:

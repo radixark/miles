@@ -63,6 +63,8 @@ def _args(**overrides) -> Namespace:
         lora_train_only=False,
         colocate_memory_peak_device="cpu",
         titan_fsdp_reduce_dtype="float32",
+        titan_fp8_recipe=None,
+        titan_fp8_filter_fqns=[],
         # read by the padded-rows loss layout's startup check on a static-shape platform
         train_backend="torchtitan",
         loss_type="policy_loss",
@@ -120,6 +122,7 @@ _TPU_FACTS = (
     "rooted_reduce",
     "premul_sum_reduce",
     "weight_transfer_modes",
+    "titan_fp8_rowwise",
 )
 
 
@@ -415,6 +418,8 @@ def _config_args(**overrides: object) -> Namespace:
         optimizer_cpu_offload=False,
         titan_fsdp_gather_once=False,
         titan_fsdp_reduce_dtype="float32",
+        titan_fp8_recipe=None,
+        titan_fp8_filter_fqns=[],
         save=None,
         load=None,
     )
@@ -1155,3 +1160,17 @@ def test_the_fsdp_reduce_dtype_reaches_torchtitans_training_config(monkeypatch, 
         dump_subdir="x",
     )
     assert config.training.mixed_precision_reduce == "bfloat16"
+
+
+def test_titan_fp8_recipe_validates_choices_and_platform(monkeypatch, request):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    with pytest.raises(ValueError, match="expected one of"):
+        validate_torchtitan_args(_args(titan_fp8_recipe="blockwise"))
+    with pytest.raises(ValueError, match="--titan-fp8-filter-fqns requires --titan-fp8-recipe"):
+        validate_torchtitan_args(_args(titan_fp8_filter_fqns=["attention.wo"]))
+    with pytest.raises(ValueError, match="not supported on cuda"):
+        validate_torchtitan_args(_args(titan_fp8_recipe="rowwise"))
+
+    request.getfixturevalue("on_tpu")
+    validate_torchtitan_args(_tpu_args(titan_fp8_recipe="rowwise"))
+    validate_torchtitan_args(_tpu_args(titan_fp8_recipe="rowwise_with_gw_hp", titan_fp8_filter_fqns=["attention.wo"]))
