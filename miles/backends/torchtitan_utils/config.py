@@ -76,11 +76,16 @@ def build_model_config(
     model = builder(args.backend.titan_model_flavor, **kwargs)
     _disable_load_balancing(model)
     if not platforms.current_platform.grouped_mm:
-        _use_neuron_routed_experts(model)
+        _use_neuron_routed_experts(model, parallelism=parallelism, seq_len=args.backend.seq_length)
     if not platforms.current_platform.flex_attention:
         _replace_inner_attention(model)
         _check_gated_delta_runs_without_tp(model, tp=parallelism.tensor_parallel_degree)
     if parallelism.context_parallel_degree > 1:
+        if not platforms.current_platform.flex_attention and not platforms.IS_TPU:
+            raise NotImplementedError(
+                f"--context-parallel-size {parallelism.context_parallel_degree} is not supported on "
+                f"{platforms.current_platform.device_type}"
+            )
         if platforms.current_platform.flex_attention:
             cp_attention = {FlexInnerAttention: AllGatherKVFlexInnerAttention}
         else:
@@ -354,9 +359,24 @@ class NeuronRoutedExperts(RoutedExperts):
         return output_TD.type_as(x_TD)
 
 
-def _use_neuron_routed_experts(model: BaseModel.Config) -> None:
+# the NKI blockwise MoE kernels take whole experts and a multiple of this many tokens a call
+_NEURON_MOE_TOKEN_MULTIPLE = 8192
+
+
+def _use_neuron_routed_experts(model: BaseModel.Config, *, parallelism: ParallelismConfig, seq_len: int) -> None:
     for layer in model.layers:
         for _, experts, parent, field_name in layer.traverse(RoutedExperts.Config, recurse=True):
+            if parallelism.tensor_parallel_degree > 1:
+                raise NotImplementedError(
+                    f"--tensor-model-parallel-size {parallelism.tensor_parallel_degree} with MoE is not supported on "
+                    "neuron: its MoE kernels take whole experts"
+                )
+            # every microbatch pads to --seq-length (static shapes)
+            if seq_len % _NEURON_MOE_TOKEN_MULTIPLE:
+                raise ValueError(
+                    f"--seq-length {seq_len} must be a multiple of {_NEURON_MOE_TOKEN_MULTIPLE} for MoE on neuron: "
+                    "its MoE kernels take that many tokens a call"
+                )
             setattr(parent, field_name, NeuronRoutedExperts.Config.from_routed_experts(experts))
 
 
