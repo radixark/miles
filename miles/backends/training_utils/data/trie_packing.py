@@ -157,6 +157,14 @@ def _gathered_kv(
     return TrieKV(index=_ranges_to_index(ranges), cu_seqlens=cu_seqlens, max_seqlen=max(seqlens, default=0))
 
 
+# Sliding layers attend over a window gather: only the ancestor keys the window reaches, far fewer than all of
+# them under a long shared prefix. FA2 tiles each sequence's keys from its start (64 or 128 keys, by head dim),
+# so starting each window gather on a logical position that is a multiple of 128 cuts the window into the same
+# tiles as for an unpacked sample, and trie and standard packing round alike. FA3 and FA4 tile differently;
+# there the extra keys are only masked out.
+WINDOW_START_MULTIPLE = 128
+
+
 def build_trie_layout(
     trie: IndexedFlatTrie,
     *,
@@ -223,3 +231,13 @@ def build_trie_layout(
         sample_segments=tuple(sample_segments),
         sample_lengths=tuple(sample_lengths),
     )
+
+
+@dataclass(frozen=True)
+class TrieModelSpec:
+    """What a model's trie rows depend on, read from its config.
+
+    ``sliding_window_size`` is the number of tokens a sliding layer attends over, if any layer slides.
+    """
+
+    sliding_window_size: int | None = None
