@@ -7,7 +7,7 @@ from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
     est_time=500,
-    suite="stage-c-8-gpu-h100",
+    suite="stage-c-8-gpu-h200",
     labels=["lora", "multi-lora", "torchtitan"],
     hardware=["hopper"],
     num_gpus=8,
