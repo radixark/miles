@@ -49,7 +49,7 @@ def enforced_specs() -> dict[tuple[str, str], CiGateSpec]:
     return specs
 
 
-def export_sql(specs: dict[tuple[str, str], CiGateSpec]) -> str:
+def export_sql(specs: dict[tuple[str, str], CiGateSpec], repository: str) -> str:
     literals = ",\n".join("(" + ",".join("'" + v.replace("'", "''") + "'" for v in key) + ")" for key in sorted(specs))
     return f"""BEGIN TRANSACTION READ ONLY;
 SET LOCAL statement_timeout = '120s';
@@ -62,7 +62,8 @@ SELECT r.run_id, r.test_path, r.backend, r.suite, r.created_at::text,
                  FILTER (WHERE mv.run_id IS NOT NULL), '[]'::jsonb) AS values
 FROM runs r LEFT JOIN metric_values mv ON mv.run_id = r.run_id
     AND EXISTS (SELECT 1 FROM specs s WHERE r.test_path = s.test_path AND mv.metric_key = s.metric_key)
-WHERE r.backend = 'cuda' AND r.test_path IN (SELECT test_path FROM specs)
+WHERE r.repository = '{repository.replace("'", "''")}' AND r.backend = 'cuda'
+    AND r.test_path IN (SELECT test_path FROM specs)
 GROUP BY r.run_id, r.test_path, r.backend, r.suite, r.created_at, r.github_run_id, r.github_run_attempt, r.trusted
 ORDER BY r.created_at, r.run_id;
 COMMIT;
@@ -294,9 +295,10 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--export-sql", action="store_true")
     mode.add_argument("--input", type=Path, help="complete decrypted Neon access result.json")
+    parser.add_argument("--repository", default="radixark/miles", help="repository whose history to replay")
     args = parser.parse_args()
     specs = enforced_specs()
-    sql = export_sql(specs)
+    sql = export_sql(specs, args.repository)
     if args.export_sql:
         print(sql, end="")
         return 0

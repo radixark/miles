@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# `docker` first on every runner's PATH. The runner bind-mounts the host's /var/run/docker.sock into
+# every container it creates for a job, which hands the job root on the host: drop that mount from
+# `create` / `run`, and refuse any other reference to the socket, so a changed runner format fails
+# the job instead of leaving the socket in. Every command then goes to the next `docker` on PATH.
+set -euo pipefail
+
+self=$(cd "${BASH_SOURCE[0]%/*}" && pwd -P)/docker
+next=""
+IFS=: read -ra path_dirs <<<"$PATH"
+for dir in "${path_dirs[@]}"; do
+  candidate=$(cd "$dir" 2>/dev/null && pwd -P)/docker || continue
+  if [ "$candidate" != "$self" ] && [ -x "$candidate" ]; then
+    next=$candidate
+    break
+  fi
+done
+[ -n "$next" ] || { echo "job-container docker hook: no docker after $self on PATH" >&2; exit 1; }
+
+case "${1:-}" in
+  create | run) ;;
+  *) exec "$next" "$@" ;;
+esac
+
+socket_mount=/var/run/docker.sock:/var/run/docker.sock
+args=()
+while [ $# -gt 0 ]; do
+  if [ "$1" = -v ] && [ "${2:-}" = "$socket_mount" ]; then
+    shift 2
+    continue
+  fi
+  if [[ $1 == *docker.sock* ]]; then
+    echo "job-container docker hook: refusing to pass the docker socket into a container: $1" >&2
+    exit 1
+  fi
+  args+=("$1")
+  shift
+done
+exec "$next" "${args[@]}"

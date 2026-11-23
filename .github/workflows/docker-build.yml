@@ -1,14 +1,11 @@
 name: Docker Build & Push
 
 on:
+  # Every main push reaches the hosted planner; image_inputs.py alone decides
+  # which images need rebuilding, including inputs added outside docker/.
   push:
     branches:
       - main
-    paths:
-      - 'docker/Dockerfile'
-      - 'docker/install-kube-tools.sh'
-      - 'docker/verify_transformer_engine.py'
-      - 'requirements.txt'
 
   schedule:
     # Poll every 10 minutes so an upstream move starts a build within ~30 minutes;
@@ -171,20 +168,60 @@ jobs:
           path: last_upstream_shas.txt
           key: upstream-shas-cu13-${{ github.run_id }}
 
+  push-variants:
+    # A push rebuilds only the images whose inputs it touched, so a TPU-only change
+    # does not spend an hour or more rebuilding the multi-arch cu13 image.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      variants: ${{ steps.pick.outputs.variants }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pick the variants the push touched
+        id: pick
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          git fetch -q --depth=1 origin "$BEFORE"
+          variants=()
+          candidates=(cu13)
+          # The TPU image (docker/build.py) and its CI (pr-test-tpu.yml) belong to radixark/miles.
+          if [ "$GITHUB_REPOSITORY" = radixark/miles ]; then
+            candidates+=(tpu)
+          fi
+          for variant in "${candidates[@]}"; do
+            current=$(python3 docker/image_inputs.py --variant "$variant" --rev HEAD)
+            base=$(python3 docker/image_inputs.py --variant "$variant" --rev "$BEFORE")
+            if [ "$current" != "$base" ]; then
+              variants+=("\"${variant}\"")
+            fi
+          done
+          echo "variants=[$(IFS=,; echo "${variants[*]}")]" | tee -a "$GITHUB_OUTPUT"
+
   build-and-push:
-    needs: [check-upstream]
+    needs: [check-upstream, push-variants]
     # schedule: only build if upstream changed
-    # push/dispatch: build; simulate_schedule runs the check but does not gate the manual build
+    # push: build the variants push-variants picked
+    # dispatch: build; simulate_schedule runs the check but does not gate the manual build
     if: |
       always() &&
-      (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true')
-    # Automatic builds (schedule, push) run one at a time: a build outlasts the poll
-    # interval, and overlapping ones race to push dev / latest. A newer pending build
+      (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true') &&
+      (github.event_name != 'push' || (needs.push-variants.result == 'success' && needs.push-variants.outputs.variants != '[]'))
+    # A schedule keeps every rolling image current; a push builds what it touched, and
+    # a manual dispatch builds only the variant it picks.
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.variant) || github.event_name == 'push' && needs.push-variants.outputs.variants || github.repository == 'radixark/miles' && '["cu13", "tpu"]' || '["cu13"]') }}
+    # Automatic builds of a variant run one at a time: a build outlasts the poll
+    # interval, and overlapping ones race to push its dev / latest. A newer pending build
     # replaces an older one, which is safe because builds clone branch HEADs when they
     # start. Manual dispatches and polls that skip the build get a per-run group, so
     # they never wait on, or cancel, an automatic build.
     concurrency:
-      group: ${{ github.event_name != 'workflow_dispatch' && (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true') && 'docker-build-auto' || format('docker-build-{0}', github.run_id) }}
+      group: ${{ github.event_name != 'workflow_dispatch' && (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true') && format('docker-build-auto-{0}', matrix.variant) || format('docker-build-{0}-{1}', github.run_id, matrix.variant) }}
       cancel-in-progress: false
     # The build itself never touches a GPU (buildx sandboxes RUN steps); docker-build
     # nodes are CI machines carrying a second runner instance dedicated to builds, so
@@ -213,6 +250,12 @@ jobs:
           pip3 install --help 2>/dev/null | grep -q -- --break-system-packages && PIP_BSP="--break-system-packages"
           pip3 install $PIP_BSP --ignore-installed typer
 
+      - name: Read the variant's tag postfix
+        # build.py owns each variant's tag_postfix; promoting latest and pruning follow it.
+        run: |
+          postfix=$(cd docker && python3 -c 'import sys, build; print(build.VARIANTS[sys.argv[1]].get("tag_postfix", ""))' '${{ matrix.variant }}')
+          echo "TAG_POSTFIX=${postfix}" >> "$GITHUB_ENV"
+
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -220,12 +263,15 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
+        env:
+          BUILD_GITHUB_TOKEN: ${{ github.token }}
         run: |
           python3 docker/build.py \
-            --variant ${{ inputs.variant || 'cu13' }} \
+            --variant ${{ matrix.variant }} \
             --image-tag ${{ inputs.image_tag || 'dev' }} \
             --dockerfile ${{ inputs.dockerfile || 'docker/Dockerfile' }} \
             ${{ inputs.custom_tag && format('--custom-tag {0}', inputs.custom_tag) || '' }} \
+            --image-repo "$GITHUB_REPOSITORY" \
             --push
 
       - name: Point latest to current dev
@@ -233,7 +279,7 @@ jobs:
         # simulate_schedule must not move it.
         if: github.event_name == 'schedule'
         run: |
-          docker buildx imagetools create -t radixark/miles:latest radixark/miles:dev
+          docker buildx imagetools create -t "${GITHUB_REPOSITORY}:latest${TAG_POSTFIX}" "${GITHUB_REPOSITORY}:dev${TAG_POSTFIX}"
 
       - name: Prune old dev tags
         if: github.event_name == 'schedule'
@@ -243,7 +289,7 @@ jobs:
           # days however often builds run, so the count limit alone never deletes it.
           MIN_AGE_DAYS=14
           CUTOFF=$(date -u -d "${MIN_AGE_DAYS} days ago" +%Y%m%d%H%M)
-          IMAGE=radixark/miles
+          IMAGE=${GITHUB_REPOSITORY}
 
           # Authenticate with Docker Hub API
           TOKEN=$(curl -s -X POST "https://hub.docker.com/v2/users/login/" \
@@ -291,7 +337,7 @@ jobs:
             done
           }
 
-          prune_series '^dev-[0-9]{12}$'
+          prune_series "^dev${TAG_POSTFIX}-[0-9]{12}\$"
 
   # A failed automatic build leaves the published images behind their inputs until a
   # later build succeeds, so report it to the Miles CI Lark group on the first failure.

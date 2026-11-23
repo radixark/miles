@@ -36,6 +36,24 @@ class AlgoConfig(BaseConfig):
             )
         ),
     ] = None
+    keep_recent_checkpoints: A[
+        int | None,
+        Arg(
+            help=(
+                "Checkpoint decay: after each save, keep this many newest checkpoint steps and, of the older "
+                "ones, only every --keep-checkpoint-every-th rollout. Off when unset."
+            )
+        ),
+    ] = None
+    keep_checkpoint_every: A[
+        int | None,
+        Arg(
+            help=(
+                "Checkpoint decay: keep every Nth rollout older than the newest --keep-recent-checkpoints. "
+                "Must be a multiple of --save-interval."
+            )
+        ),
+    ] = None
     custom_megatron_post_save_hook_path: A[
         CustomFunctionConfig | None,
         Arg(

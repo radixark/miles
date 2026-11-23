@@ -255,7 +255,12 @@ def create_mbridge_for_model(model, hf_path: str):
     model_vocab_rows = unwrap_model(model)[0].vocab_size
     # any non-None value turns on mbridge's pad on load
     bridge = AutoBridge.from_pretrained(hf_path, trust_remote_code=True, make_vocab_size_divisible_by=model_vocab_rows)
-    hf_vocab_size = bridge.hf_config.get_text_config().vocab_size
+    text_config = bridge.hf_config.get_text_config()
+    # the checkpoint's embedding rows: Inkling's config reports the unpadded vocab as
+    # vocab_size and the rows it stores as padded_vocab_size
+    hf_vocab_size = (
+        getattr(text_config, "padded_vocab_size", None) or text_config.vocab_size
+    )  # config-access-exempt: only checkpoints that store a padded embedding declare it
     assert (
         model_vocab_rows >= hf_vocab_size
     ), f"the model was built with fewer vocab rows ({model_vocab_rows}) than {hf_path} holds ({hf_vocab_size})"

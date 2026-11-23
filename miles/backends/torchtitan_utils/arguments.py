@@ -8,6 +8,8 @@ from miles.kernels.tpu import FLASH_ATTENTION_BLOCK
 from miles.platforms import current_platform, tpu_shared_slice
 from miles.utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 
+_FSDP_REDUCE_DTYPES = ("float32", "bfloat16")
+
 
 @dataclass
 class TorchtitanArgs(FSDPArgs):
@@ -20,6 +22,12 @@ class TorchtitanArgs(FSDPArgs):
     tensor_model_parallel_size: int = 1
     pipeline_model_parallel_size: int = 1
     expert_model_parallel_size: int = 1
+
+    # FSDP all-gathers params once per pass and reduce-scatters grads once per step; each rank holds full
+    # bf16 params and fp32 grads for the pass
+    titan_fsdp_gather_once: bool = False
+    # FSDP's gradient reduce dtype: bfloat16 halves the reduce-scatter buffers and bytes
+    titan_fsdp_reduce_dtype: str = "float32"
 
 
 def build_torchtitan_parser(extra_args_provider=None):
@@ -56,11 +64,23 @@ def validate_torchtitan_args(args) -> None:
             "inside the rope kernel"
         )
 
+    if args.titan_fsdp_reduce_dtype not in _FSDP_REDUCE_DTYPES:
+        raise ValueError(
+            f"--titan-fsdp-reduce-dtype {args.titan_fsdp_reduce_dtype!r}: expected one of {_FSDP_REDUCE_DTYPES}"
+        )
     _validate_platform_args(args)
     if args.update_weight_transfer_mode == "ici" and tpu_shared_slice.spec() is None:
         raise ValueError(
             f"--update-weight-transfer-mode ici needs {tpu_shared_slice.ENV_VAR} on the trainer, naming the slice "
             "it shares with the engine"
+        )
+    if args.titan_fsdp_gather_once and args.pipeline_model_parallel_size > 1:
+        raise ValueError("--titan-fsdp-gather-once does not apply to the pipeline schedule; drop it under PP")
+    # with gradient sync off until the last microbatch, FSDP accumulates the unsharded gradients in the reduce dtype
+    if args.titan_fsdp_gather_once and args.titan_fsdp_reduce_dtype != "float32":
+        raise ValueError(
+            f"--titan-fsdp-gather-once would accumulate microbatch gradients in --titan-fsdp-reduce-dtype "
+            f"{args.titan_fsdp_reduce_dtype}; use float32 with it"
         )
     if args.ref_update_interval is not None:
         raise ValueError("--ref-update-interval is not supported by the torchtitan backend")
@@ -74,8 +94,6 @@ def validate_torchtitan_args(args) -> None:
         raise ValueError(
             "torchtitan's LR schedule takes --lr-warmup-iters only; fraction, WSD and decay-iters are unsupported"
         )
-    if args.save_debug_train_data is not None:
-        raise ValueError("--save-debug-train-data is not wired up for the torchtitan backend")
     if args.use_routing_replay and not args.use_rollout_routing_replay and not current_platform.dynamic_shapes:
         raise ValueError(
             "--use-routing-replay without --use-rollout-routing-replay records the ids inside a compiled block, which "
@@ -135,6 +153,11 @@ def _validate_lora_args(args) -> None:
 
 def _validate_platform_args(args) -> None:
     platform = current_platform
+    if args.multimodal_keys is not None and not platform.trains_multimodal_encoders:
+        raise ValueError(
+            f"--multimodal-keys: multimodal training is not supported on {platform.device_type} yet; the trainer "
+            "builds the language model alone there"
+        )
     if args.log_probs_backend == "fused" and not platform.triton_kernels:
         raise ValueError(
             f"--log-probs-backend fused is a Triton kernel; on {platform.device_type} use --log-probs-backend torch"
@@ -149,17 +172,17 @@ def _validate_platform_args(args) -> None:
         )
     if platform.dynamic_shapes:
         return
-    # without dynamic shapes, packed microbatches are padded to a power-of-two bucket capped at --seq-length
+    # without dynamic shapes, every packed microbatch is padded to --seq-length, the one compiled shape
     if args.seq_length % FLASH_ATTENTION_BLOCK != 0:
         raise ValueError(
             f"--seq-length {args.seq_length} must be a multiple of {FLASH_ATTENTION_BLOCK} on {platform.device_type}: "
-            f"the splash attention kernel works in {FLASH_ATTENTION_BLOCK}-token blocks and the largest length bucket "
-            "is --seq-length"
+            f"the splash attention kernel works in {FLASH_ATTENTION_BLOCK}-token blocks and every microbatch pads to "
+            "--seq-length"
         )
-    if args.context_parallel_size != 1:
+    if args.seq_length % args.context_parallel_size:
         raise ValueError(
-            f"--context-parallel-size {args.context_parallel_size} is not supported on {platform.device_type}: "
-            "its length buckets do not align microbatches to the CP shards"
+            f"--context-parallel-size {args.context_parallel_size} does not divide --seq-length {args.seq_length}: "
+            "every microbatch pads to --seq-length and shards evenly across the CP ranks"
         )
     if args.expert_model_parallel_size != 1:
         raise ValueError(
@@ -170,10 +193,10 @@ def _validate_platform_args(args) -> None:
     if args.use_dynamic_batch_size and args.max_tokens_per_gpu > args.seq_length:
         raise ValueError(
             f"--max-tokens-per-gpu {args.max_tokens_per_gpu} exceeds --seq-length {args.seq_length}, "
-            "the largest length bucket"
+            "the shape every microbatch pads to"
         )
     if not args.use_dynamic_batch_size and args.micro_batch_size > 1:
         raise ValueError(
             f"--micro-batch-size {args.micro_batch_size} can pack more than --seq-length {args.seq_length} "
-            "tokens, the largest length bucket; use --use-dynamic-batch-size with --max-tokens-per-gpu"
+            "tokens, the shape every microbatch pads to; use --use-dynamic-batch-size with --max-tokens-per-gpu"
         )

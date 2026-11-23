@@ -28,6 +28,7 @@ def _static_args() -> Namespace:
         qkv_format="thd",
         use_dynamic_global_batch_size=False,
         use_dynamic_batch_size=False,
+        multimodal_token_space_processing=False,
         backend=Namespace(global_batch_size=256, micro_batch_size=8),
     )
 
@@ -35,6 +36,7 @@ def _static_args() -> Namespace:
 def _scheduled_args() -> Namespace:
     return Namespace(
         qkv_format="thd",
+        multimodal_token_space_processing=False,
         global_batch_size=256,
         backend=Namespace(global_batch_size=256),
         use_dynamic_global_batch_size=False,
@@ -108,6 +110,24 @@ class TestGetDataIteratorPrecomputedSchedule:
         assert sorted(i for shard in shards for i in shard["sample_indices"]) == list(range(256))
 
 
+class TestDataIteratorMicrobatchIndices:
+    @pytest.mark.parametrize(
+        "schedule",
+        [dict(micro_batch_size=2), dict(micro_batch_indices=[[3, 0], [1], [2, 5, 4]])],
+        ids=["fixed", "balanced"],
+    )
+    def test_matches_the_rows_get_next_yields(self, schedule):
+        """Replay is filled from this membership, so it must be what the forwards pop."""
+        rollout = {"sample_indices": list(range(6))}
+        iterator = data_utils.DataIterator(rollout, **schedule)
+        yielded = [iterator.get_next(["sample_indices"])["sample_indices"] for _ in range(3)]
+
+        consumed = iterator.offset
+        assert iterator.microbatch_indices(3) == yielded
+        assert iterator.microbatch_indices(2) == yielded[:2]
+        assert iterator.offset == consumed
+
+
 class TestGetDataIteratorUnsupportedSchedule:
     def test_a_backend_without_schedule_support_falls_back_and_rejects_three_cells(
         self, monkeypatch: pytest.MonkeyPatch
@@ -159,7 +179,7 @@ class TestGetRolloutDataParallelWiring:
             dp_rank: int,
             train_parallel_config: TrainParallelConfig,
             witness_info: object,
-            output_store_read: object,
+            output_store: object,
         ) -> tuple[dict[str, list[list[int]]], object]:
             seen.append((dp_rank, train_parallel_config, witness_info))
             return {"tokens": [[1]], "loss_masks": [[1]]}, store_result
@@ -167,7 +187,7 @@ class TestGetRolloutDataParallelWiring:
         monkeypatch.setattr(data_utils, "get_parallel_state", lambda: state)
         monkeypatch.setattr(data_utils, "process_rollout_data", process)
         monkeypatch.setattr(data_utils.current_platform, "current_device", lambda: data_utils.torch.device("cpu"))
-        args = Namespace(enable_witness=False, qkv_format="thd")
+        args = Namespace(enable_witness=False, multimodal_token_space_processing=False, qkv_format="thd")
 
         rollout, result = data_utils.get_rollout_data(
             args=args, rollout_data_ref=object(), train_parallel_config=config

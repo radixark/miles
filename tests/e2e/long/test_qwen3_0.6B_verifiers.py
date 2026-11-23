@@ -16,7 +16,7 @@ from miles.utils.external_utils import command_utils
 register_cuda_ci(
     est_time=300, suite="stage-c-2-gpu-h200", labels=["short"], hardware=["hopper", "blackwell"], num_gpus=2
 )
-register_rocm_ci(est_time=900, suite="nightly-stage-c-2-gpu-mi350", labels=["short"])
+register_rocm_ci(est_time=900, suite="stage-c-2-gpu-mi350", labels=["short"], nightly=True)
 
 MODEL_NAME = "Qwen3-0.6B"
 MODEL_TYPE = "qwen3-0.6B"

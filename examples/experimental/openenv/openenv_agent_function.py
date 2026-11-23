@@ -108,7 +108,7 @@ MESSAGE_TIMEOUT_S = float(os.getenv("OPENENV_MESSAGE_TIMEOUT_S", "1200"))
 # generation) and stall the whole rollout batch (a step finishes only when the
 # slowest of all concurrent episodes returns). An episode exceeding this cap is
 # terminated (its coroutine cancelled) and scored reward 0.
-_MAX_ROLLOUT_TIME_S = float(os.getenv("OPENENV_MAX_ROLLOUT_TIME_SECONDS", "3600"))
+MAX_ROLLOUT_TIME_S = float(os.getenv("OPENENV_MAX_ROLLOUT_TIME_SECONDS", "3600"))
 
 
 def _is_retryable_env_error(e: BaseException) -> bool:
@@ -437,10 +437,10 @@ async def run_for_training(
         # during cancellation cleanup.
         reward, agent_metrics = await asyncio.wait_for(
             run_episode_fn(policy, model_name, messages, request_kwargs, metadata),
-            timeout=_MAX_ROLLOUT_TIME_S,
+            timeout=MAX_ROLLOUT_TIME_S,
         )
     except asyncio.TimeoutError:
-        logger.warning(f"OpenEnv tbench2 episode exceeded {_MAX_ROLLOUT_TIME_S:.0f}s; " "terminating with reward 0")
+        logger.warning(f"OpenEnv tbench2 episode exceeded {MAX_ROLLOUT_TIME_S:.0f}s; " "terminating with reward 0")
         # eval_report empty: the episode was cancelled before evaluate ever
         # ran, so there is no pytest report to surface.
         return {
