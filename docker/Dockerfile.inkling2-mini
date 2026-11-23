@@ -1,0 +1,38 @@
+# Inkling 2 Mini on Miles: the dev image with the SGLang that serves Inkling 2 Mini (sgl-project/sglang#51926,
+# SGLang 1.0, H200 and Blackwell) and Harbor for agentic rollout (examples/experimental/harbor).
+#
+#   python docker/build.py --variant cu13 --image-tag custom --custom-tag inkling-2-mini \
+#       --dockerfile docker/Dockerfile.inkling2-mini --push
+
+ARG BASE_IMAGE=radixark/miles:dev-202611231736
+FROM ${BASE_IMAGE}
+
+ARG SGLANG_COMMIT=99f0be56153d55b79b08301543ab046583890ccc
+ARG HARBOR_REPO=https://github.com/harbor-framework/harbor.git
+ARG HARBOR_COMMIT=ff87249d334dd12da836986bcd05bb3b4a62c187
+ARG MILES_BRANCH=zhichen/inkling2-mini-tb2
+
+# /sgl-workspace/sglang is the editable install, so a checkout swaps the package
+RUN cd /sgl-workspace/sglang \
+    && git fetch origin ${SGLANG_COMMIT} \
+    && git checkout -f ${SGLANG_COMMIT} \
+    && pip install --no-cache-dir --no-deps "sglang-kernel==0.4.11" "tml-renderers==0.4.2"
+
+# Harbor's own pins (openai 3.x, websockets 15) go in a side directory on PYTHONPATH; the packages the
+# trainer and SGLang share with it stay at the image's versions.
+RUN git clone ${HARBOR_REPO} /opt/harbor-src \
+    && cd /opt/harbor-src && git checkout ${HARBOR_COMMIT} \
+    && uv pip install --python "$(command -v python)" --target /opt/harbor-deps "harbor[e2b] @ /opt/harbor-src" \
+    && cd /opt/harbor-deps \
+    && rm -rf boto3* botocore* certifi* charset_normalizer* filelock* fsspec* hf_xet* httpcore2* httpx2* \
+        huggingface_hub* importlib_metadata* markdown_it* polars* _polars_runtime_32* yaml _yaml PyYAML* pyyaml* \
+        regex* tokenizers* typer* platformdirs* \
+    && python -c "import sys; sys.path.insert(0, '/opt/harbor-deps'); import harbor, e2b; from harbor.trial.trial import Trial"
+
+ENV PYTHONPATH=/opt/harbor-deps
+# SGLang 1.0 otherwise loads a Rust radix-tree core this image does not bundle
+ENV SGLANG_UNIFIED_RADIX_TREE_CORE_BACKEND=python
+
+RUN cd /root/miles \
+    && git fetch origin ${MILES_BRANCH} \
+    && git checkout -f -B ${MILES_BRANCH} FETCH_HEAD
