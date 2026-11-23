@@ -152,12 +152,14 @@ def validate_args(args):
         args.sglang_enable_prefill_only_deterministic_inference = True
         args.sglang_enable_deterministic_inference = True
 
+    # SGLang 1.0 removed --enable-dp-attention: attention DP is --attn-dp-size alone
+    enable_dp_attention = vars(args).get("sglang_enable_dp_attention", args.sglang_attn_dp_size > 1)
     if args.sglang_dp_size > 1:
-        assert args.sglang_enable_dp_attention
+        assert enable_dp_attention
 
     if sglang_attention_dp_enabled(
         attn_dp_size=args.sglang_attn_dp_size,
-        enable_dp_attention=args.sglang_enable_dp_attention,
+        enable_dp_attention=enable_dp_attention,
         dp_size=args.sglang_dp_size,
     ):
         args.router_dp_aware = True
