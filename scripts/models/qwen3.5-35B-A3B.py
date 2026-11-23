@@ -1,11 +1,10 @@
 from model_args_utils import moe_layer_freq
 
 
-NLAYERS = 40
 FIRST_K_DENSE_REPLACE = 0
 
 
-def model_args() -> str:
+def model_args(nlayers: int = 40) -> str:
     return (
         "--spec miles_plugins.models.qwen3_5 get_qwen3_5_spec "
         "--disable-bias-linear "
@@ -14,7 +13,7 @@ def model_args() -> str:
         "--num-attention-heads 16 "
         "--num-query-groups 2 "
         "--kv-channels 256 "
-        "--num-layers 40 "
+        f"--num-layers {nlayers} "
         "--hidden-size 2048 "
         "--ffn-hidden-size 512 "
         "--normalization RMSNorm "
@@ -32,7 +31,7 @@ def model_args() -> str:
         "--moe-router-score-function softmax "
         "--moe-token-dispatcher-type alltoall "
         "--moe-router-topk 8 "
-        f"--moe-layer-freq {moe_layer_freq(nlayers=NLAYERS, first_k_dense_replace=FIRST_K_DENSE_REPLACE)} "
+        f"--moe-layer-freq {moe_layer_freq(nlayers=nlayers, first_k_dense_replace=FIRST_K_DENSE_REPLACE)} "
         "--num-experts 256 "
         "--moe-grouped-gemm "
         "--moe-token-drop-policy probs "

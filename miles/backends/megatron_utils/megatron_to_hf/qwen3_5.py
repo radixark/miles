@@ -5,6 +5,19 @@ import torch
 from miles.backends.megatron_utils.megatron_to_hf.linear_attn_layout import gdn_heads_of, qkv_group_major_to_flat
 from miles.utils.args.runtime import TrainerConfig
 
+_GDN_GROUP_MAJOR = ("self_attention.linear_attn.in_proj_qkv.weight", "self_attention.linear_attn.conv1d.weight")
+
+
+def _is_top_gdn(args: TrainerConfig) -> bool:
+    """TOP v1 on a Qwen GDN checkpoint; the TOP module loads SGLang, so it is imported on TOP runs only."""
+    if (
+        getattr(args, "true_on_policy_contract", None) is None
+    ):  # config-access-exempt: weight converters and tools pass partial namespaces that carry no TOP contract
+        return False
+    from miles.true_on_policy.gdn import is_top_gdn
+
+    return is_top_gdn(args)
+
 
 def _convert_mtp_layer(
     args: TrainerConfig, name: str, param: torch.Tensor, layer_idx: str
@@ -78,6 +91,18 @@ def convert_qwen3_5_to_hf(args: TrainerConfig, name: str, param: torch.Tensor) -
     if match:
         layer_idx, rest = match.groups()
         prefix = f"model.language_model.layers.{layer_idx}"
+
+        # SequentialMLP experts by name. Weight sync never reaches this: named_weights publishes them under
+        # the grouped name with the global id. Callers that pass raw names (offline conversion at EP1) get the
+        # local index, which is global only at EP1.
+        local_expert = re.fullmatch(r"mlp\.experts\.local_experts\.(\d+)\.linear_fc([12])\.weight", rest)
+        if local_expert:
+            expert_idx, fc = local_expert.groups()
+            expert_prefix = f"{prefix}.mlp.experts.{expert_idx}"
+            if fc == "1":
+                gate, up = param.chunk(2, dim=0)
+                return [(f"{expert_prefix}.gate_proj.weight", gate), (f"{expert_prefix}.up_proj.weight", up)]
+            return [(f"{expert_prefix}.down_proj.weight", param)]
 
         # experts (grouped gemm - fused format)
         if rest == "mlp.experts.linear_fc1":
@@ -167,6 +192,8 @@ def convert_qwen3_5_to_hf(args: TrainerConfig, name: str, param: torch.Tensor) -
             return [(f"{prefix}.input_layernorm.weight", param)]
         elif rest == "mlp.linear_fc1.layer_norm_weight":
             return [(f"{prefix}.post_attention_layernorm.weight", param)]
+        elif rest == "input_layernorm.weight":
+            return [(f"{prefix}.input_layernorm.weight", param)]
         elif rest == "pre_mlp_layernorm.weight":
             return [(f"{prefix}.post_attention_layernorm.weight", param)]
         elif rest == "mlp.router.weight":
@@ -179,8 +206,11 @@ def convert_qwen3_5_to_hf(args: TrainerConfig, name: str, param: torch.Tensor) -
             return [(f"{prefix}.self_attn.q_norm.weight", param)]
         elif rest == "self_attention.k_layernorm.weight":
             return [(f"{prefix}.self_attn.k_norm.weight", param)]
-        elif rest in ("self_attention.linear_attn.in_proj_qkv.weight", "self_attention.linear_attn.conv1d.weight"):
+        elif rest in _GDN_GROUP_MAJOR:
             hf_rest = rest[len("self_attention.") :]
+            # TOP's GDN (TopQwenGDN) already holds HF's flat Q/K/V rows; only the head-sharded layer is group-major.
+            if _is_top_gdn(args):
+                return [(f"{prefix}.{hf_rest}", param)]
             return [(f"{prefix}.{hf_rest}", qkv_group_major_to_flat(param, gdn_heads_of(args.hf_checkpoint)))]
         elif rest.startswith("self_attention.") and rest[len("self_attention.") :] in [
             "input_layernorm.weight",

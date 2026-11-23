@@ -1,4 +1,4 @@
-def model_args() -> str:
+def model_args(nlayers: int = 64) -> str:
     return (
         "--spec miles_plugins.models.qwen3_5 get_qwen3_5_spec "
         "--disable-bias-linear "
@@ -7,7 +7,7 @@ def model_args() -> str:
         "--num-attention-heads 24 "
         "--num-query-groups 4 "
         "--kv-channels 256 "
-        "--num-layers 64 "
+        f"--num-layers {nlayers} "
         "--hidden-size 5120 "
         "--ffn-hidden-size 17408 "
         "--normalization RMSNorm "
