@@ -95,9 +95,19 @@ def _add_prefixed_server_args(parser, *, flag_prefix: str, dest_prefix: str, ski
                     final_kwargs["dest"] = f"{dest_prefix}{canonical_dest}"
                     break
 
-        if inherit:
+        action = final_kwargs.get("action")
+        # SGLang's DeprecatedChoiceToFlagAction maps legacy choice values to target boolean dests and sets its own
+        # default=SUPPRESS in __init__, so prefix its target dests/flags and omit a duplicate default kwarg.
+        is_deprecated_choice_map = isinstance(action, type) and action.__name__ == "DeprecatedChoiceToFlagAction"
+        if is_deprecated_choice_map and isinstance(final_kwargs.get("flags"), dict):
+            final_kwargs["flags"] = {
+                choice: (f"{dest_prefix}{target_dest}", f"--{flag_prefix}-{new_flag.lstrip('-')}")
+                for choice, (target_dest, new_flag) in final_kwargs["flags"].items()
+            }
+
+        if inherit and not is_deprecated_choice_map:
             final_kwargs["default"] = argparse.SUPPRESS
-            if final_kwargs.get("action") in ("store_true", "store_false"):
+            if action in ("store_true", "store_false"):
                 # store_true can only turn a field on; an override must also turn one off.
                 final_kwargs["action"] = argparse.BooleanOptionalAction
                 final_kwargs.pop("const", None)

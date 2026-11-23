@@ -1,6 +1,7 @@
 import asyncio
 import ipaddress
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -48,7 +49,7 @@ class StaticInferenceEngineWorkerProvider(BaseWorkerProvider):
 
     async def init(self) -> None:
         urls = _compute_external_engine_urls(self._args)
-        engines = await _discover_external_engines(urls, api_key=self._args.sglang.base_args["api_key"])
+        engines = await _discover_external_engines(urls, api_key=_resolve_external_engine_api_key(self._args))
         _assert_engines_match_args(self._args, engines=engines)
 
         self._cells = _compute_cells(args=self._args, engines=engines)
@@ -118,9 +119,19 @@ class _ExternalEngineInfo:
     disaggregation_bootstrap_port: int | None
 
 
+def _resolve_external_engine_api_key(args: Any) -> str | None:
+    base_args = args.sglang.base_args
+    if (admin_api_key := base_args.get("admin_api_key")) is not None:
+        return admin_api_key
+    if (api_key := base_args["api_key"]) is not None:
+        return api_key
+    return os.environ.get("SGLANG_ADMIN_API_KEY")
+
+
 def _compute_cells(*, args: Any, engines: list[_ExternalEngineInfo]) -> dict[str, _ExternalCell]:
     cells: dict[str, _ExternalCell] = {}
     gpu_offset = 0
+    resolved_api_key = _resolve_external_engine_api_key(args)
     for cell_index, engine in enumerate(engines):
         cell_id = compute_cell_id(pool_id=_EXTERNAL_ENGINE_POOL_ID, cell_index=cell_index)
         worker_name = compute_worker_name(pool_id=_EXTERNAL_ENGINE_POOL_ID, cell_index=cell_index)
@@ -136,7 +147,7 @@ def _compute_cells(*, args: Any, engines: list[_ExternalEngineInfo]) -> dict[str
                     worker_type=engine.worker_type.value,
                     num_gpus_per_engine=engine.num_gpus,
                     gpu_offset=gpu_offset,
-                    sglang_api_key=args.sglang.base_args["api_key"],
+                    sglang_api_key=resolved_api_key,
                     needs_offload=False,
                     update_weights=True,
                     # The engine's own SGLANG_HEALTH_CHECK_TIMEOUT is not reported, so assume SGLang's default
