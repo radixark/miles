@@ -5,7 +5,12 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from miles.rollout.session.config import SessionServerConfig
-from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
+from miles.rollout.session.errors import (
+    MessageValidationError,
+    SessionNotFoundError,
+    TokenizationError,
+    TruncatedGenerationError,
+)
 from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request
 from miles.rollout.session.store_refs import SessionStoreRefs
 from miles.rollout.session.types import SessionRecord
@@ -14,7 +19,7 @@ from miles.utils.chat_template_utils.message_matcher_hub import (
     assert_messages_append_only_with_allowed_role,
     strict_message_matches,
 )
-from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
+from miles.utils.chat_template_utils.tito_tokenizer import FixedTemplate, TITOTokenizer, extract_template_args
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +61,70 @@ def assert_pretokenized_prefix(
         )
 
 
+def assert_continuation_roles(
+    messages: list[dict[str, Any]], *, appended_from: int, fixed_template: FixedTemplate
+) -> None:
+    """Refuse an appended message that may not directly follow its assistant.
+
+    Each message in ``messages[appended_from:]`` that directly follows an
+    assistant must take a role in ``fixed_template.roles_after`` that assistant,
+    decided by whether it carries ``tool_calls``. Checked before rendering, so
+    a refusal is a 400 and leaves session state unchanged. Shared verbatim by
+    the v1 render and the v2 render.
+    """
+    for index in range(max(appended_from, 1), len(messages)):
+        previous = messages[index - 1]
+        if previous.get("role") != "assistant":
+            continue
+        role = messages[index].get("role")
+        allowed = fixed_template.roles_after(previous)
+        if role not in allowed:
+            calls = "with" if previous.get("tool_calls") else "without"
+            raise MessageValidationError(
+                f"appended message at index {index} has role={role!r} after an assistant {calls} tool_calls; "
+                f"the selected TITO family accepts only {sorted(allowed)} there"
+            )
+
+
+def assert_no_server_message_keys(messages: list[dict[str, Any]], tito_tokenizer: TITOTokenizer) -> None:
+    """Refuse a client message that carries a key only the server writes (``SERVER_MESSAGE_KEYS``).
+
+    The fixed template renders those keys as stored, so a client-supplied one
+    would put text into the prompt that the message's own fields do not show.
+    *messages* are the ones the request adds; a replayed stored message gets
+    its keys from the store. Shared verbatim by the v1 render and the v2 render.
+    """
+    for index, message in enumerate(messages):
+        forged = sorted(key for key in tito_tokenizer.SERVER_MESSAGE_KEYS if key in message)
+        if forged:
+            raise MessageValidationError(
+                f"new message {index} (role={message.get('role')!r}) carries server-only keys {forged}; "
+                "the session server writes them and a request must not"
+            )
+
+
+def close_truncated_checkpoint(
+    token_ids: list[int], *, completion_start: int, tito_tokenizer: TITOTokenizer, allowed: bool
+) -> list[int]:
+    """*token_ids* followed by the tokens that close its last turn, cut by ``finish_reason='length'``.
+
+    The closer becomes the head of the next prompt, so the next turn sees closed
+    reasoning and tool-call structures; the stored checkpoint keeps only its
+    sampled tokens. *allowed* is the run's resolved ``--allow-truncated-continuation``;
+    when it is off the continuation is a 409 and leaves session state unchanged.
+    Shared verbatim by the v1 render and the v2 render.
+    """
+    if not allowed:
+        if tito_tokenizer.FIXED_TEMPLATE.truncation_closer is None:
+            reason = f"{type(tito_tokenizer).__name__} cannot close a turn cut by finish_reason='length'"
+        else:
+            reason = "rejected by --no-allow-truncated-continuation"
+        raise TruncatedGenerationError(
+            f"truncated generation cannot be extended: {reason}; branch before the cut instead"
+        )
+    return token_ids + tito_tokenizer.close_truncated_turn(token_ids, completion_start)
+
+
 @dataclass
 class LinearTrajectory:
     """State for a linear trajectory.
@@ -76,6 +145,10 @@ class LinearTrajectory:
     Rollback slices it with the token checkpoints. Model rules decide which of
     these fields a continuation inherits or must keep unchanged.
 
+    ``completion_starts`` and ``finish_reasons`` record where each checkpoint's
+    sampled tokens start and why sampling stopped; a continuation closes a
+    checkpoint cut by ``finish_reason='length'`` before appending to it.
+
     ``prepare_token_ids_and_request_args`` resolves arguments and renders from
     the selected checkpoint before applying rollback.
 
@@ -91,6 +164,8 @@ class LinearTrajectory:
     generated_checkpoint_message_ends: list[int] = field(default_factory=list)
     num_assistant: int = 0
     turn_args_history: list[dict[str, Any]] = field(default_factory=list)
+    completion_starts: list[int] = field(default_factory=list)
+    finish_reasons: list[str] = field(default_factory=list)
     evaluation: bool = False
     sampling_defaults: dict[str, Any] = field(default_factory=dict)
     sampling_support_replay: bool = False
@@ -104,6 +179,8 @@ class LinearTrajectory:
             trajectory_token_ids=list(self.trajectory_token_ids),
             generated_checkpoint_message_ends=list(self.generated_checkpoint_message_ends),
             turn_args_history=list(self.turn_args_history),
+            completion_starts=list(self.completion_starts),
+            finish_reasons=list(self.finish_reasons),
         )
 
     @property
@@ -157,6 +234,7 @@ class LinearTrajectory:
             checkpoint_index=checkpoint_index,
             template_args=prepared.template_args,
             tito_tokenizer=tito_tokenizer,
+            allow_truncated_continuation=config.allow_truncated_continuation,
             message_matcher=matcher,
         )
         self._rollback_to_checkpoint(checkpoint_index)
@@ -169,6 +247,7 @@ class LinearTrajectory:
         checkpoint_index: int,
         template_args: dict[str, Any],
         tito_tokenizer: TITOTokenizer,
+        allow_truncated_continuation: bool,
         message_matcher: SessionMessageMatcher | None = None,
     ) -> list[int]:
         """Build prompt token IDs while reusing the selected checkpoint's token prefix.
@@ -177,7 +256,8 @@ class LinearTrajectory:
 
         Validates that *request_messages* extends the selected checkpoint's history
         under *message_matcher* (defaults to the strict matcher) and reuses its stored
-        token_ids as the pretokenized prefix. When no stored checkpoint is selected
+        token_ids as the pretokenized prefix; a checkpoint cut by
+        ``finish_reason='length'`` is closed first. When no stored checkpoint is selected
         to build on — the first turn, or a retry of the first turn that selects
         the empty checkpoint — renders *request_messages* from scratch via
         the chat template instead.
@@ -188,6 +268,7 @@ class LinearTrajectory:
 
         token_ids = self.trajectory_token_ids[checkpoint_index] if checkpoint_index >= 0 else []
         if not token_ids:
+            assert_no_server_message_keys(request_messages, tito_tokenizer)
             return tito_tokenizer.apply_chat_template(
                 request_messages,
                 add_generation_prompt=True,
@@ -208,7 +289,18 @@ class LinearTrajectory:
                 f"{e}; the selected TITO fixed template does not support appending this role"
             ) from e
 
+        assert_no_server_message_keys(request_messages[len(stored_messages) :], tito_tokenizer)
         effective_messages = stored_messages + request_messages[len(stored_messages) :]
+        assert_continuation_roles(
+            effective_messages, appended_from=len(stored_messages), fixed_template=tito_tokenizer.FIXED_TEMPLATE
+        )
+        if self.finish_reasons[checkpoint_index] == "length":
+            token_ids = close_truncated_checkpoint(
+                token_ids,
+                completion_start=self.completion_starts[checkpoint_index],
+                tito_tokenizer=tito_tokenizer,
+                allowed=allow_truncated_continuation,
+            )
         return tito_tokenizer.merge_tokens(
             old_messages=stored_messages,
             new_messages=effective_messages,
@@ -224,11 +316,13 @@ class LinearTrajectory:
         completion_token_ids: list[int],
         max_trim_tokens: int,
         turn_args: dict[str, Any] | None = None,
+        finish_reason: str = "stop",
     ) -> None:
         """Store raw token IDs after a successful response.
 
         Appends ``prompt_token_ids + completion_token_ids`` as a new checkpoint,
-        recording the full resolved request in ``turn_args`` alongside.
+        recording the full resolved request in ``turn_args`` and the upstream
+        ``finish_reason`` alongside.
         Validates that the previously stored token_ids are a prefix of the new
         checkpoint (tolerating up to ``max_trim_tokens`` trailing differences).
         Must be called under ``self.lock``.
@@ -250,6 +344,8 @@ class LinearTrajectory:
         self.messages = self.messages + request_messages[len(self.messages) :] + [assistant_message]
         self.trajectory_token_ids.append(all_token_ids)
         self.turn_args_history.append(turn_args or {})
+        self.completion_starts.append(len(prompt_token_ids))
+        self.finish_reasons.append(finish_reason)
         self.generated_checkpoint_message_ends.append(len(request_messages) + 1)
         self.num_assistant = len(self.generated_checkpoint_message_ends)
 
@@ -370,6 +466,8 @@ class LinearTrajectory:
         self.messages = self.messages[:rollback_msg_end]
         self.trajectory_token_ids = self.trajectory_token_ids[: checkpoint_index + 1]
         self.turn_args_history = self.turn_args_history[: checkpoint_index + 1]
+        self.completion_starts = self.completion_starts[: checkpoint_index + 1]
+        self.finish_reasons = self.finish_reasons[: checkpoint_index + 1]
         self.records = self.records[: checkpoint_index + 1]
         self.generated_checkpoint_message_ends = self.generated_checkpoint_message_ends[: checkpoint_index + 1]
         self.num_assistant = len(self.generated_checkpoint_message_ends)
@@ -443,7 +541,24 @@ class SessionRegistry:
                 tokenize=True,
                 template_args=extract_template_args(session.turn_args),
             )
-            mismatches = self.comparator.compare_sequences(expected_ids, session.token_ids)
+            token_ids = self._comparable_token_ids(
+                session.token_ids,
+                truncated=session.finish_reasons[-1] == "length",
+                completion_start=session.completion_starts[-1],
+            )
+            mismatches = self.comparator.compare_sequences(expected_ids, token_ids)
             return [m.to_dict() for m in mismatches]
         except Exception as e:
             raise TokenizationError(f"failed to compute tito_session_mismatch: {e}") from e
+
+    def _comparable_token_ids(self, token_ids: list[int], *, truncated: bool, completion_start: int) -> list[int]:
+        """The accumulated tokens that the mismatch check compares with the template render.
+
+        The render ends every turn, so a final turn cut by ``finish_reason='length'``
+        is compared closed, as a continuation would extend it; its missing end-of-turn
+        token is then not reported as a special-token mismatch. A family that
+        cannot close the turn compares the cut tokens as they are.
+        """
+        if truncated and self.tito_tokenizer.FIXED_TEMPLATE.truncation_closer is not None:
+            return token_ids + self.tito_tokenizer.close_truncated_turn(token_ids, completion_start)
+        return token_ids

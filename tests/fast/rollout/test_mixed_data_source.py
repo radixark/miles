@@ -42,6 +42,8 @@ def _make_source(tmp_path: Path, datasets: dict, **overrides) -> MixedRolloutDat
         metadata_key="metadata",
         tool_key="tools",
         multimodal_keys=None,
+        multimodal_token_space_processing=False,
+        shared_media_dir=None,
         apply_chat_template=False,
         apply_chat_template_kwargs={},
     )

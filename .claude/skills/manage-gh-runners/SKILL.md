@@ -107,8 +107,8 @@ With `--tags aliyun`, `add` also:
   install an IPv6 default route through a nonexistent next hop), and the host's
   non-connected routes on that bond in the `rdma.routes` label;
 * installs [`hooks/aliyun/docker`](hooks/aliyun/docker) under
-  `/data/runner-setup/hooks/aliyun`, mounts it read-only first in the runner
-  container's `PATH`, and checks that the runner resolves `docker` to it.
+  `/data/runner-setup/hooks/aliyun` and mounts it read-only in the runner
+  container's `PATH`, right after the job-container hook.
 
 The runner resolves `docker` through `PATH` and runs `docker create`, then
 `docker start <id>`, before any job step. The hook passes every command through
@@ -121,8 +121,7 @@ the start, so a job never runs without RDMA silently. The job's IPv4 networking
 started as a service instead of this container reads `PATH` from
 `RUNNER_DIR/.path`.
 
-Check a tagged runner: `docker exec <name> sh -c 'command -v docker'` prints
-`/opt/runner-hooks/aliyun/docker`, and a job container started through it lists
+Check a tagged runner: a job container started through it lists
 eight `rdma-railN` networks and eight `/46` routes. On aliyun-2 a cross-rail
 `ib_write_bw` inside such a container (8 MiB messages, 4 QPs) reached 388 Gb/s,
 and Mooncake CPU-to-CPU reached 92-106 GB/s, matching host networking;
@@ -138,6 +137,17 @@ A few invariants the script encodes that are easy to get wrong by hand:
   and forwards its in-container `--work` path verbatim to the daemon; if
   host and container paths differ, the daemon resolves a directory the
   runner never wrote to.
+* **Job-start hook** `tests/ci/github_runner/remove-foreign-checkouts.sh`,
+  installed under `/data/runner-setup/hooks/job-start` on every `add`: a job
+  container mounts the runner's whole `_work`, so the checkouts other
+  repositories' jobs left there are deleted before each job.
+* **Job-container docker hook** on every runner:
+  [`tests/ci/github_runner/job-container-docker/docker`](../../../tests/ci/github_runner/job-container-docker/docker),
+  installed under `/data/runner-setup/hooks/job-container-docker` and first in
+  the runner's `PATH` (`add` checks that `docker` resolves to it). The runner
+  mounts the host docker socket into every job container, which is root on the
+  host; the hook drops that mount, refuses any other socket reference, and
+  passes every command on to the next `docker` on `PATH`.
 * **Cache mount** `/data/runner-cache/<name>/.cache → /root/.cache` keeps
   pip / HF / torch caches on the big disk instead of the root partition.
 * **No `/data/miles_ci` mount on the runner container itself** — only the

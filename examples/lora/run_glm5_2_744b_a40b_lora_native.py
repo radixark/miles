@@ -27,8 +27,8 @@ import miles.utils.external_utils.command_utils as U
 
 app = typer.Typer()
 
-# attention-only, same set as the MLA registries in run_lora_native.py
-_MLA_TARGET_MODULES = "q_a_proj,q_b_proj,kv_a_proj_with_mqa,kv_b_proj,o_proj"
+# attention-only; SGLang's DSA prefill rejects a kv_b_proj adapter
+_MLA_TARGET_MODULES = "q_a_proj,q_b_proj,kv_a_proj_with_mqa,o_proj"
 
 _HF_REPO = {
     "GLM-5.2_5layer": "Pinaster/GLM-5.2_5layer",

@@ -133,7 +133,7 @@ def test_native_special_token_inside_payload_requests_retry():
     assert "tool_calls" not in parsed.client_message
 
 
-def test_malformed_and_length_cut_completions_request_retry():
+def test_malformed_and_unterminated_completions_request_retry():
     tokenizer = FakeInklingTokenizer()
     ids = tokenizer.SPECIAL
     malformed = [
@@ -143,17 +143,132 @@ def test_malformed_and_length_cut_completions_request_retry():
         ids["<|end_message|>"],
         ids["<|content_model_end_sampling|>"],
     ]
-    truncated = [
+    unterminated = [
         ids["<|content_thinking|>"],
         *_text(tokenizer, "unfinished"),
     ]
 
     malformed_result = InklingResponseParser(tokenizer).parse(malformed, finish_reason="stop")
-    truncated_result = InklingResponseParser(tokenizer).parse(truncated, finish_reason="length")
+    unterminated_result = InklingResponseParser(tokenizer).parse(unterminated, finish_reason="stop")
 
     assert malformed_result.parse_error == "malformed_tool_json"
+    assert malformed_result.frame_error is None
     assert "tool_calls" not in malformed_result.client_message
-    assert truncated_result.parse_error == "unterminated_content_block"
+    assert unterminated_result.parse_error == "unterminated_content_block"
+    assert unterminated_result.stored_message["content_blocks"] == []
+
+
+def _cut_completion(tokenizer, open_part):
+    """A complete tool call followed by a message that stops in *open_part*."""
+    ids = tokenizer.SPECIAL
+    call = [
+        *_text(tokenizer, "bash"),
+        ids["<|content_invoke_tool_json|>"],
+        *_text(tokenizer, '{"name":"bash_command","args":{"command":"pwd"}}'),
+        ids["<|end_message|>"],
+    ]
+    tails = {
+        "between": [],
+        "header": [ids["<|message_model|>"]],
+        "recipient": [ids["<|message_model|>"], *_text(tokenizer, "ba")],
+        "thinking": [ids["<|message_model|>"], ids["<|content_thinking|>"], *_text(tokenizer, "so")],
+        "text": [ids["<|message_model|>"], ids["<|content_text|>"], *_text(tokenizer, "so")],
+        "tool_json": [
+            ids["<|message_model|>"],
+            *_text(tokenizer, "bash"),
+            ids["<|content_invoke_tool_json|>"],
+            *_text(tokenizer, '{"name":'),
+        ],
+    }
+    return call + tails[open_part]
+
+
+_CUT_BLOCKS = {
+    "between": None,
+    "header": {"type": "text", "text": ""},
+    "recipient": {"type": "tool_call", "recipient": "ba", "raw_json": ""},
+    "thinking": {"type": "thinking", "text": "so"},
+    "text": {"type": "text", "text": "so"},
+    "tool_json": {"type": "tool_call", "recipient": "bash", "raw_json": '{"name":'},
+}
+
+
+def test_length_cut_completion_keeps_its_unfinished_message_and_complete_calls():
+    tokenizer = FakeInklingTokenizer()
+    parser = InklingResponseParser(tokenizer)
+    for open_part, cut_block in _CUT_BLOCKS.items():
+        parsed = parser.parse(_cut_completion(tokenizer, open_part), finish_reason="length")
+
+        assert parsed.parse_error is None, open_part
+        assert parsed.open_part == open_part
+        blocks = parsed.stored_message["content_blocks"]
+        assert blocks[0]["name"] == "bash_command"
+        assert blocks[1:] == ([] if cut_block is None else [cut_block]), open_part
+        # The unfinished call is stored as sampled and is not a call.
+        assert [call["function"]["name"] for call in parsed.client_message["tool_calls"]] == ["bash_command"]
+        assert parsed.client_message.get("reasoning_content") == ("so" if open_part == "thinking" else None)
+        assert parsed.client_message["content"] == ("so" if open_part == "text" else "")
+
+
+def test_length_cut_completion_keeps_its_unfinished_message_after_a_content_error():
+    tokenizer = FakeInklingTokenizer()
+    ids = tokenizer.SPECIAL
+    # A text message with a recipient is a content error; the scan goes on to the cut message.
+    completion = [
+        *_text(tokenizer, "bash"),
+        ids["<|content_text|>"],
+        *_text(tokenizer, "hi"),
+        ids["<|end_message|>"],
+        ids["<|message_model|>"],
+        ids["<|content_thinking|>"],
+        *_text(tokenizer, "so"),
+    ]
+
+    parsed = InklingResponseParser(tokenizer).parse(completion, finish_reason="length")
+
+    assert parsed.parse_error == "unexpected_text_recipient"
+    assert parsed.frame_error is None
+    assert parsed.stored_message["content_blocks"] == [
+        {"type": "text", "text": "hi"},
+        {"type": "thinking", "text": "so"},
+    ]
+
+
+def test_closer_finishes_the_open_message_and_ends_the_turn():
+    tokenizer = FakeInklingTokenizer()
+    tito = InklingTITOTokenizer(tokenizer)
+    closers = {
+        "between": "<|content_model_end_sampling|>",
+        "header": "<|content_text|><|end_message|><|content_model_end_sampling|>",
+        "recipient": "<|content_invoke_tool_json|><|end_message|><|content_model_end_sampling|>",
+        "thinking": "<|end_message|><|content_model_end_sampling|>",
+        "text": "<|end_message|><|content_model_end_sampling|>",
+        "tool_json": "<|end_message|><|content_model_end_sampling|>",
+    }
+    cut_kinds = {"recipient": "tool_call", "tool_json": "tool_call", "thinking": "reasoning"}
+    prompt = [tokenizer.SPECIAL["<|message_model|>"]]
+    for open_part, closer_text in closers.items():
+        cut_turn = prompt + _cut_completion(tokenizer, open_part)
+        closer = tito.close_truncated_turn(cut_turn, len(prompt))
+
+        assert tokenizer.decode(closer) == closer_text, open_part
+        assert tito.cut_kind(cut_turn, len(prompt)) == cut_kinds.get(open_part, "answer")
+        closed = cut_turn + closer
+        assert tito.check_turn_structure(closed, (len(prompt), len(closed))) == []
+        assert tito.close_truncated_turn(closed, len(prompt)) == []
+
+
+def test_check_turn_structure_reports_a_broken_frame_before_and_after_closing():
+    tokenizer = FakeInklingTokenizer()
+    tito = InklingTITOTokenizer(tokenizer)
+    ids = tokenizer.SPECIAL
+    prompt = [ids["<|message_model|>"]]
+    # A control token inside a block stops the scan; the closer cannot repair what the model sampled.
+    cut_turn = prompt + [ids["<|content_text|>"], ids["<|endoftext|>"], *_text(tokenizer, "so")]
+    closed = cut_turn + tito.close_truncated_turn(cut_turn, len(prompt))
+
+    for turn in (cut_turn, closed):
+        assert tito.check_turn_structure(turn, (len(prompt), len(turn))) == ["control_token_inside_open_block"]
 
 
 def test_parser_instances_have_no_shared_state():

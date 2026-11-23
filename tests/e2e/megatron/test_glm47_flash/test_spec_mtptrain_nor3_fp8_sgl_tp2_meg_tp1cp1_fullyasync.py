@@ -18,9 +18,7 @@ register_cuda_ci(
     hardware=["hopper"],
     num_gpus=8,
 )
-register_rocm_ci(
-    est_time=1400, suite="nightly-stage-c-8-gpu-mi350", labels=["megatron", "weight-update", "fully-async"]
-)
+register_rocm_ci(est_time=1400, suite="stage-c-8-gpu-mi350", labels=["megatron", "weight-update", "fully-async"])
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")

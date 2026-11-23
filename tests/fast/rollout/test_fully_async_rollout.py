@@ -103,11 +103,13 @@ def make_args(**overrides) -> Namespace:
         debug_rollout_only=False,
         debug_skip_weight_update=False,
         rollout_batch_size=2,
+        rollout_seed=0,
         n_samples_per_prompt=N_SAMPLES_PER_PROMPT,
         max_weight_staleness=None,
         async_submit_within_staleness=False,
         async_max_concurrent_samples=None,
         async_data_buffer_capacity_factor=1000.0,
+        async_data_buffer_selection="fifo",
         async_unused_samples_handler="drop",
         custom_async_data_buffer_path=None,
         enable_sample_ownership_checker=False,
@@ -720,8 +722,8 @@ async def get_one(buffer, **context):
     return entry
 
 
-async def test_buffer_reports_unfiltered_raw_reward_across_kept_and_dropped():
-    """The accepted-only raw_reward is conditioned by the filter, so this mean must still see dropped groups."""
+async def test_buffer_reports_raw_reward_across_kept_and_dropped():
+    """raw_reward includes dropped groups even though only accepted groups reach training."""
     args = make_args(rollout_batch_size=1, dynamic_sampling_filter_path=f"{__name__}.reject_group_1")
     buffer = data_buffer.DefaultDataBuffer(
         data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=lambda group, reason: None)
@@ -731,9 +733,9 @@ async def test_buffer_reports_unfiltered_raw_reward_across_kept_and_dropped():
     await put_group(buffer, make_group(2, reward=1))
 
     metrics = buffer.get_metrics()
-    assert metrics["rollout/raw_reward_unfiltered"] == 0.5
+    assert metrics["rollout/raw_reward"] == 0.5
     assert metrics["rollout/dynamic_filter/drop_rejected"] == 1
-    assert "rollout/raw_reward_unfiltered" not in buffer.get_metrics()
+    assert "rollout/raw_reward" not in buffer.get_metrics()
 
 
 async def test_dynamic_filter_records_the_prompt_as_explicitly_dropped(sample_flow_event_dir: Path) -> None:

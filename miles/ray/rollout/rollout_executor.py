@@ -7,12 +7,17 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, TypeVar
 
-from miles.dashboard import hooks as dashboard_hooks
-from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
+from miles.ray.rollout.debug_data import (
+    RolloutDataInjectionUtil,
+    drop_conversations_not_dumped,
+    load_debug_rollout_data,
+    save_debug_rollout_data,
+)
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, RolloutExecutorEvalFleet
 from miles.ray.rollout.metrics import log_eval_rollout_data, log_eval_skip, log_rollout_data
 from miles.ray.rollout.output_snapshotter import _RolloutExecutorOutputSnapshotter
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
+from miles.ray.rollout.rollout_sample_reporter import report_rollout_samples
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
 from miles.ray.rollout.train_data_conversion import (
     ROLLOUT_DATA_VALUE_SPEC,
@@ -30,7 +35,7 @@ from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
 from miles.rollout.data_source import RolloutDataResumeMismatch
 from miles.rollout.fully_async_data_buffer import Group
 from miles.rollout.inference_rollout.compatibility import load_rollout_function
-from miles.utils import object_store
+from miles.utils import object_store, observers
 from miles.utils.args.custom_function import CustomFunctionConfig
 from miles.utils.args.custom_view import ImmutableNamespace, compute_custom_function_config
 from miles.utils.args.runtime_base import BaseLeafConfig
@@ -46,9 +51,10 @@ from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.function_registry import load_function
 from miles.utils.hf_utils.config import is_complete_hf_export
 from miles.utils.http_utils import init_http_client
-from miles.utils.init_once import InitOnce, init_once
+from miles.utils.init_once import InitOnce, InitState, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
+from miles.utils.misc import call_agent_preflight_hook
 from miles.utils.output_store.config import connect_output_store, output_store_backend_config, sweep_output_store
 from miles.utils.output_store.dropped import store_refs_of, take_dropped_refs
 from miles.utils.output_store.plan import StorePlanError
@@ -101,10 +107,20 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         # Every rollout get() began is here until its release, so one left at dispose was never trained.
         self._unreleased_store_refs: dict[int, dict[str, Any]] = {}
         self._delete_store_refs = None
+        self.data_source = None
+        self.generate_rollout = None
+        self.eval_generate_rollout = None
+        self._metric_checker = None
+
+    async def check_agent_setup(self) -> None:
+        """Run the agent functions' ``preflight`` hooks. Needs nothing from ``init``, so it runs before the engine wait."""
+        if self.args.load_debug_rollout_data is None:  # replayed rollouts call no agent function
+            await call_agent_preflight_hook(self.args)
 
     @init_once
     async def init(self) -> None:
         args = self.args
+        observers.start_process("rollout_manager")
         if args.starts_inference_engines:
             await resolve_router_addrs(args, router_providers=self._router_providers)
             await wait_session_server_ready(args, provider=self._session_server_provider)
@@ -169,11 +185,12 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
     # -------------------------- lifecycle -----------------------------
 
     async def dispose(self) -> None:
-        if self._disposed:
+        # the driver may dispose an executor whose init never started; a partial init still tears down what it built
+        if self._disposed or self._init_once.state is InitState.NOT_INITED:
             return
         self._disposed = True
 
-        if not self.use_legacy_rollout_v1 and self.generate_rollout is not None:
+        if self.generate_rollout is not None and not self.use_legacy_rollout_v1:
             await maybe_await(self.generate_rollout.dispose())
         if (
             close := getattr(self.data_source, "close", None)
@@ -280,11 +297,15 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         if (
             get_buffer_length := getattr(self.data_source, "get_buffer_length", None)
         ) is not None:  # config-access-exempt: custom data sources may omit this lifecycle method
-            dashboard_hooks.report_data_buffer(get_buffer_length())
+            if (buffer_length := get_buffer_length()) is not None:
+                observers.Observers().data_buffer(buffer_length)
         with timer("rollout" if trainer_model_id is None else f"{trainer_model_id}/rollout"):
             data, metadata, metrics = await self._get_rollout_data(
                 rollout_id=rollout_id, trainer_model_id=trainer_model_id
             )
+        # before the dump, which moves recorded conversations out of the samples
+        report_rollout_samples(data, rollout_id=rollout_id, evaluation=False)
+        drop_conversations_not_dumped(self.args, data, evaluation=False)
         save_debug_rollout_data(
             self.args,
             data,
@@ -329,6 +350,8 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                     evaluation=True,
                 )
         data = result.data
+        report_rollout_samples(data, rollout_id=rollout_id, evaluation=True)
+        drop_conversations_not_dumped(self.args, data, evaluation=True)
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
         metrics = log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
         if self._metric_checker is not None:
@@ -372,6 +395,8 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                 return self.report_eval_skip(rollout_id, e.reason)
 
             data = result.data
+            report_rollout_samples(data, rollout_id=rollout_id, evaluation=True)
+            drop_conversations_not_dumped(self.args, data, evaluation=True)
             save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
             extra_metrics = dict(result.metrics or {})
             if (last_get_rollout_id := _single_or_none(self.last_get_rollout_id_of_model_id.values())) is not None:

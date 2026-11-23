@@ -34,8 +34,10 @@ from miles.kernels.quant.nvfp4_qdq import (
 )
 from miles.utils.nvfp4 import (
     NVFP4_GROUP_SIZE,
+    _clear_negative_zero,
     nvfp4_global_decode_scale_te,
     nvfp4_global_encode_scale_te,
+    nvfp4_quantize_1d,
     nvfp4_quantize_1d_pair,
     nvfp4_weight_e4m3_max,
 )
@@ -387,6 +389,32 @@ def test_nvfp4_quantize_pair_reuses_adjacent_storage(monkeypatch):
     assert up_block_scale.shape == (16, 4)
 
 
+def test_clear_negative_zero_rewrites_only_negative_zero_codes():
+    """Each byte packs two E2M1 codes; a -0 (0x8) in either half becomes +0 and every other code stays."""
+    qweight = torch.tensor([[0x08, 0x80, 0x88, 0x89, 0x98, 0x8F, 0x00, 0x11, 0xF7]], dtype=torch.uint8)
+    expected = torch.tensor([[0x00, 0x00, 0x00, 0x09, 0x90, 0x0F, 0x00, 0x11, 0xF7]], dtype=torch.uint8)
+
+    torch.testing.assert_close(_clear_negative_zero(qweight), expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("use_4over6", [False, True], ids=["default", "4over6"])
+def test_nvfp4_quantize_keeps_the_bytes_of_a_weight_crossing_zero(use_4over6, monkeypatch):
+    if use_4over6:
+        monkeypatch.setenv("NVTE_NVFP4_4OVER6", "all")
+        monkeypatch.setenv("NVTE_NVFP4_4OVER6_ERR_MODE", "MSE")
+    else:
+        monkeypatch.delenv("NVTE_NVFP4_4OVER6", raising=False)
+    torch.manual_seed(42)
+    weight = torch.randn(64, 128, device="cuda", dtype=torch.bfloat16)
+    rounds_to_zero = torch.rand(weight.shape, device="cuda") < 0.25
+    weight[rounds_to_zero] = 1e-30
+
+    qweight, _, _ = nvfp4_quantize_1d(weight)
+    crossed_zero, _, _ = nvfp4_quantize_1d(torch.where(rounds_to_zero, -weight, weight))
+
+    torch.testing.assert_close(crossed_zero, qweight, rtol=0, atol=0)
+
+
 @pytest.mark.parametrize(
     "quantize_fn",
     [processor_quantize_nvfp4, tool_quantize_nvfp4],
@@ -414,7 +442,8 @@ def test_nvfp4_quantize_matches_te_reference_bitwise(quantize_fn, shape, dtype, 
         row_scaled_nvfp4=False,
     )
 
-    torch.testing.assert_close(qweight, qweight_ref, rtol=0, atol=0)
+    # The export clears TE's negative zeros; every other byte matches TE.
+    torch.testing.assert_close(qweight, _clear_negative_zero(qweight_ref), rtol=0, atol=0)
     torch.testing.assert_close(block_scale.view(torch.uint8), block_scale_ref.view(torch.uint8), rtol=0, atol=0)
     torch.testing.assert_close(global_scale, global_scale_ref, rtol=0, atol=0)
 
@@ -438,7 +467,7 @@ def test_nvfp4_quantize_pair_matches_te_reference_bitwise(shape, dtype, init_dat
         up_qweight,
         up_block_scale,
         up_global_scale,
-    ) = nvfp4_quantize_1d_pair(gate, up)
+    ) = nvfp4_quantize_1d_pair(gate, up, clear_negative_zero=False)
 
     combined = torch.cat((gate, up), dim=0)
     qweight_ref, block_scale_ref, global_scale_ref = _te_nvfp4_reference(

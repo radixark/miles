@@ -49,6 +49,7 @@ def _make_cell(state: CellState, health: TriState = TriState.TRUE, workers_hash:
             worker_name="inference-engine-0-0-0-0",
             needs_offload=False,
             update_weights=True,
+            health_check_timeout_seconds=20,
             workers_hash=workers_hash,
         ),
         router_api_client=SimpleNamespace(),

@@ -1,0 +1,459 @@
+"""Shared TITO tokenizer contract: ``FixedTemplate`` and the default ``TITOTokenizer``."""
+
+from __future__ import annotations
+
+import functools
+from collections.abc import Callable
+from copy import deepcopy
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from miles.utils.chat_template_utils import template
+from miles.utils.chat_template_utils.message_matcher_hub import (
+    assert_messages_append_only_with_allowed_role,
+    strict_message_matches,
+)
+from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
+from miles.utils.chat_template_utils.truncation import TruncationCloser
+
+# Bundled fixed-template files live under this directory; ``FixedTemplate.template``
+# values are filenames relative to it.
+TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
+
+# Roles that a fixed template may support after the pretokenized assistant
+# prefix.  A family narrows this set only when its registered renderer cannot
+# preserve every role append-only.
+VALID_APPEND_ROLES: tuple[str, ...] = ("tool", "user", "system", "assistant")
+ALL_APPEND_ROLES: frozenset[str] = frozenset(VALID_APPEND_ROLES)
+
+_DUMMY_SYSTEM: dict[str, Any] = {"role": "system", "content": "dummy system"}
+_DUMMY_USER: dict[str, Any] = {"role": "user", "content": "dummy user"}
+
+
+def _continuation_roles(name: str, value: frozenset[str] | None, allowed: frozenset[str]) -> frozenset[str]:
+    """A continuation-role field, defaulting to *allowed* and bounded by it."""
+    roles = allowed if value is None else frozenset(value)
+    if not roles <= allowed:
+        raise ValueError(
+            f"FixedTemplate {name} {sorted(roles - allowed)} are outside allowed_append_roles {sorted(allowed)}"
+        )
+    return roles
+
+
+@dataclass(frozen=True)
+class FixedTemplate:
+    """A family's fixed chat template, required kwargs, and append surface.
+
+    ``template`` is a path relative to ``TEMPLATE_DIR`` for a bundled fixed
+    template, or ``None`` to keep the HF-native template (kwargs-only fix).
+    ``extra_kwargs`` carry the family's preserve-think constants, so renders
+    stay append-only.  ``allowed_append_roles`` defaults to the maximal
+    four-role surface; a known restricted template must narrow it explicitly.
+    ``consistant_kwargs`` lists fields that must retain their recorded value
+    or absence when continuing a turn.
+
+    ``roles_after_tool_call`` and ``roles_after_no_tool_call`` are the roles
+    the runtime accepts directly after an assistant message with and without
+    ``tool_calls``.  Both default to ``allowed_append_roles``; a family whose
+    renderer refuses a continuation narrows them.  They state what the session
+    server accepts when a request appends to a stored history, which can be
+    wider than what the model was trained on; a from-scratch render is left to
+    the renderer.
+
+    ``truncation_closer`` closes an assistant turn cut by
+    ``finish_reason='length'`` so the next message can follow it; ``None`` means
+    the family cannot continue such a turn.
+    """
+
+    template: str | None = None
+    extra_kwargs: dict[str, Any] = field(default_factory=dict)
+    allowed_append_roles: frozenset[str] = ALL_APPEND_ROLES
+    consistant_kwargs: list[str] = field(default_factory=list)
+    roles_after_tool_call: frozenset[str] | None = None
+    roles_after_no_tool_call: frozenset[str] | None = None
+    truncation_closer: TruncationCloser | None = None
+
+    def __post_init__(self) -> None:
+        roles = frozenset(self.allowed_append_roles)
+        invalid = roles - ALL_APPEND_ROLES
+        if invalid:
+            raise ValueError(
+                f"Unknown FixedTemplate allowed_append_roles: {sorted(invalid)}; "
+                f"supported roles are {sorted(ALL_APPEND_ROLES)}"
+            )
+        object.__setattr__(self, "allowed_append_roles", roles)
+        object.__setattr__(
+            self,
+            "roles_after_tool_call",
+            _continuation_roles("roles_after_tool_call", self.roles_after_tool_call, roles),
+        )
+        object.__setattr__(
+            self,
+            "roles_after_no_tool_call",
+            _continuation_roles("roles_after_no_tool_call", self.roles_after_no_tool_call, roles),
+        )
+        if "tool" not in self.roles_after_tool_call:
+            raise ValueError(
+                "FixedTemplate roles_after_tool_call must allow the 'tool' messages that answer the calls"
+            )
+
+    def roles_after(self, assistant_message: dict[str, Any]) -> frozenset[str]:
+        """The roles that may directly follow *assistant_message*."""
+        if assistant_message.get("tool_calls"):
+            return self.roles_after_tool_call
+        return self.roles_after_no_tool_call
+
+
+def extract_template_args(request_args: dict[str, Any]) -> dict[str, Any]:
+    """Select renderer kwargs from an already resolved request, including tools."""
+    args = dict(request_args.get("chat_template_kwargs") or {})
+    if request_args.get("tools"):
+        args["tools"] = request_args["tools"]
+    return args
+
+
+def _build_dummy_assistant(stored_assistant: dict[str, Any]) -> dict[str, Any]:
+    """Build a dummy assistant that preserves the stored turn's tool calls."""
+    return {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": " ",
+        "tool_calls": stored_assistant.get("tool_calls") or [],
+    }
+
+
+def _from_last_assistant(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*messages* from the last assistant turn on, behind a dummy user turn; all of
+    them when there is no assistant turn."""
+    last = max((i for i, message in enumerate(messages) if message.get("role") == "assistant"), default=None)
+    return messages if last is None else [_DUMMY_USER, *messages[last:]]
+
+
+class TITOTokenizer:
+    """Incremental tokenization and prefix merging for appended messages."""
+
+    max_trim_tokens: int = 0
+    trailing_token_ids: frozenset[int] = frozenset()
+    # Family default for ``--allow-stop-token-replace``: whether ``merge_tokens`` may replace
+    # the sampled stop token with a different first token of the appended render.
+    allow_stop_token_replace: bool = False
+
+    # The family's fixed renderer contract. DEFAULT uses the model's native
+    # template with the maximal best-effort append surface.
+    FIXED_TEMPLATE: FixedTemplate = FixedTemplate()
+
+    # sglang ``--reasoning-parser`` and ``--tool-call-parser`` values bound to
+    # this family.
+    reasoning_parser: str | None = None
+    tool_call_parser: str | None = None
+
+    # Keys ``postprocess_completion`` adds to a stored assistant message for later
+    # renders; a client replaying that turn does not send them back.
+    SERVER_MESSAGE_KEYS: tuple[str, ...] = ()
+
+    def __init__(
+        self,
+        tokenizer: Any,
+        chat_template_kwargs: dict[str, Any] | None = None,
+        assistant_start_str: str | None = None,
+        special_token_ids: set[int] | None = None,
+    ):
+        self.tokenizer = tokenizer
+        self.chat_template_kwargs = dict(chat_template_kwargs or {})
+        self._assistant_start_str = assistant_start_str
+        self.allowed_append_roles = self.FIXED_TEMPLATE.allowed_append_roles
+        self.special_token_ids: set[int] = special_token_ids
+        launch_args = TITOTokenizer.resolve_request_args(self, {}, turn_args=None)
+        self.chat_template_kwargs = extract_template_args(launch_args)
+
+    def request_arg_rules(self) -> list[Callable[..., None]]:
+        """Return this model's rules in execution order; subclasses may extend the list."""
+        return [
+            self.resolve_template_kwargs,
+            self.resolve_tools,
+            self.resolve_history_args,
+            self.apply_fixed_template_kwargs,
+        ]
+
+    def resolve_request_args(
+        self, request_args: dict[str, Any], *, turn_args: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        """Apply model rules in place and return the same full request.
+
+        Rules read request_source, turn_args and launch kwargs without modifying
+        them. Copy inherited mutable values before writing them into request_args.
+        """
+        request_source = dict(request_args)
+        for rule in self.request_arg_rules():
+            rule(request_args, request_source=request_source, turn_args=turn_args)
+        return request_args
+
+    def resolve_template_kwargs(
+        self,
+        request_args: dict[str, Any],
+        *,
+        request_source: dict[str, Any],
+        turn_args: dict[str, Any] | None,
+    ) -> None:
+        """Merge request template fields over history and launch defaults."""
+        kwargs = {
+            **self.chat_template_kwargs,
+            **((turn_args or {}).get("chat_template_kwargs") or {}),
+            **(request_source.get("chat_template_kwargs") or {}),
+        }
+        # Launch kwargs may contain tools; requests carry them at the top level.
+        kwargs.pop("tools", None)
+        request_args["chat_template_kwargs"] = deepcopy(kwargs)
+
+    def resolve_tools(
+        self,
+        request_args: dict[str, Any],
+        *,
+        request_source: dict[str, Any],
+        turn_args: dict[str, Any] | None,
+    ) -> None:
+        """Inherit omitted tools and reject changes to tools in a reused prefix."""
+        tools = request_source.get("tools") or None
+        if turn_args is None:
+            tools = tools or self.chat_template_kwargs.get("tools")
+        else:
+            recorded = turn_args.get("tools")
+            if tools is None:
+                tools = recorded
+            elif template.extract_tool_dicts(tools) != template.extract_tool_dicts(recorded):
+                raise ValueError(
+                    "tools changed on a continued turn: the turn being continued was rendered with different tools, "
+                    "and this model family renders tools in the prompt prefix"
+                )
+        request_args["tools"] = deepcopy(tools)
+
+    def apply_fixed_template_kwargs(
+        self,
+        request_args: dict[str, Any],
+        *,
+        request_source: dict[str, Any],
+        turn_args: dict[str, Any] | None,
+    ) -> None:
+        """Override requested template values with the family's required settings."""
+        if self.FIXED_TEMPLATE.extra_kwargs:
+            request_args.setdefault("chat_template_kwargs", {}).update(deepcopy(self.FIXED_TEMPLATE.extra_kwargs))
+
+    def resolve_history_args(
+        self,
+        request_args: dict[str, Any],
+        *,
+        request_source: dict[str, Any],
+        turn_args: dict[str, Any] | None,
+    ) -> None:
+        """Keep selected historical fields, including their absence, in a continued turn."""
+        if turn_args is None:
+            return
+        recorded = turn_args.get("chat_template_kwargs") or {}
+        kwargs = request_args.setdefault("chat_template_kwargs", {})
+        for key in self.FIXED_TEMPLATE.consistant_kwargs:
+            kwargs.pop(key, None)
+        kwargs.update(
+            deepcopy({key: recorded[key] for key in self.FIXED_TEMPLATE.consistant_kwargs if key in recorded})
+        )
+
+    def create_comparator(self) -> TokenSeqComparator:
+        """Create a :class:`TokenSeqComparator` configured with this
+        tokenizer's model-specific settings."""
+        return TokenSeqComparator(
+            self.tokenizer,
+            assistant_start_str=self._assistant_start_str,
+            special_token_ids=self.special_token_ids,
+            trim_trailing_ids=self.trailing_token_ids or None,
+        )
+
+    def default_template_args(self, tools: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        """Return launch template kwargs with optional tools for direct rendering."""
+        args = dict(self.chat_template_kwargs)
+        if tools:
+            args["tools"] = tools
+        return args
+
+    def apply_chat_template(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        add_generation_prompt: bool,
+        tokenize: bool = False,
+        template_args: dict[str, Any] | None = None,
+    ) -> str | list[int]:
+        """Render messages using resolved template kwargs and tools.
+
+        Pass `template_args` as the complete argument set; it is not merged with
+        launch defaults. `None` uses this tokenizer's launch defaults.
+        """
+        # TODO: Use the unified kwargs resolver for launch and request arguments once
+        # available, then check whether callers still need this default fallback.
+        args = self.chat_template_kwargs if template_args is None else template_args
+        return template.apply_chat_template(
+            messages,
+            tokenizer=self.tokenizer,
+            tokenize=tokenize,
+            add_generation_prompt=add_generation_prompt,
+            **args,
+        )
+
+    def postprocess_completion(
+        self,
+        *,
+        choice: dict[str, Any],
+        assistant_message: dict[str, Any],
+        completion_token_ids: list[int],
+    ) -> dict[str, Any]:
+        """Postprocess an upstream completion and return the message to store.
+
+        The default path trusts SGLang's parsed message. Model families that
+        need token-aware response handling override this hook and may update
+        ``choice`` before returning their server-side message representation.
+        """
+        return assistant_message
+
+    def preserve_server_message_state(
+        self,
+        stored_messages: list[dict[str, Any]],
+        request_messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Restore the ``SERVER_MESSAGE_KEYS`` a client drops when it replays a stored assistant turn."""
+        preserved = list(request_messages)
+        for index, (stored_message, request_message) in enumerate(zip(stored_messages, preserved, strict=False)):
+            sidecars = {key: stored_message[key] for key in self.SERVER_MESSAGE_KEYS if key in stored_message}
+            if (
+                sidecars
+                and stored_message.get("role") == "assistant"
+                and strict_message_matches(stored_message, request_message)
+            ):
+                preserved[index] = {**request_message, **sidecars}
+        return preserved
+
+    def close_truncated_turn(self, token_ids: list[int], completion_start: int) -> list[int]:
+        """Return the tokens that close a turn cut by ``finish_reason='length'``.
+
+        *token_ids* is the prompt followed by the turn's sampled tokens, which
+        start at *completion_start*.  Callers append the result before
+        ``merge_tokens``; earlier tokens never change.
+        """
+        return self._require_truncation_closer().close_truncated_turn(
+            token_ids,
+            completion_start,
+            tokenizer=self.tokenizer,
+            message_boundary_ids=self._message_boundary_ids,
+        )
+
+    def check_turn_structure(self, token_ids: list[int], span: tuple[int, int]) -> list[str]:
+        """Report the structure problems of the assistant turn at *span*, ``(completion_start, turn_end)``.
+
+        Empty for a turn that closes every reasoning and tool-call structure it
+        opens and ends the way the family ends a turn.
+        """
+        return self._require_truncation_closer().check_turn_structure(
+            token_ids,
+            span,
+            tokenizer=self.tokenizer,
+            message_boundary_ids=self._message_boundary_ids,
+        )
+
+    def cut_kind(self, token_ids: list[int], completion_start: int) -> str:
+        """Which of ``truncation.CUT_KINDS`` the turn stops in; the session verifier places and names cuts by it."""
+        return self._require_truncation_closer().cut_kind(
+            token_ids,
+            completion_start,
+            tokenizer=self.tokenizer,
+            message_boundary_ids=self._message_boundary_ids,
+        )
+
+    def _require_truncation_closer(self) -> TruncationCloser:
+        closer = self.FIXED_TEMPLATE.truncation_closer
+        if closer is None:
+            raise ValueError(f"{type(self).__name__} cannot close a truncated turn")
+        return closer
+
+    @functools.cached_property
+    def _message_boundary_ids(self) -> set[int]:
+        """Token IDs that delimit messages: the comparator's segment boundaries."""
+        return TokenSeqComparator.resolve_special_ids(self.tokenizer, self.special_token_ids)
+
+    def _encode_text(self, text: str) -> list[int]:
+        return self.tokenizer.encode(text, add_special_tokens=False)
+
+    def _tokenize_rendered_suffix(
+        self,
+        base_messages: list[dict[str, Any]],
+        appended_messages: list[dict[str, Any]],
+        *,
+        template_args: dict[str, Any] | None = None,
+        add_generation_prompt: bool = False,
+    ) -> list[int]:
+        """Render *base_messages* and *base_messages + appended_messages*, return
+        tokens for the suffix.
+
+        When *add_generation_prompt* is True and *appended_messages* is empty,
+        this computes the generation-prompt suffix (the assistant opener tokens).
+        """
+        text_without = self.apply_chat_template(
+            base_messages, add_generation_prompt=False, template_args=template_args
+        )
+        text_with = self.apply_chat_template(
+            base_messages + appended_messages,
+            add_generation_prompt=add_generation_prompt,
+            template_args=template_args,
+        )
+        if not text_with.startswith(text_without):
+            roles = [msg["role"] for msg in appended_messages] if appended_messages else ["generation_prompt"]
+            raise ValueError(f"rendered suffix diff failed for {roles}")
+        return self._encode_text(text_with[len(text_without) :])
+
+    def tokenize_additional_messages(
+        self,
+        old_messages: list[dict[str, Any]],
+        new_messages: list[dict[str, Any]],
+        *,
+        template_args: dict[str, Any] | None = None,
+    ) -> list[int]:
+        """Compute incremental token IDs for messages appended after the
+        pretokenized prefix.
+
+        Appended roles must be listed in ``self.allowed_append_roles``.  The
+        method validates that *new_messages* is an append-only extension of
+        *old_messages* via ``assert_messages_append_only_with_allowed_role``.
+
+        Args:
+            old_messages: Previously stored messages (prefix).
+            new_messages: Full new message list (must be a superset of
+                *old_messages* with only allowed-role messages appended).
+            template_args: Resolved template kwargs and tools, or `None` for launch defaults.
+
+        Returns:
+            Incremental token IDs (including the generation prompt) that,
+            when merged with pretokenized prefix via ``merge_tokens``,
+            form the full prompt token IDs.
+        """
+        assert_messages_append_only_with_allowed_role(old_messages, new_messages, self.allowed_append_roles)
+        appended_messages = new_messages[len(old_messages) :]
+        return self._tokenize_rendered_suffix(
+            [_DUMMY_SYSTEM, _build_dummy_assistant(old_messages[-1])],
+            appended_messages,
+            template_args=template_args,
+            add_generation_prompt=True,
+        )
+
+    def merge_tokens(
+        self,
+        old_messages: list[dict[str, Any]],
+        new_messages: list[dict[str, Any]],
+        pretokenized_token_ids: list[int],
+        *,
+        template_args: dict[str, Any] | None = None,
+    ) -> list[int]:
+        """Merge *pretokenized_token_ids* with incremental tokens to produce
+        the complete prompt token IDs (including generation prompt).
+
+        The default implementation is simple concatenation.  Subclasses
+        override this to handle model-specific boundary token logic.
+        """
+        incremental = self.tokenize_additional_messages(old_messages, new_messages, template_args=template_args)
+        return list(pretokenized_token_ids) + incremental

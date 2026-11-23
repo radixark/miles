@@ -281,6 +281,11 @@ def inkling_model_provider(
 
     if args.backend.context_parallel_size > 1:
         assert args.allgather_cp, "Inkling CP requires --allgather-cp (zigzag CP not supported)"
+    if mm_towers and not args.multimodal_token_space_processing:
+        raise ValueError(
+            "Inkling multimodal training runs on SGLang's token-space processor only; "
+            "set --multimodal-token-space-processing"
+        )
     text_cfg = json.load(open(f"{args.hf_checkpoint}/config.json"))["text_config"]
     config = build_inkling_config(
         text_cfg,

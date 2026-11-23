@@ -78,6 +78,20 @@ class SessionConfig(BaseConfig):
             ),
         ),
     ] = None
+    allow_truncated_continuation: A[
+        bool | None,
+        Arg(
+            action=argparse.BooleanOptionalAction,
+            help=(
+                "Whether the session server continues a turn that ended with finish_reason=length. "
+                "When allowed, the next request's prompt first closes that turn's open reasoning and "
+                "tool-call blocks and ends the turn; with --no-allow-truncated-continuation such a "
+                "request is rejected with HTTP 409. Defaults to the --tito-model family's setting "
+                "(allowed for every family that declares a closer; default declares none and cannot "
+                "allow it)."
+            ),
+        ),
+    ] = None
     session_message_matcher: A[
         str,
         Arg(

@@ -107,7 +107,7 @@ class ClusterConfig(BaseConfig):
         ),
     ] = None
     rollout_num_gpus_per_engine: A[
-        int, Arg(help="Number of GPUs per inference engine, just like the tp_size in sglang.")
+        int, Arg(help="Number of GPUs per inference engine: SGLang's tp_size times --sglang-pp-size.")
     ] = 1
     num_gpus_per_node: A[
         int,

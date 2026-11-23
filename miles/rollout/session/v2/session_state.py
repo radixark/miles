@@ -26,8 +26,14 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from miles.rollout.session.config import SessionServerConfig
-from miles.rollout.session.errors import MessageValidationError, TokenizationError, TruncatedGenerationError
-from miles.rollout.session.linear_trajectory import SessionRegistry, assert_pretokenized_prefix
+from miles.rollout.session.errors import MessageValidationError, TokenizationError
+from miles.rollout.session.linear_trajectory import (
+    SessionRegistry,
+    assert_continuation_roles,
+    assert_no_server_message_keys,
+    assert_pretokenized_prefix,
+    close_truncated_checkpoint,
+)
 from miles.rollout.session.request_args import PreparedChatRequest, prepare_chat_request
 from miles.rollout.session.store_refs import SessionStoreRefs
 from miles.rollout.session.types import SessionRecord
@@ -73,16 +79,8 @@ def attach_point_for_request(
     message_matcher: SessionMessageMatcher | None = None,
 ) -> AttachPoint:
     """Where *request_messages* attaches: the deepest node whose path is a
-    prefix of the request, ``node=None`` for a new root. Pure; raises 409 when
-    that node is a truncated generation."""
+    prefix of the request, ``node=None`` for a new root. Pure."""
     attach = state.tree.find_attach_point(request_messages, message_matcher=message_matcher)
-
-    if attach.node is not None and attach.node.truncated:
-        raise TruncatedGenerationError(
-            "truncated generation cannot be extended: the matched node ended with "
-            "finish_reason='length' and truncation closes that path for good; "
-            "branch before the cut instead"
-        )
 
     if attach.node is not state.latest():
         logger.debug(
@@ -118,7 +116,11 @@ def prepare_token_ids_and_request_args(
         sampling_support_replay=state.sampling_support_replay,
     )
     prepared.body["input_ids"] = _render_token_ids(
-        parent, request_messages, template_args=prepared.template_args, tito_tokenizer=tito_tokenizer
+        parent,
+        request_messages,
+        template_args=prepared.template_args,
+        tito_tokenizer=tito_tokenizer,
+        allow_truncated_continuation=config.allow_truncated_continuation,
     )
     return prepared, parent
 
@@ -129,6 +131,7 @@ def _render_token_ids(
     *,
     template_args: dict[str, Any],
     tito_tokenizer: TITOTokenizer,
+    allow_truncated_continuation: bool,
 ) -> list[int]:
     """Build prompt token IDs for a request extending `parent`.
 
@@ -136,9 +139,12 @@ def _render_token_ids(
 
     - No parent (new root): render the whole request from scratch.
     - Otherwise: reuse the parent's token snapshot as-is and tokenize only
-      the new suffix on top — the shared prefix is never re-rendered.
+      the new suffix on top — the shared prefix is never re-rendered. A parent
+      cut by ``finish_reason='length'`` is closed first; the closer heads the
+      new prompt and the stored snapshot keeps only sampled tokens.
     """
     if parent is None:
+        assert_no_server_message_keys(request_messages, tito_tokenizer)
         return tito_tokenizer.apply_chat_template(
             request_messages,
             add_generation_prompt=True,
@@ -148,11 +154,23 @@ def _render_token_ids(
 
     stored = parent.path_messages()
     _validate_suffix_roles(request_messages[len(stored) :], tito_tokenizer)
+    assert_no_server_message_keys(request_messages[len(stored) :], tito_tokenizer)
     effective_messages = stored + request_messages[len(stored) :]
+    assert_continuation_roles(
+        effective_messages, appended_from=len(stored), fixed_template=tito_tokenizer.FIXED_TEMPLATE
+    )
+    pretokenized_token_ids = parent.token_ids
+    if parent.truncated:
+        pretokenized_token_ids = close_truncated_checkpoint(
+            parent.token_ids,
+            completion_start=parent.completion_span[0],
+            tito_tokenizer=tito_tokenizer,
+            allowed=allow_truncated_continuation,
+        )
     return tito_tokenizer.merge_tokens(
         old_messages=stored,
         new_messages=effective_messages,
-        pretokenized_token_ids=parent.token_ids,
+        pretokenized_token_ids=pretokenized_token_ids,
         template_args=template_args,
     )
 
@@ -242,25 +260,22 @@ class SessionRegistryV2(SessionRegistry):
         )
         return session_id
 
-    def compute_mismatch(
-        self,
-        messages: list[dict[str, Any]],
-        token_ids: list[int],
-        *,
-        turn_args: dict[str, Any],
-    ) -> list[dict] | None:
-        """Compare accumulated token IDs against canonical chat template
-        output for one path using its leaf's recorded renderer fields. Read-only."""
-        if not token_ids:
+    def compute_mismatch(self, leaf: TrajectoryNode) -> list[dict] | None:
+        """Compare *leaf*'s accumulated token IDs against canonical chat template
+        output for its path using its recorded renderer fields. Read-only."""
+        if not leaf.token_ids:
             return None
         try:
             # Mismatch checks have no request args to resolve. Re-render from
             # the renderer fields in the full request recorded for this turn.
             expected_ids = self.tito_tokenizer.apply_chat_template(
-                messages,
+                leaf.path_messages(),
                 add_generation_prompt=False,
                 tokenize=True,
-                template_args=extract_template_args(turn_args),
+                template_args=extract_template_args(leaf.turn_args),
+            )
+            token_ids = self._comparable_token_ids(
+                leaf.token_ids, truncated=leaf.truncated, completion_start=leaf.completion_span[0]
             )
             mismatches = self.comparator.compare_sequences(expected_ids, token_ids)
             return [m.to_dict() for m in mismatches]
@@ -272,4 +287,4 @@ class SessionRegistryV2(SessionRegistry):
         node = state.latest()
         if node is None:
             return None
-        return self.compute_mismatch(node.path_messages(), node.token_ids, turn_args=node.turn_args)
+        return self.compute_mismatch(node)

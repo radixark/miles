@@ -24,7 +24,7 @@ from megatron.core.extensions.transformer_engine import TEColumnParallelGroupedL
 from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.e2e.lora.test_slot_checkpoint_resume import ADAM, assert_same_state, snapshot
 
 from miles.backends.megatron_utils.lora.optimizer import (
@@ -39,6 +39,7 @@ from miles.utils.distributed_utils import init_gloo_group
 register_cuda_ci(
     est_time=240, suite="stage-b-2-gpu-h200", labels=["lora", "multi-lora"], hardware=["hopper"], num_gpus=2
 )
+register_rocm_ci(est_time=120, suite="stage-c-2-gpu-mi350", labels=["lora", "multi-lora"], nightly=True)
 
 logger = logging.getLogger(__name__)
 
