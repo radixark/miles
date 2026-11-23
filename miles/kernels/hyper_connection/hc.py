@@ -124,6 +124,63 @@ def _gate_chain_fwd(normed, w_down, w_up, n):
     return gate, z1
 
 
+def _mm32(a, b):
+    """FP32 a @ b through aten::mm.out; the TOP batch-invariant override replaces only
+    the functional aten::mm/addmm and is BF16-only."""
+    out = torch.empty(a.shape[0], b.shape[1], dtype=torch.float32, device=a.device)
+    return torch.mm(a.float(), b.float(), out=out)
+
+
+def mix_inject_backward(*, x2d, weight, w_down, w_up, w_inject, rstd, n, eps, dmixed, dh_post):
+    """Gradients of the FP32 mix/inject chain, recomputed from the saved inputs."""
+    T, W = x2d.shape
+    C = W // n
+    normed, _ = grouped_rmsnorm_fwd(x2d, weight, n, eps)
+    z1 = _mm32(normed, w_down.t()) / n
+    gate = torch.sigmoid(_mm32(F.silu(z1), w_up.t()))
+    s1 = F.silu(z1)
+
+    dmixed = dmixed.float()
+    dgate = torch.empty(T, W, dtype=torch.float32, device=x2d.device)
+    dnormed = torch.empty(T, W, dtype=torch.float32, device=x2d.device)
+    if T > 0:
+        _gate_mul_mean_bwd_kernel[(T,)](dmixed, gate, normed, dgate, dnormed, T, N=n, C=C, BLOCK_C=block_c(C))
+
+    dz2 = dgate * gate * (1.0 - gate)
+    dw_up = _mm32(dz2.t(), s1)
+    ds1 = _mm32(dz2, w_up)
+    sig_z1 = torch.sigmoid(z1)
+    dz1 = ds1 * sig_z1 * (1.0 + z1 * (1.0 - sig_z1))
+    dz1 = dz1 / n  # z1 = (N @ w_down^T) / n
+    dw_down = _mm32(dz1.t(), normed)
+    dnormed += _mm32(dz1, w_down)
+
+    dw_inject = None
+    if w_inject is not None and dh_post is not None and dh_post.numel() > 0:
+        u = _mm32(normed, w_inject.t()) / n
+        sig_u = torch.sigmoid(u)
+        du = dh_post.float() * 2.0 * sig_u * (1.0 - sig_u)
+        du = du / n
+        dw_inject = _mm32(du.t(), normed).to(w_inject.dtype)
+        dnormed += _mm32(du, w_inject)
+
+    x_hat = (x2d.float().view(T, n, C) * rstd.unsqueeze(-1)).view(T, W)
+    dweight = (dnormed * x_hat).sum(dim=0).to(weight.dtype)
+
+    dx = torch.empty_like(x2d)
+    if T > 0:
+        grouped_rmsnorm_bwd_kernel[(T * n,)](x2d, weight, rstd, dnormed, dx, T, N=n, C=C, BLOCK_C=block_c(C))
+    return (
+        dx,
+        dweight,
+        dw_down.to(w_down.dtype),
+        dw_up.to(w_up.dtype),
+        dw_inject,
+        None,
+        None,
+    )
+
+
 class _HCMixInject(torch.autograd.Function):
     """Fused mix + inject gate."""
 
@@ -147,52 +204,30 @@ class _HCMixInject(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dmixed, dh_post):
         x2d, weight, w_down, w_up, w_inject, rstd = ctx.saved_tensors
-        n, eps = ctx.n, ctx.eps
-        T, W = x2d.shape
-        C = W // n
-        normed, _ = grouped_rmsnorm_fwd(x2d, weight, n, eps)
-        gate, z1 = _gate_chain_fwd(normed, w_down, w_up, n)
-        s1 = F.silu(z1)
-
-        dmixed = dmixed.float()
-        dgate = torch.empty(T, W, dtype=torch.float32, device=x2d.device)
-        dnormed = torch.empty(T, W, dtype=torch.float32, device=x2d.device)
-        if T > 0:
-            _gate_mul_mean_bwd_kernel[(T,)](dmixed, gate, normed, dgate, dnormed, T, N=n, C=C, BLOCK_C=block_c(C))
-
-        dz2 = dgate * gate * (1.0 - gate)
-        dw_up = dz2.t() @ s1
-        ds1 = dz2 @ w_up.float()
-        sig_z1 = torch.sigmoid(z1)
-        dz1 = ds1 * sig_z1 * (1.0 + z1 * (1.0 - sig_z1))
-        dz1 = dz1 / n  # z1 = (N @ w_down^T) / n
-        dw_down = dz1.t() @ normed
-        dnormed += dz1 @ w_down.float()
-
-        dw_inject = None
-        if w_inject is not None and dh_post is not None and dh_post.numel() > 0:
-            u = F.linear(normed, w_inject.float()) / n
-            sig_u = torch.sigmoid(u)
-            du = dh_post.float() * 2.0 * sig_u * (1.0 - sig_u)
-            du = du / n
-            dw_inject = (du.t() @ normed).to(w_inject.dtype)
-            dnormed += du @ w_inject.float()
-
-        x_hat = (x2d.float().view(T, n, C) * rstd.unsqueeze(-1)).view(T, W)
-        dweight = (dnormed * x_hat).sum(dim=0).to(weight.dtype)
-
-        dx = torch.empty_like(x2d)
-        if T > 0:
-            grouped_rmsnorm_bwd_kernel[(T * n,)](x2d, weight, rstd, dnormed, dx, T, N=n, C=C, BLOCK_C=block_c(C))
-        return (
-            dx,
-            dweight,
-            dw_down.to(w_down.dtype),
-            dw_up.to(w_up.dtype),
-            dw_inject,
-            None,
-            None,
+        return mix_inject_backward(
+            x2d=x2d,
+            weight=weight,
+            w_down=w_down,
+            w_up=w_up,
+            w_inject=w_inject,
+            rstd=rstd,
+            n=ctx.n,
+            eps=ctx.eps,
+            dmixed=dmixed,
+            dh_post=dh_post,
         )
+
+
+def combine_backward(*, y2d, h_post, n, dout):
+    """(dy, FP32 dh_post) for out = residual + h_post[:, c, None] * y."""
+    T, W = dout.shape
+    C = W // n
+    dout = dout.contiguous()
+    dy = torch.empty_like(y2d)
+    dh_post = torch.empty(T, n, dtype=torch.float32, device=dout.device)
+    if T > 0:
+        _combine_bwd_kernel[(T,)](dout, y2d, h_post, dy, dh_post, T, N=n, C=C, BLOCK_C=block_c(C))
+    return dy, dh_post
 
 
 class _HCCombine(torch.autograd.Function):
@@ -214,14 +249,7 @@ class _HCCombine(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dout):
         y2d, h_post = ctx.saved_tensors
-        n = ctx.n
-        T, W = dout.shape
-        C = W // n
-        dout = dout.contiguous()
-        dy = torch.empty_like(y2d)
-        dh_post = torch.empty(T, n, dtype=torch.float32, device=dout.device)
-        if T > 0:
-            _combine_bwd_kernel[(T,)](dout, y2d, h_post, dy, dh_post, T, N=n, C=C, BLOCK_C=block_c(C))
+        dy, dh_post = combine_backward(y2d=y2d, h_post=h_post, n=ctx.n, dout=dout)
         return dout, dy, dh_post.to(ctx.h_post_dtype), None
 
 

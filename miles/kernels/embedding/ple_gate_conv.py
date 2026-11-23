@@ -233,6 +233,123 @@ def _seg_bounds(T: int, cu_seqlens, device):
     return lo, hi
 
 
+def ple_gate_conv_backward(
+    *,
+    hc_state,
+    key,
+    value,
+    wk,
+    wq,
+    wc,
+    convw2d,
+    gate,
+    rstdk,
+    rstdq,
+    rstdc,
+    seg_lo,
+    seg_hi,
+    conv_pre,
+    n,
+    eps,
+    dilation,
+    Kk,
+    conv_w_dtype,
+    dout,
+):
+    """Gradients of the FP32 gate/norm/conv chain, recomputed from the saved inputs."""
+    T, W = hc_state.shape
+    C = W // n
+    dev = hc_state.device
+    dout = dout.contiguous()
+
+    gated = torch.empty(T, W, dtype=torch.float32, device=dev)
+    _g = torch.empty(T, n, dtype=torch.float32, device=dev)
+    _rk = torch.empty(T, n, dtype=torch.float32, device=dev)
+    _rq = torch.empty(T, n, dtype=torch.float32, device=dev)
+    if T > 0:
+        _ple_gate_fwd_kernel[(T * n,)](
+            key,
+            hc_state,
+            value,
+            wk,
+            wq,
+            gated,
+            _g,
+            _rk,
+            _rq,
+            T,
+            N=n,
+            C=C,
+            EPS=eps,
+            SQRTC=math.sqrt(C),
+            BLOCK_C=block_c(C),
+        )
+    normed, _ = grouped_rmsnorm_fwd(gated, wc, n, eps)
+
+    dnormed = torch.empty(T, W, dtype=torch.float32, device=dev)
+    dconvw = torch.zeros(W, Kk, dtype=torch.float32, device=dev)
+    dgated = torch.empty(T, W, dtype=torch.float32, device=dev)
+    BW = 256
+    if T > 0:
+        _ple_conv_bwd_kernel[(T, triton.cdiv(W, BW))](
+            dout,
+            conv_pre,
+            normed,
+            convw2d,
+            seg_lo,
+            seg_hi,
+            dnormed,
+            dconvw,
+            dgated,
+            T,
+            W,
+            K=Kk,
+            DIL=dilation,
+            BLOCK_W=BW,
+        )
+
+    x_hat = (gated.view(T, n, C) * rstdc.unsqueeze(-1)).view(T, W)
+    dwc = (dnormed * x_hat).sum(dim=0).to(wc.dtype)
+    dgated_norm = torch.empty(T, W, dtype=torch.float32, device=dev)
+    if T > 0:
+        grouped_rmsnorm_bwd_kernel[(T * n,)](gated, wc, rstdc, dnormed, dgated_norm, T, N=n, C=C, BLOCK_C=block_c(C))
+    dgated += dgated_norm
+
+    dkey = torch.empty_like(key)
+    dquery = torch.empty_like(hc_state)
+    dvalue_pern = torch.empty(T, n, C, dtype=torch.float32, device=dev)
+    dwk_part = torch.empty(T, W, dtype=torch.float32, device=dev)
+    dwq_part = torch.empty(T, W, dtype=torch.float32, device=dev)
+    if T > 0:
+        _ple_gate_bwd_kernel[(T * n,)](
+            dgated,
+            key,
+            hc_state,
+            value,
+            wk,
+            wq,
+            gate,
+            rstdk,
+            rstdq,
+            dkey,
+            dquery,
+            dvalue_pern,
+            dwk_part,
+            dwq_part,
+            T,
+            N=n,
+            C=C,
+            SQRTC=math.sqrt(C),
+            BLOCK_C=block_c(C),
+        )
+    dvalue = dvalue_pern.sum(dim=1).to(value.dtype)
+    dwk = dwk_part.sum(dim=0).to(wk.dtype)
+    dwq = dwq_part.sum(dim=0).to(wq.dtype)
+    dconv_w = dconvw.view(W, 1, Kk).to(conv_w_dtype)
+
+    return (dquery, dkey, dvalue, dwk, dwq, dwc, dconv_w, None, None, None, None)
+
+
 class _PLEGateConv(torch.autograd.Function):
     @staticmethod
     def forward(ctx, hc_state, key, value, wk, wq, wc, conv_w, n, eps, dilation, cu_seqlens):
@@ -298,99 +415,28 @@ class _PLEGateConv(torch.autograd.Function):
             ctx.saved_tensors
         )
         n, eps, dilation, Kk, conv_w_dtype = ctx.dims
-        T, W = hc_state.shape
-        C = W // n
-        dev = hc_state.device
-        dout = dout.contiguous()
-
-        gated = torch.empty(T, W, dtype=torch.float32, device=dev)
-        _g = torch.empty(T, n, dtype=torch.float32, device=dev)
-        _rk = torch.empty(T, n, dtype=torch.float32, device=dev)
-        _rq = torch.empty(T, n, dtype=torch.float32, device=dev)
-        if T > 0:
-            _ple_gate_fwd_kernel[(T * n,)](
-                key,
-                hc_state,
-                value,
-                wk,
-                wq,
-                gated,
-                _g,
-                _rk,
-                _rq,
-                T,
-                N=n,
-                C=C,
-                EPS=eps,
-                SQRTC=math.sqrt(C),
-                BLOCK_C=block_c(C),
-            )
-        normed, _ = grouped_rmsnorm_fwd(gated, wc, n, eps)
-
-        dnormed = torch.empty(T, W, dtype=torch.float32, device=dev)
-        dconvw = torch.zeros(W, Kk, dtype=torch.float32, device=dev)
-        dgated = torch.empty(T, W, dtype=torch.float32, device=dev)
-        BW = 256
-        if T > 0:
-            _ple_conv_bwd_kernel[(T, triton.cdiv(W, BW))](
-                dout,
-                conv_pre,
-                normed,
-                convw2d,
-                seg_lo,
-                seg_hi,
-                dnormed,
-                dconvw,
-                dgated,
-                T,
-                W,
-                K=Kk,
-                DIL=dilation,
-                BLOCK_W=BW,
-            )
-
-        x_hat = (gated.view(T, n, C) * rstdc.unsqueeze(-1)).view(T, W)
-        dwc = (dnormed * x_hat).sum(dim=0).to(wc.dtype)
-        dgated_norm = torch.empty(T, W, dtype=torch.float32, device=dev)
-        if T > 0:
-            grouped_rmsnorm_bwd_kernel[(T * n,)](
-                gated, wc, rstdc, dnormed, dgated_norm, T, N=n, C=C, BLOCK_C=block_c(C)
-            )
-        dgated += dgated_norm
-
-        dkey = torch.empty_like(key)
-        dquery = torch.empty_like(hc_state)
-        dvalue_pern = torch.empty(T, n, C, dtype=torch.float32, device=dev)
-        dwk_part = torch.empty(T, W, dtype=torch.float32, device=dev)
-        dwq_part = torch.empty(T, W, dtype=torch.float32, device=dev)
-        if T > 0:
-            _ple_gate_bwd_kernel[(T * n,)](
-                dgated,
-                key,
-                hc_state,
-                value,
-                wk,
-                wq,
-                gate,
-                rstdk,
-                rstdq,
-                dkey,
-                dquery,
-                dvalue_pern,
-                dwk_part,
-                dwq_part,
-                T,
-                N=n,
-                C=C,
-                SQRTC=math.sqrt(C),
-                BLOCK_C=block_c(C),
-            )
-        dvalue = dvalue_pern.sum(dim=1).to(value.dtype)
-        dwk = dwk_part.sum(dim=0).to(wk.dtype)
-        dwq = dwq_part.sum(dim=0).to(wq.dtype)
-        dconv_w = dconvw.view(W, 1, Kk).to(conv_w_dtype)
-
-        return (dquery, dkey, dvalue, dwk, dwq, dwc, dconv_w, None, None, None, None)
+        return ple_gate_conv_backward(
+            hc_state=hc_state,
+            key=key,
+            value=value,
+            wk=wk,
+            wq=wq,
+            wc=wc,
+            convw2d=convw2d,
+            gate=gate,
+            rstdk=rstdk,
+            rstdq=rstdq,
+            rstdc=rstdc,
+            seg_lo=seg_lo,
+            seg_hi=seg_hi,
+            conv_pre=conv_pre,
+            n=n,
+            eps=eps,
+            dilation=dilation,
+            Kk=Kk,
+            conv_w_dtype=conv_w_dtype,
+            dout=dout,
+        )
 
 
 def ple_gate_conv(

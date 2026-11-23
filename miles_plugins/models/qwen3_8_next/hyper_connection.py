@@ -18,6 +18,17 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
 from miles.kernels.hyper_connection.hc import hc_combine, hc_mix_inject
+
+# Numerical binding point; the TOP adapter swaps both ops together via set_hc_ops.
+_mix_inject_op = hc_mix_inject
+_combine_op = hc_combine
+
+
+def set_hc_ops(*, mix_inject, combine) -> None:
+    global _mix_inject_op, _combine_op
+    _mix_inject_op, _combine_op = mix_inject, combine
+
+
 from miles_plugins.models.qwen3_8_next.ops.ple import Qwen38NextPLE, current_ple_batch
 
 
@@ -76,7 +87,7 @@ class Qwen38NextHyperConnection(MegatronModule):
                 "run without 'mhc' in --recompute-modules."
             )
         assert self.use_combine, "per-layer HC needs the inject weight; use the Mixer for read-only"
-        aggregated, h_post = hc_mix_inject(
+        aggregated, h_post = _mix_inject_op(
             hidden_states,
             self.hc_norm_weight,
             self.input_mix_weight_down,
@@ -112,7 +123,7 @@ class Qwen38NextHyperConnection(MegatronModule):
             x = x + bias.view(*([1] * (x.dim() - 1)), -1)
         if dropout_prob > 0.0 and training:
             x = F.dropout(x, p=dropout_prob)
-        return hc_combine(original_residual, x, h_post, self.n)
+        return _combine_op(original_residual, x, h_post, self.n)
 
 
 class Qwen38NextHCHeadContraction(MegatronModule):
@@ -140,7 +151,7 @@ class Qwen38NextHCHeadContraction(MegatronModule):
             torch.nn.init.xavier_uniform_(self.input_mix_weight_up)
 
     def forward(self, hidden_states: Tensor) -> Tensor:
-        mixed, _ = hc_mix_inject(
+        mixed, _ = _mix_inject_op(
             hidden_states,
             self.hc_norm_weight,
             self.input_mix_weight_down,
