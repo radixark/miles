@@ -13,6 +13,8 @@ def _get_memory_info(device=None) -> tuple[int, int]:
 
 class NeuronPlatform(Platform):
     device_type = "neuron"
+    # torch-neuronx's dynamo backend compiles each graph into one NEFF
+    compile_backend = "neuron"
     # neuron compiles each new shape into its own NEFF; dynamic-shape helpers stay eager
     dynamic_shapes = False
     nvml_numa_affinity = False
@@ -20,6 +22,10 @@ class NeuronPlatform(Platform):
     flex_attention = False
     # gather's scatter_add backward races the collectives and reads out of bounds
     gather_backward = False
+    # sglang-neuron reloads a checkpoint from disk into its compiled graphs; it takes no tensor or NCCL updates
+    weight_transfer_modes = frozenset({"disk-delta"})
+    # upstream SGLang, which sglang-neuron plugs into, has no --enable-prefill-weight-versions
+    prefill_weight_versions = False
 
     def __init__(self) -> None:
         # torch-neuronx's allocator is not a c10 DeviceAllocator, so torch.accelerator's memory

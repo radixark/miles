@@ -150,6 +150,47 @@ class TpuFlashInnerAttention(InnerAttention):
         return out.squeeze(0).transpose(0, 1)
 
 
+class NeuronFlashInnerAttention(InnerAttention):
+    """torchtitan's inner attention on the nkilib flash kernels; its metadata is each token's segment id."""
+
+    @dataclass(kw_only=True, slots=True)
+    class Config(_SegmentIdsConfig):
+        @property
+        def is_full_attention(self) -> bool:
+            return True
+
+    def __init__(self, config: Config) -> None:
+        super().__init__()
+        # imported here, eagerly and on neuron only: it needs nkilib and torch_neuronx
+        from miles.backends.torchtitan_utils.neuron_attention import packed_causal_attention
+
+        self.packed_causal_attention = packed_causal_attention
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        *,
+        attention_metadata: torch.Tensor,
+        score_mod=None,
+        scale: float | None = None,
+        enable_gqa: bool = False,
+        out_transform=None,
+    ) -> torch.Tensor:
+        if score_mod is not None or out_transform is not None:
+            raise NotImplementedError("the Neuron flash attention takes no score_mod or out_transform")
+        # torchtitan passes [tokens, heads, dim]; the kernels take [heads, tokens, dim] and run GQA themselves
+        out_HTD, _ = self.packed_causal_attention(
+            q.transpose(0, 1),
+            k.transpose(0, 1),
+            v.transpose(0, 1),
+            attention_metadata,
+            scale if scale is not None else q.shape[-1] ** -0.5,
+        )
+        return out_HTD.transpose(0, 1)
+
+
 class UlyssesTpuFlashInnerAttention(Ulysses, TpuFlashInnerAttention):
     """TpuFlashInnerAttention under Ulysses CP: all-to-alls trade the token shard for a head shard around the kernel,
     which then sees the whole sequence and its global segment ids."""
@@ -258,10 +299,14 @@ class TpuGatedDeltaInnerAttention(InnerAttention):
 
 def _replace_inner_attention(model: BaseModel.Config) -> None:
     """Swap in inner attentions keyed on segment ids, for platforms without sparse FlexAttention or attn_gym."""
-    replacements: dict[type[InnerAttention.Config], type[InnerAttention.Config]] = {
-        FlexInnerAttention.Config: TpuFlashInnerAttention.Config,
-        InnerGDN.Config: TpuGatedDeltaInnerAttention.Config,
-    }
+    replacements: dict[type[InnerAttention.Config], type[InnerAttention.Config]] = (
+        {
+            FlexInnerAttention.Config: TpuFlashInnerAttention.Config,
+            InnerGDN.Config: TpuGatedDeltaInnerAttention.Config,
+        }
+        if platforms.IS_TPU
+        else {FlexInnerAttention.Config: NeuronFlashInnerAttention.Config}
+    )
     for layer in model.layers:
         for _, inner, parent, field_name in layer.traverse(InnerAttention.Config, recurse=True):
             # MLA wraps the attention kernel it runs
