@@ -52,3 +52,8 @@ trainer compiles each decoder block on its first step (about 6 minutes for Qwen3
 - Vocab-parallel cross entropy selects the target with a one-hot mask (`Platform.gather_backward`): gather's
   scatter_add backward races the collectives on Neuron.
 - The engine samples with `SGLANG_NEURON_SAMPLER=temperature`, exact full-vocabulary sampling on the device.
+
+## Disk use
+
+Each launch keeps a full copy of the checkpoint (the engine's pulled local checkpoint, 57 GB for Qwen3-30B-A3B) and
+its per-sync deltas under `--weight-sync-dir/<run_id>/`; remove a finished run's directory to reclaim it.

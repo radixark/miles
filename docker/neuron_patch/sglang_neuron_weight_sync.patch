@@ -1,9 +1,10 @@
 sglang-neuron (sgl-project/sglang-neuron 4e24326, as installed in the pytorch-inference-sglang-neuron v0.1.0 image):
 reload transformer weights from disk in place and serve /pull_weights, which miles' disk-delta weight sync drives.
-Applied by docker/Dockerfile.neuron inside site-packages; drop it once sglang-neuron ships both.
+Proposed upstream as sgl-project/sglang-neuron#20 and #21. Applied by docker/Dockerfile.neuron inside site-packages;
+drop it once sglang-neuron ships both.
 
 diff --git a/sglang_neuron/general_plugin.py b/sglang_neuron/general_plugin.py
-index c6defe6..f255342 100644
+index c6defe6..05da188 100644
 --- a/sglang_neuron/general_plugin.py
 +++ b/sglang_neuron/general_plugin.py
 @@ -61,9 +61,11 @@ ATTN_BACKEND_NAME = "neuron"
@@ -20,7 +21,17 @@ index c6defe6..f255342 100644
      f"{_CONTROL}.update_weights_from_tensor",
      f"{_CONTROL}.update_weights_from_distributed",
      f"{_CONTROL}.update_weights_from_ipc",
-@@ -190,6 +192,21 @@ def _refuse_weight_update(original_fn, self, *args, **kwargs):
+@@ -84,6 +86,9 @@ _LAUNCH_SOURCES_MD5 = {
+         "c01ade18185dfb7a995460013edecc1f",
+ }
+ _RUNTIME_SOURCES_MD5 = {
++    # copies the checkpoint into the compiled graphs' parameters instead of reloading the model
++    ("sglang.srt.model_executor.model_runner_components.weight_updater", "WeightUpdater.update_weights_from_disk"):
++        "76cf178e5ecde7f739c01439a1c64f65",
+     # every use_* argument is a device communicator, turned off
+     ("sglang.srt.distributed.parallel_state", "init_model_parallel_group"): "fe3cc1fab307a27a8e48c3ee6657bbec",
+     # replaced by the NeuronCore's HBM, in the same units and with the same MIN over cpu_group
+@@ -190,6 +195,21 @@ def _refuse_weight_update(original_fn, self, *args, **kwargs):
                                                  "model's weights are loaded into its compiled graphs once")
  
  
@@ -42,7 +53,7 @@ index c6defe6..f255342 100644
  def _refuse_pause_under_pp(original_fn, self, obj, *args, **kwargs):
      """AROUND TokenizerManager.pause_generation: a pipelined server refuses an in_place or retract pause with HTTP 400.
  
-@@ -308,6 +325,10 @@ def _register_launch_hooks() -> None:
+@@ -308,6 +328,10 @@ def _register_launch_hooks() -> None:
      HookRegistry.register(f"{_TOKENIZER}.convert_logprob_style", convert_logprob_style, HookType.AROUND)
      for target in _WEIGHT_UPDATES:
          HookRegistry.register(target, _refuse_weight_update, HookType.AROUND)
@@ -80,7 +91,7 @@ index f381bc8..5e79340 100644
          """SGLang hands over a lazy iterator over the checkpoint, left unread: the first graph reads this rank's shards
          of the checkpoint, and an aggregated server's other graph shares its device copy."""
 diff --git a/sglang_neuron/models/transformer/model.py b/sglang_neuron/models/transformer/model.py
-index 716b22a..5c3f476 100644
+index 716b22a..f7cf5f7 100644
 --- a/sglang_neuron/models/transformer/model.py
 +++ b/sglang_neuron/models/transformer/model.py
 @@ -23,7 +23,7 @@ from sglang_neuron.ops.attention.qkv_paged import qkv_paged
@@ -92,7 +103,7 @@ index 716b22a..5c3f476 100644
  
  
  class RMSNorm(nn.Module):
-@@ -293,8 +293,28 @@ class TransformerForCausalLM(nn.Module):
+@@ -293,8 +293,33 @@ class TransformerForCausalLM(nn.Module):
      def load_weights(self, checkpoint_path: str, device: torch.device) -> None:
          """Read this rank's shard of every mapped parameter onto ``device``."""
          checkpoint = SafetensorsCheckpoint(checkpoint_path)
@@ -114,22 +125,32 @@ index 716b22a..5c3f476 100644
 +        state = checkpoint.load_sharded_pipelined(self.tp_group.rank_in_group, self.tp_group.world_size, self,
 +                                                  self.hf_weight_mappings(), torch.device("cpu")).state_dict
 +        params = dict(self.named_parameters(remove_duplicate=False))
++        # checked before the first copy, so a bad checkpoint leaves the served weights untouched
 +        unknown = sorted(set(state) - set(params))
 +        if unknown:
 +            raise RuntimeError(f"the checkpoint loaded {len(unknown)} tensor(s) the graph has no parameter for: "
 +                               f"{unknown[:8]}")
++        mismatched = [name for name, tensor in state.items() if tensor.shape != params[name].shape]
++        if mismatched:
++            raise RuntimeError(f"{len(mismatched)} checkpoint tensor(s) do not match their parameter's shape: "
++                               f"{[(n, tuple(state[n].shape), tuple(params[n].shape)) for n in mismatched[:4]]}")
 +        with torch.no_grad():
 +            for name, tensor in state.items():
 +                params[name].copy_(tensor)
 diff --git a/sglang_neuron/weight_sync/__init__.py b/sglang_neuron/weight_sync/__init__.py
 new file mode 100644
-index 0000000..e69de29
+index 0000000..9881313
+--- /dev/null
++++ b/sglang_neuron/weight_sync/__init__.py
+@@ -0,0 +1 @@
++# SPDX-License-Identifier: Apache-2.0
 diff --git a/sglang_neuron/weight_sync/local_checkpoint.py b/sglang_neuron/weight_sync/local_checkpoint.py
 new file mode 100644
-index 0000000..fb784f6
+index 0000000..e710cd9
 --- /dev/null
 +++ b/sglang_neuron/weight_sync/local_checkpoint.py
-@@ -0,0 +1,351 @@
+@@ -0,0 +1,352 @@
++# SPDX-License-Identifier: Apache-2.0
 +# copied from sgl-project/sglang sglang-miles python/sglang/srt/weight_sync/local_checkpoint.py (20211e0fa3)
 +"""Host-local pull of published weights (the /pull_weights endpoint).
 +
