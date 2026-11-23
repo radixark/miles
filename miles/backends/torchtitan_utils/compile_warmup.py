@@ -36,7 +36,8 @@ def warmup_shard(num_samples: int, routed_experts_shape: tuple[int, int] | None 
         "partition": list(sample_ids),
     }
     if routed_experts_shape is not None:
-        # replay's padding rows: the routers take experts 0..top_k-1, and the --ci-test replay check skips them
+        # replay's padding rows: the routers spread them across the experts, and the --ci-test
+        # replay check skips them
         shard["rollout_routed_experts"] = [
             np.full((length - 1, *routed_experts_shape), -1, dtype=np.int32) for length in lengths
         ]
