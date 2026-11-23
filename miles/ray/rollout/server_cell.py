@@ -216,7 +216,7 @@ class ServerCell:
             )
 
         if self.meta.needs_offload:
-            api_client = SGLangApiClient(server_url=addr_info.server_url)
+            api_client = SGLangApiClient(server_url=addr_info.server_url, api_key=self.meta.sglang_api_key)
             await api_client.release_memory_occupation()
             await api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 

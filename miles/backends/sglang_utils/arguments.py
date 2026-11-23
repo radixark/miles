@@ -1,4 +1,5 @@
 import argparse
+import secrets
 
 from sglang.srt.server_args import ServerArgs
 
@@ -132,6 +133,10 @@ def add_sglang_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentPa
 
 def validate_args(args):
     args.sglang_tp_size = args.rollout_num_gpus_per_engine // args.sglang_pp_size
+
+    # SGLang 1.0 answers memory release/resume and weight updates with 403 unless the engine has an admin key
+    if args.sglang_admin_api_key is None:
+        args.sglang_admin_api_key = secrets.token_hex(16)
 
     # "auto" given explicitly counts as unset: on TPU it would mean fp8, which needs an explicit fp8_e4m3
     if args.sglang_kv_cache_dtype == "auto" and current_platform.rollout_kv_cache_dtype is not None:
