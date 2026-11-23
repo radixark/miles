@@ -8,12 +8,13 @@ from typing import Any
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
-from miles.dashboard import hooks as dashboard_hooks
+from miles.ray.rollout.engine_topology_reporter import EngineTopologyReporter
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin, InferenceControllerEvalFleet
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
 from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
-from miles.utils import async_utils
+from miles.utils import async_utils, observers
+from miles.utils.args.component_rollout import InferenceRuntimeImmutState
 from miles.utils.audit_utils.checksum_utils import ChecksumCollectionFailure
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.context_lock import (
@@ -62,11 +63,13 @@ class InferenceController:
         self._eval_fleet: InferenceControllerEvalFleet | None = None
         self._watcher_disposers: list[StopWatchFn] = []
         self._ticker: SimpleTicker | None = None
+        self._engine_topology_reporter = EngineTopologyReporter()
 
     @lock_exempt
     @init_once
     async def init(self) -> None:
         configure_logger(self.args, source=SimpleProcessIdentity(component="inference_controller"))
+        observers.start_process("inference_controller")
 
         if not self.args.starts_inference_engines:
             return
@@ -79,13 +82,11 @@ class InferenceController:
             engine_provider=self._engine_provider,
             router_addrs=router_addrs,
         )
-        if self.args.eval_num_gpus > 0:
+        if "eval" in self.servers:
             self._eval_fleet = InferenceControllerEvalFleet(self.args, srv=self.servers["eval"])
 
         self._watcher_disposers.append(await self._engine_provider.watch_cells(self._reconcile))
         self._ticker = SimpleTicker(self._tick_cells, interval_seconds=TICK_INTERVAL_SECONDS)
-
-        dashboard_hooks.register_router(self.args)
 
         await self.wait_expected_num_cells()
 
@@ -129,7 +130,7 @@ class InferenceController:
     @with_lock
     async def prepare_rollout(self, rollout_id: int, model_id: str | None = None) -> None:
         await self._health_monitoring_resume(model_id)
-        await dashboard_hooks.register_engines(self.servers, provider=self._engine_provider)
+        await self._engine_topology_reporter.report_if_changed(self.servers, provider=self._engine_provider)
 
     @with_lock
     async def prepare_eval(self, model_id: str | None = None) -> None:
@@ -247,9 +248,9 @@ class InferenceController:
             receiver_pool=receiver_pool,
         )
 
-    @releases_lock
+    @lock_exempt
     async def abort_update_weights(self) -> None:
-        pass
+        self.context_lock.release_if_detached()
 
     @releases_lock
     async def end_update_weights(
@@ -353,7 +354,7 @@ class InferenceController:
 
     @lock_exempt
     async def get_eval_fleet_info(self) -> EvalFleetInfo | None:
-        return self._eval_fleet.info if self._eval_fleet is not None else None
+        return await self._eval_fleet.info() if self._eval_fleet is not None else None
 
     @lock_exempt
     async def pin_eval_fleet(self, checkpoint_dir: str, weight_version: str) -> EvalFleetPin:
@@ -370,6 +371,18 @@ class InferenceController:
         return await self._eval_fleet.check_version(weight_version)
 
     # -------------------------- misc APIs -----------------------------
+
+    @with_lock
+    async def get_inference_runtime_immut_state(self) -> InferenceRuntimeImmutState:
+        engine_gpu_counts = [
+            count for name, srv in self.servers.items() if name != "eval" for count in srv.engine_gpu_counts
+        ]
+        eval_srv = self.servers.get("eval")
+        return InferenceRuntimeImmutState(
+            engine_count=len(engine_gpu_counts),
+            gpu_count=sum(engine_gpu_counts),
+            eval_engine_count=len(eval_srv.engine_gpu_counts) if eval_srv is not None else 0,
+        )
 
     @lock_exempt
     async def get_cell_statuses(self) -> dict[str, CellStatus]:
@@ -499,5 +512,6 @@ def _compute_server_cell_meta_from_info(info: CellInfo) -> ServerCellMetadata:
         worker_name=info.worker_names[0],
         needs_offload=info.meta["needs_offload"],
         update_weights=info.meta["update_weights"],
+        health_check_timeout_seconds=info.meta["health_check_timeout_seconds"],
         workers_hash=info.workers_hash,
     )

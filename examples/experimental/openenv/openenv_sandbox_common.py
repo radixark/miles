@@ -1,8 +1,8 @@
 """Shared per-episode sandbox orchestration for the backend agent functions.
 
 A backend module (``openenv_daytona_agent_function``,
-``openenv_e2b_agent_function``, ``openenv_modal_agent_function``)
-owns only what is genuinely provider-specific: how ONE sandbox with the env
+``openenv_e2b_agent_function``, ``openenv_modal_agent_function``,
+``openenv_novita_agent_function``) owns only what is genuinely provider-specific: how ONE sandbox with the env
 server comes into being (its ``tb2_sandbox_*`` materialization module), which
 errors count as retryable throttling, and its env-var knobs. Everything that
 makes per-episode sandboxes safe under a fanned-out rollout is provider-blind
@@ -39,6 +39,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
+from miles.rollout.agentic.credentials import PROVIDER_ALIASES, resolve_provider
 from miles.rollout.agentic.rollout_limits import rollout_semaphore
 
 # A provider's "start one sandbox" hook: (task_id, tasks_dir) -> (close_fn, base_url).
@@ -52,14 +53,14 @@ AGENT_MODULES = {
     "daytona": "openenv_daytona_agent_function",
     "e2b": "openenv_e2b_agent_function",
     "modal": "openenv_modal_agent_function",
+    "novita": "openenv_novita_agent_function",
 }
 AGENT_FUNCTIONS = {backend: f"{module}.run" for backend, module in AGENT_MODULES.items()}
-_ALIASES = {"agentenv": "e2b"}
 
 
 def backend_names() -> str:
     """The accepted names, for help text that must not drift from the registry."""
-    return ", ".join(sorted([*AGENT_FUNCTIONS, *_ALIASES]))
+    return ", ".join(sorted([*AGENT_FUNCTIONS, *PROVIDER_ALIASES]))
 
 
 def resolve_backend(name: str | None) -> str:
@@ -73,7 +74,7 @@ def resolve_backend(name: str | None) -> str:
     allowed = backend_names()
     if not backend:
         raise ValueError(f"no sandbox backend named; choose one of: {allowed}")
-    backend = _ALIASES.get(backend, backend)
+    backend = resolve_provider(backend)
     if backend not in AGENT_FUNCTIONS:
         raise ValueError(f"unknown sandbox backend {name!r}; choose one of: {allowed}")
     return backend

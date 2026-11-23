@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers.activations import ACT2FN
 
+
 try:
     from fla.modules import FusedRMSNormGated, ShortConvolution
 except ImportError:
@@ -15,7 +16,7 @@ from miles.backends.megatron_utils.fp32_param_utils import mark_param_dtype
 from miles_plugins.models.cp_utils import build_gdn_cp_context
 from miles_plugins.models.hf_attention import HuggingfaceAttention
 from miles_plugins.models.linear_attn import gdn_kernel
-from miles_plugins.models.qwen3_5 import _get_text_config
+from miles_plugins.models.qwen3_5.model import _get_text_config
 
 
 # Adapted from Qwen3NextGatedDeltaNet but with separate in_proj_qkv and in_proj_z
@@ -28,7 +29,7 @@ class ReplicatedGatedDeltaNet(nn.Module):
 
     def __init__(self, config, layer_idx: int, args=None):
         super().__init__()
-        self.gdn_backend = getattr(args, "linear_attention_backend", "fla")
+        self.gdn_backend = args.linear_attention_backend if args is not None else "fla"
         self.chunk_gated_delta_rule = gdn_kernel(self.gdn_backend)
         self.hidden_size = config.hidden_size
         self.num_v_heads = config.linear_num_value_heads

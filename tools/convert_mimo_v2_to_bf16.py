@@ -12,7 +12,10 @@ BF16, splits qkv into q_proj/k_proj/v_proj in head order, and drops `quantizatio
 `attention_projection_layout`, so the HF remote code, Megatron-Bridge and a BF16 SGLang engine
 all read it as-is.
 
---keep-quant only reindexes layers and copies every tensor in its source format.
+--keep-quant only reindexes layers and copies every tensor in its source format. --fp8-experts does the same but
+casts the MXFP4 experts to blockwise FP8 like the dense linears, for an engine that runs FP8 throughout; the cast
+is exact unless the 32-input scales inside one 128x128 block span more than e4m3's range, and the summary counts
+the experts it changed.
 
 python tools/convert_mimo_v2_to_bf16.py --model-dir <src> --save-dir <dst> [--layers 0,1,5,6] [--num-experts 32]
 """
@@ -47,13 +50,35 @@ def dequant_fp8_block(weight: torch.Tensor, scale_inv: torch.Tensor) -> torch.Te
     return (weight.float() * scale[:, :cols]).to(torch.bfloat16)
 
 
+def unpack_e2m1(packed: torch.Tensor) -> torch.Tensor:
+    """[out, in / 2] packed e2m1 (element 2i in the low nibble) -> [out, in] float32 values."""
+    out_dim, in_dim = packed.shape[0], packed.shape[1] * 2
+    packed = packed.view(torch.uint8)
+    table = FP4_TABLE.to(packed.device)
+    return torch.stack([table[(packed & 0x0F).long()], table[(packed >> 4).long()]], dim=-1).reshape(out_dim, in_dim)
+
+
 def dequant_mxfp4(packed: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     out_dim, in_dim = packed.shape[0], packed.shape[1] * 2
     assert scale.shape == (out_dim, in_dim // MXFP4_BLOCK), f"{packed.shape=} {scale.shape=}"
-    packed = packed.view(torch.uint8)
-    table = FP4_TABLE.to(packed.device)
-    values = torch.stack([table[(packed & 0x0F).long()], table[(packed >> 4).long()]], dim=-1).reshape(out_dim, in_dim)
-    return (values * torch.exp2(scale.float() - 127.0).repeat_interleave(MXFP4_BLOCK, dim=1)).to(torch.bfloat16)
+    return (unpack_e2m1(packed) * torch.exp2(scale.float() - 127.0).repeat_interleave(MXFP4_BLOCK, dim=1)).to(
+        torch.bfloat16
+    )
+
+
+def cast_mxfp4_to_fp8_block(packed: torch.Tensor, scale: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """MXFP4 (one E8M0 scale per 32 inputs) -> e4m3 with one power-of-two scale per 128x128 block, as
+    tools/convert_mxfp4_to_fp8.py casts DeepSeek-V4: a block's scale is its largest MXFP4 scale / 64, so every value
+    stays within 6 x 64 = 384 < 448."""
+    out_dim, in_dim = packed.shape[0], packed.shape[1] * 2
+    assert out_dim % FP8_BLOCK == 0 and in_dim % FP8_BLOCK == 0, f"{packed.shape=} is not whole FP8 blocks"
+    assert scale.shape == (out_dim, in_dim // MXFP4_BLOCK), f"{packed.shape=} {scale.shape=}"
+    exponent = scale.float() - 127.0
+    groups = FP8_BLOCK // MXFP4_BLOCK
+    block_exponent = exponent.view(out_dim // FP8_BLOCK, FP8_BLOCK, in_dim // FP8_BLOCK, groups).amax(dim=(1, 3)) - 6
+    shift = exponent - block_exponent.repeat_interleave(FP8_BLOCK, dim=0).repeat_interleave(groups, dim=1)
+    values = unpack_e2m1(packed) * torch.exp2(shift).repeat_interleave(MXFP4_BLOCK, dim=1)
+    return values.to(torch.float8_e4m3fn), torch.exp2(block_exponent)
 
 
 def dequant_fused_qkv(weight: torch.Tensor, scale_inv: torch.Tensor, shards: int) -> torch.Tensor:
@@ -95,7 +120,9 @@ def output_name(name: str, layer_map: dict[int, int] | None, num_experts: int | 
     return f"model.layers.{layer_map[layer] if layer_map is not None else layer}.{rest}"
 
 
-def convert_config(config: dict, layer_map: dict[int, int] | None, num_experts: int | None, keep_quant: bool) -> dict:
+def convert_config(
+    config: dict, layer_map: dict[int, int] | None, num_experts: int | None, keep_quant: bool, fp8_experts: bool
+) -> dict:
     config = json.loads(json.dumps(config))
     if layer_map is not None:
         assert config.get("hybrid_block_size") is None, "per-layer schedules must be explicit lists"
@@ -114,6 +141,10 @@ def convert_config(config: dict, layer_map: dict[int, int] | None, num_experts: 
             if renamed is not None:
                 ignored.append(renamed.removesuffix(".weight"))
         quant["ignored_layers"] = ignored
+        if fp8_experts:
+            # the routed experts are blockwise FP8 like the rest, no longer MXFP4
+            quant.pop("store_dtype", None)
+            quant.pop("mxfp4_block_size", None)
     else:
         config.pop("quantization_config", None)
         config.pop("attention_projection_layout", None)
@@ -171,7 +202,13 @@ def check_output(weight_map: dict[str, str], config: dict) -> None:
 
 
 def main(
-    model_dir: str, save_dir: str, layers: list[int] | None, num_experts: int | None, keep_quant: bool, device: str
+    model_dir: str,
+    save_dir: str,
+    layers: list[int] | None,
+    num_experts: int | None,
+    keep_quant: bool,
+    device: str,
+    fp8_experts: bool = False,
 ):
     src, dst = Path(model_dir), Path(save_dir)
     dst.mkdir(parents=True, exist_ok=True)
@@ -179,6 +216,7 @@ def main(
     assert config["architectures"] == ["MiMoV2ForCausalLM"], config["architectures"]
     layer_map = {old: new for new, old in enumerate(layers)} if layers is not None else None
     assert layer_map is None or all(0 <= layer < config["num_hidden_layers"] for layer in layer_map), layers
+    keep_quant = keep_quant or fp8_experts
     assert not (keep_quant and num_experts is not None), "--num-experts needs the dequantized output"
     fused_qkv = config.get("attention_projection_layout") == "fused_qkv"
 
@@ -192,7 +230,7 @@ def main(
         return handles[file_name].get_tensor(name).to(device)
 
     writer = ShardWriter(dst)
-    counts = {"fp8": 0, "mxfp4": 0, "qkv_split": 0, "copied": 0}
+    counts = {"fp8": 0, "mxfp4": 0, "qkv_split": 0, "copied": 0, "mxfp4_to_fp8": 0, "mxfp4_to_fp8_inexact": 0}
     scale_suffixes = ("weight_scale_inv", "weight_scale")
     for file_name in tqdm(sorted(set(weight_map.values())), desc="shards"):
         for name in [n for n, f in weight_map.items() if f == file_name]:
@@ -200,6 +238,17 @@ def main(
             if new_name is None or (not keep_quant and name.endswith(scale_suffixes)):
                 continue
             tensor = load(name)
+            if fp8_experts and tensor.dtype == torch.uint8:
+                if name.endswith(".weight"):
+                    scale = load(name.removesuffix("weight") + "weight_scale")
+                    weight, scale_inv = cast_mxfp4_to_fp8_block(tensor, scale)
+                    writer.add(new_name, weight)
+                    writer.add(new_name + "_scale_inv", scale_inv)
+                    counts["mxfp4_to_fp8"] += 1
+                    exact = torch.equal(dequant_fp8_block(weight, scale_inv), dequant_mxfp4(tensor, scale))
+                    counts["mxfp4_to_fp8_inexact"] += not exact
+                # an MXFP4 scale (uint8 E8M0) is folded into its weight's FP8 block scales
+                continue
             if keep_quant:
                 writer.add(new_name, tensor)
                 counts["copied"] += 1
@@ -226,7 +275,7 @@ def main(
             counts["copied"] += 1
     writer.flush()
 
-    new_config = convert_config(config, layer_map, num_experts, keep_quant)
+    new_config = convert_config(config, layer_map, num_experts, keep_quant, fp8_experts)
     if not keep_quant:
         check_output(writer.weight_map, new_config)
     (dst / "config.json").write_text(json.dumps(new_config, indent=2) + "\n")
@@ -261,7 +310,10 @@ if __name__ == "__main__":
         "--num-experts", type=int, default=None, help="Keep only the first N routed experts per MoE layer."
     )
     parser.add_argument("--keep-quant", action="store_true", help="Reindex layers but keep the source tensor formats.")
+    parser.add_argument(
+        "--fp8-experts", action="store_true", help="As --keep-quant, but cast the MXFP4 experts to blockwise FP8."
+    )
     parser.add_argument("--device", type=str, default="cpu")
     args = parser.parse_args()
     layers = [int(x) for x in args.layers.split(",")] if args.layers else None
-    main(args.model_dir, args.save_dir, layers, args.num_experts, args.keep_quant, args.device)
+    main(args.model_dir, args.save_dir, layers, args.num_experts, args.keep_quant, args.device, args.fp8_experts)

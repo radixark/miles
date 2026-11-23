@@ -1,6 +1,7 @@
 from argparse import Namespace
 
 import pytest
+from tests.fast.fixtures.args_fixtures import parser_defaults, resolve_parse_boundary_configs
 
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 from miles.utils.weight_version import (
@@ -14,18 +15,17 @@ SGLANG_LITERAL = "default"
 
 
 def _make_args(**overrides: object) -> Namespace:
-    args = Namespace(
+    values = dict(
         debug_rollout_only=False,
         debug_train_only=False,
         debug_skip_weight_update=False,
         lora_rank=0,
         lora_adapter_path=None,
         update_weights_interval=1,
+        rollout_num_gpus=1,
         sglang_enable_prefill_weight_versions=False,
     )
-    for key, value in overrides.items():
-        setattr(args, key, value)
-    return args
+    return resolve_parse_boundary_configs(Namespace(**{**parser_defaults(), **values, **overrides}))
 
 
 def _make_sample(versions: list[str], index: int = 0) -> Sample:

@@ -7,11 +7,30 @@ from types import FrameType
 from typing import TextIO
 
 import pytest
-
 from tests.fast.fixtures.generation_fixtures import generation_env
 from tests.fast.fixtures.rollout_fixtures import rollout_env
 
+from miles.utils import observers
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
+from miles.utils.misc import SingletonMeta
+
 _ = rollout_env, generation_env
+
+
+if SNAPSHOT_TESTING_ENABLED:
+
+    @pytest.fixture(autouse=True)
+    def isolate_config_snapshot_generated_values(monkeypatch: pytest.MonkeyPatch) -> None:
+        """Each test owns an isolated process-local provenance registry."""
+        from miles.utils.audit_utils.config_snapshot.generated_value_registry import (
+            GENERATED_VALUES_ENV_VAR,
+            generated_value_registry,
+        )
+        from miles.utils.test_utils.snapshot import SNAPSHOT_RECORD_DIR_ENV_VAR
+
+        monkeypatch.delenv(SNAPSHOT_RECORD_DIR_ENV_VAR, raising=False)
+        monkeypatch.setattr(generated_value_registry, "_values", [])
+        monkeypatch.delenv(GENERATED_VALUES_ENV_VAR, raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -19,6 +38,15 @@ def no_env_reporting(monkeypatch):
     """Constructing a worker configures its logger, which in a real process starts a thread that
     shells out to pip and git; tests exercise that reporter directly instead."""
     monkeypatch.setattr("miles.utils.logging_utils.start_env_reporting", lambda args: None)
+
+
+@pytest.fixture(autouse=True)
+def no_installed_observers(monkeypatch):
+    # an observer package installed in the environment would hear every test's run
+    monkeypatch.setattr(observers, "entry_points", lambda group: ())
+    SingletonMeta._instances.pop(observers.Observers, None)
+    yield
+    SingletonMeta._instances.pop(observers.Observers, None)
 
 
 @pytest.fixture(autouse=True)

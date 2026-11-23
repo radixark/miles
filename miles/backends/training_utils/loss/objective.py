@@ -1,5 +1,8 @@
 from argparse import Namespace
+from collections.abc import Callable
+
 import torch
+import torch.distributed as dist
 from torch.utils.checkpoint import checkpoint
 
 from miles.backends.training_utils.data.context_parallel import get_local_response_loss_masks, get_sum_of_sample_mean
@@ -9,10 +12,26 @@ from miles.backends.training_utils.loss.hub.losses import get_loss_function
 from miles.backends.training_utils.loss.hub.math_utils import compute_approx_kl
 from miles.backends.training_utils.loss.hub.opd import apply_opd_kl_to_advantages
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import TrainAdvantageComputationEvent
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.types import RolloutBatch
+
+
+def _lazy_reducer(
+    build: Callable[[], Callable[[torch.Tensor], torch.Tensor]]
+) -> Callable[[torch.Tensor], torch.Tensor]:
+    """A reducer that `build`s itself on its first call, so a loss that never reduces with it costs nothing."""
+    reducer: Callable[[torch.Tensor], torch.Tensor] | None = None
+
+    def reduce(x: torch.Tensor) -> torch.Tensor:
+        nonlocal reducer
+        if reducer is None:
+            reducer = build()
+        return reducer(x)
+
+    return reduce
 
 
 def _detach_rollout_tensor_list(rollout_data: RolloutBatch, key: str) -> list[torch.Tensor] | None:
@@ -28,6 +47,8 @@ def _detach_rollout_tensor_list(rollout_data: RolloutBatch, key: str) -> list[to
 def compute_advantages_and_returns(
     args: Namespace,
     rollout_data: RolloutBatch,
+    *,
+    whiten_group: dist.ProcessGroup | None = None,
 ) -> None:
     """Compute advantages and returns in-place based on `args.advantage_estimator`.
 
@@ -51,6 +72,9 @@ def compute_advantages_and_returns(
             "rewards", "values", "response_lengths", "loss_masks",
             "total_lengths"). Modified in-place to add "advantages" and
             "returns" keys, each mapping to lists of tensors per sample.
+        whiten_group: The data-parallel group `normalize_advantages` reduces
+            over; None is the effective DP group. A trainer that keeps the
+            per-sample tensors on the host passes its gloo group.
     """
     allow_missing_log_probs = args.skip_actor_forward_only and not args.use_rollout_logprobs
     log_probs_key = "rollout_log_probs" if args.use_rollout_logprobs else "log_probs"
@@ -119,7 +143,9 @@ def compute_advantages_and_returns(
         )
 
     if args.normalize_advantages:
-        advantages = normalize_advantages(args, advantages, loss_masks, total_lengths, response_lengths, max_seq_lens)
+        advantages = normalize_advantages(
+            args, advantages, loss_masks, total_lengths, response_lengths, max_seq_lens, whiten_group=whiten_group
+        )
 
     rollout_data["advantages"] = advantages
     rollout_data["returns"] = returns
@@ -163,7 +189,7 @@ def loss_function(
         Tuple of `(scaled_loss, normalizer, logging_dict)` where:
         - `scaled_loss` is the loss tensor (scalar) rescaled for Megatron.
         - `normalizer` is `num_tokens` (scalar tensor) if
-          `args.calculate_per_token_loss` is True, else `1` (int).
+          `args.backend.calculate_per_token_loss` is True, else `1` (int).
         - `logging_dict` has keys "keys" (list of str metric names) and
           "values" (1D tensor: [count, metric1, metric2, ...]).
           Tinker losses may also return "per_datum" outputs.
@@ -172,30 +198,38 @@ def loss_function(
     num_tokens = count_loss_tokens(batch["loss_masks"])
     num_samples = len(batch["response_lengths"])
 
-    sum_of_sample_mean = get_sum_of_sample_mean(
-        batch["total_lengths"],
-        batch["response_lengths"],
-        batch["loss_masks"],
-        args.calculate_per_token_loss,
-        args.qkv_format,
-        batch.get("max_seq_lens", None),
-        denominators=batch.get("rollout_mask_sums", None),
+    # built on first use: a loss on padded rows reduces with its own row divisors and never needs it
+    sum_of_sample_mean = _lazy_reducer(
+        lambda: get_sum_of_sample_mean(
+            batch["total_lengths"],
+            batch["response_lengths"],
+            batch["loss_masks"],
+            args.backend.calculate_per_token_loss,
+            args.qkv_format,
+            batch.get("max_seq_lens", None),
+            denominators=batch.get("rollout_mask_sums", None),
+        )
     )
 
     func = get_loss_function(args, batch.get("loss_fn"))
+    fn_args = (
+        compute_custom_function_config(args, args.custom_loss_function_path)
+        if args.loss_type == "custom_loss" and batch.get("loss_fn") is None
+        else args
+    )
     # with --log-probs-backend fused the loss's backward overwrites `logits` with their gradient
     # (see get_log_probs_and_entropy); nothing may read them after it
 
     if args.recompute_loss_function:
         loss, log = checkpoint(
             func,
-            args,
+            fn_args,
             batch,
             logits,
             sum_of_sample_mean,
         )
     else:
-        loss, log = func(args, batch, logits, sum_of_sample_mean)
+        loss, log = func(fn_args, batch, logits, sum_of_sample_mean)
 
     # Forces autograd to traverse the full graph on every rank to avoid hang.
     # fp32 sum: an fp16 logits sum can overflow to inf, and 0 * inf is nan.
@@ -207,10 +241,10 @@ def loss_function(
         global_batch_size = num_rollouts
     else:
         assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in batch)
-        global_batch_size = batch.get("dynamic_global_batch_size", args.global_batch_size)
+        global_batch_size = batch.get("dynamic_global_batch_size", args.backend.global_batch_size)
     # Tinker losses already carry the client's normalization
     loss_normalizer = 1 if is_multi_lora_enabled(args) else global_batch_size
-    if not args.calculate_per_token_loss:
+    if not args.backend.calculate_per_token_loss:
         if apply_megatron_loss_scaling:
             loss_parallel_size = (
                 parallel_state.intra_dp.size
@@ -231,12 +265,12 @@ def loss_function(
     per_datum = log.pop("per_datum", None) if batch.get("loss_fn") is not None else None
     return (
         loss,
-        torch.tensor(num_tokens if args.calculate_per_token_loss else 1, device=logits.device),
+        torch.tensor(num_tokens if args.backend.calculate_per_token_loss else 1, device=logits.device),
         {
             **({"per_datum": per_datum} if per_datum is not None else {}),
             "keys": list(log.keys()),
             "values": torch.tensor(
-                [num_samples if not args.calculate_per_token_loss else num_tokens] + list(log.values()),
+                [num_samples if not args.backend.calculate_per_token_loss else num_tokens] + list(log.values()),
                 device=logits.device,
             ),
         },

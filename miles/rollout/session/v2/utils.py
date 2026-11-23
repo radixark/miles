@@ -6,6 +6,7 @@ from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.errors import TokenizationError
 from miles.rollout.session.request_args import filter_turn_args
 from miles.rollout.session.samples.merge import (
+    adopt_session_records,
     compute_samples_from_openai_records,
     merge_samples_with_addition_r3,
     truncate_samples_by_total_tokens,
@@ -87,6 +88,7 @@ def build_leaf_material(
             sample = merge_samples_with_addition_r3(args, turns, records, registry.tokenizer)
         else:
             sample = merge_samples(turns, registry.tokenizer)
+        adopt_session_records(sample, records)
         flat: dict[str, Any] = {
             "accumulated_token_ids": list(leaf.token_ids),
             "turn_args": filter_turn_args(leaf.turn_args),
@@ -101,7 +103,7 @@ def build_leaf_material(
             mismatch = computed_mismatch[leaf.seq]
         else:
             try:
-                mismatch = registry.compute_mismatch(leaf.path_messages(), leaf.token_ids, turn_args=leaf.turn_args)
+                mismatch = registry.compute_mismatch(leaf)
             except TokenizationError:
                 logger.exception("Failed to compute tito_session_mismatch for session %s", session_id)
                 mismatch = None

@@ -218,6 +218,55 @@ class TestHotRestartDriverProgressGuard:
                 RunProgress(last_saved_iteration=1, last_finished_rollout_id=1)
             )
 
+    @pytest.mark.parametrize("old_reads", [1, 3])
+    def test_old_log_reads_do_not_end_the_pending_rollback(self, tmp_path: Path, old_reads: int) -> None:
+        """A pending take-over may expose the frozen log repeatedly before rolling back."""
+        driver = _driver(tmp_path)
+        driver._assert_no_step_lost_outside_take_over(RunProgress(last_saved_iteration=1, last_finished_rollout_id=2))
+        driver.records.append(HotRestartRecord(index=0, saved_iteration_at_trigger=1, frozen_rollout_id=2))
+
+        for finished in [2] * old_reads + [1, 2]:
+            driver._assert_no_step_lost_outside_take_over(
+                RunProgress(last_saved_iteration=1, last_finished_rollout_id=finished)
+            )
+
+        with pytest.raises(AssertionError, match="lost work"):
+            driver._assert_no_step_lost_outside_take_over(
+                RunProgress(last_saved_iteration=1, last_finished_rollout_id=1)
+            )
+
+    def test_catch_up_without_observing_rollback_still_restores_the_guard(self, tmp_path: Path) -> None:
+        """Advancing beyond the frozen step proves catch-up even when polling missed rollback."""
+        driver = _driver(tmp_path)
+        driver._assert_no_step_lost_outside_take_over(RunProgress(last_saved_iteration=1, last_finished_rollout_id=2))
+        driver.records.append(HotRestartRecord(index=0, saved_iteration_at_trigger=1, frozen_rollout_id=2))
+        driver._assert_no_step_lost_outside_take_over(RunProgress(last_saved_iteration=1, last_finished_rollout_id=3))
+
+        with pytest.raises(AssertionError, match="lost work"):
+            driver._assert_no_step_lost_outside_take_over(
+                RunProgress(last_saved_iteration=1, last_finished_rollout_id=2)
+            )
+
+    def test_each_take_over_must_observe_its_own_rollback(self, tmp_path: Path) -> None:
+        """The first take-over's rollback cannot prematurely finish the second take-over."""
+        driver = _driver(tmp_path)
+        for index, saved, frozen in [(0, 1, 2), (1, 3, 4)]:
+            driver._assert_no_step_lost_outside_take_over(
+                RunProgress(last_saved_iteration=saved, last_finished_rollout_id=frozen)
+            )
+            driver.records.append(
+                HotRestartRecord(index=index, saved_iteration_at_trigger=saved, frozen_rollout_id=frozen)
+            )
+            for finished in (frozen, saved, frozen):
+                driver._assert_no_step_lost_outside_take_over(
+                    RunProgress(last_saved_iteration=saved, last_finished_rollout_id=finished)
+                )
+
+        with pytest.raises(AssertionError, match="lost work"):
+            driver._assert_no_step_lost_outside_take_over(
+                RunProgress(last_saved_iteration=3, last_finished_rollout_id=3)
+            )
+
 
 class TestTheFreezeATakeOverWaitsFor:
     def test_a_run_that_has_finished_nothing_is_not_frozen_yet(self, tmp_path, monkeypatch):

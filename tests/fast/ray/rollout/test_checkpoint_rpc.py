@@ -24,7 +24,8 @@ class TestResponsiveCheckpointRpc:
 
             try:
                 async with asyncio.timeout(3.0):
-                    await rpc.handle.submit_without_result(method, rollout_id=2)
+                    kwargs = {"load": str(tmp_path)} if method == "load" else {}
+                    await rpc.handle.submit_without_result(method, rollout_id=2, **kwargs)
                     assert await asyncio.to_thread(source.entered.wait, 2.0)
                     rpc.worker.loop.call_soon_threadsafe(rpc.worker.produce.set)
                     assert (await rpc.client.get(HEALTH_PATH)).json() == {"status": "ok"}

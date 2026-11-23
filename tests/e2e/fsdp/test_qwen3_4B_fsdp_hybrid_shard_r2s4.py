@@ -7,7 +7,7 @@ from miles.utils.external_utils import command_utils
 register_cuda_ci(
     est_time=600, suite="stage-c-8-gpu-h100", labels=["fsdp"], hardware=["hopper", "blackwell"], num_gpus=8
 )
-register_rocm_ci(est_time=400, suite="nightly-stage-c-8-gpu-mi350", labels=["fsdp"])
+register_rocm_ci(est_time=400, suite="stage-c-8-gpu-mi350", labels=["fsdp"])
 
 NUM_GPUS = 8
 DP_REPLICATE_SIZE = 2

@@ -7,7 +7,12 @@ from typing import Any
 import numpy as np
 import pybase64
 
-from miles.utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_sampling
+from miles.rollout.generate_utils.sampling_mask import decode_flat_sampling_mask
+from miles.utils.rollout_topk_logprobs import (
+    requests_support_logprobs,
+    rollout_topk_from_support,
+    validate_rollout_topk_logprobs_sampling,
+)
 from miles.utils.sampling_mask import RolloutSamplingMask
 from miles.utils.types import Sample
 
@@ -27,7 +32,7 @@ def configure_rollout_topk_logprobs_request(args: Namespace, request: dict[str, 
         if sampling.get(key) is None:
             sampling[key] = default
     validate_rollout_topk_logprobs_sampling(sampling, temperature=args.rollout_temperature, candidate_count=k)
-    if args.rollout_sampling_logprobs_mode == "support":
+    if requests_support_logprobs(args):
         # SGLang's support mode returns the actual post-filter behavior distribution.
         for key in (
             "top_logprobs",
@@ -37,15 +42,12 @@ def configure_rollout_topk_logprobs_request(args: Namespace, request: dict[str, 
         ):
             request.pop(key, None)
         request["sampling_logprobs_mode"] = "support"
-    elif openai:
+    else:
         request.pop("sampling_logprobs_mode", None)
-        request["top_logprobs"] = k
+        request["top_logprobs" if openai else "top_logprobs_num"] = k
         # base64 [tokens, k] arrays: no per-candidate detokenization, and -inf survives (JSON would send null)
         request["return_flat_raw_output_top_logprobs"] = True
         request["return_flat_raw_top_logprobs_b64"] = True
-    else:
-        request.pop("sampling_logprobs_mode", None)
-        request["top_logprobs_num"] = k
 
 
 def append_rollout_topk_logprobs(
@@ -61,49 +63,53 @@ def append_rollout_topk_logprobs(
     if not k:
         return
     n = len(meta.get("output_token_logprobs") or [])
-    support_mode = sampling_logprobs_mode == "support"
-    field = "output_token_sampling_logprobs" if support_mode else "output_top_logprobs"
     ids = np.full((n, k), -1, dtype=np.int32)
     logps = np.full((n, k), -np.inf, dtype=np.float32)
-    if not support_mode and "output_top_logprobs_shape" in meta:
+    # A zero-token turn keeps its empty [0, k] arrays whatever SGLang reports.
+    if n and sampling_logprobs_mode == "support":
+        support_ids, lengths, support_logps = decode_flat_sampling_mask(meta, sampling_logprobs_mode="support")
+        if len(lengths) != n:
+            raise ValueError(
+                "Rollout top-k logprobs collection requires SGLang's sampling support for every generated token"
+            )
+        ids, logps = rollout_topk_from_support(
+            ids=support_ids,
+            offsets=np.concatenate(([0], np.cumsum(lengths))),
+            logprobs=support_logps,
+            forced=np.zeros(n, dtype=bool),
+            k=k,
+        )
+    elif n:
         flat_ids, flat_logps = _decode_flat_output_top_logprobs(meta)
         if len(flat_ids) != n:
-            raise ValueError(f"Rollout top-k logprobs collection requires SGLang {field} for every generated token")
+            raise ValueError(
+                "Rollout top-k logprobs collection requires SGLang output_top_logprobs for every generated token"
+            )
         if flat_ids.shape[1] < k:
             # e.g. a router capping top_logprobs; padding would silently shrink the candidate set
             raise ValueError(
-                f"SGLang returned {flat_ids.shape[1]} {field} per token, fewer than --rollout-top-logprobs-num {k}"
+                f"SGLang returned {flat_ids.shape[1]} output top logprobs per token, "
+                f"fewer than --rollout-top-logprobs-num {k}"
             )
         ids[:] = flat_ids[:, :k]
         logps[:] = flat_logps[:, :k]
-    else:
-        rows = meta.get(field)
-        if n and (rows is None or len(rows) != n):
-            raise ValueError(f"Rollout top-k logprobs collection requires SGLang {field} for every generated token")
-        for i, entries in enumerate(rows or []):
-            if support_mode:
-                if len(entries) > k:
-                    raise ValueError("Rollout top-k logprobs sampling support exceeds --rollout-top-logprobs-num")
-                token_ids, probabilities = meta["output_token_sampling_mask"][i], entries
-            else:
-                token_ids = [entry[1] for entry in entries[:k]]
-                probabilities = [entry[0] for entry in entries[:k]]
-            ids[i, : len(token_ids)] = token_ids
-            logps[i, : len(token_ids)] = probabilities
     for name, values in (("rollout_topk_token_ids", ids), ("rollout_topk_log_probs", logps)):
-        previous = getattr(sample, name)
+        previous = getattr(
+            sample, name
+        )  # config-access-exempt: sample field name is selected from the paired top-k array fields
         setattr(sample, name, values if previous is None else np.concatenate((previous, values)))
 
 
 def _decode_flat_output_top_logprobs(meta: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarray]:
     """Candidate ids and logprobs `[tokens, width]` from SGLang's base64 `return_flat_raw_output_top_logprobs`."""
+    if "output_top_logprobs_val_flat_b64" not in meta:
+        raise ValueError(
+            "Rollout top-k logprobs collection requires SGLang's base64 flat output top logprobs "
+            "(return_flat_raw_output_top_logprobs), behind a router that forwards it"
+        )
     if meta["output_top_logprobs_null_prefix"]:
         raise ValueError(
             "Rollout top-k logprobs collection requires SGLang output_top_logprobs for every generated token"
-        )
-    if "output_top_logprobs_val_flat_b64" not in meta:
-        raise ValueError(
-            "Rollout top-k logprobs collection requires base64 flat arrays (return_flat_raw_top_logprobs_b64)"
         )
     shape = meta["output_top_logprobs_shape"]
 
@@ -138,7 +144,9 @@ def _support_membership(ids: np.ndarray, support: RolloutSamplingMask) -> tuple[
 def pad_rollout_topk_logprobs(sample: Sample, count: int) -> None:
     """Pad non-trained tool/observation positions before extending the response."""
     for field, fill in (("rollout_topk_token_ids", -1), ("rollout_topk_log_probs", -np.inf)):
-        values = getattr(sample, field)
+        values = getattr(
+            sample, field
+        )  # config-access-exempt: sample field name is selected from the explicit rollout probability fields
         if values is not None:
             padding = np.full((count, values.shape[1]), fill, dtype=values.dtype)
             setattr(sample, field, np.concatenate((values, padding)))
@@ -177,7 +185,9 @@ def validate_rollout_topk_logprobs_sample(sample: Sample, k: int) -> None:
 
 
 def merge_rollout_topk_logprobs_field(first: Sample, second: Sample, field: str, gap: int) -> np.ndarray | None:
-    a, b = getattr(first, field), getattr(second, field)
+    a, b = getattr(first, field), getattr(
+        second, field
+    )  # config-access-exempt: sample field name is selected from the explicit rollout probability fields
     if a is None and b is None:
         return None
     if a is None or b is None or a.shape[1] != b.shape[1]:

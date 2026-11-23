@@ -62,17 +62,19 @@ class TestSetRandomSeedFromArgs:
         _patch_state(monkeypatch, _parallel_state())
         monkeypatch.setattr(initialize.tensor_parallel, "model_parallel_cuda_manual_seed", lambda *args: None)
         args = SimpleNamespace(
-            rank=0,
-            seed=1729,
-            data_parallel_random_init=True,
-            te_rng_tracker=False,
-            inference_rng_tracker=True,
+            backend=SimpleNamespace(
+                rank=0,
+                seed=1729,
+                data_parallel_random_init=True,
+                te_rng_tracker=False,
+                inference_rng_tracker=True,
+            )
         )
 
         with caplog.at_level(logging.INFO, logger=initialize.__name__):
             initialize.set_random_seed_from_args(args)
             first_values = (random.random(), np.random.random(), torch.rand(1).item())
-            args.rank = 1
+            args.backend.rank = 1
             initialize.set_random_seed_from_args(args)
             second_values = (random.random(), np.random.random(), torch.rand(1).item())
 
@@ -124,3 +126,77 @@ def test_non_last_pp_stage_is_not_main_rank(monkeypatch):
     """A pp rank that is not the last pipeline stage is never the main rank."""
     _patch_state(monkeypatch, _parallel_state(tp_rank=0, pp_rank=0, pp_size=2))
     assert initialize.is_first_replica_megatron_main_rank() is False
+
+
+class TestCustomInitializationRequest:
+    @pytest.mark.parametrize("fails", [False, True])
+    @pytest.mark.parametrize("request_kind", ["fresh", "recovery", "absent"])
+    def test_init_passes_only_the_current_request_without_mutating_backend(
+        self, monkeypatch: pytest.MonkeyPatch, fails: bool, request_kind: str
+    ) -> None:
+        """Real init hooks receive transient load inputs even when the callback raises."""
+        from tests.fast.fixtures.args_fixtures import parse_megatron_test_config
+
+        from miles.backends.megatron_utils.checkpoint_request import CHECKPOINT_LOAD_FIELDS, MegatronCkptLoadConfig
+        from miles.utils.args.custom_function import CustomFunctionConfig
+        from miles.utils.args.custom_view import ImmutableNamespace
+        from miles.utils.args.trainer_utils import compute_trainer_config
+        from miles.utils.function_registry import function_registry
+
+        config = parse_megatron_test_config()
+        args = compute_trainer_config(config, config.raw_megatron.trainers[0]).model_copy(
+            update={"custom_megatron_init_path": CustomFunctionConfig(path="test.transient_init")}
+        )
+        request = MegatronCkptLoadConfig.for_peer_recovery()
+        if request_kind == "fresh":
+            request = request.model_copy(
+                update={
+                    "load": "original-hf",
+                    "resume_from_ckpt": False,
+                    "finetune": True,
+                    "no_load_optim": True,
+                    "no_load_rng": True,
+                }
+            )
+        elif request_kind == "absent":
+            request = None
+        with args.backend.mutable():
+            args.backend.rank = 0
+        assert args.backend.data_parallel_size == 1
+        original = vars(args.backend).copy()
+        seen = []
+
+        for name in (
+            "set_args",
+            "_initialize_distributed",
+            "create_indep_dp_group",
+            "create_megatron_parallel_state",
+            "set_parallel_state",
+            "set_random_seed_from_args",
+            "register_hf_config_aliases",
+            "_build_tokenizer",
+            "init_num_microbatches_calculator",
+        ):
+            monkeypatch.setattr(initialize, name, lambda *args, **kwargs: None)
+        monkeypatch.setattr(initialize.dist, "get_rank", lambda: 0)
+        monkeypatch.setattr(initialize.dist, "get_world_size", lambda: 1)
+
+        def check_request(view: ImmutableNamespace) -> None:
+            seen.append(view)
+            assert CHECKPOINT_LOAD_FIELDS.isdisjoint(vars(args.backend))
+            if request is None:
+                assert CHECKPOINT_LOAD_FIELDS.isdisjoint(dict(view))
+            else:
+                for key, value in request.model_dump().items():
+                    assert dict(view)[key] == value
+            if fails:
+                raise RuntimeError("initialization hook failed")
+
+        with function_registry.temporary("test.transient_init", check_request):
+            if fails:
+                with pytest.raises(RuntimeError, match="initialization hook failed"):
+                    initialize.init(args, ckpt_load_config=request)
+            else:
+                initialize.init(args, ckpt_load_config=request)
+        assert len(seen) == 1
+        assert vars(args.backend) == original

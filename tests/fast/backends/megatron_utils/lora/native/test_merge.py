@@ -156,10 +156,12 @@ def test_grouped_routed_experts():
     experts = nn.Module()
     experts.linear_fc1, experts.linear_fc2 = _GroupedLinear(3, 10, HIDDEN), _GroupedLinear(3, HIDDEN, 5)
     common = dict(reference=experts.linear_fc1.weight0, context=context, num_local_experts=3, moe_intermediate=5)
-    experts.lora_fc1_adapter = LoRAGroupedFC1(hf_prefix="e.", is_ep=False, width=HIDDEN, **common)
-    experts.lora_fc2_adapter = LoRAGroupedFC2(hf_prefix="e.", is_ep=False, width=HIDDEN, **common)
-    attach_adapter_forward(experts.linear_fc1, experts.lora_fc1_adapter, context.lora.scale)
-    attach_adapter_forward(experts.linear_fc2, experts.lora_fc2_adapter, context.lora.scale)
+    experts.lora_fc1_adapter = LoRAGroupedFC1(
+        hf_prefix="e.", hf_leaves=("w1", "w3"), is_ep=False, width=HIDDEN, **common
+    )
+    experts.lora_fc2_adapter = LoRAGroupedFC2(hf_prefix="e.", hf_leaf="w2", is_ep=False, width=HIDDEN, **common)
+    attach_adapter_forward(experts.linear_fc1, experts.lora_fc1_adapter)
+    attach_adapter_forward(experts.linear_fc2, experts.lora_fc2_adapter)
     module = nn.Module()
     module.experts = experts
     _assert_merge_matches_forward(
@@ -210,7 +212,7 @@ def test_output_head_with_mup_input_scaling():
         vocab_local=12,
         mup_width_multiplier=4.0,
     )
-    attach_adapter_forward(module.output_layer, module.head, context.lora.scale)
+    attach_adapter_forward(module.output_layer, module.head)
     _assert_merge_matches_forward(module, [("output_layer", module.output_layer)])
 
 
@@ -232,3 +234,16 @@ def test_unadapted_weights_pass_through_untouched():
     merged = _merged(module)
     assert merged["norm"] is module.norm
     assert merged["mlp.linear_fc1.weight"] is module.mlp.linear_fc1.weight
+
+
+def test_an_untrained_adapter_exports_the_base_bytes():
+    module = nn.Module()
+    module.mlp = nn.Module()
+    module.mlp.linear_fc1, module.mlp.linear_fc2 = _Linear(10, HIDDEN), _Linear(HIDDEN, 5)
+    with torch.no_grad():
+        module.mlp.linear_fc1.weight[0, :2] = -0.0
+    SplitGateUpMLPSpec().attach(module.mlp, None, named(_context(), "model.layers.0.mlp."))
+    merged = _merged(module)
+    for name, base in module.named_parameters():
+        if "lora" not in name:
+            assert torch.equal(merged[name].view(torch.int32), base.view(torch.int32)), name

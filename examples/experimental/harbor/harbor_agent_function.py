@@ -55,11 +55,10 @@ Env vars (read on the rollout worker):
 Failure semantics: a verdict is returned as-is; every episode that ends
 without one scores 0 with a named ``exit_status`` (``TimeLimitExceeded``,
 ``SequenceLengthLimitExceeded``, ``AgentError``), matching the agent-server
-path. Configuration errors (missing task dir, bad env vars) raise instead:
-they would fail every sample, and a loud stop beats training on silent
-all-zero rewards. Nothing is discarded here yet; see the tracking issue for
-wiring the platform-side Harbor exceptions to ``InfraAbort`` once that
-contract lands.
+path. Setup errors raise instead, which aborts only this sample: ``preflight``
+has already checked, before the first rollout, the setup every trial on this
+host shares, so an error here belongs to this sample, such as a row whose task
+dir is missing.
 """
 
 import asyncio
@@ -68,12 +67,14 @@ import logging
 import math
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, resolve_provider_api_key
+from aenv_cli import preflight_aenv
+
+from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, resolve_provider, resolve_provider_api_key
 from miles.rollout.agentic.session import openai_session_url
 
 logger = logging.getLogger(__name__)
@@ -272,6 +273,12 @@ _DEFAULT_BINDING = HarnessBinding(kwargs=_no_kwargs, env=_openai_env)
 # --- trial config ----------------------------------------------------------
 
 
+def _tasks_dir() -> Path:
+    if not (raw := os.getenv("HARBOR_TASKS_DIR", "").strip()):
+        raise ValueError("set HARBOR_TASKS_DIR to the directory holding one Harbor task dir per instance_id")
+    return Path(raw)
+
+
 def _task_path(tasks_dir: Path, instance_id: str) -> Path:
     if not instance_id or not _SAFE_INSTANCE_ID.match(instance_id):
         raise ValueError(f"invalid instance_id {instance_id!r}")
@@ -283,11 +290,26 @@ def _task_path(tasks_dir: Path, instance_id: str) -> Path:
     return path
 
 
+def task_dir_errors(tasks_dir: Path, instance_ids: Iterable[str]) -> list[str]:
+    """The error a trial would raise for each of ``instance_ids`` that has no usable task dir."""
+    errors = []
+    for instance_id in instance_ids:
+        try:
+            _task_path(tasks_dir, instance_id)
+        except (ValueError, FileNotFoundError) as e:
+            errors.append(str(e))
+    return errors
+
+
+def _harbor_env_type() -> str:
+    return os.getenv("HARBOR_ENV_TYPE", "").strip().lower()
+
+
 def _ensure_provider_key() -> None:
     """Resolve the key file the launcher forwarded (by PATH) into the env var the
     provider's SDK reads. Modal needs nothing here: its SDK reads the config file
     MODAL_CONFIG_PATH names."""
-    spec = PROVIDER_CREDENTIALS.get(os.getenv("HARBOR_ENV_TYPE", "").strip().lower())
+    spec = PROVIDER_CREDENTIALS.get(resolve_provider(_harbor_env_type()))
     if not spec or len(spec["key_env_vars"]) != 1:
         return
     key_env = spec["key_env_vars"][0]
@@ -302,12 +324,13 @@ def _environment_config():
     from harbor.models.environment_type import EnvironmentType
     from harbor.models.trial.config import EnvironmentConfig
 
-    raw = os.getenv("HARBOR_ENV_TYPE", "").strip().lower()
+    raw = _harbor_env_type()
     if not raw:
         raise ValueError("set HARBOR_ENV_TYPE to the Harbor environment type to run trials on (e.g. e2b, daytona)")
     env_type = EnvironmentType(raw)  # raises on an unknown backend instead of guessing
     kwargs = json.loads(os.getenv("HARBOR_ENV_KWARGS", "{}") or "{}")
-    if env_type == EnvironmentType.DAYTONA:
+    provider = resolve_provider(env_type.value)
+    if provider == "daytona":
         # a killed worker never reaches Harbor's teardown, and Harbor's Daytona defaults (0) never reclaim;
         # the stop timer outlasts the trial cap because an in-sandbox agent looks idle to Daytona
         trial_min = math.ceil(_trial_timeout_s() / 60)
@@ -317,6 +340,16 @@ def _environment_config():
             raise ValueError(
                 f"auto_stop_interval_mins={kwargs['auto_stop_interval_mins']} would stop a Daytona sandbox "
                 f"mid-trial: AGENT_TRIAL_TIMEOUT allows {trial_min} minutes"
+            )
+    elif provider == "e2b":
+        # renewals keep a sandbox alive as long as Harbor runs; servers that read this end it soon after
+        # the trial cap (the 30 minutes of slack is an estimate)
+        trial_s = _trial_timeout_s()
+        kwargs.setdefault("max_lifetime_secs", trial_s + 30 * 60)
+        if int(kwargs["max_lifetime_secs"]) <= trial_s:
+            raise ValueError(
+                f"max_lifetime_secs={kwargs['max_lifetime_secs']} would end an E2B sandbox mid-trial: "
+                f"AGENT_TRIAL_TIMEOUT allows {trial_s} seconds"
             )
     overrides = {}
     for field, var in (
@@ -341,7 +374,7 @@ def _environment_config():
 def build_trial_config(metadata: dict[str, Any], session_url: str, request_kwargs: dict[str, Any]):
     from harbor.models.trial.config import AgentConfig, TaskConfig, TrialConfig, VerifierConfig
 
-    tasks_dir = Path(os.environ["HARBOR_TASKS_DIR"])
+    tasks_dir = _tasks_dir()
     agent_name = str(metadata.get("agent_name") or "mini-swe-agent")
     model = f"openai/{os.getenv('AGENT_MODEL_NAME', 'model')}"
     api_key = "dummy"
@@ -387,47 +420,77 @@ def build_trial_config(metadata: dict[str, Any], session_url: str, request_kwarg
 
 
 def _timing_duration_sec(timing) -> float | None:
-    started = getattr(timing, "started_at", None)
-    finished = getattr(timing, "finished_at", None)
+    started = getattr(
+        timing, "started_at", None
+    )  # config-access-exempt: unfinished Harbor trial phases may have no start timestamp
+    finished = getattr(
+        timing, "finished_at", None
+    )  # config-access-exempt: unfinished Harbor trial phases may have no finish timestamp
     return (finished - started).total_seconds() if started and finished else None
 
 
 def trial_result_to_metadata(result) -> dict[str, Any]:
     """Harbor ``TrialResult`` -> the dict merged into sample metadata."""
-    exc = getattr(result, "exception_info", None)
+    exc = getattr(
+        result, "exception_info", None
+    )  # config-access-exempt: Harbor results without an exception omit exception details
     if exc is not None:
-        exc_type = getattr(exc, "exception_type", "")
+        exc_type = getattr(
+            exc, "exception_type", ""
+        )  # config-access-exempt: partial Harbor exception records may lack the exception type
         if exc_type in _TIMEOUT_EXCEPTIONS:
             exit_status = "TimeLimitExceeded"
         elif exc_type in _OUTPUT_LIMIT_EXCEPTIONS:
             exit_status = "SequenceLengthLimitExceeded"
         else:
             exit_status = "AgentError"
-    elif getattr(result, "verifier_result", None) is not None:
+    elif (
+        getattr(result, "verifier_result", None) is not None
+    ):  # config-access-exempt: failed Harbor trials may not produce verifier results
         exit_status = "Submitted"
     else:
         exit_status = "AgentError"
 
-    verifier = getattr(result, "verifier_result", None)
-    rewards = dict(getattr(verifier, "rewards", None) or {}) if verifier is not None else {}
+    verifier = getattr(
+        result, "verifier_result", None
+    )  # config-access-exempt: failed Harbor trials may not produce verifier results
+    rewards = (
+        dict(getattr(verifier, "rewards", None) or {}) if verifier is not None else {}
+    )  # config-access-exempt: Harbor verifier results may omit rewards before grading completes
     reward = float(rewards.get("reward", next(iter(rewards.values()), 0.0))) if rewards else 0.0
 
     metrics: dict[str, Any] = {}
-    agent_result = getattr(result, "agent_result", None)
+    agent_result = getattr(
+        result, "agent_result", None
+    )  # config-access-exempt: Harbor trials failing before agent execution have no agent result
     if agent_result is not None:
         for field in ("n_input_tokens", "n_output_tokens", "cost_usd"):
-            if (value := getattr(agent_result, field, None)) is not None:
+            if (
+                value := getattr(agent_result, field, None)
+            ) is not None:  # config-access-exempt: Harbor agent implementations expose different optional token and cost metrics
                 metrics[field] = value
-        if (n_steps := getattr(agent_result, "n_steps", None)) is not None:
+        if (
+            n_steps := getattr(agent_result, "n_steps", None)
+        ) is not None:  # config-access-exempt: Harbor agent results do not all report a step count
             metrics["turns"] = n_steps
-        if isinstance(agent_meta := getattr(agent_result, "metadata", None), dict):
+        if isinstance(
+            agent_meta := getattr(agent_result, "metadata", None), dict
+        ):  # config-access-exempt: Harbor agent-specific metadata is optional
             metrics.update(agent_meta)
     for key, timing in {
         "total_time": result,
-        "env_setup_time": getattr(result, "environment_setup", None),
-        "agent_setup_time": getattr(result, "agent_setup", None),
-        "agent_run_time": getattr(result, "agent_execution", None),
-        "eval_time": getattr(result, "verifier", None),
+        "env_setup_time": getattr(
+            result, "environment_setup", None
+        ),  # config-access-exempt: Harbor results may omit timings for phases that did not run
+        "agent_setup_time": getattr(
+            result, "agent_setup", None
+        ),  # config-access-exempt: Harbor results may omit timings for phases that did not run
+        "agent_run_time": getattr(
+            result, "agent_execution", None
+        ),  # config-access-exempt: Harbor results may omit timings for phases that did not run
+        "eval_time": getattr(
+            result, "verifier", None
+        ),  # config-access-exempt: Harbor results may omit timings for phases that did not run
     }.items():
         if timing is not None and (duration := _timing_duration_sec(timing)) is not None:
             metrics[key] = duration
@@ -440,6 +503,51 @@ def _failed(exit_status: str) -> dict[str, Any]:
 
 
 # --- entry -----------------------------------------------------------------
+
+
+async def preflight(args) -> None:
+    """Fail the run before its first rollout if no trial could start on this host."""
+    # `aenv --version` and the E2B request block the event loop
+    await asyncio.to_thread(_check_trial_setup)
+
+
+def _check_trial_setup() -> None:
+    import harbor.trial.trial  # noqa: F401  # every trial imports it
+
+    env_type = _harbor_env_type()
+    preflight_aenv(env_type)
+    _trial_timeout_s()
+    _ensure_provider_key()
+    # every sample builds its trial config from the same environment, so a stand-in sample per harness checks it
+    stand_in_metadata = {"instance_id": _stand_in_task_id(_tasks_dir())}
+    for agent_name in HARNESS_BINDINGS:
+        build_trial_config({**stand_in_metadata, "agent_name": agent_name}, "http://preflight.invalid/v1", {})
+    if resolve_provider(env_type) == "e2b":
+        _check_e2b_api()
+
+
+def _check_e2b_api() -> None:
+    from e2b import ConnectionConfig, Template  # installed only with harbor[e2b]
+
+    try:
+        Template.exists("miles-preflight")  # any name: only whether the API answers matters
+    except Exception as e:  # a 401 from a wrong endpoint reads as a bad key, so name the endpoint
+        raise RuntimeError(
+            f"the E2B API at {ConnectionConfig().api_url} refused or did not answer a template lookup, "
+            f"so no trial can start; check E2B_API_URL and the API key: {e}"
+        ) from e
+
+
+def _stand_in_task_id(tasks_dir: Path) -> str:
+    if not tasks_dir.is_dir():
+        raise FileNotFoundError(
+            f"HARBOR_TASKS_DIR {tasks_dir} is not a directory on this host; "
+            "put the task dirs on a filesystem every worker can read"
+        )
+    for entry in sorted(tasks_dir.iterdir()):
+        if entry.is_dir() and _SAFE_INSTANCE_ID.match(entry.name):
+            return entry.name
+    raise FileNotFoundError(f"no Harbor task dir under HARBOR_TASKS_DIR {tasks_dir}")
 
 
 async def run(
@@ -458,9 +566,7 @@ async def run(
     instance_id = metadata.get("instance_id")
     trial_timeout_s = _trial_timeout_s()
 
-    # Config errors (missing task dir, bad env vars, unresolvable provider key)
-    # fail every sample the same way; raising beats training on silent all-zero
-    # rewards.
+    # not the policy's doing: raising drops the sample instead of scoring it 0
     _ensure_provider_key()
     config = build_trial_config(metadata, session_url, request_kwargs)
 

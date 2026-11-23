@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,10 @@ from miles.ray.rollout.engine_env_reporter import RETRY_INTERVAL_SECONDS, Engine
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
 from miles.utils.audit_utils.event_logger.models import EngineEnvReportEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.workers.connection_config import WorkerPodMetadata
+from miles.utils.workers.env_vars import WORKER_METADATA_ENV_VAR
+from miles.utils.workers.serving.worker_identity import read_worker_metadata
+from miles.utils.workers.worker_spec import StaticMeta
 
 _SAMPLE_SERVER_INFO: dict[str, Any] = {
     "model_path": "/models/qwen",
@@ -124,6 +129,35 @@ class TestReportIfDue:
 
 
 class TestRedaction:
+    async def test_worker_metadata_keys_are_redacted_in_the_recorded_engine_environment(
+        self, event_log_dir: Path
+    ) -> None:
+        """Engine environment reports hide metadata credentials without mutating worker connection data."""
+        metadata = WorkerPodMetadata(
+            category="engine",
+            workers_per_pod=1,
+            pods_per_cell=1,
+            gpu_slots_per_worker=1,
+            dynamic_pool=True,
+            worker_class=None,
+            port_infos=[],
+            static_meta=StaticMeta(values={"model_id": "actor", "sglang_api_key": "synthetic-worker-secret"}),
+        )
+        original_env = {WORKER_METADATA_ENV_VAR: metadata.model_dump_json(), "RANK": "0"}
+        server_info = {"internal_states": [{"env_vars": original_env}]}
+
+        await _report(EngineEnvReporter(interval_seconds=3600.0), _FakeApiClient(server_info=server_info))
+
+        event = _events(event_log_dir)[0]
+        recorded_env = event.server_info["internal_states"][0]["env_vars"]
+        recorded_metadata = json.loads(recorded_env[WORKER_METADATA_ENV_VAR])
+        assert "synthetic-worker-secret" not in event.model_dump_json()
+        assert recorded_metadata["static_meta"]["values"]["sglang_api_key"].startswith("redacted-sha256:")
+        assert recorded_metadata["static_meta"]["values"]["model_id"] == "actor"
+        assert recorded_metadata["workers_per_pod"] == 1
+        assert recorded_env["RANK"] == "0"
+        assert read_worker_metadata(original_env) == metadata
+
     async def test_the_recorded_server_info_carries_no_secret(self, event_log_dir: Path) -> None:
         """/server_info returns the engine's api keys and its whole sglang environment, verbatim."""
         await _report(EngineEnvReporter(interval_seconds=3600.0), _FakeApiClient())

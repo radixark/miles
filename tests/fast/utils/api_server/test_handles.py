@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from miles.ray.specs.inference import POOL_CATEGORY_INFERENCE_ENGINE
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
 from miles.utils.workers.cell_operations.ray import RayCellOperations
@@ -53,6 +54,7 @@ def _make_actor_handler(
         ),
         controllers=[group],
         pool_ids=["trainer-engine-actor"],
+        category=None,
     )
     return handler, group, manager
 
@@ -161,6 +163,7 @@ def _make_rollout_handler(
         ),
         controllers=[controller],
         pool_ids=[cell_id.rsplit("-", 1)[0]],
+        category=None,
     )
 
 
@@ -245,6 +248,7 @@ class TestRolloutCellHandler:
             ),
             controllers=[controller],
             pool_ids=_pool_ids_of(manager),
+            category=None,
         )
 
         await handler.get_cell(ENGINE_CELL_ID)
@@ -262,6 +266,7 @@ class TestRolloutCellHandler:
             ),
             controllers=[MockInferenceController()],
             pool_ids=_pool_ids_of(manager),
+            category=None,
         )
 
         await handler.suspend(ENGINE_CELL_ID)
@@ -279,6 +284,7 @@ class TestRolloutCellHandler:
             ),
             controllers=[MockInferenceController()],
             pool_ids=_pool_ids_of(manager),
+            category=None,
         )
 
         await handler.resume(ENGINE_CELL_ID)
@@ -319,6 +325,7 @@ class TestRolloutCellHandler:
             ),
             controllers=[controller],
             pool_ids=_pool_ids_of(manager),
+            category=None,
         )
         await handler.resume(ENGINE_CELL_ID)
 
@@ -339,7 +346,8 @@ class TestRolloutCellHandler:
     async def test_only_the_engine_specs_are_listed(self) -> None:
         """Routers and session servers are cells of the manager too, but not rollout cells."""
         manager = MockWorkerManager(
-            {**make_cell_summaries("inference-engine-0-0-0"), **make_cell_summaries("miles-router-0")}
+            {**make_cell_summaries("inference-engine-0-0-0"), **make_cell_summaries("miles-router-0")},
+            categories={"inference-engine-0-0": POOL_CATEGORY_INFERENCE_ENGINE, "miles-router": "router"},
         )
         handler = _CellHandler(
             cell_type="rollout",
@@ -347,7 +355,8 @@ class TestRolloutCellHandler:
                 worker_manager_handle=manager,
             ),
             controllers=[MockInferenceController()],
-            pool_ids=["inference-engine-0-0"],
+            pool_ids=None,
+            category=POOL_CATEGORY_INFERENCE_ENGINE,
         )
 
         assert await handler.list_cell_ids() == ["inference-engine-0-0-0"]
@@ -369,6 +378,7 @@ class TestRolloutCellHandler:
             ),
             controllers=[controller],
             pool_ids=_pool_ids_of(manager),
+            category=None,
         )
 
         cells = await handler.list_cells()
@@ -386,12 +396,13 @@ class TestRolloutCellHandler:
             ),
             controllers=[MockInferenceController()],
             pool_ids=_pool_ids_of(manager),
+            category=None,
         )
 
         cells = await handler.list_cells()
 
         assert len(cells) == 3
-        assert manager.cell_info_calls == [{"pool_ids": ["engine"]}]
+        assert manager.cell_info_calls == [{"pool_ids": ["engine"], "category": None}]
 
 
 class TestRolloutCellHandlerControlFaultHook:
@@ -409,6 +420,7 @@ class TestRolloutCellHandlerControlFaultHook:
             ),
             controllers=[MockInferenceController()],
             pool_ids=_pool_ids_of(manager),
+            category=None,
         )
 
         result = await handler.control_fault_hook(command)
@@ -446,6 +458,7 @@ class TestCellStatusGeneration:
             ),
             controllers=[BlockingController(), RecordingController()],
             pool_ids=[],
+            category=None,
         )
         statuses_task = asyncio.create_task(handler._get_cell_statuses())
 
@@ -474,6 +487,7 @@ class TestCellStatusGeneration:
             ),
             controllers=[MockInferenceController({ENGINE_CELL_ID: stale})],
             pool_ids=_pool_ids_of(manager),
+            category=None,
         )
 
         cell = await handler.get_cell(ENGINE_CELL_ID)
@@ -496,6 +510,7 @@ class TestCellStatusGeneration:
             ),
             controllers=[MockInferenceController({ENGINE_CELL_ID: current})],
             pool_ids=_pool_ids_of(manager),
+            category=None,
         )
 
         cell = await handler.get_cell(ENGINE_CELL_ID)
@@ -518,6 +533,7 @@ class TestCellStatusGeneration:
                 MockInferenceController({ENGINE_CELL_ID: _running_status(TriState.TRUE, workers_hash="gen-1")})
             ],
             pool_ids=_pool_ids_of(manager),
+            category=None,
         )
 
         cell = await handler.get_cell(ENGINE_CELL_ID)
@@ -536,6 +552,7 @@ class TestCellStatusGeneration:
             ),
             controllers=[MockInferenceController()],
             pool_ids=_pool_ids_of(manager),
+            category=None,
         )
 
         cell = await handler.get_cell(ENGINE_CELL_ID)
@@ -563,6 +580,7 @@ class TestCellStatusGeneration:
             ),
             controllers=[MockInferenceController({ENGINE_CELL_ID: stale})],
             pool_ids=_pool_ids_of(manager),
+            category=None,
         )
 
         cell = await handler.get_cell(ENGINE_CELL_ID)
@@ -594,6 +612,7 @@ class TestCellStatusGeneration:
             ),
             controllers=[MockInferenceController({ENGINE_CELL_ID: stale})],
             pool_ids=_pool_ids_of(manager),
+            category=None,
         )
 
         cell = await handler.get_cell(ENGINE_CELL_ID)
@@ -616,6 +635,7 @@ class TestCellStatusGeneration:
             ),
             controllers=[MockInferenceController({ENGINE_CELL_ID: stale})],
             pool_ids=_pool_ids_of(manager),
+            category=None,
         )
 
         await handler.get_cell(ENGINE_CELL_ID)
@@ -635,6 +655,7 @@ class TestCellStatusGeneration:
                 MockInferenceController({ENGINE_CELL_ID: _running_status(TriState.TRUE, workers_hash="gen-1")})
             ],
             pool_ids=_pool_ids_of(manager),
+            category=None,
         )
 
         [cell] = await handler.list_cells()
@@ -657,6 +678,7 @@ class TestCellStatusGeneration:
             ),
             controllers=[controller],
             pool_ids=_pool_ids_of(manager),
+            category=None,
         )
 
         controller.observe_cell(ENGINE_CELL_ID, _running_status(TriState.FALSE, workers_hash="gen-2"))

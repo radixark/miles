@@ -45,7 +45,9 @@ def json_safe(value: Any) -> Any:
 
 def tables(env: Mapping[str, Any]) -> dict:
     return {
-        domain: pl.from_pandas(getattr(env["containers"][domain], attr), nan_to_null=True).to_dicts()
+        domain: pl.from_pandas(
+            getattr(env["containers"][domain], attr), nan_to_null=True
+        ).to_dicts()  # config-access-exempt: domain schema maps each NeMo container to its dataframe attribute
         for domain, attr in TABLES.items()
     }
 

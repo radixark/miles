@@ -26,7 +26,7 @@ description: Launch recipe for Inkling (975 B), Thinking Machines' multimodal Mo
 
 ```bash
 # Pull the image
-docker pull radixark/miles:inkling
+docker pull radixark/miles:latest
 
 # Full-parameter GRPO on 16 nodes x 4 GB300, inside the container
 cd /root/miles
@@ -63,7 +63,7 @@ This section explains what the launcher does under the hood, and how to drive ea
 # inside the container
 hf download thinkingmachines/Inkling --local-dir /root/models/Inkling
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k
-hf download --repo-type dataset hiyouga/geometry3k --local-dir /root/datasets/geo3k
+hf download --repo-type dataset chenhegu/geo3k_imgurl --local-dir /root/datasets/geo3k_imgurl
 ```
 
 Pass `--hf-checkpoint <path>` to the launcher when the weights are already on a shared filesystem.
@@ -199,8 +199,17 @@ $$
 
 The adapter follows Inkling's released LoRA schema, covering the attention, dense MLP, MoE, and LM-head projections (defaults: rank 32, `alpha = 32`, all-linear). The routed experts use a shared-outer factorization: one factor is shared across experts while the expert-specific factors follow EP sharding.
 
-After each optimizer step, Miles exports a serving-ready adapter directly from the distributed training state and hands it to the colocated SGLang worker over CUDA IPC; the frozen base is never re-transferred. This cuts the weight update from 49.4 s to 2.5 s (20×) and brings training-step time to ~85 % of full-parameter training, with no optimizer offload needed. Released Inkling adapters in safetensors format support warm starts via `--lora-adapter-path`, and per-rank adapter checkpoints allow exact training resume.
+After each optimizer step, Miles exports a serving-ready adapter directly from the distributed training state and hands it to the colocated SGLang worker over CUDA IPC; the frozen base is never re-transferred. This cuts the weight update from 49.4 s to 2.5 s (20×) and brings training-step time to ~85 % of full-parameter training, with no optimizer offload needed. Released Inkling adapters in safetensors format support warm starts via `--lora-adapter-path`, and `--save` adapter checkpoints resume exactly under any parallel layout.
 
 ## 7. Multimodal RL
 
-`--task geo3k` switches to the vision-language recipe: structured multimodal rollouts, Megatron-side vision and audio towers, and routing replay preserved across the media-expanded sequence. Each image or audio sentinel in the rendered prompt expands into its patch/frame positions before packing, and the R3 trace is indexed over the expanded sequence, so replay stays aligned even though SGLang made its routing decisions after expansion. Production recipes keep the vision and audio towers frozen and train the language model (or its adapter) around their embeddings; training the towers is available as an experimental option. The same path supports audio inputs and both full-parameter and LoRA training.
+`--task geo3k` switches to the vision-language recipe on the token-space processor: the prompt renders one placeholder token per image, SGLang expands it into the image's patch positions and computes the features, and every trainer rank rebuilds the same tensors from the shared image files in the background. Routing replay is recorded over the expanded sequence, so the trainer replays the experts the engine chose for every position. The data is the `chenhegu/geo3k_imgurl` parquet that `examples/geo3k_vlm` trains on; `--task avqa_audio` runs the audio recipe of `examples/avqa_audio` the same way.
+
+```bash
+# Inkling-Small, LoRA, geo3k on one node of 8 GPUs
+python scripts/run_inkling.py train \
+   --model-name Inkling-Small --train-mode lora --task geo3k \
+   --num-gpus-per-node 8 --rollout-num-gpus-per-engine 8 \
+   --lr 2e-4 --rollout-batch-size 32 --n-samples-per-prompt 8 --global-batch-size 128 --enable-eval
+```
+

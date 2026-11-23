@@ -8,6 +8,14 @@ from tests.utils.deploy.hot_restart.assert_process import (
 from tests.utils.deploy.hot_restart.cluster_observer import ClusterSnapshot, compute_hot_restart_workloads
 from tests.utils.deploy.hot_restart.evidence import HotRestartEvidence
 
+from miles.ray.specs.rollout import ROLLOUT_EXECUTOR_POOL_ID
+from miles.utils.external_utils.command_utils.common import ArgvManipulator
+from miles.utils.workers.serving.utils import parse_serve_worker_config
+from miles.utils.workers.worker_provider.kubernetes.helm.naming import component_name
+
+SERVE_CONFIG_FLAG: str = "--config"
+
+
 # ============================ what a take-over rolls ==========================
 
 
@@ -58,6 +66,75 @@ def assert_only_orchestration_restarted(evidence: HotRestartEvidence, *, num_res
     assert (
         not unexpected
     ), f"a hot restart stamps exactly the two pod templates it replaces, and these carry a stamp too: {unexpected}"
+
+
+# ======================== what a take-over's pods carry =======================
+
+
+def assert_take_overs_carried_rollout_only_args(
+    evidence: HotRestartEvidence, *, flag: str, values: Sequence[str]
+) -> None:
+    rollout_executor = component_name(evidence.release, ROLLOUT_EXECUTOR_POOL_ID)
+    uids_of_workload = _compute_pod_uids_of_workload(evidence.snapshots)
+
+    carried = [
+        _read_flag_of_serve_config(command, flag=flag)
+        for command in _commands_of(evidence, workload=rollout_executor, uids_of_workload=uids_of_workload)
+    ]
+    assert len(carried) == len(values), (
+        f"{rollout_executor} ran as {len(carried)} pod(s) while {len(values)} generation(s) of arguments were "
+        f"installed, so the pods and the arguments cannot be paired up"
+    )
+    assert carried == list(values), (
+        f"the successive pods of {rollout_executor} carried {flag} as {carried}, and the launches installed "
+        f"{list(values)}: a take-over ran the component with arguments other than the ones it was relaunched with"
+    )
+
+    leaked = {
+        uid: workload
+        for workload, uids in uids_of_workload.items()
+        if workload != rollout_executor
+        for uid in uids
+        if any(value in part for part in evidence.commands_of_pod_uid[uid] for value in values)
+    }
+    assert not leaked, (
+        f"{flag} is read by the rollout executor alone, and the pods {leaked} of other workloads carry one of its "
+        f"values: the argument leaked into a payload a hot restart must leave untouched"
+    )
+
+    print(f"every take-over's rollout executor carried {flag} as relaunched, and no other pod did: {list(values)}")
+
+
+def _compute_pod_uids_of_workload(snapshots: Sequence[ClusterSnapshot]) -> dict[str, list[str]]:
+    uids_of_workload: dict[str, list[str]] = {}
+    for snapshot in snapshots:
+        for pod in snapshot.pods:
+            if (workload := _compute_workload_of_pod(pod.name, workloads=snapshot.workload_names)) is None:
+                continue
+            uids = uids_of_workload.setdefault(workload, [])
+            if pod.uid not in uids:
+                uids.append(pod.uid)
+    return uids_of_workload
+
+
+def _commands_of(
+    evidence: HotRestartEvidence, *, workload: str, uids_of_workload: dict[str, list[str]]
+) -> list[list[str]]:
+    commands = []
+    for uid in uids_of_workload.get(workload, []):
+        assert (command := evidence.commands_of_pod_uid.get(uid)) is not None, (
+            f"pod {uid} of {workload} was observed, but no read of the release recorded its command, so what it "
+            f"ran is unknown"
+        )
+        commands.append(list(command))
+    return commands
+
+
+def _read_flag_of_serve_config(command: list[str], *, flag: str) -> str | None:
+    assert (
+        rendered := ArgvManipulator.get_effective(command, SERVE_CONFIG_FLAG)
+    ) is not None, f"a served worker is started with {SERVE_CONFIG_FLAG}, and this command carries none: {command}"
+    return parse_serve_worker_config(rendered).args.get(flag.removeprefix("--").replace("-", "_"))
 
 
 # ========================== what the snapshots say ============================

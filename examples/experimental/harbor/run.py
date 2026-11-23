@@ -16,7 +16,13 @@ from dataclasses import dataclass
 from typing import Literal
 
 import typer
-from launch_common import agentic_pythonpath_dirs, agentic_train_args, harbor_env_vars
+from launch_common import (
+    METADATA_KEY,
+    agentic_pythonpath_dirs,
+    agentic_train_args,
+    harbor_env_vars,
+    preflight_task_dirs,
+)
 
 from miles.utils.external_utils import command_utils
 
@@ -58,6 +64,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     daytona_api_key_file: str = os.environ.get("DAYTONA_API_KEY_FILE", "")
     e2b_api_key_file: str = os.environ.get("E2B_API_KEY_FILE", "")
     modal_config_file: str = os.environ.get("MODAL_CONFIG_PATH", "")
+    novita_api_key_file: str = os.environ.get("NOVITA_API_KEY_FILE", "")
 
     # The host agents outside the cluster reach every session server on; passed as
     # --session-server-external-host, which also keeps the session servers on the head node.
@@ -104,7 +111,7 @@ def execute(args: ScriptArgs):
     rollout_args = (
         f"--prompt-data {args.prompt_data} "
         "--input-key prompt "
-        "--metadata-key metadata "
+        f"--metadata-key {METADATA_KEY} "
         "--rollout-shuffle "
         f"--num-rollout {args.num_rollout} "
         f"--rollout-batch-size {args.rollout_batch_size} "
@@ -184,6 +191,7 @@ def execute(args: ScriptArgs):
         f"{perf_args}{sglang_args}{agent_args}{misc_args}{debug_args}"
     )
 
+    preflight_task_dirs(args.prompt_data, args.harbor_tasks_dir)
     extra_env_vars = {
         "PYTHONPATH": ":".join([args.megatron_path, *agentic_pythonpath_dirs(), str(command_utils.repo_base_dir)]),
         **harbor_env_vars(args),

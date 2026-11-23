@@ -9,6 +9,7 @@ import torch
 import torch.distributed as dist
 from megatron.core.dist_checkpointing.mapping import ShardedTensor
 from megatron.core.dist_checkpointing.tensor_aware_state_dict import MCoreTensorAwareStateDict
+from tests.fast.fixtures.args_fixtures import make_trainer_args
 from torch.utils._pytree import tree_flatten_with_path, tree_unflatten
 
 from miles.backends.megatron_utils.ft import checkpoint_transfer, in_memory_checkpoint
@@ -228,6 +229,7 @@ class TestSendCkptRecords:
 
         with caplog.at_level(logging.INFO, logger=_CKPT_TRANSFER_LOGGER):
             checkpoint_transfer.send_ckpt(
+                args=make_trainer_args(),
                 indep_dp=GroupInfo(rank=0, size=2, group=None),
                 model=[],
                 optimizer=object(),

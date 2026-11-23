@@ -13,7 +13,7 @@ from tests.ci.ci_register import register_cuda_ci
 # the checker's real-model bound.
 
 register_cuda_ci(
-    est_time=600, suite="stage-c-8-gpu-h200", labels=["megatron", "model-scripts", "lora"], hardware=["hopper"]
+    est_time=600, suite="stage-c-8-gpu-h100", labels=["megatron", "model-scripts", "lora"], hardware=["hopper"]
 )
 
 

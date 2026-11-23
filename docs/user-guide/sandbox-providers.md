@@ -13,8 +13,9 @@ one.
 |---|:---:|:---:|:---:|:---:|
 | [AgentENV](https://github.com/kvcache-ai/AgentENV) | ✓ | | | [✓](https://github.com/radixark/miles/tree/main/examples/experimental/agentenv) |
 | [Daytona](https://www.daytona.io/) | ✓ | ✓ | ✓ | ✓ |
-| [E2B](https://e2b.dev/) | ✓ | | | ✓ |
+| [E2B](https://e2b.dev/) | ✓ | | ✓ | ✓ |
 | [Modal](https://modal.com/) | ✓ | | | ✓ |
+| [Novita](https://docs.novita.ai/) | ✓ | | | ✓ |
 
 The rest of this page is how to set each provider up. Its SDK is installed per
 recipe; the recipe README has that line.
@@ -49,6 +50,33 @@ E2B Cloud builds templates as a non-root user, so a task Dockerfile whose `RUN`
 layers need root fails to build there. Terminal-Bench-2 tasks ship prebuilt
 images and are unaffected.
 
+For the [NeMo Gym](https://github.com/radixark/miles/tree/main/examples/experimental/nemo-gym)
+recipe (NeMo Gym `main` >= `3338ebc`), each task image needs an E2B template
+before the run, because E2B starts sandboxes from templates rather than from
+image references. NeMo Gym's
+builder makes them from the task images (named as in the
+[`mini_swe_agent_2` README](https://github.com/NVIDIA-NeMo/Gym/tree/main/responses_api_agents/mini_swe_agent_2#dataset-information))
+and writes the mapping the provider reads; the
+[provider README](https://github.com/NVIDIA-NeMo/Gym/tree/main/nemo_gym/sandbox/providers/e2b#templates)
+has the details:
+
+```bash
+python -m nemo_gym.sandbox.providers.e2b.build --images-file images.txt \
+    --cpu-count 2 --memory-mb 8192 --output template_map.yaml
+```
+
+2 vCPUs and 8192 MB match the agent's own `sandbox_spec.resources` and fit
+E2B's Hobby tier.
+
+Put that `template_map` under `sandbox.e2b.create` in a config file, and pass
+it after `nemo_gym/sandbox/providers/e2b/configs/e2b.yaml`, which replaces the
+docker config in `gym env start`. On E2B's Hobby tier a sandbox lives at most
+one hour, less than the agent's default `sandbox_spec.ttl_s`, so add
+`'++mini_swe_agent_2.responses_api_agents.mini_swe_agent_2.sandbox_spec.ttl_s=3600'`
+there. The NeMo Gym server reads the key only from `E2B_API_KEY` in its own
+environment, not from the key file, so export it on the host that runs
+`gym env start`.
+
 ## Daytona
 
 ```bash
@@ -77,3 +105,14 @@ For OpenEnv TB2, `cpus` and `memory_mb` from each task's `task.toml` become
 Modal resource requests, not hard limits. They preserve the task's guaranteed
 resource contract while still allowing the sandbox to burst above the request
 when its host has spare capacity.
+
+## Novita
+
+```bash
+mkdir -p ~/.config/novita && echo <key> > ~/.config/novita/api_key   # or export NOVITA_API_KEY
+```
+
+With nothing else set, the SDK talks to the `us-phx-1` region.
+`NOVITA_DOMAIN=sandbox.novita.ai` selects the legacy `us-virginia-1` region;
+`NOVITA_API_URL` and `NOVITA_SANDBOX_URL` override the two endpoints for an
+internal deployment.

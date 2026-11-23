@@ -22,8 +22,9 @@ register_cuda_ci(
 )
 register_rocm_ci(
     est_time=1400,
-    suite="nightly-stage-c-8-gpu-mi350",
+    suite="stage-c-8-gpu-mi350",
     labels=["megatron", "qwen35", "weight-update", "fully-async", "replay"],
+    nightly=True,
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -31,6 +32,7 @@ register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 CASE = CaseConfig(
     num_gpus_per_node=4,
@@ -49,6 +51,7 @@ CASE = CaseConfig(
     use_spec=False,
     enable_mtp_training=False,
     use_r3=True,
+    use_output_store=True,
     # miles has no VLM/vision implementation on the training side, so vision weights are
     # never synced; exclude them from the weight-equality check.
     check_weight_update_skip_list=("visual",),

@@ -167,6 +167,11 @@ class ModelCompanionWeightVersionUtils:
         for companion in companions:
             companion.weight_version.add_(1)
 
+    @staticmethod
+    def set_weight_version(model: Sequence[torch.nn.Module], weight_version: int) -> None:
+        for companion in _get_companions_of_model(model):
+            companion.weight_version.fill_(weight_version)
+
 
 class SampleIdentityExtractor:
     @staticmethod
@@ -227,7 +232,7 @@ def _reallocate_when_load_from_state_dict(
         f"Model companion entry {key} must be a (*, {_ROW_WIDTH}) int64 tensor, but got "
         f"type={type(incoming).__name__} dtype={getattr(incoming, 'dtype', None)} "
         f"shape={getattr(incoming, 'shape', None)}"
-    )
+    )  # config-access-exempt: the incoming payload may not be a tensor carrying dtype
     parameter = module.get_parameter(name)
     parameter.data = torch.empty(tuple(incoming.shape), dtype=parameter.dtype, device=parameter.device)
 

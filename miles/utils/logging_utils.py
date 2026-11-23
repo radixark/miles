@@ -2,7 +2,11 @@ import logging
 import os
 import re
 import sys
+import time
 import warnings
+
+from miles.utils.audit_utils.config_snapshot.dumper import ConfigSnapshotDumper
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 from miles.utils.audit_utils.event_logger.logger import EventLogger, is_event_logger_initialized, set_event_logger
 from miles.utils.audit_utils.process_identity import ProcessIdentity
 from miles.utils.env_report.reporter import EnvReporter, start_env_reporting
@@ -18,8 +22,11 @@ _FATAL_ASYNC_PATTERN = "coroutine .* was never awaited"
 def configure_logger(args, *, source: ProcessIdentity, report_env: bool = True) -> None:
     name = source.to_name()
     configure_logger_raw(name)
+    if SNAPSHOT_TESTING_ENABLED:
+        ConfigSnapshotDumper.configure(args=args, source=source)
+        ConfigSnapshotDumper.dump(stage="process_config", config={"args": args})
 
-    if (event_dir := getattr(args, "save_debug_event_data", None)) is not None:
+    if (event_dir := args.save_debug_event_data) is not None:
         if not is_event_logger_initialized():
             set_event_logger(EventLogger(log_dir=event_dir, file_name=f"{name}.jsonl", source=source))
 
@@ -72,3 +79,27 @@ def configure_strict_async_warnings() -> None:
         _original_hook(unraisable)
 
     sys.unraisablehook = _crash_on_async_misuse
+
+
+class RateLimitedWarner:
+    """Warn at most once per ``interval_seconds``.
+
+    Background loops (scraper ticks, NVML sampling) hit the same failure
+    thousands of times during an outage; observability must neither spam the
+    training logs nor die silently, so the first warning goes through and
+    repeats are suppressed for the window.
+    """
+
+    def __init__(self, logger: logging.Logger, *, interval_seconds: float = 300.0):
+        self._logger = logger
+        self.interval_seconds = interval_seconds
+        self._last_warn = float("-inf")
+
+    def warn(self, message: str) -> None:
+        now = time.monotonic()
+        if now - self._last_warn >= self.interval_seconds:
+            self._last_warn = now
+            self._logger.warning("%s (further warnings suppressed for %.0fs)", message, self.interval_seconds)
+
+    def reset_window_for_test(self) -> None:
+        self._last_warn = float("-inf")

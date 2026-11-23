@@ -44,9 +44,10 @@ _EXPECTED_FIXED_TEMPLATES = {
     TITOTokenizerType.MINIMAX_M25: ("minimax_m25_fixed.jinja", {"clear_thinking": False}),
     TITOTokenizerType.MINIMAX_M27: ("minimax_m27_fixed.jinja", {"clear_thinking": False}),
     TITOTokenizerType.DEEPSEEKV32: (None, {"drop_thinking": False}),
-    TITOTokenizerType.DEEPSEEKV4: (None, {"drop_thinking": False}),
-    TITOTokenizerType.DEEPSEEKV41: (None, {"drop_thinking": False}),
+    TITOTokenizerType.DEEPSEEKV4: (None, {}),
+    TITOTokenizerType.DEEPSEEKV41: (None, {}),
     TITOTokenizerType.INKLING: ("inkling_fixed.jinja", {}),
+    TITOTokenizerType.MUSE_SPARK: ("muse_spark_fixed.jinja", {}),
 }
 
 
@@ -85,6 +86,26 @@ def test_fixed_template_defaults_to_all_roles():
 def test_fixed_template_rejects_unknown_role():
     with pytest.raises(ValueError, match="Unknown FixedTemplate allowed_append_roles"):
         FixedTemplate(allowed_append_roles=frozenset({"developer"}))
+
+
+def test_continuation_roles_default_to_the_append_surface():
+    fixed = FixedTemplate(allowed_append_roles=frozenset({"tool", "user"}))
+    assert fixed.roles_after_tool_call == fixed.roles_after_no_tool_call == frozenset({"tool", "user"})
+    assert fixed.roles_after({"role": "assistant", "tool_calls": [{"id": "call_0"}]}) == fixed.roles_after_tool_call
+    assert fixed.roles_after({"role": "assistant", "content": "done"}) == fixed.roles_after_no_tool_call
+
+
+@pytest.mark.parametrize(
+    "continuation,match",
+    [
+        ({"roles_after_no_tool_call": frozenset({"system"})}, "outside allowed_append_roles"),
+        ({"roles_after_tool_call": frozenset({"system", "tool"})}, "outside allowed_append_roles"),
+        ({"roles_after_tool_call": frozenset({"user"})}, "must allow the 'tool' messages"),
+    ],
+)
+def test_fixed_template_rejects_invalid_continuation_roles(continuation, match):
+    with pytest.raises(ValueError, match=match):
+        FixedTemplate(allowed_append_roles=frozenset({"tool", "user"}), **continuation)
 
 
 @pytest.mark.parametrize(

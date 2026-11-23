@@ -30,6 +30,12 @@ async def _multi_sample_generate(input: GenerateFnInput) -> GenerateFnOutput:
     return GenerateFnOutput(samples=[s1, s2])
 
 
+@pytest.fixture
+def multi_sample_generate():
+    with function_registry.temporary("test:multi_sample_generate", _multi_sample_generate):
+        yield
+
+
 @pytest.mark.parametrize(
     "rollout_env",
     [
@@ -51,15 +57,14 @@ async def _multi_sample_generate(input: GenerateFnInput) -> GenerateFnOutput:
     ],
     indirect=True,
 )
-def test_multi_sample_output_preserves_existing_reward(rollout_env):
+def test_multi_sample_output_preserves_existing_reward(multi_sample_generate, rollout_env):
     env = rollout_env
-    with function_registry.temporary("test:multi_sample_generate", _multi_sample_generate):
-        out = load_and_call_train(env.args, env.data_source)
+    out = load_and_call_train(env.args, env.data_source)
 
-        assert len(out.samples) == env.args.rollout_batch_size
-        group = out.samples[0]
-        assert isinstance(group[0], list)
-        samples = group[0]
-        assert len(samples) == 2
-        assert samples[0].reward == 1
-        assert samples[1].reward == 0.5
+    assert len(out.samples) == env.args.rollout_batch_size
+    group = out.samples[0]
+    assert isinstance(group[0], list)
+    samples = group[0]
+    assert len(samples) == 2
+    assert samples[0].reward == 1
+    assert samples[1].reward == 0.5

@@ -37,6 +37,7 @@ class LaunchArgs(Protocol):
     daytona_api_key_file: str
     e2b_api_key_file: str
     modal_config_file: str
+    novita_api_key_file: str
     session_server_external_host: str
     miles_host_ip: str
 
@@ -120,7 +121,7 @@ def resolve_sandbox_backend(args: LaunchArgs) -> str:
     to build images from, and the provider to build them on — so naming one
     without the other is an error rather than a guess.
     """
-    raw = (getattr(args, "openenv_sandbox_backend", "") or "").strip()
+    raw = (args.openenv_sandbox_backend or "").strip()
     tasks_dir = args.openenv_tb2_tasks_dir
     if not raw and not tasks_dir:
         return ""
@@ -199,7 +200,9 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
     backend = resolve_sandbox_backend(args)
     if backend:
         spec = PROVIDER_CREDENTIALS[backend]
-        provision_provider(env, spec, arg_path=getattr(args, spec["arg_attr"], "") or "")
+        provision_provider(
+            env, spec, arg_path=getattr(args, spec["arg_attr"], "") or ""
+        )  # config-access-exempt: provider registry selects credential fields; launchers may instead use environment credentials
         # Preflight the env package the recipe bakes into each task image —
         # shared by every sandbox backend. The import check catches a missing
         # install; the source probe catches an install that imports fine but

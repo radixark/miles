@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import msgspec
 import pytest
+from tests.fast.backends.sglang_utils.conftest import tiny_model_path
+from tests.fast.fixtures.sglang_config_fixtures import with_parser_defaults_and_sglang_config
 
 from miles.backends.sglang_utils import sglang_engine
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
@@ -19,6 +21,8 @@ def make_args(**overrides: object) -> SimpleNamespace:
         rollout_num_gpus_per_engine=1,
         offload_rollout=False,
         sglang_dp_size=1,
+        sglang_enable_dp_attention=False,
+        sglang_attn_dp_size=1,
         sglang_pp_size=1,
         sglang_ep_size=1,
         sglang_mem_fraction_static=0.7,
@@ -28,11 +32,13 @@ def make_args(**overrides: object) -> SimpleNamespace:
         lora_adapter_path=None,
         debug_rollout_only=False,
         debug_skip_weight_update=False,
+        multi_lora=False,
         multi_lora_n_adapters=1,
         lora_adapter_targets=[f"model.layers.*.self_attn.{projection}_proj" for projection in ("q", "k", "v")],
+        use_output_store=False,
     )
     defaults.update(overrides)
-    return SimpleNamespace(**defaults)
+    return SimpleNamespace(**with_parser_defaults_and_sglang_config(defaults))
 
 
 def compute(args: SimpleNamespace, **overrides: object) -> dict:
@@ -48,6 +54,8 @@ def compute(args: SimpleNamespace, **overrides: object) -> dict:
         engine_info_bootstrap_port=None,
         sglang_overrides=None,
         num_gpus_per_engine=None,
+        tp_size=1,
+        pp_size=1,
         gated_launch_port=30001,
         random_seed=0,
     )
@@ -152,6 +160,51 @@ class TestSglangOverridePrecedence:
         assert server_args["mem_fraction_static"] == 0.7
 
 
+class TestDecoderSwaBoundedReplay:
+    """SGLang resolves an unset value to on for DeepSeek-V4.1, which breaks rollout/trainer logprob parity."""
+
+    def test_an_unset_value_keeps_full_prefill(self):
+        args = make_args()
+        args.sglang.base_args["enable_decoder_swa_bounded_replay"] = None
+
+        assert compute(args)["enable_decoder_swa_bounded_replay"] is False
+
+    def test_an_explicit_user_choice_is_kept(self):
+        args = make_args()
+        args.sglang.base_args["enable_decoder_swa_bounded_replay"] = True
+
+        assert compute(args)["enable_decoder_swa_bounded_replay"] is True
+
+    def test_a_group_override_still_wins(self):
+        args = make_args()
+        args.sglang.base_args["enable_decoder_swa_bounded_replay"] = None
+
+        server_args = compute(args, sglang_overrides={"enable_decoder_swa_bounded_replay": True})
+
+        assert server_args["enable_decoder_swa_bounded_replay"] is True
+
+
+class TestOutputStore:
+    def test_every_engine_writes_to_the_run_store_with_its_own_host(self, monkeypatch):
+        """The engine's address goes into its store config, without the IPv6 brackets."""
+        hosts = []
+
+        def server_args(args, *, local_hostname):
+            hosts.append(local_hostname)
+            return {"output_store_backend": "mooncake"}
+
+        monkeypatch.setattr(sglang_engine, "sglang_output_store_server_args", server_args)
+        monkeypatch.setattr(sglang_engine, "_record_field_names", lambda record: ("output_store_backend",))
+
+        kwargs = compute(make_args(use_output_store=True), host="[::1]")
+
+        assert hosts == ["::1"]
+        assert kwargs["output_store_backend"] == "mooncake"
+
+    def test_without_the_switch_no_store_is_set(self):
+        assert "output_store_backend" not in compute(make_args())
+
+
 class TestAdapterOwnership:
     def test_a_trainer_run_leaves_the_adapter_to_the_first_weight_sync(self):
         """An engine that also loaded the adapter from disk would serve stale weights if the sync were skipped."""
@@ -167,3 +220,90 @@ class TestAdapterOwnership:
         server_args = compute(make_args(lora_rank=8, lora_adapter_path="/fake/adapter", **{flag: True}))
 
         assert server_args["lora_paths"] == ["miles_lora=/fake/adapter"]
+
+
+_ATTENTION_DP_SPELLINGS = [
+    pytest.param(dict(sglang_attn_dp_size=8), True, id="attn-dp-size"),
+    pytest.param(dict(sglang_enable_dp_attention=True, sglang_dp_size=8), True, id="deprecated-enable-dp-attention"),
+    pytest.param(dict(sglang_enable_dp_attention=True, sglang_dp_size=1), False, id="enable-dp-attention-at-dp-1"),
+    pytest.param({}, False, id="no-attention-dp"),
+]
+
+
+class TestAttentionDpLoRA:
+    @pytest.mark.parametrize(("parallel", "attention_dp"), _ATTENTION_DP_SPELLINGS)
+    def test_attention_dp_pins_the_adapter_beside_a_base_model_slot(self, parallel, attention_dp):
+        """SGLang's attention-DP LoRA admits only pinned adapters, and never pins the slot it keeps for the base model."""
+        args = make_args(lora_rank=8, lora_adapter_path="/fake/adapter", debug_rollout_only=True, **parallel)
+        for name in ("sglang_attn_dp_size", "sglang_enable_dp_attention", "sglang_dp_size"):
+            delattr(args, name)
+        server_args = compute(args)
+
+        pinned = {"lora_name": "miles_lora", "lora_path": "/fake/adapter", "pinned": True}
+        assert server_args["lora_paths"] == [pinned if attention_dp else "miles_lora=/fake/adapter"]
+        assert server_args["max_loras_per_batch"] == (2 if attention_dp else 1)
+
+
+class TestPipelinedEngine:
+    def test_an_engine_spread_over_pipeline_stages_gets_its_per_stage_tp_size(self):
+        """SGLang sizes an engine as tp_size * pp_size, so 64 GPUs in 8 stages are TP 8 per stage."""
+        args = make_args(rollout_num_gpus=64, rollout_num_gpus_per_engine=64, sglang_pp_size=8)
+
+        (group,) = args.sglang.models[0].server_groups
+
+        assert (group.tp_size, group.pp_size) == (8, 8)
+
+    def test_a_group_pp_override_sizes_that_groups_tp(self):
+        """An eval group that drops pipeline parallelism uses all of its own GPUs for TP."""
+        args = make_args(
+            rollout_num_gpus=64,
+            rollout_num_gpus_per_engine=64,
+            sglang_pp_size=8,
+            eval_num_gpus=8,
+            eval_num_gpus_per_engine=8,
+        )
+
+        (group,) = args.sglang.models[1].server_groups
+
+        assert (group.tp_size, group.pp_size) == (8, 1)
+
+    def test_the_launched_engine_gets_the_sizes_it_is_given(self):
+        server_args = compute(make_args(), num_gpus_per_engine=64, tp_size=8, pp_size=8)
+
+        assert (server_args["tp_size"], server_args["pp_size"]) == (8, 8)
+
+    def test_an_engine_whose_gpus_do_not_split_evenly_into_stages_is_refused(self):
+        """A remainder would leave SGLang an engine whose world size differs from its GPU count."""
+        with pytest.raises(AssertionError, match="12 GPUs per engine.*pp_size 8"):
+            make_args(rollout_num_gpus=12, rollout_num_gpus_per_engine=12, sglang_pp_size=8)
+
+
+class TestPipelineLayerPartition:
+    """SGLang hands one partition to every pipelined engine and checks it only when loading the model."""
+
+    @staticmethod
+    def _make_args(partition: str, *, pp_size: int) -> SimpleNamespace:
+        return make_args(
+            rollout_num_gpus=16,
+            rollout_num_gpus_per_engine=16,
+            sglang_pp_size=pp_size,
+            sglang_pp_layer_partition=partition,
+            hf_checkpoint=str(tiny_model_path()),  # 2 layers
+        )
+
+    def test_a_partition_with_a_stage_per_entry_covering_every_layer_is_accepted(self):
+        assert self._make_args("1,1", pp_size=2).sglang_pp_layer_partition == "1,1"
+
+    @pytest.mark.parametrize("partition, pp_size", [("1,1", 4), ("2,1", 2), ("0,2", 2), ("1,,1", 2), ("1,1,", 2)])
+    def test_a_partition_that_does_not_fit_the_engine_is_refused(self, partition, pp_size):
+        with pytest.raises(ValueError, match="--sglang-pp-layer-partition .* must give each of the"):
+            self._make_args(partition, pp_size=pp_size)
+
+    def test_a_partition_no_engine_would_read_is_refused(self):
+        with pytest.raises(ValueError, match="no server group"):
+            self._make_args("1,1", pp_size=1)
+
+    def test_a_run_that_launches_no_engine_accepts_the_partition(self):
+        args = make_args(sglang_pp_size=2, sglang_pp_layer_partition="1,1", rollout_num_gpus=0)
+
+        assert args.sglang.models == []

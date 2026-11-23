@@ -14,7 +14,9 @@ def _qwen3_router_forward(self, hidden_states):
     router_logits = F.linear(hidden_states, self.weight)
     router_probs = F.softmax(router_logits, dtype=torch.float, dim=-1)
     router_top_value, router_indices = self._miles_replay_topk(router_probs, self.top_k)
-    if getattr(self, "norm_topk_prob", True):
+    if getattr(
+        self, "norm_topk_prob", True
+    ):  # config-access-exempt: router implementations differ in top-k normalization support
         router_top_value = router_top_value / router_top_value.sum(dim=-1, keepdim=True)
     router_top_value = router_top_value.to(router_logits.dtype)
     return router_logits, router_top_value, router_indices

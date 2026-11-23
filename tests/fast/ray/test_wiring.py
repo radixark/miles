@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args
+from tests.fast.fixtures.args_fixtures import parse_megatron_test_config
 from tests.fast.source_scan import REPO_ROOT
 
 from miles.ray import wiring
@@ -25,7 +25,11 @@ class TestLaunchWorkerManager:
     def test_a_ray_run_launches_the_ray_worker_manager(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The Ray path is the one every existing run takes, and it must be untouched."""
         launched: list[Any] = []
-        monkeypatch.setattr(wiring, "_launch_ray_worker_manager", lambda args: launched.append(args))
+        monkeypatch.setattr(
+            wiring,
+            "_launch_ray_worker_manager",
+            lambda args, *, worker_env, report_process_ends: launched.append(args),
+        )
 
         args = SimpleNamespace(cluster_backend=ClusterBackend.RAY.value)
         wiring.launch_worker_manager(args)
@@ -87,28 +91,31 @@ class TestShutdownWorkerManager:
         }
         entered = sorted(call for call in calls if call.startswith("asyncio.run("))
 
-        assert "init_orchestration_script(args, disposer=disposer)" in calls
+        assert "init_orchestration_script(startup_info, disposer=disposer)" in calls
         assert len(entered) == 1
-        assert re.fullmatch(r"asyncio\.run\(with_disposer\(\w+, args\)\)", entered[0]) is not None
+        assert (
+            re.fullmatch(r"asyncio\.run\(with_disposer\(\w+, parse_orchestrator_startup_info\(\)\)\)", entered[0])
+            is not None
+        )
 
 
-class TestGetBackendCapability:
+class TestComputeBackendCapability:
     def test_a_ray_run_is_answered_from_the_worker_manager(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The manager was launched by the driver's own first line; the capability only looks it up."""
         monkeypatch.setattr(wiring, "_launch_ray_worker_manager", _refuse_ray)
         monkeypatch.setattr(factory.RayWorkerManager, "get_handle", staticmethod(lambda: object()))
 
-        args = make_args(cluster_backend=ClusterBackend.RAY.value)
+        args = parse_megatron_test_config("--cluster-backend", ClusterBackend.RAY.value)
 
-        assert isinstance(wiring.get_backend_capability(args), RayBackendCapability)
+        assert isinstance(wiring.compute_backend_capability(args), RayBackendCapability)
 
     def test_a_kubernetes_run_is_answered_by_observing_the_namespace(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Under Kubernetes nothing was launched, so the capability is what observes the pods instead."""
         stub = stub_kubernetes_capability(monkeypatch)
 
-        args = SimpleNamespace(cluster_backend=ClusterBackend.KUBERNETES.value)
+        args = parse_megatron_test_config("--cluster-backend", ClusterBackend.KUBERNETES.value)
 
-        assert wiring.get_backend_capability(args) is stub.capability
+        assert wiring.compute_backend_capability(args) is stub.capability
         assert stub.specs_computed_from == [args]
 
     def test_the_driver_is_only_reached_when_a_ray_run_needs_its_placement_groups(self) -> None:
@@ -133,11 +140,15 @@ class TestTheWireTheWorkerManagerIsLaunchedWith:
         monkeypatch.setattr(
             wiring.RayWorkerManager,
             "launch",
-            staticmethod(lambda args, specs, pgs, *, comm_backend: launched.append(comm_backend)),
+            staticmethod(
+                lambda args, specs, pgs, *, comm_backend, worker_env, report_process_ends: launched.append(
+                    comm_backend
+                )
+            ),
         )
 
         args = SimpleNamespace(cluster_backend=ClusterBackend.RAY.value, worker_comm_backend=resolved)
-        wiring._launch_ray_worker_manager(args)
+        wiring._launch_ray_worker_manager(args, worker_env=None, report_process_ends=False)
 
         assert launched == [WorkerCommBackend(resolved)]
 

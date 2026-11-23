@@ -64,7 +64,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --gradient-checkpointing
   --attn-implementation flash_attention_3
   --train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}'
-  --fsdp-cpu-offload 
+  --optimizer-cpu-offload 
   --use-dynamic-batch-size
   --max-tokens-per-gpu 9216 
   --actor-num-nodes 1

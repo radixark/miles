@@ -24,13 +24,14 @@ from tests.e2e.megatron.test_qwen3_5_35B_A3B._common import CaseConfig, execute,
 register_cuda_ci(
     est_time=2100, suite="stage-c-4-gpu-h200", labels=["megatron", "qwen35"], hardware=["hopper"], num_gpus=4
 )
-register_rocm_ci(est_time=1600, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "qwen35"])
+register_rocm_ci(est_time=1600, suite="stage-c-4-gpu-mi350", labels=["megatron", "qwen35"])
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 CASE = CaseConfig(
     # tp2/cp2/ep4: TP=4 hits a Qwen3.5 attention-output-gate sharding bug, so stay at TP=2.

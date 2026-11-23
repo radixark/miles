@@ -3,19 +3,35 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 from examples.geo3k_vlm.multi_turn.base_env import BaseInteractionEnv
 
 # When executed as a module: python -m examples.geo3k_vlm.multi_turn.rollout
-from miles.rollout.sglang_rollout import GenerateState
+from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
+from miles.rollout.generate_utils.generate_endpoint_utils import (
+    adopt_expanded_prompt_ids,
+    get_routed_experts_from_response,
+    token_space_request_fields,
+    truncate_to_max_seq_len,
+)
+from miles.utils.args.schema import A, Arg, BaseConfig
 from miles.utils.http_utils import post
+from miles.utils.media_refs import collect_media_refs
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.types import Sample
 
 DEFAULT_ENV_MODULE = "examples.geo3k_vlm.multi_turn.env_geo3k"
+
+
+class Geo3kConfig(BaseConfig):
+    max_turns: A[int, Arg()]
+    rollout_interaction_env_path: A[str, Arg()] = DEFAULT_ENV_MODULE
+
 
 # Dummy messages used for calculating trim length in chat template encoding
 DUMMY_MESSAGES = [
@@ -58,6 +74,8 @@ def _encode_observation_for_generation(
     metadata: dict | None,
     apply_chat_template: bool,
     apply_chat_template_kwargs: dict | None,
+    token_space: bool,
+    media_dir: str | None,
 ):
     """
     Encode a single observation turn that may include images/videos in the content list.
@@ -101,15 +119,23 @@ def _encode_observation_for_generation(
             k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
         } or None
     else:
+        # Token space: the media ride along as references and SGLang expands the placeholders on the next request.
+        multimodal_inputs = collect_media_refs([message], media_dir) if token_space else None
         prompt_ids = tokenizer.encode(formatted_prompt, add_special_tokens=False)
 
     if trim_length:
         prompt_ids = prompt_ids[trim_length:]
 
-    image_data = []
-    if multimodal_inputs and multimodal_inputs.get("images"):
-        image_data = [encode_image_for_rollout_engine(img) for img in multimodal_inputs["images"]]
+    image_data = _image_data_for_engine(multimodal_inputs, token_space)
     return prompt_ids, image_data, multimodal_inputs, multimodal_train_inputs
+
+
+def _image_data_for_engine(multimodal_inputs: dict | None, token_space: bool) -> list:
+    """The request's image_data: the references as they are in token space, else base64 of the PIL images."""
+    images = (multimodal_inputs or {}).get("images")
+    if not images:
+        return []
+    return list(images) if token_space else [encode_image_for_rollout_engine(img) for img in images]
 
 
 def _merge_multimodal_train_inputs(chunks: list[dict | None]) -> dict | None:
@@ -142,16 +168,15 @@ def _initialize_resources(args: Any, sample: Sample):
     env_module = _load_env_module(args.rollout_interaction_env_path)
     max_turns = args.max_turns
     if max_turns is None:
-        raise ValueError("max_turns must be set via --custom-config-path in the custom config file.")
-    state = GenerateState(args)
+        raise ValueError("max_turns must be set with --max-turns.")
     url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
     sample.metadata = sample.metadata or {}
     env = _build_env(env_module, sample, args)
     config = {"max_turns": max_turns}
-    return env, env_module, config, state, url
+    return env, env_module, config, url
 
 
-def _prepare_initial_inputs(sample: Sample, processor, tokenizer):
+def _prepare_initial_inputs(sample: Sample, processor, tokenizer, token_space: bool):
     if processor:
         processor_output = processor(text=sample.prompt, **(sample.multimodal_inputs or {}))
         prompt_ids = processor_output["input_ids"][0]
@@ -161,14 +186,14 @@ def _prepare_initial_inputs(sample: Sample, processor, tokenizer):
     else:
         prompt_ids = tokenizer.encode(sample.prompt, add_special_tokens=False)
 
-    image_data = []
-    if sample.multimodal_inputs and sample.multimodal_inputs.get("images"):
-        image_data = [encode_image_for_rollout_engine(img) for img in sample.multimodal_inputs["images"]]
+    image_data = _image_data_for_engine(sample.multimodal_inputs, token_space)
     return prompt_ids, image_data, sample.multimodal_train_inputs
 
 
-def _prepare_start_state(sample: Sample, state, args: Any, sampling_params: dict):
-    prompt_ids, image_data, init_mm_train = _prepare_initial_inputs(sample, state.processor, state.tokenizer)
+def _prepare_start_state(sample: Sample, state, processor, args: Any, sampling_params: dict):
+    prompt_ids, image_data, init_mm_train = _prepare_initial_inputs(
+        sample, processor, state.tokenizer, args.multimodal_token_space_processing
+    )
     current_image_data = image_data
     multimodal_train_inputs_buffer: list[dict | None] = []
     if init_mm_train:
@@ -182,23 +207,42 @@ def _prepare_start_state(sample: Sample, state, args: Any, sampling_params: dict
     sample.response_length = len(response_tokens)
 
     budget = None
-    if args.rollout_max_context_len is not None:
-        budget = args.rollout_max_context_len - len(sample.tokens)
+    if args.max_seq_len is not None:
+        budget = args.max_seq_len - len(sample.tokens)
     elif sampling_params.get("max_new_tokens") is not None:
         budget = sampling_params["max_new_tokens"] - len(sample.tokens)
     return current_image_data, response_tokens, budget, multimodal_train_inputs_buffer
 
 
-async def _run_inference_step(url: str, tokens: list[int], sampling_params: dict, image_data, tokenizer):
+async def _run_inference_step(
+    url: str, sample: Sample, sampling_params: dict, image_data, mm_token_expansion_start_len: int | None, *, args
+):
     payload = {
-        "input_ids": tokens,
+        "input_ids": sample.tokens,
         "sampling_params": sampling_params,
         "return_logprob": True,
     }
     if image_data:
         payload["image_data"] = image_data
+    record_routed_experts = mm_token_expansion_start_len is not None and args.use_rollout_routing_replay
+    held_rows = 0 if sample.rollout_routed_experts is None else len(sample.rollout_routed_experts)
+    if mm_token_expansion_start_len is not None:
+        payload.update(token_space_request_fields(mm_token_expansion_start_len))
+        payload["return_routed_experts"] = args.use_rollout_routing_replay
+    if record_routed_experts:
+        # Keep the rows earlier requests recorded: this request's prefill would route bf16 ties differently.
+        payload["routed_experts_start_len"] = held_rows
 
     output = await post(url, payload)
+    adopt_expanded_prompt_ids(sample, payload, output)
+    # A request aborted while still queued answers without prompt_tokens or routed experts: no new rows to keep.
+    if record_routed_experts and "routed_experts" in output["meta_info"]:
+        meta_info = output["meta_info"]
+        new_rows = meta_info["prompt_tokens"] + meta_info["completion_tokens"] - 1 - held_rows
+        patch = get_routed_experts_from_response(args, output, new_rows)
+        sample.rollout_routed_experts = (
+            patch if sample.rollout_routed_experts is None else np.concatenate([sample.rollout_routed_experts, patch])
+        )
     response_text = output["text"]
     if "output_token_logprobs" in output["meta_info"]:
         new_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
@@ -223,6 +267,8 @@ def _process_env_step(env: BaseInteractionEnv, response_text: str, tokenizer, pr
             sample_metadata,
             args.apply_chat_template,
             args.apply_chat_template_kwargs,
+            args.multimodal_token_space_processing,
+            args.shared_media_dir,
         )
     )
 
@@ -280,6 +326,30 @@ def _update_multimodal_state(
     return current_image_data
 
 
+@dataclass(frozen=True)
+class _ObservationCheckpoint:
+    """The sample right before an observation is appended in token space: what a roll-back restores."""
+
+    num_tokens: int
+    multimodal_inputs: dict | None
+    media_counts: dict[str, int]
+
+
+def _checkpoint_before_observation(sample: Sample) -> _ObservationCheckpoint:
+    media = sample.multimodal_inputs
+    media_counts = {key: len(refs) for key, refs in (media or {}).items() if isinstance(refs, list)}
+    return _ObservationCheckpoint(len(sample.tokens), media, media_counts)
+
+
+def _roll_back_observation(sample: Sample, checkpoint: _ObservationCheckpoint, tokenizer) -> None:
+    """Drop an observation and the response after it: its media expanded into all the room --max-seq-len had left."""
+    sample.strip_last_output_tokens(len(sample.tokens) - checkpoint.num_tokens, tokenizer)
+    sample.multimodal_inputs = checkpoint.multimodal_inputs
+    for key, count in checkpoint.media_counts.items():
+        del sample.multimodal_inputs[key][count:]
+    sample.status = Sample.Status.TRUNCATED
+
+
 def _should_stop_on_finish(sample: Sample, finish_type: str) -> bool:
     match finish_type:
         case "length":
@@ -306,31 +376,53 @@ def _finalize_sample(sample: Sample, tokenizer, response_tokens, multimodal_trai
     return sample
 
 
-async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
+async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     """Custom multi-turn rollout that interacts with a pluggable environment."""
+    args, sample, sampling_params = input.args, input.sample, input.sampling_params
     assert not args.partial_rollout, "Partial rollout is not supported for interaction rollouts."
 
-    env, env_module, config, state, url = _initialize_resources(args, sample)
+    state = input.state
+    env, env_module, config, url = _initialize_resources(args, sample)
     sampling_params = sampling_params.copy()
+    # In token space SGLang expands the media placeholders and the trainer builds the processor tensors.
+    processor = None if args.multimodal_token_space_processing else state.processor
+    mm_token_expansion_start_len = 0 if args.multimodal_token_space_processing else None
     current_image_data, response_tokens, budget, multimodal_train_inputs_buffer = _prepare_start_state(
-        sample, state, args, sampling_params
+        sample, state, processor, args, sampling_params
     )
     try:
         env.reset()
         if budget is not None and budget <= 0:
             sample.status = Sample.Status.TRUNCATED
-            return sample
+            return GenerateFnOutput(samples=sample)
 
         cur_sampling_params = sampling_params
+        checkpoint = None
         for turn_idx in range(config["max_turns"]):
             if budget is not None:
                 cur_sampling_params["max_new_tokens"] = budget
 
+            tokens_before_expansion = len(sample.tokens)
             response_text, new_response_tokens, new_response_log_probs, finish_type = await _run_inference_step(
-                url, sample.tokens, cur_sampling_params, current_image_data, state.tokenizer
+                url, sample, cur_sampling_params, current_image_data, mm_token_expansion_start_len, args=args
             )
+            if num_expanded_tokens := len(sample.tokens) - tokens_before_expansion:
+                # SGLang expanded the prompt, or on a later turn the latest observation inside the response.
+                response_tokens[:] = sample.tokens[len(sample.tokens) - sample.response_length :]
+                budget = _update_budget(budget, num_expanded_tokens)
             _append_to_sample(sample, response_tokens, new_response_tokens, new_response_log_probs, loss_mask_val=1)
             budget = _update_budget(budget, len(new_response_tokens))
+            if args.multimodal_token_space_processing:
+                # max_new_tokens was only an upper bound: this turn's media expanded after it was taken.
+                expanded_prompt_len = len(sample.tokens) - len(new_response_tokens)
+                if checkpoint is not None and args.max_seq_len and expanded_prompt_len >= args.max_seq_len:
+                    # The expanded observation left no room for a response token: the whole turn goes.
+                    _roll_back_observation(sample, checkpoint, state.tokenizer)
+                else:
+                    truncate_to_max_seq_len(args, sample, state.tokenizer)
+                if sample.status == Sample.Status.TRUNCATED:
+                    response_tokens[:] = sample.tokens[len(sample.tokens) - sample.response_length :]
+                    break
 
             if _should_stop_on_finish(sample, finish_type):
                 break
@@ -339,12 +431,24 @@ async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
                 break
 
             obs_prompt_ids, obs_image_data, obs_multimodal_inputs, obs_multimodal_train_inputs, done = (
-                _process_env_step(env, response_text, state.tokenizer, state.processor, args, sample.metadata)
+                _process_env_step(env, response_text, state.tokenizer, processor, args, sample.metadata)
             )
             if done:
                 sample.status = Sample.Status.COMPLETED
                 break
 
+            if args.multimodal_token_space_processing:
+                # SGLang expands the observation's media placeholders only on the next request, so an observation
+                # that no request follows stays out of the sample; its length here is the unexpanded one.
+                if turn_idx + 1 >= config["max_turns"]:
+                    sample.status = Sample.Status.COMPLETED
+                    break
+                if budget is not None and budget - len(obs_prompt_ids) <= 0:
+                    sample.status = Sample.Status.TRUNCATED
+                    break
+                # The turn is rolled back to this point when the expansion leaves no room for a response.
+                checkpoint = _checkpoint_before_observation(sample)
+                mm_token_expansion_start_len = checkpoint.num_tokens
             obs_log_probs = [0.0] * len(obs_prompt_ids)
             _append_to_sample(sample, response_tokens, obs_prompt_ids, obs_log_probs, loss_mask_val=0)
             budget = _update_budget(budget, len(obs_prompt_ids))
@@ -365,9 +469,14 @@ async def generate(args: Any, sample: Sample, sampling_params) -> Sample:
                 sample.status = Sample.Status.COMPLETED
                 break
 
-        return _finalize_sample(sample, state.tokenizer, response_tokens, multimodal_train_inputs_buffer)
+        return GenerateFnOutput(
+            samples=_finalize_sample(sample, state.tokenizer, response_tokens, multimodal_train_inputs_buffer)
+        )
     finally:
         try:
             env.close()
         except Exception:
             pass
+
+
+generate.config_class = Geo3kConfig

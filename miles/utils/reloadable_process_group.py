@@ -125,7 +125,7 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
         ReloadableProcessGroup.GROUPS[pid].append(self)
 
     def __getattr__(self, name):
-        return getattr(self.group, name)
+        return getattr(self.group, name)  # config-access-exempt: attribute selected at runtime from name
 
     @staticmethod
     def destroy_process_groups():
@@ -178,7 +178,9 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
         if inner is None:
             raise RuntimeError("ReloadableProcessGroup: inner PG is None, call reload() first.")
         with _wrap_low_level_call():
-            return getattr(inner, method)(*args, **kwargs)
+            return getattr(inner, method)(
+                *args, **kwargs
+            )  # config-access-exempt: attribute selected at runtime from method
 
     def barrier(self, *a, **kw):
         return self._fwd("barrier", *a, **kw)
@@ -278,7 +280,9 @@ def _forward_remaining_collectives():
             continue
         if name in vars(ReloadableProcessGroup):
             continue
-        if not callable(getattr(dist.ProcessGroup, name, None)):
+        if not callable(
+            getattr(dist.ProcessGroup, name, None)
+        ):  # config-access-exempt: attribute selected at runtime from name
             continue
 
         def make(method):
@@ -310,6 +314,6 @@ def _wrap_low_level_call():
         yield
     except Exception as e:
         mem_info = print_memory("after torch distributed error")
-        if hasattr(e, "add_note"):
+        if hasattr(e, "add_note"):  # config-access-exempt: exception notes are unavailable on older Python versions
             e.add_note(f"{mem_info=}")
         raise

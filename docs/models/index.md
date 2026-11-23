@@ -14,7 +14,7 @@ Each model name links to its recipe page.
 | Family | Models |
 |---|---|
 | **DeepSeek** | [DeepSeek-V4.1 Flash](/models/deepseek/deepseek-v4-1-flash)<br/>[DeepSeek-V4 Pro](/models/deepseek/deepseek-v4-pro)<br/>[DeepSeek-V4 Flash](/models/deepseek/deepseek-v4-flash)<br/>[DeepSeek-V3.2](/models/deepseek/deepseek-v3-2)<br/>[DeepSeek-V3](/models/deepseek/deepseek) |
-| **Thinking Machines** | [Inkling](/models/thinkingmachines/inkling)<br/>[Inkling-Small](/models/thinkingmachines/inkling-small) |
+| **Thinking Machines** | [Inkling 2 Mini](/models/thinkingmachines/inkling-2-mini)<br/>[Inkling 2 Small](/models/thinkingmachines/inkling-2-small)<br/>[Inkling](/models/thinkingmachines/inkling)<br/>[Inkling-Small](/models/thinkingmachines/inkling-small) |
 | **Qwen** | [Qwen3.8-Flash-Next](/models/qwen/qwen3-8-flash-next)<br/>[Qwen3.8-27B](/models/qwen/qwen3-8)<br/>[Qwen3.6 MoE](/models/qwen/qwen3-6-moe)<br/>[Qwen3.6](/models/qwen/qwen3-6)<br/>[Qwen3.5-35B-A3B](/models/qwen/qwen3-5-moe)<br/>[Qwen3.5-4B / 9B / 27B](/models/qwen/qwen3-5)<br/>[Qwen3-Next-80B-A3B-Thinking](/models/qwen/qwen3-next)<br/>[Qwen3-30B-A3B / 235B-A22B](/models/qwen/qwen3-moe)<br/>[Qwen3-0.6B / 1.7B / 4B / 8B / 14B / 32B](/models/qwen/qwen3) |
 | **GLM** | [GLM-5.3](/models/glm/glm5-3)<br/>[GLM-5.3-Flash](/models/glm/glm5-3-flash)<br/>[GLM-5.2](/models/glm/glm5-2)<br/>[GLM-5.1](/models/glm/glm5)<br/>[GLM-5](/models/glm/glm5)<br/>[GLM-4.7-Flash](/models/glm/glm4-7-flash)<br/>[GLM-4.5](/models/glm/glm4-5) |
 | **Kimi** | [Kimi-K3](/models/kimi/kimi-k3)<br/>[Kimi-K2.6](/models/kimi/kimi-k2.5)<br/>[Kimi-K2.5](/models/kimi/kimi-k2.5)<br/>[Kimi-K2-Instruct / Thinking](/models/kimi/kimi-k2) |
@@ -23,6 +23,7 @@ Each model name links to its recipe page.
 | **JoyAI** | [JoyAI-LLM-Flash](https://github.com/radixark/miles/blob/main/scripts/run_joy_ai_llm_flash.py) |
 | **GPT-OSS** | [gpt-oss-20b](/models/gpt-oss/gpt-oss) |
 | **MiMo** | [MiMo-V2.6-Flash](/models/mimo/mimo-v2-6-flash) |
+| **MiniMax** | [MiniMax-M3](/models/minimax/minimax-m3), [MiniMax-M3.1-Flash](/models/minimax/minimax-m3-1-flash) |
 | **StepFun** | [Step-5-Preview](/models/stepfun/step5) |
 | **Muse Spark** | [Muse Spark Open](/models/muse-spark/muse-spark-open) |
 | **Reflection** | [Beam-1.0-501B-A23B](/models/reflection/beam) |

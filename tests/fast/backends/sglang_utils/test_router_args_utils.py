@@ -11,6 +11,7 @@ from miles.backends.sglang_utils.router_args_utils import (
     parse_router_args_argv,
     router_args_to_argv,
 )
+from miles.utils.args.configs.router import RouterConfig
 
 
 def _make_router_cli_parser() -> argparse.ArgumentParser:
@@ -35,7 +36,7 @@ def _make_miles_args(**overrides: object) -> Namespace:
     values = vars(_make_prefixed_router_cli_parser().parse_args([]))
     values.update(sglang_router_request_timeout_secs=600, sglang_router_policy=None)
     values.update(overrides)
-    return Namespace(**values)
+    return Namespace(**values, **RouterConfig.from_args(Namespace(**values)))
 
 
 class TestRouterArgsToArgv:

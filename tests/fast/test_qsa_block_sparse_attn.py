@@ -149,7 +149,7 @@ def test_tile_index_pair_is_consistent_both_ways():
     q, k, v, idx = _single_sequence_case(T=256, budget=32)
     sel = selection_to_block_bitmap(idx, 256, BLK)
     block_first = torch.arange(sel.shape[1], dtype=torch.int32, device="cuda") * BLK
-    klist, kcnt, qlist, qcnt = build_tile_index_pair(sel, block_first, block_first + BLK - 1, 64, 32)
+    klist, kcnt, qlist, qcnt = build_tile_index_pair(sel, block_first, block_first + BLK - 1, 64, 32, BLK)
 
     forward = {(qt, int(klist[qt, i])) for qt in range(kcnt.numel()) for i in range(int(kcnt[qt]))}
     backward = {(int(qlist[kt, i]), kt) for kt in range(qcnt.numel()) for i in range(int(qcnt[kt]))}

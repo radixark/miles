@@ -106,12 +106,11 @@ class TestLegacyRolloutSampleOwnership:
         args = make_args(
             enable_sample_ownership_checker=True,
             partial_rollout=partial_rollout,
-            use_miles_router=True,
             sglang_router_ip="127.0.0.1",
             sglang_router_port=30000,
         )
         monkeypatch.setattr(sglang_rollout, "GenerateState", lambda _args: state)
-        monkeypatch.setattr(sglang_rollout, "get", lambda _url: _return({"urls": []}))
+        monkeypatch.setattr(sglang_rollout, "get", lambda _url: _return({"workers": []}))
         monkeypatch.setattr(sglang_rollout, "call_agent_abort_hook", _no_op)
         set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="rollout_executor")))
 

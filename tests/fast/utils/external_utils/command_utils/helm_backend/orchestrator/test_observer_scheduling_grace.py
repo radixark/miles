@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from tests.fast.utils.external_utils.command_utils.helm_backend.orchestrator.observer_fakes import _ObserverProbe
@@ -30,7 +31,7 @@ class TestMissingUnstartedPodBudget:
             generations=[path] * 61,
             pods=[None] * 29 + [observer.ObservedPod(phase="Pending")] + [None] * 30,
         )
-        monkeypatch.setattr(observer.time, "sleep", probe.sleep)
+        monkeypatch.setattr(observer, "time", SimpleNamespace(sleep=probe.sleep))
 
         outcome = observer.wait_for_run(
             state_file=path, read_pod=probe.read_pod, read_active_state_file=probe.read_generation
@@ -46,7 +47,7 @@ class TestMissingUnstartedPodBudget:
         """A takeover must not inherit missing-pod evidence from the replaced generation."""
         old, new = tmp_path / "old.json", tmp_path / "new.json"
         probe = _ObserverProbe(generations=[old] * 29 + [new] * 31, pods=[None] * 59)
-        monkeypatch.setattr(observer.time, "sleep", probe.sleep)
+        monkeypatch.setattr(observer, "time", SimpleNamespace(sleep=probe.sleep))
 
         outcome = observer.wait_for_run(
             state_file=old, read_pod=probe.read_pod, read_active_state_file=probe.read_generation

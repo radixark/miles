@@ -5,6 +5,8 @@ import pickle
 import re
 import shutil
 import time
+from contextlib import nullcontext
+from pathlib import Path
 
 import safetensors.torch
 import torch
@@ -13,6 +15,7 @@ from typing_extensions import override
 
 from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf, remove_padding
 from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
+from miles.utils.args.enhanced_argparse_namespace import EnhancedArgparseNamespace
 from miles.utils.hf_utils.config import load_hf_config
 
 
@@ -104,16 +107,13 @@ def get_named_params(args, state_dict):
 
 
 def save_tensors(args, model_name, state_dict, output_dir, chunk_size, vocab_size=None):
-    # for miles update_weight compatible
-    args.sglang_enable_ep_moe = False
-
     print(f"start saving to {output_dir}")
     os.makedirs(output_dir, exist_ok=True)
     # 2GB
     current_size = 0
     total_size = 0
     modeltensors = [{}]
-    for name, param in get_named_params(args, state_dict):
+    for name, param in get_named_params(args.backend, state_dict):
         if vocab_size:
             param = remove_padding(name, param, vocab_size)
         converted_named_tensors = convert_to_hf(args, model_name, name, param)
@@ -203,7 +203,12 @@ if __name__ == "__main__":
     t = time.time()
     megatron_args = torch.load(os.path.join(args.input_dir, "common.pt"), weights_only=False)["args"]
     if args.origin_hf_dir:
-        megatron_args.hf_checkpoint = args.origin_hf_dir
+        with (
+            megatron_args.force_all_mutable()
+            if isinstance(megatron_args, EnhancedArgparseNamespace)
+            else nullcontext()
+        ):
+            megatron_args.hf_checkpoint = args.origin_hf_dir
     dist_cp.state_dict_loader._load_state_dict(
         state_dict,
         storage_reader=WrappedStorageReader(args.input_dir),
@@ -212,7 +217,11 @@ if __name__ == "__main__":
     )
     print(f"model loaded in {time.time()-t:.2f} sec.")
 
-    save_tensors(megatron_args, args.model_name, state_dict, args.output_dir, args.chunk_size, args.vocab_size)
+    hf_checkpoint = vars(megatron_args).get("hf_checkpoint")
+    conversion_args = argparse.Namespace(
+        backend=megatron_args, hf_checkpoint=Path(hf_checkpoint) if hf_checkpoint is not None else None
+    )
+    save_tensors(conversion_args, args.model_name, state_dict, args.output_dir, args.chunk_size, args.vocab_size)
 
     if args.origin_hf_dir:
         copy_assets(args.origin_hf_dir, args.output_dir)

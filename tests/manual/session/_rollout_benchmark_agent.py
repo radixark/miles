@@ -70,9 +70,9 @@ def serve_backend(response_bodies, port):
         turn = (len(payload["messages"]) - 1) // 2
         return Response(response_bodies[turn], media_type="application/json")
 
-    @app.get("/list_workers")
+    @app.get("/workers")
     async def list_workers():
-        return {"urls": [f"http://127.0.0.1:{port}"]}
+        return {"workers": [{"url": f"http://127.0.0.1:{port}"}]}
 
     @app.post("/abort_request")
     async def abort():

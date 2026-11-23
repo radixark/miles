@@ -15,6 +15,7 @@ import numpy as np
 import safetensors.numpy
 import torch
 
+from miles.utils.output_store.plan import StorePlan
 from miles.utils.sampling_mask import RolloutSamplingMask
 from miles.utils.types import Sample, WeightVersionsPerCall
 
@@ -42,6 +43,7 @@ SAMPLES_VALUE_SPEC: dict[str, ValueSpec] = {
     "rollout_sampling_mask": ValueSpec("sampling_mask"),
     "rollout_routed_experts": ValueSpec("tensor", np.dtype(np.int32), strict=True),
     "rollout_indexer_topk": ValueSpec("tensor", np.dtype(np.int32), strict=True),
+    "rollout_store_plan": ValueSpec("json"),
     "status": ValueSpec("json"),
     "weight_versions": ValueSpec("json"),
     "spec_info": ValueSpec("json"),
@@ -146,7 +148,7 @@ def encode_samples(
         nulls: list[str] = []
         for field in fields:
             spec = SAMPLES_VALUE_SPEC_V2[field]
-            value = getattr(sample, field)
+            value = getattr(sample, field)  # config-access-exempt: attribute selected at runtime from field
             if spec.codec == "json":
                 if field == "status":
                     value = value.value
@@ -155,6 +157,11 @@ def encode_samples(
                 elif field == "spec_info":
                     value = value.to_dict()
                 elif field == "prefix_cache_info":
+                    value = value.to_dict()
+                elif field == "rollout_store_plan":
+                    if value is None:
+                        # No key: a payload without plans stays byte-identical.
+                        continue
                     value = value.to_dict()
                 sample_meta[field] = value
                 continue
@@ -218,6 +225,11 @@ def decode_samples_and_merge_input_sample(
         for field in fields:
             spec = SAMPLES_VALUE_SPEC_V2[field]
             if spec.codec == "json":
+                if field == "rollout_store_plan":
+                    # No key means no plan; the server's plan replaces the input sample's.
+                    value = sample_meta.get(field)
+                    sample.rollout_store_plan = None if value is None else StorePlan.from_dict(value)
+                    continue
                 value = sample_meta[field]
                 if field == "status":
                     value = Sample.Status(value)

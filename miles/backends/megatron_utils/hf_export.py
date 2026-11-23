@@ -8,25 +8,27 @@ from pathlib import Path
 import torch
 from megatron.core.distributed import DistributedDataParallel as DDP
 
+from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots
+from miles.backends.megatron_utils.lora.checkpoint import single_lora_parametrization
+from miles.backends.megatron_utils.lora.native.checkpoint import NativeAdapterSlots
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
 from miles.backends.megatron_utils.lora.utils import is_lora_model
 from miles.backends.megatron_utils.named_weights import named_params_and_buffers
+from miles.backends.training_utils.checkpoint.adapter.adapter_dir import write_peft_export, write_sampler_export
+from miles.backends.training_utils.checkpoint.adapter.adapter_exports import has_plain_peft_form
 from miles.backends.training_utils.checkpoint.io import write_checkpoint_dir
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.snapshot_publisher import SnapshotPublisher
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.hf_utils.config import HF_EXPORT_COMPLETE_MARKER
-from miles.utils.megatron_bridge_utils import patch_megatron_model
+from miles.utils.megatron_bridge_utils import load_auto_bridge, patch_megatron_model
 
 logger = logging.getLogger(__name__)
 
 
 @cache
 def _get_hf_bridge(hf_checkpoint: str):
-    # Local: megatron.bridge is only needed on the bridge export path.
-    from megatron.bridge import AutoBridge
-
-    return AutoBridge.from_hf_pretrained(hf_checkpoint, trust_remote_code=True)
+    return load_auto_bridge(hf_checkpoint)
 
 
 def save_hf_model(
@@ -35,6 +37,7 @@ def save_hf_model(
     model: Sequence[DDP],
     *,
     publisher: SnapshotPublisher,
+    adapter_slots: BridgeAdapterSlots | NativeAdapterSlots | None,
     path: str | Path | None = None,
     raise_on_error: bool = False,
 ) -> None:
@@ -71,7 +74,24 @@ def save_hf_model(
                     f"bridge likely has no mapping for this model architecture."
                 )
         if is_lora_model(model):
-            publisher.write_adapter(None, checkpoint_dir / "adapter")
+            assert adapter_slots is not None, "a LoRA export needs the model's adapter slots"
+            parametrization = single_lora_parametrization(adapter_slots, args)
+            # native keeps sglang's stacked expert layout; a fused module whose components have their own A has no
+            # PEFT name, and sglang's names, as main wrote, do
+            write_export = (
+                write_sampler_export
+                if adapter_slots.bf16_adapter_key_style == "sampler"
+                or not has_plain_peft_form(parametrization, adapter_slots.targets)
+                else write_peft_export
+            )
+            write_export(
+                checkpoint_dir / "adapter",
+                adapter_slots,
+                0,
+                parametrization,
+                adapter_slots.targets,
+                lora_dropout=args.lora_dropout,
+            )
 
     if should_log:
         logger.info(f"Saving model in HuggingFace format to {path}")

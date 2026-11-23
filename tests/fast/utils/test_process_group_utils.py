@@ -185,6 +185,20 @@ def test_gather_object() -> None:
     run_multiprocess(_worker_gather_object, world_size=4)
 
 
+@pytest.mark.parametrize("rooted_reduce", [True, False])
+def test_native_reduce_takes_all_reduce_where_the_platform_has_no_rooted_reduce(monkeypatch, rooted_reduce) -> None:
+    """tpu_dist has no rooted reduce; all_reduce leaves the same value on the root."""
+    from miles.platforms import current_platform
+
+    monkeypatch.setattr(current_platform, "rooted_reduce", rooted_reduce)
+    calls = []
+    monkeypatch.setattr(dist, "reduce", lambda tensor, dst, op, group: calls.append(("reduce", dst)))
+    monkeypatch.setattr(dist, "all_reduce", lambda tensor, op, group: calls.append(("all_reduce", None)))
+    monkeypatch.setattr(dist, "get_global_rank", lambda group, rank: 5)
+    _NativePGUtil().reduce(torch.tensor([1.0]), group=object(), op=dist.ReduceOp.SUM)
+    assert calls == ([("reduce", 5)] if rooted_reduce else [("all_reduce", None)])
+
+
 class TestRawPGUtilUnit:
     """Unit tests for _RawPGUtil using mock groups (torchft-style with _rank attr)."""
 

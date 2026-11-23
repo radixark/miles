@@ -23,6 +23,7 @@ from sglang.srt.model_loader.loader import DefaultModelLoader, post_load_weights
 from sglang.srt.server_args import ServerArgs
 
 from miles.backends.megatron_utils.megatron_to_hf.processors import quantizer_fp8, quantizer_mxfp8, quantizer_nvfp4
+from miles.backends.sglang_utils.sglang_config import SglangConfig
 from miles.backends.training_utils.weight_update.protocols.utils.loader_probe import HfTensorSpec
 from miles.backends.training_utils.weight_update.protocols.utils.model_param_stager import ModelParamStager
 from miles.backends.training_utils.weight_update.protocols.utils.model_replica import (
@@ -91,7 +92,13 @@ def main() -> None:
     initialize_fp8_gemm_config()
     initialize_fp4_gemm_config()
     quantizer_args = SimpleNamespace(
-        sglang_moe_runner_backend=server_args.moe_runner_backend, sglang_moe_a2a_backend=server_args.moe_a2a_backend
+        sglang=SglangConfig(
+            models=[],
+            base_args={
+                "moe_runner_backend": server_args.moe_runner_backend,
+                "moe_a2a_backend": server_args.moe_a2a_backend,
+            },
+        )
     )
     parallelism = RankParallelismConfig(
         tp_size=TP_SIZE,
@@ -247,7 +254,7 @@ def _quantize(
             qweight, scale = fp8_blockwise_cast(weight, [128, 128])
             quantized += [(name, qweight), (name.replace(".weight", ".weight_scale_inv"), scale)]
         elif fmt == "fp8_block":
-            quantized += quantizer_fp8._quantize_param(quantizer_args, name, weight, [128, 128], [], {})
+            quantized += quantizer_fp8._quantize_param(quantizer_args, name, weight, [128, 128], lambda prefix: False)
         elif fmt == "mxfp8":
             quantized += quantizer_mxfp8._quantize_param(name, weight)
         else:

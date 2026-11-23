@@ -5,7 +5,7 @@ key. Everything here is synchronous pure data — serving policy,
 concurrency, and tokenization live one layer up in ``session_state``.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from miles.rollout.session.types import SessionRecord
@@ -66,6 +66,19 @@ class SessionTree:
 
     def leaves(self) -> list[TrajectoryNode]:
         return [node for node in self.nodes if not node.children]
+
+    def snapshot(self) -> "SessionTree":
+        """Copy the tree structure without copying committed messages, tokens or records."""
+        tree = SessionTree()
+        for node in self.nodes:
+            parent = tree.nodes[node.parent.seq] if node.parent is not None else None
+            copied = replace(node, parent=parent, children=[])
+            tree.nodes.append(copied)
+            if parent is None:
+                tree.roots.append(copied)
+            else:
+                parent.children.append(copied)
+        return tree
 
     def create_node(
         self,

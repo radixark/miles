@@ -42,7 +42,7 @@ _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="test_run_megatron_"))
 register_cuda_ci(
     est_time=300, suite="stage-c-8-gpu-h100", labels=["short"], hardware=["hopper", "blackwell"], num_gpus=8
 )
-register_rocm_ci(est_time=300, suite="nightly-stage-c-8-gpu-mi350", labels=["short"])
+register_rocm_ci(est_time=300, suite="stage-c-8-gpu-mi350", labels=["short"])
 
 
 @dataclasses.dataclass(frozen=True)

@@ -37,16 +37,16 @@ register_cuda_ci(
 )
 register_rocm_ci(
     est_time=900,
-    suite="stage-c-4-gpu-mi350",
+    suite="stage-c-2-gpu-mi350",
     labels=["megatron", "model-scripts", "amd"],
 )
-register_rocm_ci(est_time=900, suite="nightly-stage-c-2-gpu-mi350", labels=["megatron", "model-scripts", "amd"])
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 
 def _args() -> ScriptArgs:

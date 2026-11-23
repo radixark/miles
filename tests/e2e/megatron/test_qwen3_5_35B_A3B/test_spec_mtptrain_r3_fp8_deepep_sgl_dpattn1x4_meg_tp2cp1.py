@@ -23,6 +23,7 @@ register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 CASE = CaseConfig(
     # tp2/pp1/cp1/ep4: dense DP2 with EP4 folded over TP x DP. TP=4 hits the Qwen3.5
@@ -39,6 +40,7 @@ CASE = CaseConfig(
     sglang_ep_size=4,
     enable_mtp_training=True,
     use_r3=True,
+    use_output_store=True,
     use_deepep=True,
     use_fp8_rollout=True,
     # miles has no VLM/vision implementation on the training side, so vision weights are

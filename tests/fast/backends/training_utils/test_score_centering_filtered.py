@@ -6,7 +6,7 @@ from copy import deepcopy
 import numpy as np
 import pytest
 import torch
-from tests.fast.fixtures.score_centering_fixtures import _args, _Tokenizer, _turn
+from tests.fast.fixtures.score_centering_fixtures import _args, _flat_sampling_mask, _Tokenizer, _turn
 
 from miles.backends.training_utils import parallel
 from miles.backends.training_utils.data.rollout import DataIterator
@@ -66,8 +66,7 @@ def _filtered_sample() -> Sample:
         sample,
         {
             "output_token_logprobs": [(math.log(0.4), 2, None)],
-            "output_token_sampling_mask": [[3, 2]],
-            "output_token_sampling_logprobs": [[math.log(3 / 7), math.log(4 / 7)]],
+            **_flat_sampling_mask([[3, 2]], [[math.log(3 / 7), math.log(4 / 7)]]),
         },
         3,
         sampling_logprobs_mode="support",
@@ -155,8 +154,7 @@ def test_missing_support_candidate_fails_at_generation() -> None:
     )
     meta = {
         "output_token_logprobs": [(math.log(0.4), 2, None)],
-        "output_token_sampling_mask": [[2, 5, 7, 8]],
-        "output_token_sampling_logprobs": [[math.log(0.4), math.log(0.3), math.log(0.2), math.log(0.1)]],
+        **_flat_sampling_mask([[2, 5, 7, 8]], [[math.log(0.4), math.log(0.3), math.log(0.2), math.log(0.1)]]),
     }
     with pytest.raises(ValueError, match="support exceeds"):
         append_rollout_topk_logprobs(sample, meta, 3, sampling_logprobs_mode="support")
@@ -168,7 +166,8 @@ def test_missing_support_probabilities_fail_closed() -> None:
         response_length=1,
         rollout_sampling_mask=RolloutSamplingMask.from_mask_list([[2, 3]]),
     )
-    meta = {"output_token_logprobs": [(math.log(0.4), 2, None)], "output_token_sampling_mask": [[2, 3]]}
+    meta = {"output_token_logprobs": [(math.log(0.4), 2, None)], **_flat_sampling_mask([[2, 3]], [[0.0, 0.0]])}
+    meta = {key: value for key, value in meta.items() if not key.startswith("output_token_sampling_logprobs")}
     with pytest.raises(ValueError, match="output_token_sampling_logprobs"):
         append_rollout_topk_logprobs(sample, meta, 3, sampling_logprobs_mode="support")
 

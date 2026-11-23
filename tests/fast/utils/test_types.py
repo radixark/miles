@@ -5,7 +5,10 @@ from unittest.mock import MagicMock
 
 import numpy
 import pytest
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
+from tests.fast.utils.output_store.test_plan import MASK, R3, response, segs
 
+from miles.utils.output_store.plan import StorePlanError
 from miles.utils.types import LEGACY_WEIGHT_VERSIONS_KEY, Sample, WeightVersionSpan, WeightVersionsPerCall
 
 
@@ -226,8 +229,32 @@ class TestStripLastOutputTokens:
         s.validate()
 
 
+class TestRolloutStorePlan:
+    def test_validate_checks_the_plan_rows_against_the_sample(self):
+        s = _make_sample([1, 2, 3], [4, 5])
+        s.rollout_store_plan = response("a", prompt=3, output=2)
+        s.validate()
+        s.rollout_store_plan = response("a", prompt=2, output=2)
+        with pytest.raises(StorePlanError, match="routed_experts has 3 rows; expected 4"):
+            s.validate()
+
+    def test_strip_drops_the_rows_of_the_stripped_tokens(self, tokenizer):
+        s = _make_sample([1, 2, 3], [4, 5, 6])
+        s.rollout_store_plan = response("a", prompt=3, output=3)
+        s.strip_last_output_tokens(2, tokenizer)
+        assert segs(s.rollout_store_plan, R3) == [("a", 0, 3)] and segs(s.rollout_store_plan, MASK) == [("a", 0, 1)]
+        assert [ref.key for ref in s.rollout_store_plan.owned_refs] == ["a"]
+        s.validate()
+
+    def test_reset_for_retry_drops_the_plan(self):
+        s = _make_sample([1, 2, 3], [4, 5])
+        s.rollout_store_plan = response("a", prompt=3, output=2)
+        s.reset_for_retry()
+        assert s.rollout_store_plan is None
+
+
 def _make_args() -> SimpleNamespace:
-    return SimpleNamespace(sglang_speculative_algorithm=None)
+    return SimpleNamespace(sglang=make_sglang_config(speculative_algorithm=None))
 
 
 def _make_meta_info(output_ids: list[int], **extra) -> dict:

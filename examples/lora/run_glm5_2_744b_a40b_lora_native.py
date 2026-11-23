@@ -27,8 +27,8 @@ import miles.utils.external_utils.command_utils as U
 
 app = typer.Typer()
 
-# attention-only, same set as the MLA registries in run_lora_native.py
-_MLA_TARGET_MODULES = "q_a_proj,q_b_proj,kv_a_proj_with_mqa,kv_b_proj,o_proj"
+# attention-only; SGLang's DSA prefill rejects a kv_b_proj adapter
+_MLA_TARGET_MODULES = "q_a_proj,q_b_proj,kv_a_proj_with_mqa,o_proj"
 
 _HF_REPO = {
     "GLM-5.2_5layer": "Pinaster/GLM-5.2_5layer",
@@ -234,9 +234,7 @@ def _train(args: ScriptArgs):
 
     wandb_args = U.get_default_wandb_args(__file__, run_id=args.run_id) if args.enable_wandb else ""
 
-    seq_args = (
-        f"--seq-length {args.seq_window} --rollout-max-context-len {args.seq_window} " if args.seq_window > 0 else ""
-    )
+    seq_args = f"--seq-length {args.seq_window} --max-seq-len {args.seq_window} " if args.seq_window > 0 else ""
 
     train_args = (
         f"{ckpt_args} {lora_args} {rollout_args} {seq_args} {optimizer_args} {grpo_args} {r3_args} "

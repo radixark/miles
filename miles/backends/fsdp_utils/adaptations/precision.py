@@ -22,9 +22,9 @@ class PrecisionPolicy:
 def default_precision_policy(args) -> PrecisionPolicy:
     """The backend's compute, reduction and master-weight precision; an ``ArchAdapter`` may adjust it."""
     return PrecisionPolicy(
-        param_dtype=torch.float16 if getattr(args, "fp16", False) else torch.bfloat16,
+        param_dtype=torch.float16 if args.backend.fp16 else torch.bfloat16,
         reduce_dtype=torch.float32,
-        keep_fp32_master=args.keep_fp32_master,
+        keep_fp32_master=args.backend.keep_fp32_master,
     )
 
 

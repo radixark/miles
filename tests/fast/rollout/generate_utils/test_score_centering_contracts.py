@@ -55,9 +55,7 @@ def test_request_candidates_and_sampler_contract(openai: bool) -> None:
     request = {} if openai else {"sampling_params": {}}
     configure_rollout_topk_logprobs_request(_args(rollout_top_logprobs_num=128), request, openai=openai)
     assert request["top_logprobs" if openai else "top_logprobs_num"] == 128
-    # Only the chat path asks for flat arrays; native /generate keeps the nested rows OPD reads.
-    assert request.get("return_flat_raw_output_top_logprobs", False) is openai
-    assert request.get("return_flat_raw_top_logprobs_b64", False) is openai
+    assert request["return_flat_raw_output_top_logprobs"] and request["return_flat_raw_top_logprobs_b64"]
     sampling = request if openai else request["sampling_params"]
     assert sampling["temperature"] == 0.7
     sampling["top_p"] = 0.9
@@ -133,20 +131,16 @@ def test_invalid_options_fail_early(field: str, value: object) -> None:
 @pytest.mark.parametrize("session", ["v1", "v2"])
 @pytest.mark.parametrize("top_k", [21, 128])
 def test_large_session_heads_can_use_sglang_router(session: str, top_k: int) -> None:
-    validate_score_centering_args(
-        _args(use_session_server=session, rollout_top_logprobs_num=top_k, use_miles_router=False)
-    )
+    validate_score_centering_args(_args(use_session_server=session, rollout_top_logprobs_num=top_k, router="sglang"))
 
 
 @pytest.mark.parametrize("session", ["v1", "v2"])
 def test_standard_openai_head_size_can_use_sglang_router(session: str) -> None:
-    validate_score_centering_args(
-        _args(use_session_server=session, rollout_top_logprobs_num=20, use_miles_router=False)
-    )
+    validate_score_centering_args(_args(use_session_server=session, rollout_top_logprobs_num=20, router="sglang"))
 
 
 def test_large_native_heads_can_use_sglang_router() -> None:
-    validate_score_centering_args(_args(use_session_server=None, rollout_top_logprobs_num=128, use_miles_router=False))
+    validate_score_centering_args(_args(use_session_server=None, rollout_top_logprobs_num=128, router="sglang"))
 
 
 @pytest.mark.parametrize("session", ["v1", "v2"])
@@ -154,7 +148,7 @@ def test_filtered_session_support_does_not_use_top_logprobs_router_cap(session: 
     validate_score_centering_args(
         _args(
             use_session_server=session,
-            use_miles_router=False,
+            router="sglang",
             rollout_top_logprobs_num=128,
             rollout_top_p=0.9,
             rollout_top_k=64,
@@ -166,7 +160,7 @@ def test_filtered_session_support_does_not_use_top_logprobs_router_cap(session: 
 
 def test_other_losses_do_not_require_score_centering_router() -> None:
     validate_score_centering_args(
-        _args(loss_type="policy_loss", use_session_server="v2", rollout_top_logprobs_num=128, use_miles_router=False)
+        _args(loss_type="policy_loss", use_session_server="v2", rollout_top_logprobs_num=128, router="sglang")
     )
 
 
@@ -190,18 +184,27 @@ _FLAT_SELECTED = [(row[0][0], row[0][1], None) for row in _FLAT_ROWS]
 
 
 @pytest.mark.parametrize("k", [3, 4], ids=["truncated", "exact"])
-def test_flat_output_top_logprobs_match_nested_rows(k: int) -> None:
-    nested, flat = Sample(), Sample()
+def test_flat_output_top_logprobs_keep_each_rows_first_k_candidates(k: int) -> None:
+    sample = Sample()
 
-    nested_meta = {"output_token_logprobs": _FLAT_SELECTED, "output_top_logprobs": _FLAT_ROWS}
-    append_rollout_topk_logprobs(nested, nested_meta, k)
     append_rollout_topk_logprobs(
-        flat, {"output_token_logprobs": _FLAT_SELECTED, **_flat_output_top_logprobs(_FLAT_ROWS)}, k
+        sample, {"output_token_logprobs": _FLAT_SELECTED, **_flat_output_top_logprobs(_FLAT_ROWS)}, k
     )
 
-    np.testing.assert_array_equal(flat.rollout_topk_token_ids, nested.rollout_topk_token_ids)
-    np.testing.assert_array_equal(flat.rollout_topk_log_probs, nested.rollout_topk_log_probs)
-    assert flat.rollout_topk_log_probs.dtype == np.float32
+    np.testing.assert_array_equal(
+        sample.rollout_topk_token_ids, [[entry[1] for entry in row[:k]] for row in _FLAT_ROWS]
+    )
+    np.testing.assert_array_equal(
+        sample.rollout_topk_log_probs, np.float32([[entry[0] for entry in row[:k]] for row in _FLAT_ROWS])
+    )
+    assert sample.rollout_topk_log_probs.dtype == np.float32
+
+
+def test_nested_output_top_logprobs_are_rejected() -> None:
+    nested = {"output_token_logprobs": _FLAT_SELECTED, "output_top_logprobs": _FLAT_ROWS}
+
+    with pytest.raises(ValueError, match="base64 flat output top logprobs"):
+        append_rollout_topk_logprobs(Sample(), nested, 4)
 
 
 @pytest.mark.parametrize(
@@ -224,6 +227,16 @@ def test_flat_output_top_logprobs_reject_incomplete_candidates(edit, k: int, mat
 def test_zero_token_completion_accepts_missing_candidate_fields(mode: str) -> None:
     sample = Sample(response_length=0)
     append_rollout_topk_logprobs(sample, {}, 3, sampling_logprobs_mode=mode)
+    assert sample.rollout_topk_token_ids.shape == (0, 3)
+    assert sample.rollout_topk_log_probs.shape == (0, 3)
+
+
+@pytest.mark.parametrize("width", [0, 3], ids=["empty-width", "full-width"])
+def test_zero_token_completion_accepts_empty_flat_candidates(width: int) -> None:
+    # an empty flat response has no rows to be short of, whatever width it reports
+    flat = _flat_output_top_logprobs([]) | {"output_top_logprobs_shape": [0, width]}
+    sample = Sample(response_length=0)
+    append_rollout_topk_logprobs(sample, {"output_token_logprobs": [], **flat}, 3)
     assert sample.rollout_topk_token_ids.shape == (0, 3)
     assert sample.rollout_topk_log_probs.shape == (0, 3)
 
@@ -253,3 +266,26 @@ def test_candidate_validation_preserves_order_and_allows_repeated_padding(candid
     validate_rollout_topk_logprobs_sample(sample, 3)
     np.testing.assert_array_equal(sample.rollout_topk_token_ids, original_ids)
     np.testing.assert_array_equal(sample.rollout_topk_log_probs, original_logps)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "use_tis",
+        "custom_tis_function_path",
+        "use_opsm",
+        "true_on_policy_mode",
+        "recompute_logprobs_via_prefill",
+        "sglang_speculative_algorithm",
+        "custom_pg_loss_reducer_function_path",
+        "multi_lora",
+        "use_opd",
+        "custom_convert_samples_to_train_data_path",
+    ],
+)
+def test_missing_declared_compatibility_field_is_rejected(field: str) -> None:
+    """Missing known compatibility fields cannot silently disable validation."""
+    args = _args()
+    delattr(args, field)
+    with pytest.raises(AttributeError, match=field):
+        validate_score_centering_args(args)

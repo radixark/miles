@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from tests.utils.soak.recipes import gsm8k
 
 @pytest.fixture
 def harness(scenario_harness: ScenarioHarness, monkeypatch: pytest.MonkeyPatch) -> ScenarioHarness:
+    monkeypatch.setattr(sys, "argv", [__file__])
     monkeypatch.setattr(gsm8k, "create_backend_for_run", lambda config: config.create_backend())
     monkeypatch.setattr(gsm8k, "prepare_gsm8k", scenario_harness.record_backend_prepare)
     monkeypatch.setattr(fault_triggers, "assert_hook_evidence", scenario_harness.recorder("assert_hook_evidence"))
