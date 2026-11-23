@@ -251,7 +251,9 @@ def test_a_static_shape_platform_compiles_static_graphs_for_every_pass_and_bucke
     pytest.importorskip("torchtitan")
     from miles.backends.torchtitan_utils.trainer import TitanTrainer
 
-    trainer = SimpleNamespace(config=SimpleNamespace(training=SimpleNamespace(max_context_length=8192)))
+    trainer = SimpleNamespace(
+        config=SimpleNamespace(training=SimpleNamespace(max_context_length=8192), true_on_policy=False)
+    )
 
     def configure_fixed_shape_compile(*, num_passes):
         TitanTrainer.configure_fixed_shape_compile(trainer, num_passes=num_passes)
@@ -269,6 +271,10 @@ def test_a_static_shape_platform_compiles_static_graphs_for_every_pass_and_bucke
         assert not torch._dynamo.config.automatic_dynamic_shapes
         configure_fixed_shape_compile(num_passes=3)
         assert torch._dynamo.config.recompile_limit == 2 * 3
+        # true on-policy blocks share one forward over three graphs: the first block, gated delta net, attention
+        trainer.config.true_on_policy = True
+        configure_fixed_shape_compile(num_passes=3)
+        assert torch._dynamo.config.recompile_limit == 3 * 3
 
 
 def test_context_parallelism_is_rejected_for_qwen3_5(monkeypatch):

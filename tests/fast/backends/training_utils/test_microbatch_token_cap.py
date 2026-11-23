@@ -1,3 +1,7 @@
+from types import SimpleNamespace
+
+import torch
+
 from miles.backends.training_utils.data import rollout
 from miles.utils.data import get_minimum_num_micro_batch_size
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
@@ -36,3 +40,20 @@ def test_the_sample_cap_splits_many_short_samples():
     num = rollout._num_microbatches_within_cap(lengths, 8192, max_samples=127)
     assert num == 2
     assert max(len(p) for p in get_seqlen_balanced_partitions(lengths, num, equal_size=False)) <= 127
+
+
+def test_dp_ranks_raise_the_count_until_every_rank_fits_the_sample_cap(monkeypatch):
+    """DP ranks run each step's largest count, and a rank's balanced partition at a count above its own must still
+    fit the sample cap: the ranks raise the count until every rank fits at it."""
+    lengths = [100] * 8
+    assert rollout._num_microbatches_within_cap(lengths, 8192, max_samples=4) == 2
+    real_fit = rollout._partitions_fit
+    # this rank's partition breaks the cap at 3, the count another rank needs
+    monkeypatch.setattr(rollout, "_partitions_fit", lambda ls, n, cap, ms: n != 3 and real_fit(ls, n, cap, ms))
+    other_rank = iter([torch.tensor([3]), torch.tensor([4])])
+    all_reduce = lambda t, group, op: t.copy_(torch.maximum(t, next(other_rank)))  # noqa: E731
+    monkeypatch.setattr(
+        rollout, "GeneralPGUtil", SimpleNamespace(create=lambda g: SimpleNamespace(all_reduce=all_reduce))
+    )
+    counts = rollout._agree_on_counts_within_sample_cap(torch.tensor([3]), [lengths], 8192, 4, dp_group=None)
+    assert counts.tolist() == [4]

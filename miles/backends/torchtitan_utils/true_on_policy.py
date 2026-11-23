@@ -184,10 +184,6 @@ def _gated_delta_net(gdn, x, segment_ids, positions):
     conv = (gdn.conv_q.weight, gdn.conv_k.weight, gdn.conv_v.weight)
     # The engine's op is its per-token recurrence, forward only; the trainer's kernel solves the same math in chunks
     # and gives other bytes, so it only carries the gradient.
-    own = gdn.inner_attention(
-        q, k, v, a, b, *conv, gdn.A_log, gdn.dt_bias,
-        key_head_dim=key_dim, value_head_dim=value_dim, attention_metadata=segment_ids,
-    )  # fmt: skip
     engine = ops.packed_gated_delta_net(
         torch.cat([q, k, v], dim=-1).detach(),
         b.detach(),
@@ -201,7 +197,14 @@ def _gated_delta_net(gdn, x, segment_ids, positions):
         key_dim,
         value_dim,
     )
-    core = engine + (own - own.detach()).to(engine.dtype)  # the engine's value, the trainer kernel's gradient
+    if not torch.is_grad_enabled():
+        core = engine  # a pass without a backward (log-probs) needs only the value
+    else:
+        own = gdn.inner_attention(
+            q, k, v, a, b, *conv, gdn.A_log, gdn.dt_bias,
+            key_head_dim=key_dim, value_head_dim=value_dim, attention_metadata=segment_ids,
+        )  # fmt: skip
+        core = engine + (own - own.detach()).to(engine.dtype)  # the engine's value, the trainer kernel's gradient
     gated = ops.gated_rms_norm(
         core.reshape(-1, value_dim), z.reshape(-1, value_dim), gdn.norm.weight.to(torch.bfloat16), _eps(gdn.norm)
     )

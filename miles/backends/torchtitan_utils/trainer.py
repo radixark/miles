@@ -101,6 +101,9 @@ class TitanTrainer(Configurable):
 
             for model in self.model_parts:
                 true_on_policy.install(model)
+                # install replaces each block's forward, and with it the engine's remat wrapper
+                if config.activation_remat is not None:
+                    config.activation_remat.apply(model)
         if config.compile_backend is not None:
             _compile_blocks(self.model_parts, backend=config.compile_backend)
         self.optimizers = self.engine.optim.optimizers
@@ -283,8 +286,9 @@ class TitanTrainer(Configurable):
         # a second length would otherwise make dynamo mark the dimension dynamic, which the backend rejects
         torch._dynamo.config.automatic_dynamic_shapes = False
         # blocks of one class share a forward, and a class can guard on a per-block flag (DeepSeek-V3-style dense
-        # first layers before MoE ones), so each class may hold two graphs per pass
-        num_graphs = 2 * num_passes
+        # first layers before MoE ones), so each class may hold two graphs per pass; true on-policy blocks share one
+        # forward over three graphs: the first block, and the later ones with a gated-delta-net or an attention
+        num_graphs = (3 if self.config.true_on_policy else 2) * num_passes
         torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, num_graphs)
 
     def has_last_stage(self) -> bool:
