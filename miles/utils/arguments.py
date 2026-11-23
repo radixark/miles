@@ -2010,10 +2010,8 @@ def miles_validate_args(args):
         cluster_backend=ClusterBackend(args.cluster_backend), requested=args.worker_comm_backend
     ).value
 
+    args.use_distributed_post = _resolve_use_distributed_post(args)
     if ClusterBackend(args.cluster_backend) == ClusterBackend.KUBERNETES:
-        assert (
-            not args.use_distributed_post
-        ), "--use-distributed-post reads ray.nodes(), which --cluster-backend kubernetes has no Ray cluster for"
         assert (
             args.multi_lora_n_adapters == 0
         ), "--multi-lora-n-adapters drives RayWorkerManager, which --cluster-backend kubernetes does not use"
@@ -2243,6 +2241,16 @@ def _maybe_apply_dumper_overrides(args: argparse.Namespace) -> None:
     args.save_interval = None
     if args.train_backend == "megatron":
         args.save_retain_interval = None
+
+
+def _resolve_use_distributed_post(args: argparse.Namespace) -> bool:
+    """Per-node posting actors by default on Ray; kubernetes has no Ray cluster to place them on."""
+    if ClusterBackend(args.cluster_backend) == ClusterBackend.KUBERNETES:
+        assert (
+            not args.use_distributed_post
+        ), "--use-distributed-post reads ray.nodes(), which --cluster-backend kubernetes has no Ray cluster for"
+        return False
+    return True if args.use_distributed_post is None else args.use_distributed_post
 
 
 def resolve_fsdp_num_layers(hf_config) -> int | None:

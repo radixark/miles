@@ -364,6 +364,12 @@ def init_http_client(args):
 
     # Optionally initialize distributed POST via Ray without changing interfaces
     if args.use_distributed_post:
+        import ray
+
+        if not ray.is_initialized():
+            # the default under --cluster-backend ray; a process without a Ray client keeps the local pool
+            logger.warning("[http_utils] Ray is not initialized in this process; posting from the local client")
+            return
         _init_ray_distributed_post(args)
         _distributed_post_enabled = True
 
@@ -408,9 +414,10 @@ def _init_ray_distributed_post(args):
         node_id = node["NodeID"]
         scheduling = NodeAffinitySchedulingStrategy(node_id=node_id, soft=False)
         for _ in range(args.num_gpus_per_node):
+            # Owned by the process that calls init_http_client (the rollout executor), so the
+            # actors go away with the run instead of outliving it on a shared Ray cluster.
             actor = _HttpPosterActor.options(
                 name=None,
-                lifetime="detached",
                 scheduling_strategy=scheduling,
                 max_concurrency=per_actor_conc,
                 # Use tiny CPU to schedule
