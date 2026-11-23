@@ -23,6 +23,7 @@ from miles.kernels.attention.dsa import (  # noqa: E402
     indexer_logits_sbhd,
     indexer_topk_scores,
     lighting_indexer,
+    score_rows,
 )
 from miles.kernels.attention.dsa.indexer import IndexerConfig  # noqa: E402
 from miles.kernels.attention.dsa.topk import canonical_dsa_topk, select_topk  # noqa: E402
@@ -240,6 +241,20 @@ def test_canonical_topk_beyond_32768_rows():
     got = canonical_dsa_topk(scores, topk, ks, ke)
     assert torch.equal(got, reference.canonical_topk_ref(clean, topk, ks, ke))
     assert torch.equal((got >= 0).sum(-1), (ke - ks).clamp(max=topk))
+
+
+@pytest.mark.parametrize("n_kv", [701, 1027])
+def test_score_rows_keeps_a_lone_rows_aligned_stride(n_kv):
+    """reshape flattens a [1, 1, n] score row to the stride n, which the canonical top-k refuses though it never
+    steps a lone row's stride; score_rows keeps the padded stride and the picks stay exact."""
+    ks = torch.zeros(1, dtype=torch.int32, device="cuda")
+    ke = torch.full((1,), n_kv, dtype=torch.int32, device="cuda")
+    row, clean = _scores(1, n_kv, ks, ke)
+    scores = row.unsqueeze(0)  # [1, 1, n_kv] over the padded row, as indexer_logits_sbhd returns one
+    with pytest.raises(AssertionError, match="SCORE_ROW_ALIGN"):
+        canonical_dsa_topk(scores.reshape(1, n_kv), 512, ks, ke)
+    got = canonical_dsa_topk(score_rows(scores), 512, ks, ke)
+    assert torch.equal(got, reference.canonical_topk_ref(clean, 512, ks, ke))
 
 
 def test_canonical_topk_rejects_unaligned_rows():
