@@ -1,0 +1,23 @@
+diff --git a/src/harbor/agents/terminus_2/terminus_2.py b/src/harbor/agents/terminus_2/terminus_2.py
+index 413b9cb7..dd4aec32 100644
+--- a/src/harbor/agents/terminus_2/terminus_2.py
++++ b/src/harbor/agents/terminus_2/terminus_2.py
+@@ -252,6 +252,7 @@ class Terminus2(BaseAgent):
+             **kwargs: Additional arguments
+         """
+         super().__init__(logs_dir, model_name, *args, extra_env=extra_env, **kwargs)
++        self._max_seq_len = kwargs.get("max_seq_len")
+ 
+         if model_name is None:
+             raise ValueError("model_name is required for Terminus 2")
+@@ -1631,7 +1632,9 @@ so ask everything you need to know."""
+         context: AgentContext,
+     ) -> None:
+         self._reset_per_run_state()
+-        self._chat = Chat(self._llm, interleaved_thinking=self._interleaved_thinking)
++        self._chat = Chat(
++            self._llm, interleaved_thinking=self._interleaved_thinking, max_seq_len=self._max_seq_len
++        )
+         self._context = context
+ 
+         if self._session is None:

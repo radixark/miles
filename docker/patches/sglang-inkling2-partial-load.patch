@@ -1,0 +1,25 @@
+diff --git a/python/sglang/srt/models/inkling2.py b/python/sglang/srt/models/inkling2.py
+index f49892c4e1..ea2a8676b0 100644
+--- a/python/sglang/srt/models/inkling2.py
++++ b/python/sglang/srt/models/inkling2.py
+@@ -586,6 +586,8 @@ class Inkling2ForConditionalGeneration(nn.Module):
+             aux_hidden_states=auxiliary,
+         )
+ 
++    _loaded_full_checkpoint = False
++
+     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
+         params = dict(self.named_parameters())
+         loaded = set()
+@@ -653,8 +655,10 @@ class Inkling2ForConditionalGeneration(nn.Module):
+             expected = set(range(len(projections))) if name.endswith(".weight") else {0}
+             if not expected.issubset(shards):
+                 missing.add(f"{name} shards {sorted(expected - shards)}")
+-        if missing:
++        # an online weight update sends the checkpoint in buckets; only the first load must be complete
++        if missing and not self._loaded_full_checkpoint:
+             raise ValueError(f"Missing checkpoint tensors: {sorted(missing)}")
++        self._loaded_full_checkpoint = True
+         self.post_load_weights()
+         return loaded
+ 
