@@ -139,6 +139,7 @@ def make_args(**overrides: Any) -> Namespace:
         rollout_external=False,
         rollout_external_engine_addrs=None,
         rollout_external_router_pd=False,
+        rollout_external_engine_discovery_timeout=600.0,
         custom_inference_engine_provider_path="miles.ray.specs.inference.backend_inference_engine_provider",
         # offload / fault tolerance
         offload_rollout=False,

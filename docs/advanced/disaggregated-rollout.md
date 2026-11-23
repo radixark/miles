@@ -86,9 +86,12 @@ addresses explicitly:
 ```
 
 Setting the addresses is what makes the rollout external; miles discovers each
-engine's topology from its `/server_info`. If the attached fleet runs PD
-disaggregation, add `--rollout-external-router-pd`, because the router starts
-before the engines are discovered.
+engine's topology from its `/server_info`, probing each address for up to
+`--rollout-external-engine-discovery-timeout` seconds (default 600) before the
+run gives up on it; raise it for engines that load a large checkpoint from a
+network mount. If the attached fleet runs PD disaggregation, add
+`--rollout-external-router-pd`, because the router starts before the engines
+are discovered.
 
 The engines must be reachable from the miles job and must have server settings
 compatible with the rollout configuration. Because miles retains individual

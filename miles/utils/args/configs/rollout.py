@@ -248,6 +248,16 @@ class RolloutRelatedConfig(BaseConfig):
             )
         ),
     ] = False
+    rollout_external_engine_discovery_timeout: A[
+        float,
+        Arg(
+            help=(
+                "Seconds to keep probing each external engine's /server_info before the run gives up on it. "
+                "An engine that loads a large checkpoint from a network mount can take well over the default "
+                "600 s to answer."
+            )
+        ),
+    ] = 600.0
     custom_inference_engine_provider_path: A[
         CustomFunctionConfig | None,
         Arg(
