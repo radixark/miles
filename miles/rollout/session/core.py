@@ -225,6 +225,8 @@ class SessionCore:
         self.use_addition_r3 = use_addition_r3
         # The output store client deleting what this server's sessions did not hand over; None without one.
         self._output_store = output_store
+        # The router key of each session created with one; the others route by their session id.
+        self._routing_keys: dict[str, str] = {}
 
     async def _take_store_ref(self, session, request_body: dict, result: dict) -> None:
         """Record the output store ref of a proxied response before anything can drop the response."""
@@ -285,7 +287,12 @@ class SessionCore:
         return Response(content=_render_json(body), status_code=200, media_type=JSON_MEDIA_TYPE)
 
     async def create_session(
-        self, *, evaluation: bool = False, sampling_defaults: dict | None = None, extra_key: str | None = None
+        self,
+        *,
+        evaluation: bool = False,
+        sampling_defaults: dict | None = None,
+        extra_key: str | None = None,
+        routing_key: str | None = None,
     ) -> Response:
         session_id = self.registry.create_session(
             evaluation=evaluation,
@@ -293,6 +300,8 @@ class SessionCore:
             sampling_support_replay=not evaluation and self.config.use_sampling_support_replay,
             extra_key=extra_key,
         )
+        if routing_key is not None:
+            self._routing_keys[session_id] = routing_key
         return Response(content=_render_json({"session_id": session_id}), status_code=200, media_type=JSON_MEDIA_TYPE)
 
     def _session_metadata(self, session_id: str, session) -> dict:
@@ -387,6 +396,7 @@ class SessionCore:
         await session.lock.acquire()
         try:
             self.registry.remove_session(session_id)
+            self._routing_keys.pop(session_id, None)
         finally:
             session.lock.release()
         await self._delete_store_refs(session.store_refs.kept_by_session(samples_received=samples_received))
@@ -497,7 +507,7 @@ class SessionCore:
 
     def _with_routing_key(self, headers: dict, session_id: str) -> dict:
         header = self.config.routing_key_header
-        return {**headers, header: session_id} if header else headers
+        return {**headers, header: self._routing_keys.get(session_id, session_id)} if header else headers
 
     async def proxy(
         self, session_id: str, path: str, *, method: str, query: str, headers: dict, body: bytes

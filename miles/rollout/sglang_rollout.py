@@ -428,11 +428,12 @@ async def generate_and_rm_group(
     if state.aborted:
         return group
 
-    # Generate a unique routing_key for each sample in the group (routing-key policies only)
+    # One routing_key per sample, or per group with --use-group-routing-key (routing-key policies only)
     if router_routes_by_key(args):
+        group_key = str(uuid.uuid4())
         for sample in group:
             if sample.routing_key is None:
-                sample.routing_key = str(uuid.uuid4())
+                sample.routing_key = group_key if args.use_group_routing_key else str(uuid.uuid4())
 
     tasks = []
     for idx, sample in enumerate(group):

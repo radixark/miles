@@ -23,6 +23,12 @@ class RouterConfig(BaseConfig):
         str | None,
         Arg(help="Routing policy for the SGLang router (e.g., 'consistent_hashing', 'round_robin')"),
     ] = None
+    use_group_routing_key: A[
+        bool,
+        Arg(
+            help="Give all samples of a rollout group one routing key, so a key-routing router sends the group to one engine."
+        ),
+    ] = False
     sglang_router_request_timeout_secs: A[
         int,
         Arg(help="Timeout for requests to the SGLang router in seconds"),

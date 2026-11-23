@@ -170,9 +170,10 @@ async def generate_and_rm_group(
         return group
 
     if router_routes_by_key(args):
+        group_key = str(uuid.uuid4())
         for sample in group:
             if sample.routing_key is None:
-                sample.routing_key = str(uuid.uuid4())
+                sample.routing_key = group_key if args.use_group_routing_key else str(uuid.uuid4())
 
     log_prefix = f"[group indices={[s.index for s in group]}]"
     logger.debug(f"{log_prefix} Starting group with {len(group)} samples")

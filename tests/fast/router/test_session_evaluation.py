@@ -35,10 +35,12 @@ class _Backend:
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
         self.requests = []
+        self.headers = []
 
     async def do_proxy(self, request, path, *, body, headers):
         payload = json.loads(body)
         self.requests.append(payload)
+        self.headers.append(headers)
         await asyncio.sleep(0)
         render = dict(tokenize=False, enable_thinking=False)
         prompt = self.tokenizer.apply_chat_template(payload["messages"], add_generation_prompt=True, **render)
@@ -114,6 +116,16 @@ async def _chat(env, sid, messages, **kwargs):
     response = await env.client.post(f"/sessions/{sid}/v1/chat/completions", json={"messages": messages, **kwargs})
     assert response.status_code == 200, response.text
     return response
+
+
+@pytest.mark.parametrize("routing_key", [None, "group-key"])
+async def test_a_session_routes_by_the_key_it_was_created_with(env, routing_key):
+    """A session created with a routing key hands it to the router, so a group's sessions can share an engine;
+    one created without routes by its session id."""
+    sid = await _create(env, b"" if routing_key is None else json.dumps({"routing_key": routing_key}).encode())
+    await _chat(env, sid, [USER])
+
+    assert env.backend.headers[-1]["X-SMG-Routing-Key"] == (routing_key or sid)
 
 
 @pytest.mark.parametrize("body", [b"", b"{}", b'{"evaluation": false}', b'{"evaluation": true}'])
