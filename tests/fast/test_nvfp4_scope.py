@@ -11,7 +11,13 @@ import safetensors.torch
 import torch
 from tools import convert_hf_to_nvfp4 as converter
 
-LAYER_ROOTS = ("model.layers", "language_model.model.layers", "model.language_model.layers", "language_model.layers")
+LAYER_ROOTS = (
+    "model.layers",
+    "language_model.model.layers",
+    "model.language_model.layers",
+    "language_model.layers",
+    "layers",
+)
 EXPERT = ".mlp.experts.0."
 
 

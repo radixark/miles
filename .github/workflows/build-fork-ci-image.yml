@@ -4,7 +4,7 @@ run-name: fork-ci-image-${{ github.event.workflow_run.id }}-${{ github.event.wor
 
 on:
   workflow_run:
-    workflows: [PR Test]
+    workflows: [PR Test, 'PR Test (ROCm)']
     types: [in_progress]
 
 permissions:
@@ -12,7 +12,9 @@ permissions:
 
 jobs:
   request:
+    # Publishes into radixark/miles: a fork or mirror must never run it.
     if: >-
+      github.repository == 'radixark/miles' &&
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.head_repository.id != github.event.repository.id
     runs-on: ubuntu-latest
@@ -25,6 +27,7 @@ jobs:
       request: ${{ steps.resolve.outputs.request }}
       pr: ${{ steps.resolve.outputs.pr }}
       merge_sha: ${{ steps.resolve.outputs.merge_sha }}
+      arches: ${{ steps.resolve.outputs.arches }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,21 +39,30 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/workflows/scripts/fork_ci_image.py resolve
 
+  # A request covers its source workflow's architectures: amd64 and arm64 for PR Test,
+  # rocm10-mi35x for PR Test (ROCm). Each publishes its own tag from its own job, which
+  # the PR-side job of that architecture waits for.
   build:
     needs: request
+    name: build (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(needs.request.outputs.arches) }}
     if: needs.request.outputs.request != ''
     runs-on: [docker-build]
     timeout-minutes: 180
     concurrency:
-      group: fork-ci-image-${{ needs.request.outputs.pr }}
+      group: fork-ci-image-${{ needs.request.outputs.pr }}-${{ matrix.arch }}
       cancel-in-progress: true
     permissions:
       contents: read
       actions: read
-      pull-requests: write
+      pull-requests: read
     env:
       REQUEST_JSON: ${{ needs.request.outputs.request }}
       PR_NUMBER: ${{ needs.request.outputs.pr }}
+      ARCH: ${{ matrix.arch }}
       PYTHONPATH: ''
     steps:
       - name: Checkout trusted orchestration
@@ -76,9 +88,9 @@ jobs:
           echo "OCI_OUTPUT=$OCI_OUTPUT" >> "$GITHUB_ENV"
       - name: Install build tools
         run: |
-          if ! command -v skopeo >/dev/null || ! command -v pip3 >/dev/null; then
+          if ! command -v pip3 >/dev/null; then
             apt-get -o DPkg::Lock::Timeout=600 update
-            apt-get -o DPkg::Lock::Timeout=600 install -y skopeo python3-pip
+            apt-get -o DPkg::Lock::Timeout=600 install -y python3-pip
           fi
           PIP_BSP=""
           pip3 install --help | grep -q -- --break-system-packages && PIP_BSP="--break-system-packages"
@@ -92,14 +104,14 @@ jobs:
           # Replace the action's default network.host/security.insecure entitlements.
           buildkitd-flags: --oci-worker-net=bridge
           driver-opts: image=moby/buildkit:latest
-      - name: Validate source, CUDA demand, and CPU gate
+      - name: Validate source and CPU gate
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 trusted/.github/workflows/scripts/fork_ci_image.py check-source --source source
       - name: Build without registry credentials
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 trusted/.github/workflows/scripts/fork_ci_image.py build --source source
+        run: python3 trusted/.github/workflows/scripts/fork_ci_image.py build --source source --arch "$ARCH"
       - name: Remove the builder before introducing publishing credentials
         if: always() && steps.buildx.outcome == 'success'
         env:
@@ -115,13 +127,19 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Publish the PR image without executing it
+        # docker-build runners have no skopeo and no root for apt; use the pinned upstream image.
         run: |
-          skopeo copy --all --retry-times 3 --authfile "$DOCKER_CONFIG/config.json" \
-            "oci:${OCI_OUTPUT}" "docker://radixark/miles:pr-${PR_NUMBER}"
-      - name: Verify both architectures and consume the rebuild label
+          read -r _ IMAGE_TAG < <(python3 trusted/docker/image_inputs.py --pr "$PR_NUMBER" --arch "$ARCH")
+          docker run --rm --network host \
+            -v "${OCI_OUTPUT}:/oci:ro" \
+            -v "${DOCKER_CONFIG}/config.json:/auth.json:ro" \
+            quay.io/skopeo/stable:v1.22.3-immutable@sha256:c0ee1f4edca5c01cb8d5611124f92f3cc47196ecab68aee5d0f90834e00574d5 \
+            copy --all --retry-times 3 --authfile /auth.json \
+            oci:/oci "docker://radixark/miles:${IMAGE_TAG}"
+      - name: Verify the published inputs
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 trusted/.github/workflows/scripts/fork_ci_image.py finish --source source
+        run: python3 trusted/.github/workflows/scripts/fork_ci_image.py finish --source source --arch "$ARCH"
       - name: Remove local image output and credentials
         if: always() && steps.paths.outcome == 'success'
         run: rm -rf -- "$OCI_OUTPUT" "$DOCKER_CONFIG"

@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from starlette.responses import Response
 from tests.fast.fixtures.session_fixtures import make_session_server_config
 from tests.fast.utils.output_store.test_dropped import sample_owning
-from tests.fast.utils.output_store.test_plan import R3, Ref, Spec, fake_store_refs
+from tests.fast.utils.output_store.test_plan import R3, Ref, fake_store_refs, part
 
 from miles.rollout.session import sessions
 from miles.rollout.session.core import SessionCore
@@ -61,7 +61,7 @@ class _Backend:
         if payload.get(OUTPUT_STORE_REQUEST_KEY) and not self.drop_opt_in:
             rows = len(payload["input_ids"]) + len(self.output_ids) - 1
             meta_info[OUTPUT_STORE_REF_KEY] = Ref(
-                f"key-{self.num_calls}", (Spec(R3, "int32", (rows, LAYERS, TOPK)),)
+                f"key-{self.num_calls}", (part(R3, (rows, LAYERS, TOPK)),)
             ).to_builtins()
         choice = {
             "index": 0,

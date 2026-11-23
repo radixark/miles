@@ -62,7 +62,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             sample.status = halt_status
             break
         output = await post(url, payload, headers=compute_routing_headers(args, sample))
-        await update_sample_from_response(args, sample, payload=payload, output=output, update_loss_mask=True)
+        await update_sample_from_response(
+            args, sample, payload=payload, output=output, update_loss_mask=True, tokenizer=tokenizer
+        )
         finish_reason = output["meta_info"]["finish_reason"]["type"]
         if finish_reason == "abort":
             break

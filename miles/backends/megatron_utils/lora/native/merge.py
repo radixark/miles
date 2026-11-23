@@ -27,7 +27,9 @@ class MergedWeights(Mapping[str, torch.Tensor]):
         delta = self._deltas.get(id(weight))
         if delta is None:
             return weight
-        return (weight.float() + delta()).to(weight.dtype)
+        merged = (weight.float() + delta()).to(weight.dtype)
+        # -0.0 + 0.0 is +0.0: where merging leaves the value unchanged, keep the base weight's bytes.
+        return torch.where(merged == weight, weight, merged)
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._weights)
