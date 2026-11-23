@@ -473,3 +473,29 @@ def test_client_replay_keeps_the_stored_whitespace(spec):
         _FOLLOW_UP,
     ]
     assert tito.preserve_server_message_state([_USER, stored], [_USER, edited]) == [_USER, edited]
+
+
+def test_dataset_image_blocks_render_as_the_chat_endpoints_image_url_blocks():
+    """A dataset's image block ({"type": "image", "image": path}, from miles.utils.data) renders V4.1's image
+    placeholder where the chat endpoint's image_url block puts it; recipe refuses the dataset form and file paths."""
+    tokenizer = _tokenizer("dsv41")
+    image_id = tokenizer.convert_tokens_to_ids("<｜deepseek_image｜>")
+
+    def content(block):
+        return [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "Look at "}, block, {"type": "text", "text": " now."}],
+            }
+        ]
+
+    dataset = apply_chat_template(
+        content({"type": "image", "image": "images/a.png"}), tokenizer=tokenizer, tokenize=True
+    )
+    endpoint = apply_chat_template(
+        content({"type": "image_url", "image_url": {"url": "https://example.com/a.png"}}),
+        tokenizer=tokenizer,
+        tokenize=True,
+    )
+    assert dataset == endpoint
+    assert dataset.count(image_id) == 1
