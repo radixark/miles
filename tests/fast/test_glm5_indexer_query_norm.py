@@ -34,6 +34,8 @@ def project_queries(monkeypatch):
             get_context_parallel_rank=lambda: 0,
         ),
         "gather_from_sequence_parallel_region": lambda tensor, **kwargs: tensor,
+        # not a TOP run
+        "_top_glm_ops": lambda config: None,
     }
     monkeypatch.setitem(
         sys.modules,
