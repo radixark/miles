@@ -6,7 +6,7 @@ from miles import platforms
 def test_an_unknown_accelerator_is_refused(monkeypatch):
     """Any value but cuda or tpu would otherwise run the CUDA platform silently."""
     monkeypatch.setenv("MILES_ACCELERATOR", "TPU")
-    with pytest.raises(ValueError, match="expected cuda or tpu"):
+    with pytest.raises(ValueError, match="expected cuda, tpu or neuron"):
         platforms._select_platform()
 
 
