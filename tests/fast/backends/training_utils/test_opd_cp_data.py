@@ -29,6 +29,7 @@ def _parallel_state(*, cp_size: int, cp_rank: int = 0) -> ParallelState:
 def _args(qkv_format: str) -> Namespace:
     return Namespace(
         enable_witness=False,
+        multimodal_token_space_processing=False,
         qkv_format=qkv_format,
         data_pad_size_multiplier=16,
         true_on_policy_mode=False,

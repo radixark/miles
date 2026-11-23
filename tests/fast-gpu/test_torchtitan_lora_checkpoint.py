@@ -2,11 +2,12 @@ from tests.ci.ci_register import register_cuda_ci
 
 # CPU-only checks, on this stage because only the GPU image ships torchtitan
 register_cuda_ci(
-    est_time=20, suite="stage-b-2-gpu-h200", labels=["torchtitan", "lora"], hardware=["hopper"], num_gpus=2
+    est_time=140, suite="stage-b-2-gpu-h200", labels=["torchtitan", "lora"], hardware=["hopper"], num_gpus=2
 )
 
 import os
 import socket
+import sys
 import weakref
 from dataclasses import dataclass, replace
 from datetime import timedelta
@@ -625,6 +626,7 @@ def test_the_actor_starts_after_the_restored_rollout_and_saves_lora_as_adapter_d
         optimizers=SimpleNamespace(optimizers=[]),
         align_token_side_channel=None,
         configure_loss_reduction=lambda: None,
+        configure_fixed_shape_compile=lambda *, num_passes: None,
         has_last_stage=lambda: True,
         parallelism=SimpleNamespace(get_optional_mesh=lambda name: None),
         engine=SimpleNamespace(load_checkpoint=lambda: None, save_checkpoint=MagicMock()),
@@ -660,6 +662,7 @@ def test_the_actor_starts_after_the_restored_rollout_and_saves_lora_as_adapter_d
         lora_adapter_path=lora_adapter_path,
         start_rollout_id=start_rollout_id,
         stream_optimizer_state_to_disk=False,
+        compile_warmup=False,
         offload_train=False,
     )
     actor = titan_actor.TorchtitanTrainRayActor.__new__(titan_actor.TorchtitanTrainRayActor)
@@ -885,3 +888,7 @@ def _pipeline_stages(rank, world_size, port):
 
 def test_pipeline_stages_share_the_runs_groups_and_modules():
     run_multiprocess(_pipeline_stages)
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-v"]))

@@ -36,7 +36,7 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     num_gpus=4,
 )
-register_rocm_ci(est_time=60, suite="nightly-stage-c-4-gpu-mi350", labels=["precision"])
+register_rocm_ci(est_time=60, suite="stage-c-4-gpu-mi350", labels=["precision"])
 
 SEGMENTS = [1500, 2093, 500, 3]  # neither ratio divides these; the last is shorter than both
 RATIOS = (4, 128)  # one layer that overlap-transforms, one that does not

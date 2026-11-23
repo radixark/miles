@@ -71,9 +71,10 @@ class TorchtitanMultiLoRATrainRayActor(MultiLoRASlotRpcs, TorchtitanTrainRayActo
         rollout_data, store_get_result = get_rollout_data(
             args=self.args,
             rollout_data_ref=rollout_data_ref,
-            output_store_read=self.output_store_read,
+            output_store=self.output_store,
             train_parallel_config=self.train_parallel_config,
             sample_device=response_layout_type(self.args).sample_device,
+            token_space_processor=self.token_space_processor,
         )
         with store_get_result:
             data_iterators, num_microbatches = get_data_iterator(self.args, self.model_parts, rollout_data)

@@ -32,7 +32,16 @@ class TitanTpuModel:
     titan_model_name: str
     titan_model_flavor: str
     sglang_args: str = ""
+    # environment assignments for the sglang server, e.g. "NAME=value "
+    sglang_env: str = ""
+    # how rollouts are prompted and scored; math grades the last \boxed{}, deepscaler only after </think>, which a
+    # thinking-off response lacks
+    rollout_args: str = "--rm-type math "
+    # the AIME eval set's directory under --data-dir, graded like the rollouts
+    eval_data: str = "aime-2024"
     train_args: str = ""
+    # MoE: replay the engine's expert routing (R3)
+    routing_replay: bool = False
 
 
 @dataclass(frozen=True)
@@ -68,6 +77,8 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     graceful_ray_stop: bool = True
     # keeps the trainer's compiled programs across runs (torch_tpu's tier-3 cache); a rerun's step 0 then loads them
     compile_cache_dir: str = ""
+    # compiles the first step's programs while the engine starts; off for a run whose options the warmup refuses
+    compile_warmup: bool = True
 
 
 # the associative-scan emitter off: libtpu >= 0.0.44 miscompiles cumulative ops for lengths not a multiple of 1024
@@ -132,6 +143,7 @@ def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
         f"SGLANG_TPU_SHARED_SLICE={_shared_slice(args, rank_offset=NUM_TRAINER_DEVICES)} "
         # the batched ragged paged attention reads this KV layout fastest; the cache stays bf16
         "SGLANG_TPU_USE_SEQ_ALONG_LANE_KV=1 "
+        f"{model.sglang_env}"
         "python3 -m sglang.launch_server "
         f"--model-path {args.model_dir}/{model.name} "
         "--device tpu "
@@ -156,18 +168,26 @@ def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
         "--max-running-requests 128 "
         "--torch-compile-max-bs 128 "
         f"{model.sglang_args}"
+        f"{'--enable-return-routed-experts ' if model.routing_replay else ''}"
         f"--host 0.0.0.0 --port {args.sglang_port}"
     )
 
 
-def prepare_model_and_data(args: ScriptArgs, model_commands: Sequence[str]) -> None:
-    """Make the checkpoint with `model_commands` (each skips what is already there), then fetch the datasets."""
+def prepare_model_and_data(
+    args: ScriptArgs, model_commands: Sequence[str], dataset_commands: Sequence[str] = ()
+) -> None:
+    """Make the checkpoint with `model_commands`, fetch the datasets, then derive any with `dataset_commands`.
+
+    Each command skips what is already there.
+    """
     U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     for command in model_commands:
         U.exec_command_cpu(command)
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
+    for command in dataset_commands:
+        U.exec_command_cpu(command)
 
 
 def _trainer_env(args: ScriptArgs) -> dict[str, str]:
@@ -205,12 +225,13 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
         # thinking off: a thinking response often runs out of tokens before its answer, so every reward is 0
         """--apply-chat-template-kwargs '{"enable_thinking":false}' """
         "--rollout-shuffle "
-        # grades the last \boxed{}; deepscaler grades only after </think>, which a thinking-off response lacks
-        "--rm-type math "
+        f"{model.rollout_args}"
         f"--num-rollout {recipe.num_rollout} "
         f"--rollout-batch-size {recipe.rollout_batch_size} "
         f"--n-samples-per-prompt {recipe.n_samples_per_prompt} "
         f"--rollout-max-response-len {recipe.max_response_len} "
+        # sglang refuses a prompt that leaves less than the response budget in its context
+        f"--rollout-max-prompt-len {SEQ_LEN - recipe.max_response_len} "
         "--rollout-temperature 1 "
         f"--global-batch-size {recipe.global_batch_size} "
     )
@@ -219,7 +240,7 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
     if recipe.enable_eval:
         eval_args = (
             "--eval-interval 10 "
-            f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
+            f"--eval-prompt-data aime {args.data_dir}/{model.eval_data}/{model.eval_data}.jsonl "
             "--n-samples-per-eval-prompt 4 "
             f"--eval-max-response-len {recipe.max_response_len} "
             "--eval-top-p 1 "
@@ -252,6 +273,8 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
         "--micro-batch-size 1 "
         "--gradient-checkpointing "
         "--distributed-backend tpu_dist "
+        f"{'--compile-warmup ' if args.compile_warmup else ''}"
+        f"{'--use-rollout-routing-replay ' if model.routing_replay else ''}"
         "--use-dynamic-batch-size "
         f"--max-tokens-per-gpu {SEQ_LEN} "
         f"{model.train_args}"

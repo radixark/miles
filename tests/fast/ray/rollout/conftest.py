@@ -105,6 +105,7 @@ def make_args(**overrides: Any) -> Namespace:
         sglang_router_request_timeout_secs=600,
         sglang_dp_size=1,
         sglang_pp_size=1,
+        sglang_pp_layer_partition=None,
         sglang_ep_size=1,
         sglang_api_key=None,
         multi_lora_n_adapters=0,
@@ -114,7 +115,6 @@ def make_args(**overrides: Any) -> Namespace:
         sglang_model_routers=None,
         prefill_num_servers=None,
         # routers / session server
-        use_miles_dashboard=False,
         router="sglang",
         miles_router_timeout=None,
         miles_router_max_connections=None,
@@ -122,6 +122,7 @@ def make_args(**overrides: Any) -> Namespace:
         sglang_server_concurrency=512,
         use_session_server=False,
         use_rollout_routing_replay=False,
+        multimodal_token_space_processing=False,
         sglang_enable_prefill_weight_versions=False,
         session_server_ip=None,
         session_server_external_host=None,
@@ -152,6 +153,7 @@ def make_args(**overrides: Any) -> Namespace:
         fp16=False,
         use_rollout_indexer_replay=False,
         rollout_indexer_topk_num_streams=None,
+        replay_layer_splits=[],
         use_output_store=False,
         env_report_interval_seconds=3600.0,
         # checkpoint / data source

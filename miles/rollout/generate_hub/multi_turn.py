@@ -6,6 +6,7 @@ import argparse
 import time
 from copy import deepcopy
 
+from miles.ray.rollout.debug_data import records_conversations
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_prompt_ids_from_sample,
@@ -39,7 +40,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     tool_call_parser = create_tool_call_parser(tool_specs, args.generate_tool_call_parser)
 
     # tool-call markup stays inline in the assistant text (what the model emitted)
-    record_trajectory = args.save_debug_trajectory_data is not None
+    record_trajectory = records_conversations(args)
     trajectory = (list(sample.prompt) if isinstance(sample.prompt, list) else []) if record_trajectory else None
 
     # ----------------------- Initial prompts -------------------------
@@ -68,7 +69,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         if sink is not None:
             tokens = output.get("meta_info", {}).get("completion_tokens", "")
             sink.gen_span(sample, gen_t0, time.time(), turn=_turn + 1, detail=str(tokens))
-        await update_sample_from_response(args, sample, payload=payload, output=output, update_loss_mask=True)
+        await update_sample_from_response(
+            args, sample, payload=payload, output=output, update_loss_mask=True, tokenizer=tokenizer
+        )
         if record_trajectory:
             trajectory.append({"role": "assistant", "content": output["text"]})
             sample.metadata["messages"] = list(trajectory)  # snapshot: trajectory keeps growing in later turns

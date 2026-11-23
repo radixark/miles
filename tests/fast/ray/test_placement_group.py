@@ -18,10 +18,11 @@ from tests.fast.fixtures.megatron_config_fixtures import write_megatron_config, 
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.ray import placement_group as placement_group_module
 from miles.ray.placement_group import (
+    attach_trainers_to_rollout,
     create_rollout_components,
     create_trainer_handles,
     create_training_model,
-    create_training_models,
+    init_training_models,
     take_over_trainers,
 )
 from miles.ray.rollout.eval_fleet import EvalFleetInfo
@@ -90,6 +91,7 @@ def fake_components():
     executor_handle = MagicMock(name="rollout_executor")
     executor_handle.wait_ready = AsyncMock(return_value=None)
     executor_handle.get_init_state = AsyncMock(side_effect=fake_executor_get_init_state)
+    executor_handle.check_agent_setup = AsyncMock(side_effect=lambda: events.append("agent_setup_checked"))
     executor_handle.init = AsyncMock(side_effect=lambda: events.append("executor_init"))
     executor_handle.get_num_rollout_per_epoch = AsyncMock(return_value=5)
     executor_handle.set_eval_fleet_info = AsyncMock(return_value=None)
@@ -154,6 +156,7 @@ class TestCreateRolloutComponents:
         assert fake_components.events == [
             "session_servers_ready",
             "executor_init_state_checked",
+            "agent_setup_checked",
             "controller_init",
             "executor_init",
         ]
@@ -167,7 +170,24 @@ class TestCreateRolloutComponents:
             args, capability=fake_components.capability, trainer_handles=fake_components.trainer_handles
         )
 
-        assert fake_components.events == ["executor_init_state_checked", "controller_init", "executor_init"]
+        assert fake_components.events == [
+            "executor_init_state_checked",
+            "agent_setup_checked",
+            "controller_init",
+            "executor_init",
+        ]
+
+    async def test_a_broken_agent_setup_fails_before_the_engines_are_waited_for(self, fake_components):
+        """Waiting for the engines takes minutes, all of them wasted on a setup that no sample can run on."""
+        args = _make_args(num_rollout=1)
+        fake_components.executor_handle.check_agent_setup.side_effect = RuntimeError("the agent's tool is not on PATH")
+
+        with pytest.raises(RuntimeError, match="not on PATH"):
+            await create_rollout_components(
+                args, capability=fake_components.capability, trainer_handles=fake_components.trainer_handles
+            )
+
+        assert fake_components.events == ["executor_init_state_checked"]
 
     async def test_returns_two_worker_handles(self, fake_components):
         """Both halves of rollout are independent workers, so the driver only ever holds handles."""
@@ -512,6 +532,7 @@ class TestUpdateWeights:
             worker_name="engine-0",
             needs_offload=False,
             update_weights=True,
+            health_check_timeout_seconds=20,
             workers_hash="incarnation-0",
         )
         info = UpdatableEngines(
@@ -643,6 +664,12 @@ def _make_trainer_handle(
     return handle
 
 
+async def _create_training_models(args, rollout_executor, *, handles):
+    actor_model, critic_model = await init_training_models(args, handles=handles)
+    await attach_trainers_to_rollout(args, rollout_executor, actor_model)
+    return actor_model, critic_model
+
+
 class TestCreateTrainingModels:
     @staticmethod
     def _handles(args: AllConfig) -> dict[str, MagicMock]:
@@ -680,7 +707,7 @@ class TestCreateTrainingModels:
         self._patched(monkeypatch, requested)
         args = self._args(tmp_path)
 
-        await create_training_models(args, self._rollout_executor(), handles=self._handles(args))
+        await _create_training_models(args, self._rollout_executor(), handles=self._handles(args))
 
         assert requested == ["alpha-actor"]
 
@@ -690,7 +717,7 @@ class TestCreateTrainingModels:
         handles = self._patched(monkeypatch, requested)
         args = self._args(tmp_path)
 
-        await create_training_models(args, self._rollout_executor(), handles=self._handles(args))
+        await _create_training_models(args, self._rollout_executor(), handles=self._handles(args))
 
         assert len(handles) == 1
 
@@ -699,7 +726,7 @@ class TestCreateTrainingModels:
         handles = self._patched(monkeypatch, [])
         args = self._args(tmp_path)
 
-        await create_training_models(args, self._rollout_executor(), handles=self._handles(args))
+        await _create_training_models(args, self._rollout_executor(), handles=self._handles(args))
 
         [handle] = handles
         called = [name for name, _args, _kwargs in handle.mock_calls]
@@ -711,7 +738,7 @@ class TestCreateTrainingModels:
         rollout_executor = self._rollout_executor()
         args = self._args(tmp_path)
 
-        await create_training_models(args, rollout_executor, handles=self._handles(args))
+        await _create_training_models(args, rollout_executor, handles=self._handles(args))
 
         rollout_executor.load.assert_not_awaited()
 
@@ -734,7 +761,7 @@ class TestCreateTrainingModels:
             "alpha-actor=10.0.0.5:1234",
         )
 
-        await create_training_models(args, self._rollout_executor(), handles=self._handles(args))
+        await _create_training_models(args, self._rollout_executor(), handles=self._handles(args))
 
         [handle] = handles
         called = [name for name, _args, _kwargs in handle.mock_calls]
@@ -746,7 +773,7 @@ class TestCreateTrainingModels:
         self._patched(monkeypatch, requested)
         args = parse_megatron_test_config("--advantage-estimator", "ppo")
 
-        await create_training_models(args, self._rollout_executor(), handles=self._handles(args))
+        await _create_training_models(args, self._rollout_executor(), handles=self._handles(args))
 
         assert requested == ["actor", "critic"]
 
@@ -758,7 +785,7 @@ class TestCreateTrainingModels:
         )
 
         with pytest.raises(AssertionError, match="declares a critic for"):
-            await create_training_models(
+            await _create_training_models(
                 parse_megatron_test_config("--megatron-config", megatron_config),
                 self._rollout_executor(),
                 handles={},
@@ -1016,3 +1043,160 @@ class TestCreateTrainingModel:
         assert info.start_rollout_id == 4
         handle.load_state.assert_awaited_once_with(_INIT_REQUEST)
         handle.init.assert_not_awaited()
+
+
+class TestCreateComponents:
+    """The trainers initialize while external engines start; engines miles launches, --num-epoch and a hot restart
+    come first, as does every run without --compile-warmup."""
+
+    @staticmethod
+    def _install(monkeypatch, *, rollout_turns: int = 3, hot_restart: bool = False):
+        events: list[str] = []
+        executor = SimpleNamespace(
+            set_train_parallel_config=AsyncMock(side_effect=lambda config: events.append("attach")), load=AsyncMock()
+        )
+        controller = SimpleNamespace(is_initialized=AsyncMock(return_value=hot_restart))
+        components = placement_group_module.RolloutComponents(
+            inference_controller=object(), rollout_executor=executor, num_rollout_per_epoch=None
+        )
+        actor = SimpleNamespace(get_train_parallel_config=AsyncMock(return_value="parallel-config"))
+
+        async def create_rollout_components(_args, *, capability, trainer_handles):
+            events.append("rollout_start")
+            for _ in range(rollout_turns):
+                await asyncio.sleep(0)
+            events.append("rollout_done")
+            return components
+
+        async def init_training_models(_args, *, handles):
+            events.append("trainers_start")
+            await asyncio.sleep(0)
+            events.append("trainers_done")
+            return actor, None
+
+        monkeypatch.setattr(placement_group_module, "create_rollout_components", create_rollout_components)
+        monkeypatch.setattr(placement_group_module, "init_training_models", init_training_models)
+        monkeypatch.setattr(placement_group_module, "create_rollout_executor_handle", lambda *, capability: executor)
+        monkeypatch.setattr(
+            placement_group_module, "create_inference_controller_handle", lambda *, capability: controller
+        )
+        gate = AsyncMock(side_effect=lambda handle: events.append("executor_gate"))
+        monkeypatch.setattr(placement_group_module, "wait_until_worker_not_initialized", gate)
+        disposer = SimpleNamespace(added=[], add=lambda *items: disposer.added.extend(items))
+        return events, components, actor, controller, disposer
+
+    @staticmethod
+    def _args(**overrides):
+        defaults = dict(
+            rollout_external=True,
+            num_rollout=4,
+            compile_warmup=True,
+            start_rollout_id=0,
+            trainer_controller_addrs=None,
+        )
+        return SimpleNamespace(**{**defaults, **overrides})
+
+    async def test_external_engines_start_while_the_trainers_initialize(self, monkeypatch):
+        events, components, actor, controller, disposer = self._install(monkeypatch)
+
+        result = await placement_group_module.create_components(
+            self._args(), capability=None, trainer_handles={"actor": actor}, disposer=disposer
+        )
+
+        assert result == (components, actor, None)
+        assert events == [
+            "executor_gate",
+            "rollout_start",
+            "trainers_start",
+            "trainers_done",
+            "rollout_done",
+            "attach",
+        ]
+        # once the executor's gate passes, every worker reaches the disposer before either side can fail
+        assert disposer.added == [controller, components.rollout_executor, actor]
+
+    @pytest.mark.parametrize(
+        ("overrides", "hot_restart"),
+        [
+            ({"compile_warmup": False}, False),
+            ({"rollout_external": False}, False),
+            ({"num_rollout": None}, False),
+            ({"trainer_controller_addrs": ["http://trainer:8000"]}, False),
+            ({}, True),
+        ],
+    )
+    async def test_otherwise_the_rollout_components_come_first_as_they_always_did(
+        self, monkeypatch, overrides, hot_restart
+    ):
+        """A hot restart's takeover gate waits for idle trainers, which a concurrent init and warmup would never be."""
+        events, components, actor, controller, disposer = self._install(monkeypatch, hot_restart=hot_restart)
+
+        await placement_group_module.create_components(
+            self._args(**overrides), capability=None, trainer_handles={}, disposer=disposer
+        )
+
+        # only a run that could overlap probes the workers; the others never touch them before the rollout side does
+        gate = ["executor_gate"] if hot_restart else []
+        assert events == gate + ["rollout_start", "rollout_done", "trainers_start", "trainers_done", "attach"]
+        assert controller.is_initialized.await_count == (1 if hot_restart else 0)
+        # the workers reach the disposer only once the rollout side has taken them
+        assert disposer.added == [components.inference_controller, components.rollout_executor, None, actor]
+
+    async def test_an_engine_failure_surfaces_while_the_trainers_still_initialize(self, monkeypatch):
+        """A bad engine address must not stay hidden behind a ~20 min warmup."""
+        events, *_, disposer = self._install(monkeypatch)
+        started = asyncio.Event()
+
+        async def init_training_models_forever(_args, *, handles):
+            started.set()
+            await asyncio.Event().wait()
+
+        async def failing_rollout(_args, *, capability, trainer_handles):
+            await started.wait()
+            raise RuntimeError("no engine at that address")
+
+        monkeypatch.setattr(placement_group_module, "init_training_models", init_training_models_forever)
+        monkeypatch.setattr(placement_group_module, "create_rollout_components", failing_rollout)
+
+        trainer = object()
+        with pytest.raises(RuntimeError, match="no engine at that address"):
+            await asyncio.wait_for(
+                placement_group_module.create_components(
+                    self._args(), capability=None, trainer_handles={"actor": trainer}, disposer=disposer
+                ),
+                timeout=5,
+            )
+        # the cancelled task leaves the trainers' remote init running: the disposer still reaches them
+        assert trainer in disposer.added
+
+    async def test_cancelling_the_driver_stops_both_sides(self, monkeypatch):
+        """asyncio.wait does not cancel its tasks, so a stopped driver would leave them running under the disposer."""
+        *_, disposer = self._install(monkeypatch)
+        cancelled = []
+        started = {"rollout": asyncio.Event(), "trainers": asyncio.Event()}
+
+        def forever(name):
+            async def run(*_args, **_kwargs):
+                started[name].set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    cancelled.append(name)
+                    raise
+
+            return run
+
+        monkeypatch.setattr(placement_group_module, "init_training_models", forever("trainers"))
+        monkeypatch.setattr(placement_group_module, "create_rollout_components", forever("rollout"))
+
+        driver = asyncio.create_task(
+            placement_group_module.create_components(
+                self._args(), capability=None, trainer_handles={}, disposer=disposer
+            )
+        )
+        await asyncio.wait_for(asyncio.gather(*(event.wait() for event in started.values())), timeout=5)
+        driver.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await driver
+
+        assert sorted(cancelled) == ["rollout", "trainers"]

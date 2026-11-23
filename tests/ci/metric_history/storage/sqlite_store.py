@@ -32,6 +32,7 @@ from tests.ci.metric_history.storage.store import (
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS runs (
     run_id              TEXT PRIMARY KEY,
+    repository          TEXT NOT NULL,
     test_path           TEXT NOT NULL,
     backend             TEXT NOT NULL,
     suite               TEXT NOT NULL,
@@ -55,7 +56,7 @@ CREATE TABLE IF NOT EXISTS metric_values (
 );
 
 CREATE INDEX IF NOT EXISTS runs_baseline_idx
-    ON runs (test_path, backend, suite, trusted, created_at DESC);
+    ON runs (repository, test_path, backend, suite, trusted, created_at DESC);
 """
 
 # Mirrors the authoritative baseline query: every coordinate column is
@@ -64,7 +65,8 @@ _BASELINE_SQL = """
 SELECT mv.value
 FROM metric_values mv
 JOIN runs r USING (run_id)
-WHERE r.test_path = ?
+WHERE r.repository = ?
+  AND r.test_path = ?
   AND r.backend = ?
   AND r.suite = ?
   AND mv.metric_key = ?
@@ -76,7 +78,8 @@ LIMIT ?
 
 
 class SQLiteMetricHistoryStore(MetricHistoryStore):
-    def __init__(self, database: str = ":memory:"):
+    def __init__(self, database: str = ":memory:", *, repository: str):
+        self._repository = repository
         # check_same_thread is left at its default; the store is meant for the
         # single-threaded CI gate process and the test suite.
         self._conn = sqlite3.connect(database)
@@ -107,13 +110,14 @@ class SQLiteMetricHistoryStore(MetricHistoryStore):
             self._conn.execute(
                 """
                 INSERT INTO runs (
-                    run_id, test_path, backend, suite,
+                    run_id, repository, test_path, backend, suite,
                     commit_sha, pr_number, github_run_id, github_run_attempt,
                     event_name, ref, created_at, trusted
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
+                    self._repository,
                     identity.test_path,
                     identity.backend,
                     identity.suite,
@@ -145,7 +149,7 @@ class SQLiteMetricHistoryStore(MetricHistoryStore):
     ) -> list[float]:
         rows = self._conn.execute(
             _BASELINE_SQL,
-            (test_path, backend, suite, metric_key, step, limit),
+            (self._repository, test_path, backend, suite, metric_key, step, limit),
         ).fetchall()
         return [row[0] for row in rows]
 
@@ -166,8 +170,8 @@ class SQLiteMetricHistoryStore(MetricHistoryStore):
         column, value = next(iter(provided.items()))
         with self._conn:
             cursor = self._conn.execute(
-                f"UPDATE runs SET trusted = 0 WHERE {column} = ? AND trusted = 1",
-                (value,),
+                f"UPDATE runs SET trusted = 0 WHERE repository = ? AND {column} = ? AND trusted = 1",
+                (self._repository, value),
             )
             return cursor.rowcount
 

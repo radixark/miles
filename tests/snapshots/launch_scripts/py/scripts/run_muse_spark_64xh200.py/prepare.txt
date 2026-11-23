@@ -1,0 +1,79 @@
+### 0
+hf download meta-models/Muse-Spark-Open-816B-A42B
+  --local-dir /root/models/Muse-Spark-Open-816B-A42B
+
+### 1
+[multi_node num_nodes=8] PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
+  --nproc-per-node 8
+  --master-addr {{master_addr}}
+  --master-port 23456
+  --nnodes={{nnodes}}
+  --node-rank {{node_rank}} <REPO_ROOT>/tools/convert_hf_to_torch_dist.py
+  --custom-model-provider-path miles_plugins.models.muse_spark.muse_spark_1x_model_provider
+  --megatron-to-hf-mode raw
+  --num-layers 62
+  --hidden-size 8192
+  --ffn-hidden-size 16384
+  --num-attention-heads 128
+  --num-query-groups 16
+  --kv-channels 64
+  --group-query-attention
+  --qk-layernorm
+  --attention-output-gate
+  --normalization RMSNorm
+  --norm-epsilon 1e-5
+  --disable-bias-linear
+  --swiglu
+  --vocab-size 202048
+  --make-vocab-size-divisible-by 1
+  --untie-embeddings-and-output-weights
+  --position-embedding-type rope
+  --rotary-base 500000
+  --rotary-percent 1.0
+  --rotary-interleaved
+  --no-rope-freq '[0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1]'
+  --window-size 2047,0
+  --window-attn-skip-freq '[1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0]'
+  --post-self-attn-layernorm
+  --post-mlp-layernorm
+  --num-experts 256
+  --moe-router-topk 8
+  --moe-ffn-hidden-size 4096
+  --moe-latent-size 4096
+  --moe-layer-freq '[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]'
+  --moe-grouped-gemm
+  --moe-token-dispatcher-type alltoall
+  --moe-router-score-function sigmoid
+  --moe-router-dtype fp32
+  --moe-router-use-torch-mm
+  --moe-router-enable-expert-bias
+  --freeze-e-score-correction-bias
+  --moe-router-topk-scaling-factor 1
+  --moe-combine-in-fp32
+  --expert-tensor-parallel-size 1
+  --microbatch-group-size-per-virtual-pipeline-stage 1
+  --moe-router-load-balancing-type none
+  --moe-aux-loss-coeff 0
+  --fp32-residual-connection
+  --accumulate-allreduce-grads-in-fp32
+  --attention-dropout 0
+  --hidden-dropout 0
+  --attention-softmax-in-fp32
+  --no-gradient-accumulation-fusion
+  --no-bias-swiglu-fusion
+  --no-bias-dropout-fusion
+  --no-masked-softmax-fusion
+  --hf-checkpoint /root/models/Muse-Spark-Open-816B-A42B
+  --save /root/models/Muse-Spark-Open-816B-A42B_torch_dist
+  --tensor-model-parallel-size 1
+  --pipeline-model-parallel-size 8
+  --decoder-first-pipeline-num-layers 7
+  --decoder-last-pipeline-num-layers 7
+  --context-parallel-size 1
+  --expert-model-parallel-size 8
+  --expert-tensor-parallel-size 1 
+
+### 2
+hf download
+  --repo-type dataset zhuzilin/dapo-math-17k
+  --local-dir /root/datasets/dapo-math-17k

@@ -54,6 +54,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
 )
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind, read_source_lora_alpha
 from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError, require_fields
+from miles.backends.training_utils.model_companion import ModelCompanionWeightVersionUtils
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.hf_utils.config import load_hf_config
 
@@ -637,6 +638,8 @@ def save_single_lora(
         # a dynamic global batch decouples from rollouts
         "first_rollout": first_rollout,
         "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler is not None else None,
+        # a full checkpoint saves it with the model companion, which an adapter dir leaves out
+        "weight_version": ModelCompanionWeightVersionUtils.weight_version(model),
     }
     save_and_commit_adapter_dir(
         Path(args.backend.save) / f"iter_{iteration:07d}",
@@ -731,6 +734,9 @@ def restore_single_lora(
     scheduler_state = training_state.get("opt_param_scheduler")
     if opt_param_scheduler is not None and scheduler_state is not None:
         opt_param_scheduler.load_state_dict(scheduler_state)
+    # older adapter dirs and torchtitan's do not record it; they keep the version --load restored
+    if "weight_version" in training_state:
+        ModelCompanionWeightVersionUtils.set_weight_version(model, training_state["weight_version"])
     return AdapterRestore(training_state["iteration"], scheduler_state is not None, training_state["first_rollout"])
 
 
