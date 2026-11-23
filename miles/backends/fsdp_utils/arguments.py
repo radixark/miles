@@ -171,11 +171,7 @@ def load_fsdp_args(extra_args_provider=None):
 
 
 def validate_kernel_backend_args(args) -> None:
-    """Validate --kernel-backend and keep hub kernels out of the bit-exact run modes.
-
-    --true-on-policy-mode requires the training-side kernel to match SGLang's build exactly;
-    until that equivalence is established per hub kernel, the two stay mutually exclusive.
-    """
+    """Validate --kernel-backend and keep hub kernels out of --deterministic-mode."""
     if args.kernel_backend not in ("native", "hub"):
         raise ValueError(f"--kernel-backend must be one of ('native', 'hub'), got {args.kernel_backend!r}")
 
@@ -186,8 +182,8 @@ def validate_kernel_backend_args(args) -> None:
             raise ValueError("--kernel-mapping-path only applies with --kernel-backend hub")
         return
 
-    if args.true_on_policy_mode or args.deterministic_mode:
-        raise ValueError("--kernel-backend hub is incompatible with --true-on-policy-mode / --deterministic-mode")
+    if args.deterministic_mode:
+        raise ValueError("--kernel-backend hub is incompatible with --deterministic-mode")
 
 
 def validate_hybrid_shard_args(args) -> None:

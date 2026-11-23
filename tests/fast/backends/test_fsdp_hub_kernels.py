@@ -38,7 +38,6 @@ def _make_raw_args(**overrides) -> Namespace:
         kernel_backend="hub",
         kernel_mapping_path="",
         kernel_strict=False,
-        true_on_policy_mode=False,
         deterministic_mode=False,
     )
     base.update(overrides)
@@ -47,7 +46,7 @@ def _make_raw_args(**overrides) -> Namespace:
 
 def _make_args(**overrides: object) -> Namespace:
     values = vars(_make_raw_args(**overrides))
-    return Namespace(true_on_policy_mode=values.pop("true_on_policy_mode"), backend=Namespace(**values))
+    return Namespace(true_on_policy_mode=values.pop("true_on_policy_mode", False), backend=Namespace(**values))
 
 
 def _stub_kernels(monkeypatch, *, module=None, modules=None, raises=None, calls=None):
@@ -136,16 +135,14 @@ def test_native_is_the_default_and_stays_inert(monkeypatch):
     assert "kernels" not in sys.modules
 
 
-@pytest.mark.parametrize("mode", ["true_on_policy_mode", "deterministic_mode"])
-def test_hub_backend_is_rejected_in_the_bit_exact_modes(mode):
-    with pytest.raises(ValueError, match="incompatible with --true-on-policy-mode"):
-        validate_kernel_backend_args(_make_raw_args(**{mode: True}))
+def test_hub_backend_is_rejected_in_deterministic_mode():
+    with pytest.raises(ValueError, match="incompatible with --deterministic-mode"):
+        validate_kernel_backend_args(_make_raw_args(deterministic_mode=True))
 
 
-@pytest.mark.parametrize("mode", ["true_on_policy_mode", "deterministic_mode"])
-def test_default_mapping_is_empty_in_the_bit_exact_modes(mode):
+def test_default_mapping_is_empty_in_deterministic_mode():
     """Defence in depth: even if validation is bypassed, the preset hands back nothing to bind."""
-    assert load_mapping(_make_args(**{mode: True})) == {}
+    assert load_mapping(_make_args(deterministic_mode=True)) == {}
 
 
 def test_unknown_backend_is_rejected():

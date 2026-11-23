@@ -180,11 +180,6 @@ def test_unknown_model_type_runs_the_stock_hf_path():
     assert not adapter.verified and adapter.routing_replay is None
 
 
-def test_qwen3_moe_class_patch_is_inert_outside_true_on_policy():
-    # Batched experts need no off-mode patch under the pinned transformers version.
-    _adapter("qwen3_moe").patch_classes(SimpleNamespace(true_on_policy_mode=False))
-
-
 def test_validate_hf_config_rejects_fp8_checkpoints():
     from miles.backends.fsdp_utils.adaptations.config_checks import validate_hf_config
 

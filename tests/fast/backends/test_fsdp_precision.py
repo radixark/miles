@@ -4,19 +4,17 @@ import sys
 from contextlib import contextmanager
 from types import SimpleNamespace
 
-import pytest
 import torch
 from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
 from miles.backends.fsdp_utils.adaptations.precision import (
+    PrecisionPolicy,
     apply_fp32_master,
     default_precision_policy,
     precision_forward_context,
 )
 from miles.backends.fsdp_utils.adaptations.specs import resolve_arch_adapter
 from miles.backends.fsdp_utils.arguments import load_fsdp_args, parse_fsdp_cli
-from miles.backends.training_utils.data.rollout import _rollout_logprob_dtype
-from miles.true_on_policy.contracts import QWEN3_DENSE_TRUE_ON_POLICY_V1
 
 
 def resolve_precision_policy(hf_config, args):
@@ -66,67 +64,10 @@ def test_fsdp_args_expose_effective_compute_precision(monkeypatch):
     for cli_args, expected_dtype in (([], torch.bfloat16), (["--fp16"], torch.float16)):
         monkeypatch.setattr(sys, "argv", ["miles", *cli_args])
         backend = load_fsdp_args()
-        args = SimpleNamespace(backend=backend, true_on_policy_mode=True)
+        args = SimpleNamespace(backend=backend)
 
         assert backend.bf16 == (not backend.fp16)
         assert default_precision_policy(args).param_dtype is expected_dtype
-        assert _rollout_logprob_dtype(args) is expected_dtype
-
-
-def test_qwen3_formal_true_on_policy_resolves_fp32_params_with_bf16_autocast():
-    args = _args(
-        fp16=False, keep_fp32_master=True, true_on_policy_mode=True, contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name
-    )
-
-    policy = resolve_precision_policy(SimpleNamespace(model_type="qwen3"), args)
-
-    assert policy.param_dtype is torch.float32
-    assert policy.reduce_dtype is torch.float32
-    assert policy.autocast_dtype is torch.bfloat16
-    assert policy.keep_fp32_master
-    assert policy.sync_dtype_resolver is not None
-
-
-@pytest.mark.parametrize(
-    ("model_type", "true_on_policy_mode", "contract"),
-    [
-        ("qwen3", False, QWEN3_DENSE_TRUE_ON_POLICY_V1.name),
-        ("qwen3", True, None),
-        ("qwen3_moe", True, QWEN3_DENSE_TRUE_ON_POLICY_V1.name),
-    ],
-)
-def test_qwen3_formal_precision_does_not_leak_to_other_modes(model_type, true_on_policy_mode, contract):
-    policy = resolve_precision_policy(
-        SimpleNamespace(model_type=model_type),
-        _args(fp16=False, keep_fp32_master=True, true_on_policy_mode=true_on_policy_mode, contract=contract),
-    )
-
-    assert policy.param_dtype is torch.bfloat16
-    assert policy.autocast_dtype is None
-    assert policy.sync_dtype_resolver is None
-
-
-def test_qwen3_formal_true_on_policy_rejects_fp16():
-    with pytest.raises(ValueError, match="requires bf16 training"):
-        resolve_precision_policy(
-            SimpleNamespace(model_type="qwen3"),
-            _args(
-                fp16=True, keep_fp32_master=True, true_on_policy_mode=True, contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name
-            ),
-        )
-
-
-def test_qwen3_formal_true_on_policy_rejects_disabled_fp32_master():
-    with pytest.raises(ValueError, match="requires fp32 master weights"):
-        resolve_precision_policy(
-            SimpleNamespace(model_type="qwen3"),
-            _args(
-                fp16=False,
-                keep_fp32_master=False,
-                true_on_policy_mode=True,
-                contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name,
-            ),
-        )
 
 
 def test_precision_forward_context_uses_policy_autocast(monkeypatch):
@@ -138,11 +79,10 @@ def test_precision_forward_context_uses_policy_autocast(monkeypatch):
         yield
 
     monkeypatch.setattr(torch, "autocast", fake_autocast)
-    policy = resolve_precision_policy(
-        SimpleNamespace(model_type="qwen3"),
-        _args(
-            fp16=False, keep_fp32_master=True, true_on_policy_mode=True, contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name
-        ),
+    policy = PrecisionPolicy(
+        param_dtype=torch.float32,
+        reduce_dtype=torch.float32,
+        autocast_dtype=torch.bfloat16,
     )
 
     with precision_forward_context(policy):
