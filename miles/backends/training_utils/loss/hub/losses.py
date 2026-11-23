@@ -57,11 +57,27 @@ class LossFunction(Protocol):
         ...
 
 
+class PgLossFunction(Protocol):
+    """Per-token policy-gradient loss and clip-fraction hook for `policy_loss_function`."""
+
+    def __call__(
+        self,
+        *,
+        args: Namespace,
+        log_probs: torch.Tensor,
+        old_log_probs: torch.Tensor,
+        ppo_kl: torch.Tensor,
+        advantages: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]: ...
+
+
 def policy_loss_function(
     args: Namespace,
     batch: RolloutBatch,
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
+    *,
+    pg_loss_fn: PgLossFunction | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute policy loss (PPO/GSPO) and metrics.
 
@@ -79,6 +95,8 @@ def policy_loss_function(
             and optionally "ref_log_probs" and "rollout_log_probs".
         logits: Policy logits with shape `[1, T, V]`.
         sum_of_sample_mean: Reduction function that averages per-sample values.
+        pg_loss_fn: Optional hook replacing `compute_policy_loss` for custom
+            per-token policy-gradient objectives.
 
     Returns:
         Tuple of `(loss, metrics)` where `loss` is a scalar tensor and `metrics`
@@ -189,9 +207,18 @@ def policy_loss_function(
         advantages.new_zeros(()),
     )
 
-    pg_loss, pg_clipfrac = compute_policy_loss(
-        ppo_kl, clean_advantages, args.eps_clip, args.eps_clip_high, args.eps_clip_c
-    )
+    if pg_loss_fn is not None:
+        pg_loss, pg_clipfrac = pg_loss_fn(
+            args=args,
+            log_probs=log_probs,
+            old_log_probs=torch.where(active_tokens, old_log_probs, 0.0),
+            ppo_kl=ppo_kl,
+            advantages=clean_advantages,
+        )
+    else:
+        pg_loss, pg_clipfrac = compute_policy_loss(
+            ppo_kl, clean_advantages, args.eps_clip, args.eps_clip_high, args.eps_clip_c
+        )
 
     if args.dump_details is not None:
         from miles.backends.training_utils.metrics.debug_dump import maybe_dump_policy_loss_debug
