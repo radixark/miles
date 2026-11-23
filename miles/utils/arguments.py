@@ -1663,6 +1663,10 @@ def miles_validate_args(args):
             "--update-weight-transfer-mode=disk-delta requires --update-weight-local-checkpoint-dir "
             "(a rollout-host-local directory, e.g. NVMe)."
         )
+        assert args.update_weight_disk_reload_wave is None or args.update_weight_disk_reload_wave >= 1, (
+            f"--update-weight-disk-reload-wave {args.update_weight_disk_reload_wave} must be at least 1 "
+            "(leave it unset to reload every engine at once)"
+        )
         assert os.path.isdir(args.hf_checkpoint), (
             "--update-weight-transfer-mode=disk-delta requires --hf-checkpoint to be a local directory: "
             "the baseline snapshot is seeded from its safetensors bytes."
