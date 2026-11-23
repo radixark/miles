@@ -103,7 +103,12 @@ def _engine_rope(attention) -> RotaryEmbedding:
                 dtype=torch.bfloat16,
             )
         return RotaryEmbedding(
-            head_dim, head_dim, rope_config.max_context_length, rope_config.theta, True, torch.bfloat16
+            head_size=head_dim,
+            rotary_dim=head_dim,
+            max_position_embeddings=rope_config.max_context_length,
+            base=rope_config.theta,
+            is_neox_style=True,
+            dtype=torch.bfloat16,
         )
 
 

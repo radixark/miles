@@ -26,3 +26,13 @@ def test_a_sample_above_the_cap_keeps_a_microbatch_of_its_own():
 def test_samples_that_fit_together_share_one_microbatch():
     assert rollout._num_microbatches_within_cap([8192], 8192) == 1
     assert rollout._num_microbatches_within_cap([100, 200, 300], 8192) == 1
+
+
+def test_the_sample_cap_splits_many_short_samples():
+    """True on-policy attention on TPU holds a fixed number of sequences per microbatch: 128 two-token samples (the
+    compile-warmup shard at global batch 128) fit one microbatch by tokens, but not under a 127-sample cap."""
+    lengths = [2] * 128
+    assert rollout._num_microbatches_within_cap(lengths, 8192) == 1
+    num = rollout._num_microbatches_within_cap(lengths, 8192, max_samples=127)
+    assert num == 2
+    assert max(len(p) for p in get_seqlen_balanced_partitions(lengths, num, equal_size=False)) <= 127

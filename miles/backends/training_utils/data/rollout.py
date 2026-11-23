@@ -561,6 +561,8 @@ def get_data_iterator(
     args: Namespace,
     model: torch.nn.Module | Sequence[torch.nn.Module],
     rollout_data: RolloutBatch,
+    *,
+    max_samples_per_microbatch: int | None = None,
 ) -> tuple[list[DataIterator], list[int]]:
     """
     Create iterators and a micro-batch schedule for a rollout step.
@@ -634,12 +636,14 @@ def get_data_iterator(
         assert len(samples) == num_local_samples
         num_microbatches = []
         # a fixed-shape trainer cannot run a microbatch above the cap, which the balanced partition ignores
-        num_microbatches_for = (
-            get_minimum_num_micro_batch_size if current_platform.dynamic_shapes else _num_microbatches_within_cap
-        )
         for i in range(num_steps_per_rollout):
             start, end = i * num_local_gbs, (i + 1) * num_local_gbs
-            num_microbatches.append(num_microbatches_for(samples[start:end], args.max_tokens_per_gpu * cp_size))
+            lengths, max_tokens = samples[start:end], args.max_tokens_per_gpu * cp_size
+            num_microbatches.append(
+                get_minimum_num_micro_batch_size(lengths, max_tokens)
+                if current_platform.dynamic_shapes
+                else _num_microbatches_within_cap(lengths, max_tokens, max_samples=max_samples_per_microbatch)
+            )
 
         num_microbatches = torch.tensor(num_microbatches, dtype=torch.int, device=current_platform.current_device())
         GeneralPGUtil.create(dp_group).all_reduce(num_microbatches, dp_group, op=dist.ReduceOp.MAX)
@@ -680,18 +684,24 @@ def get_data_iterator(
     )
 
 
-def _num_microbatches_within_cap(lengths: list[int], max_tokens: int) -> int:
-    """The fewest microbatches whose seqlen-balanced partition keeps each one within `max_tokens`.
+def _num_microbatches_within_cap(lengths: list[int], max_tokens: int, max_samples: int | None = None) -> int:
+    """The fewest microbatches whose seqlen-balanced partition keeps each one within `max_tokens`, and within
+    `max_samples` samples when given.
 
-    First-fit only bounds the count from below: the balanced partition ignores the cap.
+    First-fit only bounds the count from below: the balanced partition ignores the caps.
     """
     cap = max(max_tokens, max(lengths))
     num = get_minimum_num_micro_batch_size(lengths, max_tokens)
-    while num < len(lengths) and _largest_partition(lengths, num) > cap:
+    if max_samples is not None:
+        num = max(num, -(-len(lengths) // max_samples))
+    while num < len(lengths) and not _partitions_fit(lengths, num, cap, max_samples):
         num += 1
     return num
 
 
-def _largest_partition(lengths: list[int], num_partitions: int) -> int:
+def _partitions_fit(lengths: list[int], num_partitions: int, max_tokens: int, max_samples: int | None) -> bool:
     partitions = get_seqlen_balanced_partitions(lengths, num_partitions, equal_size=False)
-    return max(sum(lengths[i] for i in partition) for partition in partitions)
+    return all(
+        sum(lengths[i] for i in partition) <= max_tokens and (max_samples is None or len(partition) <= max_samples)
+        for partition in partitions
+    )

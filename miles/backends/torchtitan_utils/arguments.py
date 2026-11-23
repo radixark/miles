@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import torch
 
 from miles.backends.fsdp_utils.arguments import FSDPArgs, build_dataclass_parser, load_args_from_parser
-from miles.backends.training_utils.loss.hub.response_layout import validate_response_layout_args
+from miles.backends.training_utils.loss.hub.response_layout import padded_rows_enabled, validate_response_layout_args
 from miles.kernels.tpu import FLASH_ATTENTION_BLOCK
 from miles.platforms import current_platform, tpu_shared_slice
 from miles.utils.lora.utils import is_lora_enabled, lora_rollout_enabled
@@ -216,5 +216,13 @@ def _validate_true_on_policy_args(args) -> None:
         )
     if args.entropy_coef != 0:
         raise ValueError("--true-on-policy-mode scores with the engine's log-prob kernel, which has no entropy term")
+    if not padded_rows_enabled(args):
+        raise ValueError(
+            f"--true-on-policy-mode scores with the engine's log-prob kernel, which only the padded-row losses call; "
+            f"--loss-type {args.loss_type} does not"
+        )
+    # the installed forward runs each projection's base weight, so the adapters would drop out of the graph
+    if is_lora_enabled(args):
+        raise ValueError("--true-on-policy-mode does not cover LoRA")
     if args.rollout_top_p != 1.0 or args.rollout_top_k > 0:
         raise ValueError("--true-on-policy-mode covers plain temperature sampling: --rollout-top-p 1, no top-k")
