@@ -1,6 +1,7 @@
 from .deepseekv3 import convert_deepseekv3_to_hf
 from .deepseekv4 import convert_deepseekv4_to_hf
 from .deepseekv4_1 import convert_deepseekv4_1_to_hf
+from .export_hooks import export_hooks
 from .glm4 import convert_glm4_to_hf
 from .glm4moe import convert_glm4moe_to_hf
 from .glm5_next import convert_glm5_next_to_hf
@@ -28,6 +29,16 @@ def postprocess_hf_param(args, megatron_param_name, hf_param_name, param):
 
 # TODO optimize code details
 def convert_to_hf(args, model_name, name, param, quantization_config=None, packed_weight_basenames=None):
+    if (converter := export_hooks().converter) is not None:
+        if (
+            units := converter(args, model_name, name, param, quantization_config, packed_weight_basenames)
+        ) is not None:
+            return units
+    return convert_to_hf_stock(args, model_name, name, param, quantization_config, packed_weight_basenames)
+
+
+def convert_to_hf_stock(args, model_name, name, param, quantization_config=None, packed_weight_basenames=None):
+    """convert_to_hf without the plugin converter: an export hook hands it a parameter in checkpoint form."""
     param = remove_padding(name, param, args.backend.vocab_size)
 
     converted_named_tensors = _convert_to_hf_core(args, model_name, name, param)
@@ -67,7 +78,8 @@ def _convert_to_hf_core(args, model_name, name, param):
         converted_named_tensors = convert_qwen3moe_to_hf(args.backend, name, param)
     elif "qwen3next" in model_name:
         converted_named_tensors = convert_qwen3_next_to_hf(args, name, param)
-    elif "qwen3_8_next" in model_name or "qwen4_exp" in model_name or "qwen3.8_next" in model_name:
+    elif any(k in model_name for k in ("qwen3_8_next", "qwen3.8_next", "qwen4_exp", "qwen4expconfig")):
+        # Without --model-name the weight updater passes the HF config class name, "qwen4expconfig".
         converted_named_tensors = convert_qwen3_8_next_to_hf(args, name, param)
     elif "qwen3_5" in model_name or "qwen3_6" in model_name:
         converted_named_tensors = convert_qwen3_5_to_hf(args, name, param)

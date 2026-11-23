@@ -122,7 +122,19 @@ class EvalDatasetConfig:
 
     metadata_overrides: dict[str, Any] = field(default_factory=dict)
 
+    # Evaluate this dataset only every `interval` rollouts (plus before training and at the last rollout) instead of
+    # at every --eval-interval; e.g. a long-cap eval that costs more than the others. It is checked only when the
+    # global --eval-interval fires, so set it to a multiple of --eval-interval. Class-based rollout functions only.
+    interval: int | None = None
+
+    def due(self, rollout_id: int | None, num_rollout: int | None) -> bool:
+        if self.interval is None or rollout_id is None:
+            return True
+        return rollout_id == 0 or (rollout_id + 1) % self.interval == 0 or rollout_id == (num_rollout or 0) - 1
+
     def __post_init__(self) -> None:
+        if self.interval is not None and self.interval < 1:
+            raise ValueError(f"eval dataset {self.name!r}: interval must be at least 1, got {self.interval}")
         self.metadata_overrides = _ensure_metadata_overrides(self.metadata_overrides)
 
     @property

@@ -112,6 +112,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
                     self.group_name,
                     self.distributed_rollout_engines,
                     engine_gpu_counts=distributed_gpu_counts,
+                    deterministic_engines=self.args.sglang.actor_value("enable_deterministic_inference"),
                 )
 
         colocate_gpu_offsets = engine_gpu_offsets[:colocate_engine_nums]

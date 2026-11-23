@@ -30,6 +30,20 @@ def written_file(tmp_path):
         os.close(fd)
 
 
+def test_checkpoint_copy_writes_in_place_and_keeps_the_reservation(tmp_path):
+    src = tmp_path / "saved.bin"
+    payload = os.urandom(3 * 4096 + 17)
+    src.write_bytes(payload)
+    fd = os.open(str(tmp_path / "bucket.bin"), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        nvme_stream.reserve_file(fd, 8 * 4096)
+        nvme_stream._copy_into_fd(str(src), fd, chunk_bytes=4096)
+        assert os.fstat(fd).st_size == 8 * 4096
+        assert os.pread(fd, len(payload), 0) == payload
+    finally:
+        os.close(fd)
+
+
 def test_page_cache_window_drops_the_oldest_file_before_a_release_past_its_cap_returns(written_file):
     window = nvme_stream._PageCacheWindow(cap_bytes=_FILE_BYTES * 3 // 2)
     older, newer = written_file("older.bin"), written_file("newer.bin")

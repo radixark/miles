@@ -100,6 +100,7 @@ def _make_args() -> Namespace:
         Namespace(
             async_data_buffer_capacity_factor=1.0,
             async_data_buffer_selection="fifo",
+            async_max_consecutive_aborted_groups=None,
             custom_async_data_buffer_path_per_model=None,
             dynamic_sampling_filter_path=None,
             max_weight_staleness=None,
@@ -160,6 +161,7 @@ def _make_single_policy_args(**overrides) -> Namespace:
     defaults = dict(
         async_data_buffer_capacity_factor=1000.0,
         async_data_buffer_selection="fifo",
+        async_max_consecutive_aborted_groups=None,
         dynamic_sampling_filter_path=None,
         enable_sample_ownership_checker=False,
         max_weight_staleness=None,

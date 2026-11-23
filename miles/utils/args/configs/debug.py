@@ -88,6 +88,15 @@ class DebugConfig(BaseConfig):
             )
         ),
     ] = "/tmp/dumper"
+    dumper_every_dp_rank: A[
+        bool,
+        Arg(
+            help=(
+                "Write Megatron dump files on every data-parallel rank, each file tagged with its rank. "
+                "By default only effective DP rank 0 writes."
+            )
+        ),
+    ] = False
     dumper_inference: A[
         list[str] | None,
         Arg(

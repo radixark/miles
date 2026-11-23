@@ -19,7 +19,7 @@ from miles.backends.megatron_utils.sglang import monkey_patch_torch_reductions
 from miles.backends.megatron_utils.update_weight.expert_gather import ExpertGather
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
     MegatronHfWeightIteratorBase,
-    _iter_mm_tower_units,
+    _iter_checkpoint_units,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
@@ -49,6 +49,16 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
             self.args, self.model, gather_pp=self.placement.gather_pp
         )
         ep_size = parallel.ep.size
+        # A pipeline stage that sends only its own parameters sends only its own layers' frozen checkpoint state.
+        self._frozen_layers = (
+            None
+            if self.placement.gather_pp or parallel.pp.size == 1
+            else frozenset(
+                int(m.group(1))
+                for info in (*non_expert_infos, *expert_infos)
+                if (m := re.search(r"(?:^|\.)decoder\.layers\.(\d+)\.", info.name))
+            )
+        )
         self._non_expert_batches = _pack_param_infos_by_size(self.args, non_expert_infos)
         self._expert_batches = []
         if not self._convert_experts_before_gather:
@@ -115,7 +125,13 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
                 del named_params
             pbar.update(1)
         pbar.close()
-        yield from _iter_mm_tower_units(self.args, materialize=materialize)
+        yield from _iter_checkpoint_units(
+            self.args,
+            materialize=materialize,
+            model_name=self.model_name,
+            quantization_config=self.quantization_config,
+            layers=self._frozen_layers,
+        )
 
     def _convert_and_gather_expert_batch(self, batch: _ExpertBatch, weights):
         """Convert once per expert across EP/EDP, then gather HF weights and scales."""

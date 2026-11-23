@@ -70,7 +70,10 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
                 self.group_name, self._model_update_groups, self.rollout_engines
             )
             self._model_update_groups = connect_rollout_engines_from_distributed(
-                self.group_name, rollout_engines, engine_gpu_counts=engine_gpu_counts
+                self.group_name,
+                rollout_engines,
+                engine_gpu_counts=engine_gpu_counts,
+                deterministic_engines=self.args.sglang.actor_value("enable_deterministic_inference"),
             )
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
@@ -92,6 +95,8 @@ def connect_rollout_engines_from_distributed(
     group_name: str,
     rollout_engines: Sequence[SGLangApiClient],
     engine_gpu_counts: Sequence[int] | None = None,
+    *,
+    deterministic_engines: bool = False,
 ) -> dist.ProcessGroup:
     """
     Create NCCL group: training rank 0 + all engine GPUs. Blocks until joined.
@@ -129,9 +134,31 @@ def connect_rollout_engines_from_distributed(
         world_size=world_size,
         rank=0,
         group_name=group_name,
+        pg_options=_engine_matched_nccl_options(deterministic_engines, engine_gpu_counts),
     )
     async_utils.wait_futures(futures)
     return model_update_groups
+
+
+def _engine_matched_nccl_options(deterministic_engines: bool, engine_gpu_counts: Sequence[int]):
+    """NCCL options that give this rank the engines' channel count.
+
+    SGLang deterministic inference pins NCCL_MIN/MAX_NCHANNELS process-wide in every engine with TP > 1, so the
+    engines' ranks of this group run that many channels. A communicator whose ranks disagree on the channel count fails
+    its first collective (NCCL "Message truncated: received 6144 bytes instead of 2048" for 24 vs 8 channels).
+    """
+    if not deterministic_engines or all(n == 1 for n in engine_gpu_counts):
+        return None
+    if any(n == 1 for n in engine_gpu_counts):
+        raise ValueError(
+            "Deterministic engines with TP 1 and TP > 1 cannot share one NCCL weight-update group: "
+            "only the TP > 1 engines pin the NCCL channel count"
+        )
+    from sglang.srt.environ import envs
+
+    options = dist.ProcessGroupNCCL.Options()
+    options.config.min_ctas = options.config.max_ctas = envs.SGLANG_DETERMINISTIC_NCCL_NCHANNELS.get()
+    return options
 
 
 def disconnect_rollout_engines_from_distributed(group_name, model_update_groups, rollout_engines):

@@ -130,6 +130,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
                 input.generate_state,
                 self._eval_prompt_dataset_cache,
                 kv_cache_namespace=compute_kv_cache_namespace(self.args, input),
+                rollout_id=input.rollout_id,
             )
             return RolloutFnEvalOutput(data=results)
 
@@ -140,6 +141,7 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
                 self.state,
                 self._eval_prompt_dataset_cache,
                 kv_cache_namespace=compute_kv_cache_namespace(self.args, input),
+                rollout_id=input.rollout_id,
             )
         finally:
             self._producer_resumed.set()

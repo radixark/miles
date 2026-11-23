@@ -353,6 +353,7 @@ def get_model_provider_func(
         with build_model_context(**build_model_context_args):
             model = GPTModel(**kwargs)
 
+        _maybe_install_top_fp8_masters(args, model)
         _maybe_freeze_native_dsa_indexer(args, model)
 
         if post_process and role == "critic":
@@ -363,6 +364,17 @@ def get_model_provider_func(
         return model
 
     return model_provider
+
+
+def _maybe_install_top_fp8_masters(args: TrainerConfig, model: GPTModel) -> None:
+    """TOP block-FP8 (GLM-5, DeepSeek-V4, DeepSeek-V4.1): BF16 masters behind serving's FP8 bytes, read from
+    --hf-checkpoint."""
+    if args.true_on_policy_contract is None:
+        return
+    from miles_plugins.top import fp8_loader
+
+    if fp8_loader.wanted(args):
+        fp8_loader.install(args, model)
 
 
 def _maybe_freeze_native_dsa_indexer(args: TrainerConfig, model: GPTModel) -> None:

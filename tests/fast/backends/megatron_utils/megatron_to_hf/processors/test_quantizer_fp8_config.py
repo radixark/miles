@@ -22,7 +22,9 @@ class TestResolvedFp8ScaleFormat:
     ) -> None:
         """MoE FP8 scales follow resolved SGLang runner ownership without requiring flat CLI fields."""
         monkeypatch.setattr(quantizer_fp8, "should_deepgemm_weight_requant_ue8m0", lambda **kwargs: True)
-        args = SimpleNamespace(sglang=make_sglang_config(moe_runner_backend=runner, moe_a2a_backend=a2a))
+        args = SimpleNamespace(
+            true_on_policy_contract=None, sglang=make_sglang_config(moe_runner_backend=runner, moe_a2a_backend=a2a)
+        )
 
         result = quantizer_fp8._get_scale_format(args, "model.layers.0.mlp.experts.0.weight", [128, 128])
 
@@ -38,7 +40,10 @@ class TestResolvedFp8ScaleFormat:
             "should_deepgemm_weight_requant_ue8m0",
             lambda *, weight_block_size, grouped_moe=False: grouped_moe,
         )
-        args = SimpleNamespace(sglang=make_sglang_config(moe_runner_backend="deep_gemm", moe_a2a_backend="none"))
+        args = SimpleNamespace(
+            true_on_policy_contract=None,
+            sglang=make_sglang_config(moe_runner_backend="deep_gemm", moe_a2a_backend="none"),
+        )
 
         expert = quantizer_fp8._get_scale_format(args, "model.layers.0.mlp.experts.0.weight", [128, 128])
         dense = quantizer_fp8._get_scale_format(args, "model.layers.0.self_attn.o_proj.weight", [128, 128])
@@ -57,7 +62,9 @@ class TestResolvedFp8ScaleFormat:
         config = config.model_copy(update={"models": [model.model_copy(update={"server_groups": [overridden]})]})
 
         result = quantizer_fp8._get_scale_format(
-            SimpleNamespace(sglang=config), "model.layers.0.mlp.experts.0.weight", [128, 128]
+            SimpleNamespace(true_on_policy_contract=None, sglang=config),
+            "model.layers.0.mlp.experts.0.weight",
+            [128, 128],
         )
 
         assert result is None
@@ -76,5 +83,7 @@ class TestResolvedFp8ScaleFormat:
 
         with pytest.raises(AssertionError, match="moe_runner_backend"):
             quantizer_fp8._get_scale_format(
-                SimpleNamespace(sglang=config), "model.layers.0.mlp.experts.0.weight", [128, 128]
+                SimpleNamespace(true_on_policy_contract=None, sglang=config),
+                "model.layers.0.mlp.experts.0.weight",
+                [128, 128],
             )

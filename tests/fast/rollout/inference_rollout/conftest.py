@@ -66,6 +66,7 @@ def make_eval_args(*, namespaced_radix_cache: bool = True) -> dict[str, Any]:
         rollout_skip_special_tokens=True,
         eval_reward_key=None,
         reward_key=None,
+        num_rollout=None,
     )
 
 

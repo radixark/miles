@@ -277,6 +277,8 @@ def _load_hf_weights_with_mbridge(ddp_model, args, load_path: str) -> None:
 
     from miles.backends.megatron_utils.lora.native.modules.linear import adapters_hidden_context
 
+    from miles.true_on_policy.gdn import is_top_gdn, is_top_glm53
+
     if args.offload_train:
         from torch_memory_saver import torch_memory_saver
 
@@ -296,8 +298,19 @@ def _load_hf_weights_with_mbridge(ddp_model, args, load_path: str) -> None:
         adapters_hidden_context(ddp_model),
         bypass,
     ):
-        bridge = create_mbridge_for_model(ddp_model, load_path)
-        bridge.load_weights(ddp_model, load_path, memory_efficient=True)
+        if is_top_gdn(args):
+            # TOP's GDN layers own HF-named parameters in HF's flat row layout.
+            from miles_plugins.top.gdn_checkpoint import load_gdn_hf_weights
+
+            load_gdn_hf_weights(ddp_model, load_path)
+        elif is_top_glm53(args):
+            # TOP's GLM-5.3-Flash experts are per-expert (SequentialMLP) parameters.
+            from miles_plugins.top.glm53_checkpoint import load_glm53_hf_weights
+
+            load_glm53_hf_weights(ddp_model, load_path)
+        else:
+            bridge = create_mbridge_for_model(ddp_model, load_path)
+            bridge.load_weights(ddp_model, load_path, memory_efficient=True)
     torch.cuda.synchronize()
 
 

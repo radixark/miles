@@ -220,7 +220,8 @@ class RolloutRelatedConfig(BaseConfig):
                 "Pin the RolloutExecutor, the co-located router process, and the session servers to the "
                 "Ray head node. "
                 "Useful in K8s where the head pod has a stable Service address so that "
-                "external agent environments can reliably reach the router."
+                "external agent environments can reliably reach the router. "
+                "The trainer then takes its GPUs from other nodes first, so it does not share the head's host RAM."
             )
         ),
     ] = False
@@ -547,6 +548,18 @@ class RolloutRelatedRolloutOnlyConfig(BaseConfig):
                 "Groups exceeding this threshold are recycled back to "
                 "the data buffer instead of being sent to training. Only effective in fully "
                 "async mode. None (default) disables staleness filtering."
+            )
+        ),
+    ] = None
+    async_max_consecutive_aborted_groups: A[
+        int | None,
+        Arg(
+            help=(
+                "Fail the run once this many finished groups in a row were all dropped as aborted in fully "
+                "async mode. With --async-unused-samples-handler retry, a systematic failure (an unreachable "
+                "model endpoint, a dead sandbox service) otherwise regenerates groups forever without a "
+                "training step. An engine restart aborts every in-flight group at once, so N must exceed the "
+                "groups in flight. None (default) never fails."
             )
         ),
     ] = None

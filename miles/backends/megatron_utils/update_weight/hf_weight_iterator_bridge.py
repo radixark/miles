@@ -9,7 +9,7 @@ import torch.distributed as dist
 
 from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
     MegatronHfWeightIteratorBase,
-    _iter_mm_tower_units,
+    _iter_checkpoint_units,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils import megatron_bridge_utils
@@ -88,7 +88,12 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
                     yield unit
         for param, original_data in swapped_params:
             param.data = original_data
-        yield from _iter_mm_tower_units(self.args, materialize=materialize)
+        yield from _iter_checkpoint_units(
+            self.args,
+            materialize=materialize,
+            model_name=self.model_name,
+            quantization_config=self.quantization_config,
+        )
 
     def _export_pp_local_lora(self, adapter):
         if adapter is None:

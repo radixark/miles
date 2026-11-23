@@ -197,6 +197,7 @@ class TrainRayActor(NodeProbeMixin):
                 mm_processor_worker_num=self.args.trainer_mm_processor_worker_num,
                 mm_io_worker_num=self.args.trainer_mm_io_worker_num,
                 device=current_platform.current_device(),
+                true_on_policy=self.args.true_on_policy_mode,
             )
             if self.args.multimodal_token_space_processing
             else None

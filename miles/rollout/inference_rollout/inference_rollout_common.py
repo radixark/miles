@@ -157,6 +157,13 @@ async def generate_and_rm(
     return sample
 
 
+def sample_seed(args, sample: Sample, slot: int) -> int:
+    """Seeded sampling noise is a function of (seed, position, token): a seed shared across prompts or steps lets one
+    extreme draw inject the same improbable token into every such response. The global sample index is unique and resumes.
+    """
+    return args.rollout_seed + (sample.index if sample.index is not None else slot)
+
+
 async def generate_and_rm_group(
     state: GenerateState,
     group: list[Sample],
@@ -180,7 +187,7 @@ async def generate_and_rm_group(
     for idx, sample in enumerate(group):
         current_sampling_params = sampling_params.copy()
         if args.sglang.common_value("enable_deterministic_inference"):
-            current_sampling_params["sampling_seed"] = args.rollout_seed + idx
+            current_sampling_params["sampling_seed"] = sample_seed(args, sample, idx)
         task = asyncio.create_task(generate_and_rm(state, sample, current_sampling_params, evaluation=evaluation))
         if sample_done_callback is not None:
             # fires on success, exception, and cancellation, so in-flight accounting is conserved
@@ -265,6 +272,7 @@ class InferenceRolloutFn(BaseRolloutFn):
             state,
             self.eval_prompt_dataset_cache,
             kv_cache_namespace=compute_kv_cache_namespace(state.args, input),
+            rollout_id=input.rollout_id,
         )
         return RolloutFnEvalOutput(data=results)
 

@@ -83,9 +83,17 @@ class TestAssembleAtomicUpdateGroups:
         out = list(assemble_atomic_update_groups([_unit("layers.0.a.weight")], [optional]))
         assert len(out) == 1
 
-    def test_unit_matching_two_suffixes_raises(self):
+    def test_unit_carrying_a_whole_group_passes_through(self):
+        out = list(assemble_atomic_update_groups([_unit("layers.0.b.weight", "layers.0.c.weight")], [PAIR_GROUP]))
+        assert [[n for n, _ in u] for u in out] == [["layers.0.b.weight", "layers.0.c.weight"]]
+
+    def test_unit_matching_two_suffixes_of_different_layers_raises(self):
         with pytest.raises(AssertionError, match="matches multiple"):
-            list(assemble_atomic_update_groups([_unit("layers.0.b.weight", "layers.0.c.weight")], [PAIR_GROUP]))
+            list(assemble_atomic_update_groups([_unit("layers.0.b.weight", "layers.1.c.weight")], [PAIR_GROUP]))
+
+    def test_unit_repeating_one_suffix_raises(self):
+        with pytest.raises(AssertionError, match="matches multiple"):
+            list(assemble_atomic_update_groups([_unit("layers.0.b.weight", "layers.1.b.weight")], [PAIR_GROUP]))
 
     def test_invalid_group_specs_raise(self):
         for groups, error in [

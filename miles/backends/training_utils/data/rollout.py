@@ -21,6 +21,7 @@ from miles.backends.training_utils.data.token_space_media_process import (
     resolved_mrope_position_ids,
     resolved_multimodal_train_inputs,
 )
+from miles.backends.training_utils.data.version_split import add_token_versions
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.platforms import current_platform
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
@@ -146,8 +147,12 @@ def prepare_rollout_data(
 
         rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
 
+    if args.fully_async:
+        # Fully async runs split the train/rollout diff and IS weights by sampling version; sliced like the
+        # rollout log-probs below.
+        add_token_versions(rollout_data)
     # Full-response SGLang OPD fields share rollout CP slicing but retain float32 precision.
-    for key in ("rollout_log_probs", "teacher_log_probs", "opd_reverse_kl"):
+    for key in ("rollout_log_probs", "teacher_log_probs", "opd_reverse_kl", "rollout_token_versions"):
         if key in rollout_data:
             dtype = _rollout_logprob_dtype(args) if key == "rollout_log_probs" else torch.float32
             rollout_data[key] = [
@@ -393,8 +398,11 @@ def get_batch(
 
     mrope_position_ids = batch.pop("mrope_position_ids", None)
     if mrope_position_ids is not None and (mrope_position_ids := resolved_mrope_position_ids(mrope_position_ids)):
-        assert qkv_format == "thd" and not allgather_cp, "mRoPE positions need the per-sample THD CP layout"
-        batch["position_ids"] = _pack_natural_position_ids(mrope_position_ids, cu_seqlens_host)
+        assert qkv_format == "thd", "mRoPE positions need the THD layout"
+        # Each sample's [num_tokens, 3], for a forward that packs its own layout (GDN TOP under all-gather CP).
+        batch["sample_mrope_position_ids"] = mrope_position_ids
+        if not allgather_cp:
+            batch["position_ids"] = _pack_natural_position_ids(mrope_position_ids, cu_seqlens_host)
 
     if get_position_ids:
         position_ids_list = []

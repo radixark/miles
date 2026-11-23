@@ -46,8 +46,20 @@ def assemble_atomic_update_groups(
             for suffix_idx, suffix in enumerate(group.suffixes)
             if name.endswith(suffix)
         ]
-        assert len(matches) <= 1, f"Unit {[n for n, _ in unit]} matches multiple atomic group suffixes"
         if not matches:
+            yield unit
+            continue
+        if len(matches) > 1:
+            # A unit may already carry a whole group (TOP's DS4 export splits a fused weight into its pair).
+            group = matches[0][0]
+            prefixes = {name[: -len(suffix)] for _g, _i, suffix, name in matches}
+            complete = (
+                all(g is group for g, *_ in matches)
+                and len(prefixes) == 1
+                and sorted(i for _g, i, *_ in matches) == list(range(len(group.suffixes)))
+            )
+            assert complete, f"Unit {[n for n, _ in unit]} matches multiple atomic group suffixes"
+            matched_group_keys.add(group.key)
             yield unit
             continue
         group, suffix_idx, suffix, name = matches[0]

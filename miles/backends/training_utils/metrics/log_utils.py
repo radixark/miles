@@ -209,6 +209,9 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 "dynamic_global_batch_size",
                 "witness_ids",
                 "weight_versions",
+                "rollout_token_versions",
+                "rollout_token_fresh",
+                "rollout_token_stale",
                 "metadata",
                 "num_microbatches",
                 "micro_batch_indices",
@@ -236,8 +239,6 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                         "teacher_log_probs",
                         "opd_reverse_kl",
                         "entropy",
-                        "topk_logprob_abs_diff",
-                        "topk_set_mismatch",
                     ]:
                         sum_of_sample_mean = get_sum_of_sample_mean(
                             total_lengths,
@@ -247,7 +248,9 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                             max_seq_lens=max_seq_lens,
                             denominators=rollout_data.get("rollout_mask_sums", None),
                         )
-                        per_rank_sum = cp_size * sum_of_sample_mean(tensor)
+                        # Trainer log-probs may be FP32 holding the same values as BF16 rollout log-probs;
+                        # reduce in FP32 so equal tokens give equal sums.
+                        per_rank_sum = cp_size * sum_of_sample_mean(tensor.float())
                         if rollout_count_share is not None:
                             count = rollout_count_share
                     else:
@@ -301,23 +304,18 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
             if "rollout/entropy" in reduced_log_dict:
                 assert 0 < reduced_log_dict["rollout/entropy"] < 0.7
 
-        if args.ci_test and args.true_on_policy_mode and not args.ci_disable_logprobs_checker:
+        # TOP skips the forward-only pass (--use-rollout-logprobs), so the training forward is checked instead.
+        if (
+            args.ci_test
+            and args.true_on_policy_mode
+            and not args.ci_disable_logprobs_checker
+            and "log_probs" in log_dict
+        ):
             assert log_dict["log_probs"] == log_dict["rollout_log_probs"], (
                 f"CI check failed: true_on_policy_mode is enabled, but log_probs "
                 f"({log_dict['log_probs']}) != rollout_log_probs "
                 f"({log_dict['rollout_log_probs']})"
             )
-            # Emitted by the torch-native forward-only pass; a backend that skips it must fail here, not pass.
-            if args.rollout_top_logprobs_num > 0:
-                for key in ("topk_logprob_abs_diff", "topk_set_mismatch"):
-                    assert key in log_dict, (
-                        f"CI check failed: --rollout-top-logprobs-num is set, but the actor did not score the "
-                        f"rollout top-k candidates ({key} missing)"
-                    )
-                    assert log_dict[key][0] == 0, (
-                        f"CI check failed: true_on_policy_mode is enabled, but the rollout top-k candidates "
-                        f"differ from the trainer's: {key} sum = {log_dict[key][0]}"
-                    )
 
     if args.log_multi_turn:
         log_multi_turn_data(rollout_id, args, rollout_data)

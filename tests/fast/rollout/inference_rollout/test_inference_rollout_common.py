@@ -106,6 +106,17 @@ class TestInferenceRolloutFnKvCacheNamespace:
         assert recorder.take_stamps() == {None}
 
 
+def test_sampling_seeds_differ_across_prompts_and_steps() -> None:
+    """Seeding by group slot gave every prompt's k-th sample, in every step, the same sampling noise."""
+    from miles.rollout.inference_rollout.inference_rollout_common import sample_seed
+
+    args = SimpleNamespace(rollout_seed=1234)
+    # Two prompts per step, two steps, three samples per prompt; the data source numbers samples globally.
+    groups = [[SimpleNamespace(index=group * 3 + slot) for slot in range(3)] for group in range(4)]
+    seeds = [sample_seed(args, sample, slot) for group in groups for slot, sample in enumerate(group)]
+    assert len(set(seeds)) == len(seeds)
+
+
 class TestFailedGenerationHandsOverItsOutputStoreRefs:
     """A sample task that raises reaches no drop site, so the runners record what it held."""
 

@@ -1,7 +1,9 @@
+import socket
 from types import SimpleNamespace
 
 import pytest
 import torch
+import torch.distributed as dist
 
 from miles.backends.training_utils.data import context_parallel
 from miles.backends.training_utils.data.sampling_mask import build_local_sampling_mask, get_rollout_sampling_masks
@@ -144,9 +146,20 @@ def test_sampling_support_normalization_has_the_expected_actor_gradient():
     torch.testing.assert_close(logits.grad, expected_grad)
 
 
-def test_get_log_probs_and_entropy_applies_per_response_sampling_support(monkeypatch):
+@pytest.fixture
+def one_rank_process_group():
+    """The non-TOP log-prob reduces over the TP group; one rank leaves the values unchanged."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    dist.init_process_group("gloo", init_method=f"tcp://127.0.0.1:{port}", rank=0, world_size=1)
+    yield dist.group.WORLD
+    dist.destroy_process_group()
+
+
+def test_get_log_probs_and_entropy_applies_per_response_sampling_support(monkeypatch, one_rank_process_group):
     parallel_state = SimpleNamespace(
-        tp=SimpleNamespace(rank=0, group=None),
+        tp=SimpleNamespace(rank=0, group=one_rank_process_group),
         cp=SimpleNamespace(rank=0, size=1),
     )
     monkeypatch.setattr(logit_processors, "get_parallel_state", lambda: parallel_state)
@@ -156,7 +169,7 @@ def test_get_log_probs_and_entropy_applies_per_response_sampling_support(monkeyp
         loss_type="policy_loss",
         qkv_format="thd",
         rollout_temperature=1.0,
-        true_on_policy_mode=True,
+        true_on_policy_mode=False,
         log_probs_chunk_size=-1,
         allgather_cp=False,
         train_backend="megatron",

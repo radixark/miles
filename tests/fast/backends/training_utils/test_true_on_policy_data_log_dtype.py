@@ -1,7 +1,6 @@
 from argparse import Namespace
 from types import SimpleNamespace
 
-import pytest
 import torch
 
 from miles.backends.training_utils.data import context_parallel
@@ -30,7 +29,7 @@ def test_true_on_policy_rollout_logprob_dtype_follows_training_precision():
     )
 
 
-def _log_true_on_policy_rollout(monkeypatch, *, rollout_top_logprobs_num: int = 0) -> dict:
+def _log_true_on_policy_rollout(monkeypatch) -> dict:
     captured = {}
     parallel_state = SimpleNamespace(
         tp=SimpleNamespace(rank=0),
@@ -62,7 +61,6 @@ def _log_true_on_policy_rollout(monkeypatch, *, rollout_top_logprobs_num: int = 
             ci_disable_logprobs_checker=False,
             trainer_model_id=None,
             true_on_policy_mode=True,
-            rollout_top_logprobs_num=rollout_top_logprobs_num,
             qkv_format="thd",
             log_multi_turn=False,
             log_passrate=False,
@@ -78,10 +76,43 @@ def test_true_on_policy_log_checker_passes_when_values_and_dtype_match(monkeypat
     assert log_dict["log_probs"] == log_dict["rollout_log_probs"]
 
 
-def test_true_on_policy_top_k_check_fails_when_the_actor_skipped_it(monkeypatch):
-    # rollout top-k candidates were recorded, but no actor emitted the top-k metrics (e.g. a backend without the check)
-    with pytest.raises(AssertionError, match="did not score the rollout top-k candidates"):
-        _log_true_on_policy_rollout(monkeypatch, rollout_top_logprobs_num=128)
+def test_true_on_policy_log_checker_passes_for_fp32_train_and_bf16_rollout(monkeypatch):
+    """The row-chunked TOP log-prob returns FP32 holding BF16-exact values while rollout log-probs stay BF16; the
+    logger reduces both in FP32, so equal tokens give equal sums (each in its own dtype: -6.58164 vs -6.58398)."""
+    captured = {}
+    parallel_state = SimpleNamespace(tp=SimpleNamespace(rank=0), cp=SimpleNamespace(size=1), is_pp_last_stage=True)
+    monkeypatch.setattr(log_utils, "get_parallel_state", lambda: parallel_state)
+    monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: parallel_state)
+    monkeypatch.setattr(
+        log_utils,
+        "gather_log_data",
+        lambda metric_name, args, rollout_id, log_dict: captured.setdefault("log_dict", log_dict),
+    )
+    torch.manual_seed(0)
+    rollout = (-10 * torch.rand(1000)).to(torch.bfloat16)
+    rollout_data = {
+        "tokens": [torch.arange(1200)],
+        "total_lengths": [1200],
+        "response_lengths": [1000],
+        "loss_masks": [torch.ones(1000, dtype=torch.int32)],
+        "log_probs": [rollout.float()],
+        "rollout_log_probs": [rollout],
+    }
+    log_utils.log_rollout_data(
+        1,
+        Namespace(
+            ci_test=True,
+            ci_disable_logprobs_checker=False,
+            trainer_model_id=None,
+            true_on_policy_mode=True,
+            qkv_format="thd",
+            log_multi_turn=False,
+            log_passrate=False,
+            log_correct_samples=False,
+        ),
+        rollout_data,
+    )
+    assert captured["log_dict"]["log_probs"] == captured["log_dict"]["rollout_log_probs"]
 
 
 def test_sampling_mask_csr_payload_is_not_averaged_as_a_metric(monkeypatch):

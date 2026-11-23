@@ -341,6 +341,61 @@ def test_forward_only_omits_sampling_mask_for_callbacks_that_do_not_replay_sampl
     assert "rollout_sampling_mask" not in callback_kwargs
 
 
+@pytest.mark.parametrize("use_rollout_entropy", [False, True])
+def test_forward_only_scores_entropy_without_grad_for_every_callback(monkeypatch, use_rollout_entropy: bool):
+    """Forward-only scoring never differentiates the entropy, and both forward-only callbacks accept the flag."""
+    import inspect
+
+    from miles.backends.megatron_utils import model as model_module
+    from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy, get_values
+
+    def forward_backward(**kwargs):
+        output, callback = kwargs["forward_step_func"](kwargs["data_iterator"][0], kwargs["model"][0])
+        return [callback(output)]
+
+    callback_kwargs = {}
+
+    def callback(_output, **kwargs):
+        callback_kwargs.update(kwargs)
+        return {}
+
+    args = make_trainer_args(
+        data_pad_size_multiplier=1,
+        qkv_format="thd",
+        allgather_cp=False,
+        enable_witness=False,
+        use_rollout_entropy=use_rollout_entropy,
+        custom_megatron_before_log_prob_hook_path=None,
+        seq_length=8,
+        micro_batch_size=1,
+    )
+    batch = {
+        "tokens": None,
+        "input_loss_masks": None,
+        "multimodal_train_inputs": None,
+        "unconcat_tokens": [],
+        "total_lengths": [],
+        "response_lengths": [],
+        "max_seq_lens": None,
+    }
+    dumper = Mock()
+    dumper.wrap_forward_step.side_effect = lambda fn: fn
+
+    monkeypatch.setattr(model_module, "DumperMegatronUtil", lambda *_args, **_kwargs: dumper)
+    monkeypatch.setattr(model_module, "get_model_config", lambda _model: Mock(timers=None))
+    monkeypatch.setattr(model_module, "get_batch", lambda *_args, **_kwargs: batch)
+    monkeypatch.setattr(model_module, "get_packed_seq_params", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(model_module, "get_forward_backward_func", lambda: forward_backward)
+    monkeypatch.setattr(model_module, "mpu", FakeMpu())
+
+    model_module.forward_only(callback, args, [Mock()], [Mock()], [1], rollout_id=0)
+
+    assert callback_kwargs["with_entropy"] is use_rollout_entropy
+    assert callback_kwargs["entropy_requires_grad"] is False
+    for scorer in (get_log_probs_and_entropy, get_values):
+        inspect.signature(scorer).bind(torch.zeros(1), **callback_kwargs)
+
+
 @pytest.mark.parametrize(
     ("loss_type", "fetched"),
     [("policy_loss", True), ("score_centering", True), ("custom_loss", True), ("sft_loss", False)],

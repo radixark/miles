@@ -187,6 +187,8 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_gatherer = MetricGatherer()
         self._metric_aborted_groups = 0
         self._metric_stale_groups = 0
+        self._consecutive_aborted = 0
+        self._max_consecutive_aborted = args.async_max_consecutive_aborted_groups
         self._metric_consumed_staleness: list[int] = []
         self._metric_selected_newest_lag: list[int] = []
         self._metric_selected_version_span: list[int] = []
@@ -209,10 +211,24 @@ class DefaultDataBuffer(DataBuffer):
         output = apply_aborted_filter(self._args, input.group)
         if not output.keep:
             self._metric_aborted_groups += 1
+            self._consecutive_aborted += 1
+            if (
+                self._max_consecutive_aborted is not None
+                and self._consecutive_aborted >= self._max_consecutive_aborted
+            ):
+                # Every trial failing as an infrastructure error (an unreachable model endpoint, a dead sandbox
+                # service) would otherwise be regenerated forever without a single training step.
+                raise RuntimeError(
+                    f"{self._consecutive_aborted} finished groups in a row were aborted "
+                    f"(--async-max-consecutive-aborted-groups {self._max_consecutive_aborted}); last statuses "
+                    f"{[s.status.value for s in iter_samples(input.group)]}, metadata keys "
+                    f"{sorted(first_sample(input.group).metadata or {})}"
+                )
             # Before the handler: a retry resets the prompt group, plans included.
             record_dropped_samples([input.prompt_group, input.group])
             self._unused_handler_fn(input.prompt_group, UnusedReason.ABORTED)
             return False
+        self._consecutive_aborted = 0
 
         output = apply_missing_reward_filter(self._args, input.group)
         if not output.keep:
@@ -380,9 +396,6 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_selected_versioned_samples = 0
         self._metric_aborted_groups = self._metric_stale_groups = 0
         return metrics
-
-
-# ============================ multi policy buffer =============================
 
 
 class DefaultMultiDataBuffer(DataBuffer):

@@ -67,3 +67,32 @@ def test_translating_to_host_backups_keeps_the_companion_parameters(memory_saver
     assert version.data_ptr() == chunk.model_companion.weight_version.data_ptr()
     assert version.item() == 5
     memory_saver.get_cpu_backup.assert_not_called()
+
+
+def test_sequential_mlp_experts_get_grouped_names_with_global_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    """EP rank 1 of 2 with 8 experts: local expert 1 is global expert 5, in decoder and MTP layers alike."""
+    from miles.backends.megatron_utils import named_weights as nw
+
+    monkeypatch.setattr(nw, "get_parallel_state", lambda: SimpleNamespace(ep=SimpleNamespace(size=2, rank=1)))
+    monkeypatch.setattr(nw, "get_transformer_layer_offset", lambda config, *args, **kwargs: 0)
+
+    class Chunk(torch.nn.Module):
+        config = None
+
+        def named_parameters(self, *args, **kwargs):
+            yield "module.module.decoder.layers.0.mlp.experts.local_experts.1.linear_fc1.weight", torch.zeros(1)
+            yield "module.module.mtp.layers.0.transformer_layer.mlp.experts.local_experts.1.linear_fc2.weight", torch.zeros(
+                1
+            )
+
+        def named_buffers(self, *args, **kwargs):
+            return iter(())
+
+    names = [
+        name for name, _ in nw._named_params_and_buffers_global(Namespace(backend=Namespace(num_experts=8)), [Chunk()])
+    ]
+
+    assert names == [
+        "module.module.decoder.layers.0.mlp.experts.linear_fc1.weight5",
+        "module.module.mtp.layers.0.transformer_layer.mlp.experts.linear_fc2.weight5",
+    ]

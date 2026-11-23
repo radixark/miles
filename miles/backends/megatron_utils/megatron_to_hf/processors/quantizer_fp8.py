@@ -96,10 +96,14 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
         "self_attention.linear_kv_proj.weight",
         "self_attention.core_attention.indexer.linear_wq_b.weight",
     ]
-    if not getattr(
-        args.backend, "indexer_rope_interleave", False
-    ):  # config-access-exempt: only DSA model normalization introduces the indexer flag
-        # Non-interleaved indexers keep wk as a standalone FP8 parameter in SGLang.
+    if (
+        not getattr(
+            args.backend, "indexer_rope_interleave", False
+        )  # config-access-exempt: only DSA model normalization introduces the indexer flag
+        or args.true_on_policy_contract
+    ):
+        # Non-interleaved indexers keep wk as a standalone FP8 parameter in SGLang; so does TOP serving,
+        # which disables the indexer fusion (SGLANG_DISABLE_DSA_INDEXER_FUSION).
         fp8_param_names.extend(
             [
                 "self_attention.wk.weight",
@@ -192,6 +196,10 @@ def _quantize_param(args, name, weight, weight_block_size, is_skipped):
 
 
 def _get_scale_format(args, name, weight_block_size):
+    if args.true_on_policy_contract:
+        # TOP serving keeps packed UE8M0 scales on every architecture (true_on_policy.fp8.requant_ue8m0), and the
+        # trainer's FP8 caches rebuild with the UE8M0 quantizer; the local DeepGEMM build (SM90: FP32) must not decide.
+        return "ue8m0"
     is_moe_expert = ".experts." in name
     # grouped_moe mirrors SGLang's own MoE requant call: SM120 requantizes only grouped MoE scales.
     if not (

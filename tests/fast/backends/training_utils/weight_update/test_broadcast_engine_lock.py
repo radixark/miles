@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 from torch.distributed import HashStore
 
 from miles.backends.training_utils.weight_update.protocols.broadcast import UpdateWeightFromDistributed
@@ -28,7 +29,9 @@ def _build_protocol(
         patch(f"{_BROADCAST_MODULE}.get_parallel_state", return_value=parallel_state),
         patch(f"{_BROADCAST_MODULE}.create_world_ticket_lock") as create_lock,
     ):
-        protocol = UpdateWeightFromDistributed(Namespace(check_weight_update_equal=False))
+        protocol = UpdateWeightFromDistributed(
+            Namespace(check_weight_update_equal=False, sglang=make_sglang_config(enable_deterministic_inference=False))
+        )
     return protocol, create_lock
 
 
@@ -86,7 +89,10 @@ class TestSendBucketUnderTheEngineLock:
     @staticmethod
     def _make_self(store: HashStore) -> SimpleNamespace:
         return SimpleNamespace(
-            args=Namespace(update_weight_transfer_mode="broadcast"),
+            args=Namespace(
+                update_weight_transfer_mode="broadcast",
+                sglang=make_sglang_config(enable_deterministic_inference=False),
+            ),
             _engine_lock=StoreTicketLock(store=store, prefix=_PREFIX, poll_interval=0.001),
             group_name="miles-pp_0",
             _model_update_groups=MagicMock(name="nccl_group"),

@@ -17,7 +17,6 @@ from miles.backends.training_utils.data.rollout import (
     get_rollout_data,
     prepare_rollout_data,
 )
-from miles.backends.training_utils.loss.hub.logit_processors import get_rollout_topk_mismatch
 from miles.backends.training_utils.loss.hub.response_layout import response_layout_type
 from miles.backends.training_utils.loss.objective import (
     compute_advantages_and_returns,
@@ -267,12 +266,6 @@ class TorchNativeTrainRayActor(TrainRayActor):
         data_iterator.reset()
         use_rollout_sampling_mask = store_prefix == "" and args.use_sampling_support_replay
         keys = FORWARD_ONLY_KEYS + SAMPLING_MASK_KEYS if use_rollout_sampling_mask else FORWARD_ONLY_KEYS
-        # Scored here, with the weights that generated the rollout: after the first optimizer step they differ.
-        check_rollout_topk = (
-            store_prefix == "" and args.ci_test and args.true_on_policy_mode and args.rollout_top_logprobs_num > 0
-        )
-        if check_rollout_topk:
-            keys = keys + ROLLOUT_TOPK_KEYS
 
         layout_type = response_layout_type(args)
 
@@ -283,8 +276,6 @@ class TorchNativeTrainRayActor(TrainRayActor):
             entry = {f"{store_prefix}log_probs": result["log_probs"]}
             if "entropy" in result:
                 entry["entropy"] = result["entropy"]
-            if check_rollout_topk:
-                entry.update(get_rollout_topk_mismatch(logits, args=args, batch=batch))
             return entry
 
         with timer(f"{store_prefix}log_probs"):

@@ -117,6 +117,19 @@ def _named_params_and_buffers_global(
                 expert_pattern = r"(transformer_layer|mtp_model_layer)\.mlp\.experts\.(.+)\.weight(\d+)"
                 match = re.match(expert_pattern, rest)
                 if not match:
+                    # SequentialMLP experts, as in the decoder layers below.
+                    match = re.fullmatch(
+                        r"(transformer_layer|mtp_model_layer)\.mlp\.experts\.local_experts\.(\d+)\.(linear_fc[12])\.weight",
+                        rest,
+                    )
+                    if match:
+                        inner, local_idx, linear = match.groups()
+                        expert_idx = int(local_idx) + expert_offset
+                        yield (
+                            f"module.module.mtp.layers.{layer_idx}.{inner}.mlp.experts.{linear}.weight{expert_idx}",
+                            param,
+                        )
+                        continue
                     yield name, param
                     continue
 
@@ -138,6 +151,15 @@ def _named_params_and_buffers_global(
                 rest, expert_idx = match.groups()
                 expert_idx = int(expert_idx) + expert_offset
                 yield f"module.module.decoder.layers.{layer_idx}.mlp.experts.{rest}.weight{expert_idx}", param
+                continue
+            # SequentialMLP experts (local spec, or TE without --moe-grouped-gemm) carry EP-local
+            # indices; publish them under the grouped name with the global expert id, which every
+            # converter and iterator understands.
+            match = re.fullmatch(r"mlp\.experts\.local_experts\.(\d+)\.(linear_fc[12])\.weight", rest)
+            if match:
+                local_idx, linear = match.groups()
+                expert_idx = int(local_idx) + expert_offset
+                yield f"module.module.decoder.layers.{layer_idx}.mlp.experts.{linear}.weight{expert_idx}", param
             else:
                 yield f"module.module.decoder.layers.{layer_idx}.{rest}", param
 

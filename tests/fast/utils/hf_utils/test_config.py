@@ -147,3 +147,27 @@ class TestDeepseekV32Alias:
             f"{type(cfg).__name__} not registered with AutoModelForCausalLM — "
             f"AutoModelForCausalLM.from_config(cfg) will raise ValueError."
         )
+
+
+class TestDeepseekV41Alias:
+    def test_vision_tower_keeps_sglangs_flat_fields(self, tmp_path):
+        """Miles' V4.1 class replaces SGLang's in AutoConfig, and SGLang's processor and V4.1 model read the tower
+        from the flat vision_* fields: a checkpoint with vision_config must keep them, one without reads 0 layers."""
+        pytest.importorskip("sglang.srt.configs.deepseek_v41")
+        from miles.utils.hf_utils.config import load_hf_config
+
+        vision = {"num_hidden_layers": 32, "hidden_size": 1024, "patch_size": 14, "downsample_ratio": 3}
+        text = {"model_type": "deepseek_v41", "text_config": {"hidden_size": 64, "num_hidden_layers": 2}}
+        (tmp_path / "vision").mkdir()
+        (tmp_path / "text").mkdir()
+        _write_config_json(str(tmp_path / "vision"), {**text, "vision_config": vision})
+        _write_config_json(str(tmp_path / "text"), text)
+
+        cfg = load_hf_config(str(tmp_path / "vision"))
+        assert (cfg.vision_n_layers, cfg.vision_dim, cfg.vision_patch_size, cfg.vision_downsample_ratio) == (
+            32,
+            1024,
+            14,
+            3,
+        )
+        assert load_hf_config(str(tmp_path / "text")).vision_n_layers == 0

@@ -12,6 +12,7 @@ from collections.abc import Sequence
 import torch
 import torch.distributed as dist
 
+from miles.backends.megatron_utils.megatron_to_hf.export_hooks import export_hooks
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase, WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
@@ -36,7 +37,11 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
         )
 
     def _hf_atomic_update_groups(self):
-        return get_hf_atomic_update_groups(self.model_name, q_lora_rank=self.args.backend.q_lora_rank)
+        return get_hf_atomic_update_groups(
+            self.model_name,
+            q_lora_rank=self.args.backend.q_lora_rank,
+            frozen_indexer=export_hooks().frozen_indexer,
+        )
 
     def _iter_hf_adapter_units(self, adapter, *, materialize):
         """Both megatron exporters are PP-local after gathering TP/EP; the PP
@@ -152,10 +157,13 @@ def _gather_pp_full_adapter(
 _FROZEN_TOWER_PROVIDERS = ("inkling_mm_model_provider", "qwen3_5_mm_model_provider")
 
 
-def _iter_mm_tower_units(args, *, materialize):
+def _iter_checkpoint_units(args, *, materialize, model_name, quantization_config, layers=None):
+    """Serving state the trainer holds no parameters for: frozen multimodal towers, and a plugin's frozen serving
+    state (export_hooks). ``layers`` limits the plugin's per-layer state to one pipeline stage; None sends all."""
     # The trainer never owns these frozen towers, so they come from the boot checkpoint on every sync, like any
     # weight an engine drops across offload.
     provider = args.custom_model_provider_path
-    if provider is None or not any(name in provider.path for name in _FROZEN_TOWER_PROVIDERS):
-        return
-    yield from iter_checkpoint_tower_units(args.hf_checkpoint, materialize=materialize)
+    if provider is not None and any(name in provider.path for name in _FROZEN_TOWER_PROVIDERS):
+        yield from iter_checkpoint_tower_units(args.hf_checkpoint, materialize=materialize)
+    if (units := export_hooks().checkpoint_units) is not None:
+        yield from units(args, model_name, quantization_config, materialize=materialize, layers=layers)

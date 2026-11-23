@@ -97,7 +97,7 @@ def convert_qwen3moe_to_hf(args, name, param):
             ]
         elif rest == "mlp.linear_fc2.weight":
             return [(f"model.layers.{layer_idx}.mlp.down_proj.weight", param)]
-        elif rest == "self_attention.linear_qkv.layer_norm_weight":
+        elif rest in ("self_attention.linear_qkv.layer_norm_weight", "input_layernorm.weight"):
             return [(f"model.layers.{layer_idx}.input_layernorm.weight", param)]
         elif rest == "mlp.linear_fc1.layer_norm_weight":
             return [(f"model.layers.{layer_idx}.post_attention_layernorm.weight", param)]

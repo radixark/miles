@@ -5,6 +5,7 @@ from typing import Protocol
 import torch
 
 from miles.backends.training_utils.data.context_parallel import all_gather_with_cp
+from miles.backends.training_utils.data.version_split import fresh_stale_metrics
 from miles.backends.training_utils.loss.hub.corrections import vanilla_tis_function
 from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy, get_values
 from miles.backends.training_utils.loss.hub.math_utils import (
@@ -15,6 +16,7 @@ from miles.backends.training_utils.loss.hub.math_utils import (
 )
 from miles.backends.training_utils.loss.hub.response_layout import response_layout
 from miles.backends.training_utils.loss.hub.score_centering_loss import score_centering_loss_function
+from miles.backends.training_utils.loss.is_weight_stats import IS_WEIGHT_STATS
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.function_registry import load_function
@@ -188,6 +190,17 @@ def policy_loss_function(
         torch.nan_to_num(advantages, nan=0.0, posinf=0.0, neginf=0.0),
         advantages.new_zeros(()),
     )
+    # Async TOP: a recomputed old policy (forward-only pass) against this forward at the same weights, 0 exactly when
+    # the training forward reproduces the forward-only pass, which --skip-actor-forward-only relies on under TOP.
+    old_policy_abs_diff = None
+    if (
+        args.true_on_policy_mode
+        and args.fully_async
+        and args.advantage_estimator != "gspo"
+        and not args.use_rollout_logprobs
+        and not args.skip_actor_forward_only
+    ):
+        old_policy_abs_diff = sum_of_sample_mean(ppo_kl.detach().abs())
 
     pg_loss, pg_clipfrac = compute_policy_loss(
         ppo_kl, clean_advantages, args.eps_clip, args.eps_clip_high, args.eps_clip_c
@@ -249,6 +262,18 @@ def policy_loss_function(
 
         pg_loss, modified_response_masks, tis_metrics = tis_func(**tis_kwargs)
 
+        if trainer_scored_log_probs is not None and rollout_old_log_probs is not None:
+            raw_is_weights = torch.exp(trainer_scored_log_probs - rollout_old_log_probs)
+            builtin = tis_func is vanilla_tis_function
+            IS_WEIGHT_STATS.add(
+                raw=raw_is_weights,
+                active=active_tokens,
+                applied=raw_is_weights.clamp(min=args.tis_clip_low, max=args.tis_clip) if builtin else None,
+                changed=None if builtin else tis_metrics.get("tis_clipfrac"),
+                fresh=layout.rows(batch["rollout_token_fresh"]) if batch.get("rollout_token_fresh") else None,
+                stale=layout.rows(batch["rollout_token_stale"]) if batch.get("rollout_token_stale") else None,
+            )
+
         # [decouple IS and rejection] modified masks correct the numerator only;
         # denominators stay the precomputed rollout_mask_sums.
         sum_of_sample_mean = layout.reducer(modified_response_masks)
@@ -309,6 +334,7 @@ def policy_loss_function(
 
     train_rollout_logprob_abs_diff = None
     train_rollout_kl = None
+    version_split_metrics = {}
     if batch.get("rollout_log_probs"):
         # The loss baseline may be rollout log-probs. Diagnostics must use an
         # independently scored trainer policy, even in that case.
@@ -322,6 +348,14 @@ def policy_loss_function(
             abs_diff.new_zeros(()),
         )
         train_rollout_logprob_abs_diff = sum_of_sample_mean(abs_diff)
+        if batch.get("rollout_token_fresh") is not None:
+            version_split_metrics = fresh_stale_metrics(
+                abs_diff=abs_diff,
+                fresh=layout.rows(batch["rollout_token_fresh"]),
+                stale=layout.rows(batch["rollout_token_stale"]),
+                active_tokens=active_tokens,
+                sum_of_sample_mean=sum_of_sample_mean,
+            )
 
         # KL(rollout || train) at sampled tokens via Schulman k3 with per-token clamp [-10, 10]
         rollout_train_kl = compute_approx_kl(rollout_old_log_probs, train_scored_log_probs, kl_loss_type="low_var_kl")
@@ -338,6 +372,7 @@ def policy_loss_function(
         "entropy_loss": entropy_loss.clone().detach(),
         "pg_clipfrac": pg_clipfrac.clone().detach(),
         "ppo_kl": ppo_kl.clone().detach(),
+        **({"old_policy_logprob_abs_diff": old_policy_abs_diff} if old_policy_abs_diff is not None else {}),
         "ess_ratio": ess_ratio_sum.squeeze(),
     }
 
@@ -345,6 +380,7 @@ def policy_loss_function(
         reported_loss["train_rollout_logprob_abs_diff"] = train_rollout_logprob_abs_diff.clone().detach()
     if train_rollout_kl is not None:
         reported_loss["train_rollout_kl"] = train_rollout_kl.clone().detach()
+    reported_loss.update(version_split_metrics)
 
     if args.use_kl_loss:
         reported_loss["kl_loss"] = kl_loss.clone().detach()

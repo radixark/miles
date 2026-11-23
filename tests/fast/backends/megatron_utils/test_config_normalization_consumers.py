@@ -41,9 +41,9 @@ class TestMegatronDefaultConsumers:
         assert result.bf16 is True
         assert result.rope_type == "yarn"
 
-    def test_unsupported_true_on_policy_rejects_before_backend_defaults_are_required(
+    def test_true_on_policy_with_another_spec_rejects_before_backend_defaults_are_required(
         self, megatron_defaults: Callable
     ) -> None:
-        """Unsupported true-on-policy selection fails before backend initialization proceeds."""
-        with pytest.raises(NotImplementedError, match="not supported on the megatron backend"):
+        """True on-policy builds its own block spec, so a model spec fails before backend initialization proceeds."""
+        with pytest.raises(ValueError, match="builds the TOP block spec"):
             megatron_defaults(_args(true_on_policy_mode=True))
