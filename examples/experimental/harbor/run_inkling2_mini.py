@@ -5,7 +5,7 @@ colocated with eight TP1 SGLang engines. Terminus-2 runs in the rollout worker a
 network, so the sandboxes need no route back to the trainer.
 
 Needs the radixark/miles:inkling-2-mini image (docker/Dockerfile.inkling2-mini): SGLang 1.0 with Inkling 2 Mini, and
-Harbor with terminus-2 honoring max_seq_len.
+Harbor.
 
 Usage:
     HARBOR_ENV_TYPE=e2b python examples/experimental/harbor/run_inkling2_mini.py \
@@ -108,6 +108,8 @@ def execute(args: ScriptArgs):
         "--sglang-page-size 128 "
         "--sglang-bf16-gemm-backend torch "
         "--sglang-router-port 31000 "
+        # the engine refuses a turn past what the trainer keeps, which ends the terminus-2 trial
+        f"--sglang-context-length {args.max_seq_len} "
     )
     train_backend_args = (
         "--train-backend torchtitan "
@@ -156,8 +158,6 @@ def execute(args: ScriptArgs):
             "PYTHONPATH": ":".join(pythonpath),
             "SGLANG_UNIFIED_RADIX_TREE_CORE_BACKEND": "python",
             **harbor_env_vars(args),
-            # end the trial where the trainer would truncate it, instead of rolling on past what it can learn from
-            "HARBOR_MAX_SEQ_LEN": os.environ.get("HARBOR_MAX_SEQ_LEN") or str(args.max_seq_len),
         },
     )
 

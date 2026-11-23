@@ -12,7 +12,7 @@ ARG HARBOR_REPO=https://github.com/harbor-framework/harbor.git
 ARG HARBOR_COMMIT=ff87249d334dd12da836986bcd05bb3b4a62c187
 ARG MILES_BRANCH=zhichen/inkling2-mini-tb2
 
-COPY docker/patches/sglang-inkling2-partial-load.patch docker/patches/harbor-terminus2-max-seq-len.patch /tmp/patches/
+COPY docker/patches/sglang-inkling2-partial-load.patch /tmp/patches/
 
 # /sgl-workspace/sglang is the editable install, so a checkout swaps the package.
 # The patch lets an online weight update load Inkling 2 in buckets.
@@ -23,10 +23,9 @@ RUN cd /sgl-workspace/sglang \
     && pip install --no-cache-dir --no-deps "sglang-kernel==0.4.11" "tml-renderers==0.4.2"
 
 # Harbor's own pins (openai 3.x, websockets 15) go in a side directory on PYTHONPATH; the packages the
-# trainer and SGLang share with it stay at the image's versions. The patch makes terminus-2 stop at max_seq_len.
+# trainer and SGLang share with it stay at the image's versions.
 RUN git clone ${HARBOR_REPO} /opt/harbor-src \
     && cd /opt/harbor-src && git checkout ${HARBOR_COMMIT} \
-    && git apply /tmp/patches/harbor-terminus2-max-seq-len.patch \
     && uv pip install --python "$(command -v python)" --target /opt/harbor-deps "harbor[e2b] @ /opt/harbor-src" \
     && cd /opt/harbor-deps \
     && rm -rf boto3* botocore* certifi* charset_normalizer* filelock* fsspec* hf_xet* httpcore2* httpx2* \
