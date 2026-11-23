@@ -25,7 +25,7 @@ from sglang_tpu.rl import true_on_policy as ops
 from torchtitan.models.common.activation import Softmax
 from torchtitan.models.common.attention.attention import GQAttention, QKVLinear
 from torchtitan.models.common.attention.gdn import GDN
-from torchtitan.models.common.moe import MoE
+from torchtitan.models.common.moe import MoE, TokenChoiceTopKRouter
 from torchtitan.models.qwen3_5.model import Qwen35Attention
 from torchtitan.models.qwen3_5.moe import SigmoidGatedFeedForward
 
@@ -104,8 +104,10 @@ def _check_supported(blocks) -> None:
 
 def _check_moe(moe) -> None:
     router = moe.router
-    # the engine's TopK for Qwen: softmax scores, the top-k renormalized to sum to 1, no scaling
-    if not (isinstance(router.score_func, Softmax) and router.route_norm and router.route_scale == 1.0):
+    # the engine's TopK for Qwen: softmax scores, the top-k renormalized to sum to 1, no scaling; a router subclass
+    # (round-robin, quantile-balanced) picks the experts another way
+    softmax_top_k = isinstance(router.score_func, Softmax) and router.route_norm and router.route_scale == 1.0
+    if type(router) is not TokenChoiceTopKRouter or not softmax_top_k:
         raise ValueError("true on-policy MoE covers softmax top-k routing, renormalized, without scaling")
     if moe.shared_experts is not None and not isinstance(moe.shared_experts, SigmoidGatedFeedForward):
         raise ValueError("true on-policy MoE covers no shared expert or Qwen3.5's sigmoid-gated one")
