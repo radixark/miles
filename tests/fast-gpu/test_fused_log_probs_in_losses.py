@@ -163,7 +163,7 @@ def test_score_centering_log_probs_match_the_torch_backend(nccl_world, with_entr
     outputs = {}
     for backend in ("torch", "fused"):
         args = make_args(
-            loss_type="sc_bpo",
+            loss_type="score_centering",
             true_on_policy_mode=False,
             log_probs_backend=backend,
             rollout_temperature=0.8,

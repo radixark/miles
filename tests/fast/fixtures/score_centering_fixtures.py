@@ -20,7 +20,7 @@ def _args(**overrides: object) -> Namespace:
     values = dict(
         ci_test=False,
         enable_sample_ownership_checker=False,
-        loss_type="sc_bpo",
+        loss_type="score_centering",
         rollout_top_logprobs_num=3,
         rollout_sampling_logprobs_mode="selected",
         use_opd=False,
