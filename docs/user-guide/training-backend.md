@@ -621,6 +621,13 @@ padded to `--seq-length`, and `--max-tokens-per-gpu` may not exceed
 reduce-scatters the gradients once per step instead of once per microbatch, at the cost of
 holding the full parameters and gradients on every rank. Pipeline parallelism refuses it.
 
+`--titan-gated-delta-chunk-size` (default 128, a power of two of at least 16) sets the tokens
+per chunk of the TPU gated delta rule that replaces Qwen3.5's linear-attention kernel. The
+forward is one scan over the chunks, but the backward runs one step of eight small matmuls per
+chunk, so a longer microbatch at a small chunk is launch-bound: at 128, a 20480-token
+microbatch issues 160 steps per layer. A larger chunk trades those launches for larger
+intra-chunk matmuls; the result is the same recurrence up to fp32 rounding.
+
 ### 4. Getting weights in and out
 
 Nothing to configure: weights are streamed to SGLang under HF names through the model's own

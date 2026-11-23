@@ -101,9 +101,28 @@ def test_chunked_delta_rule_matches_the_recurrence_run_on_each_document(num_key_
     _assert_matches_the_recurrence(inputs, _CHUNKED_DOC_LENGTHS, chunk_size=chunk_size)
 
 
-def test_chunk128_matches_recurrence_across_multiple_chunks():
-    doc_lengths = [1, 127, 128, 129, 3, 260]
-    _assert_matches_the_recurrence(_inputs(doc_lengths), doc_lengths, chunk_size=128)
+# documents that end on, straddle and fall inside 64-, 128- and 256-token chunk boundaries; 1160 tokens
+_LONG_DOC_LENGTHS = [1, 127, 128, 129, 3, 260, 256, 256]
+
+
+@pytest.mark.parametrize("chunk_size", [64, 128, 256])
+def test_chunked_delta_rule_matches_recurrence_across_multiple_chunks(chunk_size):
+    """The chunk size (--titan-gated-delta-chunk-size) changes how the recurrence is batched, not its result."""
+    _assert_matches_the_recurrence(_inputs(_LONG_DOC_LENGTHS), _LONG_DOC_LENGTHS, chunk_size=chunk_size)
+
+
+def test_every_chunk_size_gives_the_same_output_and_gradients():
+    inputs = _inputs(_LONG_DOC_LENGTHS)
+    ids = _segment_ids(_LONG_DOC_LENGTHS)
+    grad = None
+    results = []
+    for chunk_size in (64, 128, 256):
+        out = gated_delta_rule(*inputs, segment_ids=ids, chunk_size=chunk_size)
+        grad = torch.randn_like(out) if grad is None else grad
+        results.append((out, torch.autograd.grad(out, inputs, grad)))
+    for out, grads in results[1:]:
+        torch.testing.assert_close(out, results[0][0], atol=1e-5, rtol=1e-4)
+        torch.testing.assert_close(grads, results[0][1], atol=1e-4, rtol=1e-4)
 
 
 @pytest.mark.parametrize("decay", [-0.01, -150.0], ids=["weak_decay", "strong_decay"])

@@ -46,6 +46,36 @@ def test_the_inner_attention_runs_convs_gate_and_delta_rule_per_segment():
     torch.testing.assert_close(packed, alone, atol=1e-5, rtol=1e-4)
 
 
+def test_the_configured_chunk_size_reaches_the_kernel_and_leaves_the_output_unchanged():
+    torch.manual_seed(0)
+    doc_lengths = [40, 90]
+    seq_len = sum(doc_lengths)
+    tensors = dict(
+        query_TC=torch.randn(seq_len, 16),
+        key_TC=torch.randn(seq_len, 16),
+        value_TC=torch.randn(seq_len, 32),
+        a_TH=torch.randn(seq_len, 4),
+        b_TH=torch.randn(seq_len, 4),
+        conv_q_weight_C1W=torch.randn(16, 1, 4),
+        conv_k_weight_C1W=torch.randn(16, 1, 4),
+        conv_v_weight_C1W=torch.randn(32, 1, 4),
+        A_log_H=torch.randn(4),
+        dt_bias_H=torch.randn(4),
+    )
+    outs = {}
+    for chunk_size in (16, 128):
+        config = TpuGatedDeltaInnerAttention.Config(chunk_size=chunk_size)
+        attention = config.build()
+        assert attention.chunk_size == chunk_size
+        outs[chunk_size] = attention(
+            **tensors,
+            key_head_dim=8,
+            value_head_dim=8,
+            attention_metadata=config.build_attention_metadata(_positions(doc_lengths)),
+        )
+    torch.testing.assert_close(outs[16], outs[128], atol=1e-5, rtol=1e-4)
+
+
 def _positions(doc_lengths: list[int]) -> torch.Tensor:
     return torch.cat([torch.arange(n) for n in doc_lengths])
 

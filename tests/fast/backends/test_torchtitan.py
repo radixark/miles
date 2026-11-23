@@ -38,6 +38,7 @@ def _args(**overrides) -> Namespace:
         colocate=False,
         update_weight_transfer_mode="broadcast",
         titan_fsdp_gather_once=False,
+        titan_gated_delta_chunk_size=128,
         pipeline_model_parallel_size=1,
         context_parallel_size=1,
         expert_model_parallel_size=1,
@@ -415,6 +416,7 @@ def _config_args(**overrides: object) -> Namespace:
         optimizer_cpu_offload=False,
         titan_fsdp_gather_once=False,
         titan_fsdp_reduce_dtype="float32",
+        titan_gated_delta_chunk_size=128,
         save=None,
         load=None,
     )
@@ -557,6 +559,17 @@ def test_gated_delta_layers_get_the_tpu_gated_delta_and_attention_layers_tpu_fla
     )
     inner = [type(layer.attention.inner_attention) for layer in model.layers]
     assert set(inner) == {TpuGatedDeltaInnerAttention.Config, TpuFlashInnerAttention.Config}
+
+    model = build_model_config(
+        _config_args(titan_model_name="qwen3_5", titan_model_flavor="debugmodel", titan_gated_delta_chunk_size=256),
+        parallelism=ParallelismConfig(),
+    )
+    gated_delta = [
+        layer.attention.inner_attention
+        for layer in model.layers
+        if isinstance(layer.attention.inner_attention, TpuGatedDeltaInnerAttention.Config)
+    ]
+    assert gated_delta and all(config.chunk_size == 256 for config in gated_delta)
 
 
 @pytest.mark.parametrize("tpu", [True, False], ids=["tpu", "gpu"])
@@ -1085,6 +1098,14 @@ def test_per_expert_names_find_the_grouped_checkpoint_tensor_they_came_from(name
     from miles.backends.torchtitan_utils import hf_weight_iterator
 
     assert hf_weight_iterator._grouped_expert_name(name) == grouped
+
+
+@pytest.mark.parametrize("chunk_size", [8, 96, 0])
+def test_the_gated_delta_chunk_size_must_be_a_power_of_two_of_at_least_16(monkeypatch, chunk_size):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    with pytest.raises(ValueError, match="gated-delta-chunk-size"):
+        validate_torchtitan_args(_args(titan_gated_delta_chunk_size=chunk_size))
+    validate_torchtitan_args(_args(titan_gated_delta_chunk_size=256))
 
 
 def test_fsdp_gather_once_is_refused_under_pipeline_parallelism(monkeypatch):
