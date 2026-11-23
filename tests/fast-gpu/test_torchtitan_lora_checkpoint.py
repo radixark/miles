@@ -666,6 +666,7 @@ def test_the_actor_starts_after_the_restored_rollout_and_saves_lora_as_adapter_d
         offload_train=False,
     )
     actor = titan_actor.TorchtitanTrainRayActor.__new__(titan_actor.TorchtitanTrainRayActor)
+    actor.args = args  # set by __init__, which __new__ skips
 
     start = actor.init(args, "actor", indep_dp_info=SimpleNamespace(quorum_id=0), indep_dp_store_addr=None)
 
