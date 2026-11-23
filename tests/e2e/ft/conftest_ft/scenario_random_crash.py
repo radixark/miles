@@ -136,8 +136,13 @@ def _build_train_args(
 ) -> str:
     debug_rollout_data_dir = None if ft_mode.has_real_rollout else materialize_cyclic_debug_rollout_data(num_steps)
     train_args = (
+        # Nothing reads the Dumper's tensors here; with it on, each run left ~400G behind.
         get_common_train_args(
-            ft_mode, dump_dir=dump_dir, num_steps=num_steps, debug_rollout_data_dir=debug_rollout_data_dir
+            ft_mode,
+            dump_dir=dump_dir,
+            num_steps=num_steps,
+            enable_dumper=False,
+            debug_rollout_data_dir=debug_rollout_data_dir,
         )
         + get_ft_args(
             ft_mode, api_server_args=API_SERVER_ARGS, extra_ft_components=_compute_extra_ft_components(ft_mode)
