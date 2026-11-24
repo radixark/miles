@@ -348,7 +348,43 @@ class _VocabParallelCrossEntropy(torch.autograd.Function):
         return grad_input.mul_(grad_output.unsqueeze(-1)).to(ctx.input_dtype), None, None
 
 
+class _OneHotVocabParallelCrossEntropy(torch.autograd.Function):
+    """The same loss for platforms whose gather backward is unsafe: the target is picked with a one-hot select.
+
+    It saves the logits instead of the fp32 softmax and recomputes the softmax in backward, so a long microbatch
+    keeps one [tokens, vocab / tp] fp32 buffer fewer alive between forward and backward.
+    """
+
+    @staticmethod
+    def forward(ctx, logits: torch.Tensor, target: torch.Tensor, group: dist.ProcessGroup) -> torch.Tensor:
+        logits_fp32 = logits.float()
+        logits_max = logits_fp32.amax(dim=-1, keepdim=True)
+        dist.all_reduce(logits_max, op=dist.ReduceOp.MAX, group=group)
+        shifted = logits_fp32 - logits_max
+        sum_exp_logits = shifted.exp().sum(dim=-1)
+        dist.all_reduce(sum_exp_logits, group=group)
+
+        local_target = target - group.rank() * logits.size(-1)
+        one_hot = torch.arange(logits.size(-1), device=target.device) == local_target.unsqueeze(-1)
+        predicted_logits = (shifted * one_hot).sum(dim=-1)
+        dist.all_reduce(predicted_logits, group=group)
+
+        ctx.save_for_backward(logits, local_target, logits_max, sum_exp_logits)
+        return sum_exp_logits.log() - predicted_logits
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        logits, local_target, logits_max, sum_exp_logits = ctx.saved_tensors
+        # softmax - one_hot(target), on this rank's slice of the vocabulary
+        grad_input = (logits.float() - logits_max).exp_().div_(sum_exp_logits.unsqueeze(-1))
+        one_hot = torch.arange(logits.size(-1), device=logits.device) == local_target.unsqueeze(-1)
+        grad_input.sub_(one_hot.float())
+        return grad_input.mul_(grad_output.unsqueeze(-1)).to(logits.dtype), None, None
+
+
 def vocab_parallel_cross_entropy(logits: torch.Tensor, target: torch.Tensor, group: dist.ProcessGroup):
+    if not platforms.current_platform.gather_backward:
+        return _OneHotVocabParallelCrossEntropy.apply(logits, target, group)
     return _VocabParallelCrossEntropy.apply(logits, target, group)
 
 
