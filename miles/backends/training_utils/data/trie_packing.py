@@ -307,6 +307,28 @@ def trie_input_loss_mask(
     return mask
 
 
+def trie_replay_rows(layout: TrieLayout, rows: Sequence[torch.Tensor]) -> torch.Tensor:
+    """A trie row's per-token replay rows, from each sample's per-token rows in micro-batch (pool) order.
+
+    ``rows[i]`` holds one row per token of sample ``i`` (``-1`` rows where the rollout recorded none, as for
+    its final token). A token takes the row of a sample that holds it, at the token's logical
+    position; padding tokens take ``-1`` rows. A token several samples share replays that one sample's
+    rollout routing, so it is exact when the rollout routed those samples' shared prefix alike, as it does
+    when they hit one radix-cache entry.
+    """
+    missing = rows[0].new_full((1, *rows[0].shape[1:]), -1)
+    offsets = torch.tensor([0] + [r.size(0) for r in rows]).cumsum(0)
+    flat = torch.cat([*rows, missing])
+    index = torch.full((layout.num_tokens,), flat.size(0) - 1)
+    # each sample's token indices lead the keys gathered for its segment
+    for sample, segment, length in zip(
+        layout.sample_indices, layout.sample_segments, layout.sample_lengths, strict=True
+    ):
+        start = int(layout.kv.cu_seqlens[segment])
+        index[layout.kv.index[start : start + length]] = offsets[sample] + torch.arange(length)
+    return flat.index_select(0, index.to(flat.device))
+
+
 @dataclass(frozen=True)
 class TrieModelSpec:
     """What a model's trie rows depend on, read from its config.

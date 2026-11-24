@@ -6,7 +6,8 @@ import pytest
 import torch
 from tests.fast.backends.training_utils.reference_trie_attention import reference_trie_attention
 
-from miles.backends.training_utils.data.trie_packing import TrieKV, build_trie_layout, pack_trie_bins
+from miles.backends.training_utils.data.trie_packing import TrieKV, build_trie_layout, pack_trie_bins, trie_replay_rows
+from miles.utils.token_trie_builder import TokenTrieBuilder
 
 
 def _samples(seed: int) -> list[list[int]]:
@@ -119,6 +120,34 @@ def test_unrelated_samples_get_roots_of_their_own():
     assert layout.num_tokens == (2 + 1 + 1 + 1 + 1) + (1 + 2 + 1 + 1 + 1)
     for sample, token_indices in _sample_token_indices(layout).items():
         assert layout.tokens[token_indices].tolist() == tokens[sample]
+
+
+def test_replay_rows_take_each_token_from_a_sample_that_holds_it():
+    """A token replays the row of a sample that holds it, at the token's logical position; padding replays none."""
+    tokens = _samples(7)
+    rows = [torch.tensor([[1000 * sample + p] for p in range(len(t))]) for sample, t in enumerate(tokens)]
+    for layout in _layouts(tokens, width=60, pad_multiple=8):
+        holders = {}
+        for sample, token_indices in _sample_token_indices(layout).items():
+            for token_index in token_indices.tolist():
+                holders.setdefault(token_index, set()).add(sample)
+        for token_index, row in enumerate(trie_replay_rows(layout, rows)[:, 0].tolist()):
+            sample, position = divmod(row, 1000)
+            if token_index in holders:
+                assert sample in holders[token_index] and position == layout.positions[token_index]
+            else:
+                assert row == -1
+
+
+def test_a_sample_ending_inside_a_segment_gives_its_rows_only_to_its_own_tokens():
+    """The segment's tokens past the shorter sample's end replay the longer sample's rows, in either order."""
+    for first, second in (((1, 2), (1, 2, 3)), ((1, 2, 3), (1, 2))):
+        builder = TokenTrieBuilder()
+        builder.add(first, tag=0)
+        builder.add(second, tag=1)
+        rows = [torch.full((len(first), 1), 0), torch.full((len(second), 1), 1)]
+        replayed = trie_replay_rows(build_trie_layout(builder.flatten()), rows)
+        assert replayed[2, 0] == (1 if len(first) < len(second) else 0)
 
 
 def test_window_gather_keeps_only_reachable_ancestors():

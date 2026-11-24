@@ -19,6 +19,7 @@ from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeForCausalLM
 
 from miles.backends.fsdp_utils import actor as fsdp_actor
 from miles.backends.fsdp_utils.actor import FSDPTrainRayActor
+from miles.backends.fsdp_utils.adaptations import routing_replay
 from miles.backends.fsdp_utils.adaptations.specs import resolve_arch_adapter
 from miles.backends.fsdp_utils.adaptations.trie_attention import (
     register_trie_attention,
@@ -30,6 +31,8 @@ from miles.backends.training_utils.data import rollout as data_utils
 from miles.backends.training_utils.data import trie_batch
 from miles.backends.training_utils.data.trie_batch import TrieMicroBatches
 from miles.backends.training_utils.data.trie_packing import TrieKV, TrieModelSpec
+from miles.backends.training_utils.replay import data as replay_data
+from miles.utils.replay_base import routing_replay_manager
 
 _VOCAB = 128
 _WINDOW = 12
@@ -51,6 +54,7 @@ def cpu_trie(monkeypatch):
     monkeypatch.setattr(data_utils.current_platform, "current_device", lambda: torch.device("cpu"))
     monkeypatch.setattr(data_utils, "get_parallel_state", lambda: state)
     monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: state)
+    monkeypatch.setattr(replay_data, "get_parallel_state", lambda: state)
     monkeypatch.setitem(
         sys.modules, "flash_attn", SimpleNamespace(flash_attn_varlen_func=_reference_flash_attn_varlen)
     )
@@ -155,12 +159,12 @@ def _trie_iterator(rollout, model_spec: TrieModelSpec, micro_batch_indices=None)
     )
 
 
-def _trie(model, samples) -> torch.Tensor:
+def _trie(model, samples, iterator=None) -> torch.Tensor:
     model.set_attn_implementation(trie_attn_implementation(model.config, "sdpa"))
     keys = ["tokens", "loss_masks", "total_lengths", "response_lengths"]
     model_spec = trie_model_spec(model.config.get_text_config())
     batch = data_utils.get_batch(
-        _trie_iterator(samples, model_spec),
+        iterator or _trie_iterator(samples, model_spec),
         keys,
         pad_multiplier=8,
         qkv_format="thd",
@@ -202,6 +206,83 @@ def test_trie_row_scores_and_trains_each_sample_as_if_alone(cpu_trie, kind, slid
     solo_grads = {name: p.grad.clone() for name, p in model.named_parameters() if p.grad is not None}
     model.zero_grad()
     trie = _trie(model, samples)
+    trie.sum().backward()
+
+    torch.testing.assert_close(trie, solo, rtol=0, atol=1e-5)
+    for name, p in model.named_parameters():
+        if name in solo_grads:
+            torch.testing.assert_close(p.grad, solo_grads[name], rtol=1e-4, atol=1e-6, msg=name)
+
+
+def _rollout_routing(samples, num_layers: int, num_experts: int, top_k: int) -> list[torch.Tensor]:
+    """``[T - 1, layers, top_k]`` routing per sample that is a function of each token's prefix, so samples
+    sharing a prefix were routed alike on it, as when they hit one radix-cache entry."""
+    routes = []
+    for tokens in samples["tokens"]:
+        ids = tokens.tolist()
+        rows = [
+            [
+                random.Random(hash((layer, *ids[: p + 1]))).sample(range(num_experts), top_k)
+                for layer in range(num_layers)
+            ]
+            for p in range(len(ids) - 1)
+        ]
+        routes.append(torch.tensor(rows))
+    return routes
+
+
+@pytest.fixture
+def rollout_routing_replay(monkeypatch):
+    # replay entries otherwise wait in pinned host memory, which needs a GPU
+    monkeypatch.setattr(data_utils.current_platform, "dynamic_shapes", False)
+    routing_replay.enable(SimpleNamespace(use_routing_replay=True, ci_test=False))
+    yield
+    routing_replay_manager.clear_all()
+    routing_replay_manager.enabled = False
+    routing_replay_manager.replays = []
+    routing_replay_manager.current = None
+
+
+def test_rollout_routing_replay_on_a_trie_row_matches_each_sample_alone(cpu_trie, rollout_routing_replay):
+    """A trie token replays the routing its samples were given at its depth; padding and final tokens none.
+    Two micro-batches, so each must replay its own rows."""
+    model = _tiny_model("qwen3_moe", sliding=False)
+    config = model.config
+    routing_replay.install(model, resolve_arch_adapter(config).routing_replay)
+    samples = _samples(3)
+    routes = _rollout_routing(samples, config.num_hidden_layers, config.num_experts, config.num_experts_per_tok)
+
+    def solo_replayed() -> torch.Tensor:
+        routing_replay_manager.clear_all()
+        for route in routes:
+            route = torch.cat([route, route.new_full((1, *route.shape[1:]), -1)])
+            for layer, replay in enumerate(routing_replay_manager.replays):
+                replay.record(route[:, layer])
+        with routing_replay.stage(routing_replay.REPLAY_FORWARD):
+            return _solo(model, samples)
+
+    unreplayed = _solo(model, samples).detach()
+    model.zero_grad()
+    solo = solo_replayed()
+    solo.sum().backward()
+    solo_grads = {name: p.grad.clone() for name, p in model.named_parameters() if p.grad is not None}
+    assert not torch.allclose(solo.detach(), unreplayed, atol=1e-3), "the replayed routing must change the scores"
+
+    rollout_data = samples | {"rollout_routed_experts": routes}
+    halves = [list(range(len(routes) // 2)), list(range(len(routes) // 2, len(routes)))]
+    iterator = _trie_iterator(rollout_data, trie_model_spec(config), halves)
+    args = SimpleNamespace(
+        use_rollout_routing_replay=True,
+        qkv_format="thd",
+        allgather_cp=False,
+        data_pad_size_multiplier=8,
+        train_backend="fsdp",
+        save_debug_train_data=None,
+    )
+    routing_replay.attach(args, [iterator], [len(halves)], rollout_data)
+    model.zero_grad()
+    with routing_replay.stage(routing_replay.REPLAY_FORWARD):
+        trie = torch.cat([_trie(model, samples, iterator) for _ in halves])
     trie.sum().backward()
 
     torch.testing.assert_close(trie, solo, rtol=0, atol=1e-5)

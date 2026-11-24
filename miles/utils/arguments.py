@@ -2174,7 +2174,6 @@ def validate_trie_packing_args(args) -> None:
     incompatible_options = [
         name
         for name, enabled in (
-            ("--use-rollout-routing-replay", args.use_rollout_routing_replay),
             ("--true-on-policy-mode", args.true_on_policy_mode),
             ("--multi-lora-n-adapters", args.multi_lora),
             ("--multimodal-token-space-processing", args.multimodal_token_space_processing),

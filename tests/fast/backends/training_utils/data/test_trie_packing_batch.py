@@ -227,7 +227,6 @@ def _trie_args(**overrides):
     values = dict(
         train_backend="fsdp",
         qkv_format="thd",
-        use_rollout_routing_replay=False,
         true_on_policy_mode=False,
         multi_lora=False,
         loss_type="policy_loss",
@@ -247,7 +246,6 @@ def test_trie_packing_accepts_a_supported_run():
     ("override", "message"),
     [
         ({"train_backend": "megatron"}, "--train-backend"),
-        ({"use_rollout_routing_replay": True}, "--use-rollout-routing-replay"),
         ({"multi_lora": True}, "--multi-lora-n-adapters"),
         ({"enable_witness": True}, "--enable-witness"),
         ({"loss_type": "custom_loss"}, "custom_loss"),

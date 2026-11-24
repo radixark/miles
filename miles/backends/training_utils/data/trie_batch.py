@@ -1,7 +1,7 @@
 """Trie-packed micro-batches (--trie-packing): the step schedule, and each scheduled micro-batch as one trie row.
 
-``get_data_iterator`` hands its ``DataIterator`` a ``TrieMicroBatches``; ``get_batch`` then reads each micro-batch's
-trie row from it, the same row on every pass over the rollout.
+``get_data_iterator`` hands its ``DataIterator`` a ``TrieMicroBatches``; ``get_batch`` and the routing replay
+fill then read each micro-batch's trie row from it, the same row on every pass over the rollout.
 """
 
 import logging
