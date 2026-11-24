@@ -1,5 +1,6 @@
 """Offline tests for the launcher's Harbor-side wiring (no harbor, no keys)."""
 
+import json
 import sys
 import types
 from pathlib import Path
@@ -20,6 +21,7 @@ def _args(**overrides):
         daytona_api_key_file="",
         e2b_api_key_file="",
         modal_config_file="",
+        novita_api_key_file="",
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -28,7 +30,7 @@ def _args(**overrides):
 @pytest.fixture(autouse=True)
 def fake_harbor_and_sdk(monkeypatch):
     """harbor and the provider SDKs only need to be importable for the preflight."""
-    for name in ("harbor", "e2b", "daytona", "modal"):
+    for name in ("harbor", "e2b", "daytona", "modal", "novita_sandbox"):
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
 
 
@@ -51,18 +53,27 @@ def test_missing_harbor_names_the_install(monkeypatch):
         launch_common.harbor_env_vars(_args())
 
 
-def test_known_provider_is_provisioned_by_key_path(monkeypatch, tmp_path):
+@pytest.mark.parametrize("env_type", ["e2b", "agentenv"])
+def test_known_provider_is_provisioned_by_key_path(monkeypatch, tmp_path, fake_aenv, env_type):
+    """agentenv runs on the E2B provider, so it gets E2B's key and endpoint."""
+    fake_aenv("aenv 0.2.5")
     key_file = tmp_path / "api_key"
     key_file.write_text("e2b_secret\n")
     monkeypatch.setenv("E2B_API_URL", "http://agentenv.internal:8000")
 
-    env = launch_common.harbor_env_vars(_args(e2b_api_key_file=str(key_file)))
+    env = launch_common.harbor_env_vars(_args(harbor_env_type=env_type, e2b_api_key_file=str(key_file)))
 
-    assert env["HARBOR_ENV_TYPE"] == "e2b"
+    assert env["HARBOR_ENV_TYPE"] == env_type  # Harbor still gets its own environment type
     assert env["HARBOR_TASKS_DIR"] == "/tasks"
     assert env["E2B_API_KEY_FILE"] == str(key_file)
     assert env["E2B_API_URL"] == "http://agentenv.internal:8000"
     assert "e2b_secret" not in str(env)
+
+
+def test_agentenv_without_aenv_stops_the_launch(fake_aenv):
+    """Harbor builds task Dockerfiles with aenv; a launch that cannot must not start."""
+    with pytest.raises(RuntimeError, match="aenv is not on PATH"):
+        launch_common.harbor_env_vars(_args(harbor_env_type="agentenv"))
 
 
 def test_unknown_provider_passes_through_with_a_notice(monkeypatch, capsys):
@@ -104,3 +115,32 @@ def test_agentic_wiring_is_the_shipped_wiring():
 
     for d in launch_common.agentic_pythonpath_dirs():
         assert Path(d).is_dir(), d
+
+
+def _write_rows(path: Path, rows: list[dict]) -> str:
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    return str(path)
+
+
+def test_task_dir_preflight_lists_every_row_a_trial_could_not_run(tmp_path):
+    """During the run such a row only drops its own samples, so the launch is where all of them get named."""
+    (tmp_path / "tasks" / "task-1").mkdir(parents=True)
+    rows = [
+        {"prompt": "p", launch_common.METADATA_KEY: {"instance_id": "task-1"}},
+        {"prompt": "p", launch_common.METADATA_KEY: {"instance_id": "gone-a"}},
+        {"prompt": "p", launch_common.METADATA_KEY: {"instance_id": "gone-b"}},
+        {"prompt": "p"},
+    ]
+    data = _write_rows(tmp_path / "train.jsonl", rows)
+    with pytest.raises(ValueError, match=r"3 instance_id\(s\)") as raised:
+        launch_common.preflight_task_dirs(data, str(tmp_path / "tasks"))
+    assert "'gone-a'" in str(raised.value) and "'gone-b'" in str(raised.value)
+    assert "invalid instance_id ''" in str(raised.value)
+
+
+def test_task_dir_preflight_passes_when_every_row_has_its_task(tmp_path):
+    (tmp_path / "tasks" / "task-1").mkdir(parents=True)
+    data = _write_rows(
+        tmp_path / "train.jsonl", [{"prompt": "p", launch_common.METADATA_KEY: {"instance_id": "task-1"}}]
+    )
+    launch_common.preflight_task_dirs(data, str(tmp_path / "tasks"))

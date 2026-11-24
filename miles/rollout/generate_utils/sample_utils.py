@@ -16,14 +16,15 @@ _REPLAY_FIELDS = (
     "rollout_sampling_mask",
 )
 
+# A turn cut by finish_reason='length' can be extended too: the session server
+# closes it at the head of the next prompt, which the merge masks as observation.
+_EXTENDABLE_STATUSES = (Sample.Status.COMPLETED, Sample.Status.TRUNCATED)
+
 
 def merge_samples(samples: list[Sample], tokenizer) -> Sample:
     acc = samples[0]
     for sample in samples[1:]:
-        # Only a COMPLETED turn can be extended by a later turn; if an
-        # intermediate turn truncated, the trajectory ends there.
-        # TODO (shi.dong): figure out how in-turn truncation should be handled.
-        if acc.status != Sample.Status.COMPLETED:
+        if acc.status not in _EXTENDABLE_STATUSES:
             break
         # Replay metadata must be complete through the merged prefix.
         if _introduces_replay_gap(acc, sample):
@@ -150,7 +151,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
         if a.rollout_indexer_topk is not None:
             assert b.rollout_indexer_topk is not None, "cannot merge: a has rollout_indexer_topk but b does not"
             assert a.rollout_indexer_topk.shape[0] <= b.rollout_indexer_topk.shape[0]
-        assert a.status == Sample.Status.COMPLETED, f"a.status must be COMPLETED, got {a.status}"
+        assert a.status in _EXTENDABLE_STATUSES, f"a.status must be COMPLETED or TRUNCATED, got {a.status}"
 
         return _create_with_all_fields(
             Sample,
@@ -184,6 +185,9 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             status=b.status,
             metadata=_merge_metadata(),
             generate_function_path=_merge_equal_value("generate_function_path"),
+            max_response_len=_merge_equal_value("max_response_len"),
+            agent_function_path=_merge_equal_value("agent_function_path"),
+            max_seq_len=_merge_equal_value("max_seq_len"),
             train_metadata=_merge_equal_value("train_metadata"),
             reward_spec=_merge_equal_value("reward_spec"),
             routing_key=_merge_equal_value("routing_key"),

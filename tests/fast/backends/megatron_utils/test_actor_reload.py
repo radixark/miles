@@ -141,6 +141,7 @@ def _actor(actor_module, *, role: str, args: Namespace):
     actor.model = None
     actor.optimizer = None
     actor.opt_param_scheduler = None
+    actor.adapter_slots = None
     actor._last_rollout_id = None
     actor._post_init_random_state = _FakeRandomState()
     return actor
@@ -259,10 +260,9 @@ def test_peer_recovery_does_not_inherit_startup_checkpoint_selection(actor_modul
         monkeypatch.setattr(actor_module, name, Mock())
     monkeypatch.setattr(actor_module.TrainRayActor, "_init_common", Mock())
     monkeypatch.setattr(actor_module, "all_replay_managers", [])
-    monkeypatch.setattr(actor_module, "routing_replay_manager", Mock())
+    monkeypatch.setattr(actor_module, "routing_replay_manager", Mock(enabled=False))
     monkeypatch.setattr(actor_module.dist, "barrier", Mock())
     monkeypatch.setattr(actor_module.fault_hook_controller, "configure", Mock())
-    monkeypatch.setattr(actor_module.dashboard_hooks, "register_train_actor", Mock())
     monkeypatch.setattr(actor_module, "is_first_replica_megatron_main_rank", lambda: False)
     monkeypatch.setattr(actor_module, "get_parallel_state", lambda: parallel_state)
     monkeypatch.setattr(actor_module, "recv_ckpt", Mock(return_value=manager))

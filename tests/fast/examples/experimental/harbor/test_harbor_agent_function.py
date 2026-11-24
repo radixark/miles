@@ -1,8 +1,8 @@
 """Offline tests for the in-process Harbor agent function (no Harbor, no sandbox).
 
-The ``harbor`` package is faked in sys.modules (module-local autouse fixture),
-so these tests run where Harbor is not installed. The contract against the
-REAL package lives in test_harbor_contract.py.
+The ``harbor`` and ``e2b`` packages are faked in sys.modules (module-local
+autouse fixtures), so these tests run where Harbor is not installed. The
+contract against the REAL package lives in test_harbor_contract.py.
 """
 
 import asyncio
@@ -21,7 +21,9 @@ class _EnvironmentType(str, enum.Enum):
     DOCKER = "docker"
     DAYTONA = "daytona"
     E2B = "e2b"
+    AGENTENV = "agentenv"
     MODAL = "modal"
+    NOVITA = "novita"
 
 
 def _record(name):
@@ -77,6 +79,35 @@ def fake_harbor(monkeypatch):
     FakeTrial.result = None
     FakeTrial.run_delay_s = 0.0
     yield FakeTrial
+
+
+class FakeTemplate:
+    """Answers the E2B template lookups the preflight sends; ``error`` makes them fail."""
+
+    looked_up: list = []
+    error = None
+
+    @classmethod
+    def exists(cls, name):
+        cls.looked_up.append(name)
+        if cls.error is not None:
+            raise cls.error
+        return False
+
+
+class _AuthenticationException(Exception):
+    pass
+
+
+@pytest.fixture(autouse=True)
+def fake_e2b(monkeypatch):
+    e2b = types.ModuleType("e2b")
+    e2b.Template = FakeTemplate
+    e2b.ConnectionConfig = lambda: SimpleNamespace(api_url=os.getenv("E2B_API_URL", "https://api.e2b.app"))
+    monkeypatch.setitem(sys.modules, "e2b", e2b)
+    FakeTemplate.looked_up = []
+    FakeTemplate.error = None
+    yield FakeTemplate
 
 
 def run_async(coro):
@@ -151,10 +182,22 @@ def test_daytona_reclaim_timer_outlasts_the_trial_cap(tasks_dir, monkeypatch):
         haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
 
 
-def test_reclaim_timers_are_daytona_only(tasks_dir, monkeypatch):
-    monkeypatch.setenv("HARBOR_ENV_TYPE", "e2b")
+@pytest.mark.parametrize("env_type", ["e2b", "agentenv"])
+def test_e2b_max_lifetime_outlasts_the_trial_cap(tasks_dir, monkeypatch, env_type):
+    """A sandbox Harbor keeps renewing must still end soon after the longest
+    trial could, and never while a trial runs."""
+    monkeypatch.setenv("HARBOR_ENV_TYPE", env_type)
+    monkeypatch.setenv("AGENT_TRIAL_TIMEOUT", "1200")
     cfg = haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
-    assert cfg.environment.kwargs == {}
+    assert cfg.environment.kwargs == {"max_lifetime_secs": 3000}  # and none of Daytona's reclaim timers
+
+    monkeypatch.setenv("HARBOR_ENV_KWARGS", '{"max_lifetime_secs": 2400}')
+    cfg = haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
+    assert cfg.environment.kwargs == {"max_lifetime_secs": 2400}  # the caller's value wins when it is safe
+
+    monkeypatch.setenv("HARBOR_ENV_KWARGS", '{"max_lifetime_secs": 1200}')
+    with pytest.raises(ValueError, match="mid-trial"):
+        haf.build_trial_config({"instance_id": "task-1", "agent_name": "mini-swe-agent"}, "http://s/v1", {})
 
 
 @pytest.mark.parametrize(
@@ -283,6 +326,16 @@ def test_instance_id_must_name_a_task_dir(tasks_dir, bad):
         haf.build_trial_config({"instance_id": bad}, "http://s/v1", {})
 
 
+def test_task_dir_errors_name_every_instance_id_a_trial_would_reject(tasks_dir):
+    """The launcher reports these before the run, in the words a trial would raise them."""
+    errors = haf.task_dir_errors(tasks_dir, ["task-1", "", "../etc", "no-such-task"])
+    assert errors == [
+        "invalid instance_id ''",
+        "invalid instance_id '../etc'",
+        f"no Harbor task dir for 'no-such-task' under {tasks_dir}",
+    ]
+
+
 # --- result mapping --------------------------------------------------------
 
 
@@ -348,9 +401,13 @@ def test_run_scores_a_timeout_zero(tasks_dir, fake_harbor, monkeypatch):
     assert out == {"reward": 0.0, "exit_status": "TimeLimitExceeded", "eval_report": {}, "agent_metrics": {}}
 
 
-def test_run_resolves_the_provider_key_file_into_the_sdk_env_var(tasks_dir, fake_harbor, tmp_path, monkeypatch):
+@pytest.mark.parametrize("env_type", ["e2b", "agentenv"])
+def test_run_resolves_the_provider_key_file_into_the_sdk_env_var(
+    tasks_dir, fake_harbor, tmp_path, monkeypatch, env_type
+):
     """The launcher forwards the key by PATH; the SDK reads its own env var, so
     the worker must resolve the file -- the gap the first live e2e run hit."""
+    monkeypatch.setenv("HARBOR_ENV_TYPE", env_type)
     key_file = tmp_path / "api_key"
     key_file.write_text("e2b_test_key\n")
     monkeypatch.delenv("E2B_API_KEY", raising=False)
@@ -376,7 +433,79 @@ def test_run_scores_a_trial_exception_zero(tasks_dir, fake_harbor):
 
 
 def test_run_raises_on_a_missing_task_instead_of_scoring_zero(tasks_dir, fake_harbor):
-    """A config error fails every sample; raising beats training on silent all-zero rewards."""
+    """A missing task dir is not the policy's doing: raising drops the sample instead of training on a zero reward."""
     with pytest.raises(FileNotFoundError):
         run_async(haf.run("http://s/sessions/s1", [], {}, {"instance_id": "missing"}))
     assert fake_harbor.created == []
+
+
+@pytest.mark.parametrize("env_type", ["e2b", "agentenv"])
+def test_preflight_passes_a_working_setup_without_running_a_trial(
+    tasks_dir, fake_harbor, fake_aenv, fake_e2b, monkeypatch, env_type
+):
+    fake_aenv("aenv 0.2.5")
+    monkeypatch.setenv("HARBOR_ENV_TYPE", env_type)
+    run_async(haf.preflight(None))
+    assert fake_harbor.created == []
+    assert len(fake_e2b.looked_up) == 1
+
+
+@pytest.mark.parametrize("env_type", ["e2b", "agentenv"])
+def test_preflight_fails_when_the_e2b_api_refuses_the_request(tasks_dir, fake_aenv, fake_e2b, monkeypatch, env_type):
+    """A wrong endpoint answers 401 just like a bad key, so the error must name the endpoint."""
+    fake_aenv("aenv 0.2.5")
+    monkeypatch.setenv("HARBOR_ENV_TYPE", env_type)
+    monkeypatch.setenv("E2B_API_URL", "https://wrong.example")
+    fake_e2b.error = _AuthenticationException("401: Unauthorized, please check your credentials.")
+    with pytest.raises(RuntimeError, match="https://wrong.example.*401: Unauthorized"):
+        run_async(haf.preflight(None))
+
+
+def test_preflight_sends_no_e2b_request_for_other_backends(tasks_dir, fake_e2b, monkeypatch):
+    """Other backends have no E2B key, so asking the E2B API would fail a working setup."""
+    monkeypatch.setenv("HARBOR_ENV_TYPE", "docker")
+    run_async(haf.preflight(None))
+    assert fake_e2b.looked_up == []
+
+
+@pytest.mark.parametrize(
+    "env, error",
+    [
+        ({"HARBOR_TASKS_DIR": None}, "set HARBOR_TASKS_DIR"),
+        ({"HARBOR_TASKS_DIR": "/nonexistent/tasks"}, "not a directory on this host"),
+        ({"E2B_API_KEY": None, "E2B_API_KEY_FILE": "/nonexistent/api_key"}, "no API key"),
+        ({"HARBOR_ENV_TYPE": "no-such-backend"}, "no-such-backend"),
+        ({"HARBOR_ENV_KWARGS": "{not json"}, "Expecting property name"),
+        # read only by the harnesses with a turn cap, so only a check under each harness catches it
+        ({"HARBOR_AGENT_MAX_ITERATIONS": "ten"}, "invalid literal"),
+    ],
+)
+def test_preflight_fails_a_setup_every_trial_would_fail_on(tasks_dir, monkeypatch, env, error):
+    for var, value in env.items():
+        if value is None:
+            monkeypatch.delenv(var, raising=False)
+        else:
+            monkeypatch.setenv(var, value)
+    with pytest.raises(Exception, match=error):
+        run_async(haf.preflight(None))
+
+
+def test_preflight_fails_a_tasks_dir_with_no_task_in_it(tasks_dir, tmp_path, monkeypatch):
+    """A wrong path or an unfinished clone leaves every row without its task."""
+    clone = tmp_path / "unfinished-clone"
+    (clone / ".git").mkdir(parents=True)
+    monkeypatch.setenv("HARBOR_TASKS_DIR", str(clone))
+    with pytest.raises(FileNotFoundError, match="no Harbor task dir"):
+        run_async(haf.preflight(None))
+
+
+def test_preflight_fails_agentenv_without_aenv(tasks_dir, fake_aenv, monkeypatch):
+    monkeypatch.setenv("HARBOR_ENV_TYPE", "agentenv")
+    with pytest.raises(RuntimeError, match="aenv is not on PATH"):
+        run_async(haf.preflight(None))
+
+
+def test_preflight_fails_when_harbor_cannot_be_imported(tasks_dir, monkeypatch):
+    monkeypatch.setitem(sys.modules, "harbor.trial.trial", None)
+    with pytest.raises(ImportError):
+        run_async(haf.preflight(None))

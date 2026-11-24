@@ -189,7 +189,7 @@ def render_message(index: int, messages: List[Dict[str, Any]], thinking_mode: st
         prompt += user_msg_template.format(content=content_developer)
         # Miles modification: with drop_thinking=False every turn keeps its
         # thinking block, so the assistant opener is <think> regardless of
-        # position (mirrors encoding_dsv4's generation-suffix gate).
+        # position.
         if not drop_thinking and thinking_mode == "thinking":
             prompt += thinking_start_token
         elif drop_thinking and index == last_user_idx and thinking_mode == "thinking":
@@ -266,7 +266,7 @@ def render_message(index: int, messages: List[Dict[str, Any]], thinking_mode: st
         # Miles modification: drop_thinking=False keeps every assistant's
         # thinking block in the render (upstream only renders it after the
         # last user turn), which makes the render append-only across user
-        # appends; mirrors encoding_dsv4's assistant gate.
+        # appends.
         if thinking_mode == "thinking" and (not drop_thinking or index > last_user_idx):
             thinking_part = thinking_template.format(reasoning_content=reasoning_content or "") + thinking_end_token
 

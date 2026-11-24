@@ -8,6 +8,8 @@ End-to-end training workflows — the place to start.
 
 - **[geo3k_vlm](./geo3k_vlm)**: Training VLMs with FSDP using GRPO on the GEO3K dataset.
   - **[multi_turn](./geo3k_vlm/multi_turn)**: The same dataset over multiple turns, with the model cropping images through an interactive environment.
+- **[timelens_video](./timelens_video)**: Video temporal-grounding RL for Qwen3.5 with token-space media and a frozen vision tower.
+- **[avqa_audio](./avqa_audio)**: AVQA audio RL for Inkling-Small with token-space audio and a LoRA on one node.
 - **[lora](./lora)**: LoRA fine-tuning with the Megatron backend.
 - **[multi_lora](./multi_lora)**: Serve concurrent LoRA fine-tuning clients on one shared base model through the Tinker protocol.
   - **[harbor_tinker](./multi_lora/harbor_tinker)**: Terminal-Bench 2 training with Harbor sandboxes and the official Tinker cookbook RL loop.
@@ -18,6 +20,7 @@ End-to-end training workflows — the place to start.
 - **[ppo](./ppo)**: Actor-critic PPO with GAE advantages, where the critic shares the actor's train GPUs.
 - **[retool_v2](./retool_v2)**: Tool-enabled language model generation with sandboxed Python code execution interleaved with thinking.
 - **[swe-agent-harbor-docker](./swe-agent-harbor-docker)**: Trains coding and terminal agents with Harbor-managed local Docker sandboxes and verifier rewards.
+- **[text_to_sql](./text_to_sql)**: Multi-turn text-to-SQL RL on BIRD-Platinum with a read-only SQLite tool, following River's recipe on Qwen3.6-35B-A3B.
 
 ## [Infra Features](./infra_features)
 
@@ -39,6 +42,7 @@ data and weights around.
 Not fully verified — for experimental and development use.
 
 - **[agentenv](./experimental/agentenv)**: Rollouts against AgentENV, a self-hosted platform running agent sandboxes on Firecracker microVMs.
+- **[bpo](./experimental/bpo)**: Custom loss plugin implementing Bellman Policy Optimization (BPO) via `--loss-type custom_loss`.
 - **[DrGRPO](./experimental/DrGRPO)**: Custom reducer for Dr.GRPO algorithm.
 - **[eval](./experimental/eval)**: Documentation and setup for evaluation environments using NeMo-Skills.
 - **[eval_multi_task](./experimental/eval_multi_task)**: Example for supporting OOD evaluation tasks, e.g., GPQA, IFBench.

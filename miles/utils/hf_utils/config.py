@@ -113,6 +113,11 @@ def register_hf_config_aliases() -> None:
     except ImportError:
         pass
 
+    try:
+        import sglang.srt.configs.muse_spark  # noqa: F401
+    except ImportError:
+        pass
+
 
 def load_hf_config(
     checkpoint_path: str,

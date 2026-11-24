@@ -13,7 +13,9 @@ from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env,
 
 from miles.rollout.session.types import SessionServerInstance
 from miles.utils.chat_template_utils import TITOTokenizerType, get_tito_tokenizer
+from miles.utils.function_registry import function_registry
 from miles.utils.processing_utils import load_tokenizer
+from miles.utils.test_utils import mock_tools
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
 from miles.utils.test_utils.mock_tools import SAMPLE_TOOLS, ThreeTurnStub, TwoTurnStub
 from miles.utils.types import Sample, WeightVersionSpan
@@ -129,6 +131,7 @@ def verify_samples(actual: Sample | list[Sample], expected: list[ExpectedSampleI
         # template kwargs the last turn recorded) that varies with mock setup.
         # Strip these before comparing structure.
         for key in (
+            "session_id",
             "tito_session_mismatch",
             "accumulated_token_ids",
             "max_trim_tokens",
@@ -463,11 +466,11 @@ class TestExitConditions:
         verify_samples(result.sample, expected)
 
 
-class TestRespectMaxContextLen:
+class TestRespectMaxSeqLen:
     @pytest.mark.parametrize(
-        "generation_env", [{"args_kwargs": {"rollout_max_context_len": SINGLE_TURN_PROMPT_TOKEN_LEN}}], indirect=True
+        "generation_env", [{"args_kwargs": {"max_seq_len": SINGLE_TURN_PROMPT_TOKEN_LEN}}], indirect=True
     )
-    def test_prompt_exceeds_max_context_len_returns_truncated(self, variant, generation_env):
+    def test_prompt_exceeds_max_seq_len_returns_truncated(self, variant, generation_env):
         if is_agentic_variant(variant):
             pytest.skip("TODO: implement")
         result = _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
@@ -487,7 +490,7 @@ class TestRespectMaxContextLen:
         [
             {
                 "args_kwargs": {
-                    "rollout_max_context_len": len(TwoTurnStub.FIRST_PROMPT_TOKEN_IDS)
+                    "max_seq_len": len(TwoTurnStub.FIRST_PROMPT_TOKEN_IDS)
                     + token_len(TwoTurnStub.FIRST_RESPONSE)
                     + token_len(TwoTurnStub.FIRST_TOOL_RESPONSE)
                 }
@@ -495,7 +498,7 @@ class TestRespectMaxContextLen:
         ],
         indirect=True,
     )
-    def test_second_turn_exceeds_max_context_len_returns_truncated(self, variant, generation_env):
+    def test_second_turn_exceeds_max_seq_len_returns_truncated(self, variant, generation_env):
         if is_agentic_variant(variant):
             pytest.skip("TODO: implement")
         S = TwoTurnStub
@@ -525,11 +528,11 @@ class TestRespectMaxContextLen:
         "generation_env,expected_max_new_tokens",
         [
             (
-                {"args_kwargs": {"rollout_max_context_len": len(TwoTurnStub.SECOND_PROMPT_TOKEN_IDS) + 10}},
+                {"args_kwargs": {"max_seq_len": len(TwoTurnStub.SECOND_PROMPT_TOKEN_IDS) + 10}},
                 10,
             ),
             (
-                {"args_kwargs": {"rollout_max_context_len": len(TwoTurnStub.SECOND_PROMPT_TOKEN_IDS) + 100}},
+                {"args_kwargs": {"max_seq_len": len(TwoTurnStub.SECOND_PROMPT_TOKEN_IDS) + 100}},
                 64,
             ),
         ],
@@ -723,6 +726,24 @@ class TestAgentMetadata:
         assert isinstance(mismatches, list)
         for m in mismatches:
             assert {"type", "segment_index", "expected_text", "actual_text", "detail"} == set(m.keys())
+
+    def test_a_sample_runs_its_own_agent_with_the_lower_seq_len(self, variant, generation_env):
+        """A mixed dataset's custom_agent_function_path and max_seq_len win over the run-wide ones, but only downward."""
+        generation_env.mock_server.process_fn = TwoTurnStub.process_fn
+        seen_seq_lens = []
+
+        async def dataset_agent(**kwargs):
+            seen_seq_lens.append(kwargs["metadata"].get("max_seq_len"))
+            return await mock_tools.run_agentic_tool_call(**kwargs)
+
+        sample = make_sample(prompt=TwoTurnStub.PROMPT)
+        sample.agent_function_path = "test3947.dataset_agent"
+        sample.max_seq_len = 100
+        run_limit = generation_env.args.max_seq_len
+        with function_registry.temporary("test3947.dataset_agent", dataset_agent):
+            _run_generate(variant, generation_env, sample)
+
+        assert seen_seq_lens == [100 if run_limit is None else min(run_limit, 100)]
 
     def test_agent_returns_none_metadata_unchanged(self, variant, generation_env):
         generation_env.mock_server.process_fn = TwoTurnStub.process_fn

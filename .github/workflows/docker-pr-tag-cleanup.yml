@@ -3,16 +3,26 @@ name: Docker PR tag cleanup
 on:
   pull_request:
     types: [closed]
+  # Fork pull_request runs have no registry secrets. Use only the trusted
+  # default-branch workflow for their fixed ROCm tag; never check out PR code.
+  pull_request_target:
+    types: [closed]
 
 permissions:
   contents: read
 
 jobs:
   delete-pr-tag:
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository)
+    # A closed fork PR deletes only its ROCm tag, with the same hosted job and
+    # Docker Hub secret as same-repository PRs.
     runs-on: ubuntu-latest
     steps:
       - shell: bash
+        env:
+          FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
         run: |
           TOKEN=$(python3 -c "
           import json, urllib.request
@@ -21,7 +31,19 @@ jobs:
                                'password': '${{ secrets.DOCKERHUB_TOKEN }}'}).encode(),
               headers={'Content-Type': 'application/json'})
           print(json.load(urllib.request.urlopen(req))['token'])")
-          curl -s -X DELETE \
-            -H "Authorization: JWT ${TOKEN}" \
-            "https://hub.docker.com/v2/repositories/radixark/miles/tags/pr-${{ github.event.pull_request.number }}/" \
-            || true
+          # One tag per PR_IMAGE_ARCHES entry in docker/image_inputs.py, plus pr-test-tpu.yml's -tpu image.
+          # The ROCm and TPU PR images exist only in radixark/miles: no other repository builds them.
+          tags=()
+          if [ "$GITHUB_REPOSITORY" = radixark/miles ]; then
+            tags=("pr-${{ github.event.pull_request.number }}-rocm10-mi35x")
+            [ "$FORK" = true ] || tags+=("pr-${{ github.event.pull_request.number }}-tpu")
+          fi
+          if [ "$FORK" != true ]; then
+            tags=("pr-${{ github.event.pull_request.number }}" "pr-${{ github.event.pull_request.number }}-arm64" "${tags[@]}")
+          fi
+          for tag in "${tags[@]}"; do
+            curl -s -X DELETE \
+              -H "Authorization: JWT ${TOKEN}" \
+              "https://hub.docker.com/v2/repositories/${GITHUB_REPOSITORY}/tags/${tag}/" \
+              || true
+          done

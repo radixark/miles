@@ -19,6 +19,7 @@ polars==1.42.1
 psycopg[binary]  # metric-history gate store (Neon Postgres driver)
 pybase64
 pylatexenc
+pyrage==1.4.0  # age-encrypted Tinker external weights (save_weights_external)
 pytest-asyncio
 pyyaml
 qwen_vl_utils # for VLM

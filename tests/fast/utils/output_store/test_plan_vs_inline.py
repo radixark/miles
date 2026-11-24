@@ -17,18 +17,21 @@ import numpy as np
 import pybase64
 import pytest
 import torch
+from tests.fast.fixtures.score_centering_fixtures import _flat_sampling_mask
 from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
-from tests.fast.utils.output_store.test_plan import Ref, Spec, fake_store_refs
+from tests.fast.utils.output_store.test_plan import Ref, Spec, fake_store_refs, read_rows, stored_parts
 
 from miles.rollout.generate_utils import tool_call_utils
 from miles.rollout.generate_utils.generate_endpoint_utils import update_sample_from_response
 from miles.rollout.generate_utils.sample_utils import merge_samples
+from miles.rollout.generate_utils.sampling_mask import configure_sampling_mask_request
 from miles.utils.output_store.plan import (
     MASK_LENGTHS,
     MASK_SUPPORT_LOGPROBS,
     MASK_TOKEN_IDS,
     OUTPUT_STORE_REF_KEY,
     OUTPUT_STORE_REQUEST_KEY,
+    REPLAY_LAYER_SPLITS_KEY,
     RoutedExpertsSegments,
     StorePlanError,
 )
@@ -38,6 +41,8 @@ R3 = RoutedExpertsSegments.name
 VOCAB = 64
 SELECTED_MAX_SUPPORT = 6
 LAYERS, EXPERTS_PER_TOKEN = 2, 3
+# SGLang stores routed experts in parts split at these layers: a two-stage pipeline's.
+LAYER_SPLITS = [1]
 TOPK_COLUMNS = ("rollout_topk_token_ids", "rollout_topk_log_probs")
 
 
@@ -59,7 +64,12 @@ def generate(
 ) -> Response:
     """One SGLang response to ``num_tokens`` input tokens, as inline meta_info and as a stored object."""
     if abort:
-        meta_info = {"output_token_logprobs": [], "finish_reason": {"type": "abort"}}
+        meta_info = {
+            "output_token_logprobs": [],
+            "finish_reason": {"type": "abort"},
+            "prompt_tokens": num_tokens,
+            "completion_tokens": 0,
+        }
         return Response([], meta_info, dict(meta_info), None)
     max_support = k if mode == "support" else SELECTED_MAX_SUPPORT
     tokens, supports, support_logprobs = [], [], []
@@ -73,12 +83,10 @@ def generate(
     common = {
         "output_token_logprobs": [(lp, t, None) for lp, t in zip(sampled, tokens, strict=True)],
         "finish_reason": {"type": "stop"},
+        "prompt_tokens": num_tokens,
+        "completion_tokens": len(tokens),
     }
-    inline = {
-        **common,
-        "output_token_sampling_mask": supports,
-        "output_token_sampling_logprobs": support_logprobs if mode == "support" else sampled,
-    }
+    inline = {**common, **_flat_sampling_mask(supports, support_logprobs if mode == "support" else sampled)}
     # With the output store, SGLang keeps only the sampled tokens' log-probs inline.
     sampled_key = "output_token_sampling_selected_logprobs" if mode == "support" else "output_token_sampling_logprobs"
     store = {**common, sampled_key: sampled}
@@ -92,7 +100,7 @@ def generate(
         # Every /generate forward covers the whole sequence: a row per position but the last.
         rows = rng.integers(1, 64, size=(num_tokens + len(tokens) - 1, LAYERS, EXPERTS_PER_TOKEN), dtype=np.int32)
         inline["routed_experts"] = pybase64.b64encode(rows.tobytes()).decode()
-        arrays[R3] = rows
+        arrays |= stored_parts(R3, rows, LAYER_SPLITS)
     store[OUTPUT_STORE_REF_KEY] = Ref(
         key, tuple(Spec(n, a.dtype.name, a.shape) for n, a in arrays.items())
     ).to_builtins()
@@ -108,11 +116,18 @@ def respond(sample: Sample, meta_info: dict, *, mode: str, k: int, routed_expert
         payload[RoutedExpertsSegments.request_key] = True
     if via_store:
         payload[OUTPUT_STORE_REQUEST_KEY] = True
+        payload[REPLAY_LAYER_SPLITS_KEY] = LAYER_SPLITS
+    configure_sampling_mask_request(payload)
     args = Namespace(
-        rollout_top_logprobs_num=k, sglang=make_sglang_config(speculative_algorithm=None), num_layers=LAYERS
+        rollout_top_logprobs_num=k,
+        sglang=make_sglang_config(speculative_algorithm=None),
+        num_layers=LAYERS,
+        max_seq_len=None,
     )
     output = {"text": "", "meta_info": meta_info}
-    asyncio.run(update_sample_from_response(args, sample, payload, output, update_loss_mask=True))
+    asyncio.run(
+        update_sample_from_response(args, sample, payload, output, update_loss_mask=True, tokenizer=Tokenizer())
+    )
 
 
 def tokens_of(rng: np.random.Generator, low: int, high: int) -> list[int]:
@@ -199,8 +214,10 @@ def test_store_sample_equals_inline_sample(seed):
         assert store_column.dtype == inline_column.dtype == dtype
         assert torch.equal(store_column, inline_column), (store_column.tolist(), inline_column.tolist())
     if R3 in plan.fields:
-        assert columns["rollout_routed_experts"].dtype == inline.rollout_routed_experts.dtype == np.int32
-        np.testing.assert_array_equal(columns["rollout_routed_experts"], inline.rollout_routed_experts)
+        # The column is the segments; replay reads their rows.
+        rows = read_rows(columns["rollout_routed_experts"], objects)
+        assert rows.dtype == inline.rollout_routed_experts.dtype == np.int32
+        np.testing.assert_array_equal(rows, inline.rollout_routed_experts)
     if mode == "selected":
         assert set(columns).isdisjoint(TOPK_COLUMNS) and inline.rollout_topk_token_ids is None
         return
@@ -212,14 +229,15 @@ def test_store_sample_equals_inline_sample(seed):
 
 
 def test_a_response_without_its_ref_raises():
-    # The router dropped the opt-in, so SGLang answered inline: the plan cannot be built.
+    # The router dropped the opt-in, so SGLang answered without a ref: the plan cannot be built.
     response = generate(
         np.random.default_rng(0), key="a", num_tokens=3, mode="selected", k=0, routed_experts=True, abort=False
     )
+    meta_info = {key: value for key, value in response.store_meta_info.items() if key != OUTPUT_STORE_REF_KEY}
     with pytest.raises(StorePlanError, match="asked for routed_experts"):
         respond(
             Sample(tokens=[1, 2, 3]),
-            response.inline_meta_info,
+            meta_info,
             mode="selected",
             k=0,
             routed_experts=True,

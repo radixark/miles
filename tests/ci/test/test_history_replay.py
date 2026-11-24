@@ -58,7 +58,7 @@ def _envelope(specs, rows):
         status="ok",
         truncated=False,
         error=None,
-        sql_sha256=hashlib.sha256(replay.export_sql(specs).encode()).hexdigest(),
+        sql_sha256=hashlib.sha256(replay.export_sql(specs, "radixark/miles").encode()).hexdigest(),
         results=[dict(columns=[], rows=[]), dict(columns=columns, rows=[[r[c] for c in columns] for r in rows])],
     )
 
@@ -92,11 +92,12 @@ class TestDiscoveryAndExport:
 
     def test_export_includes_all_candidates_and_filters_exact_coordinates(self, tmp_path):
         specs = _specs(tmp_path, name="test_quote's.py")
-        sql = replay.export_sql(specs)
+        sql = replay.export_sql(specs, "radixark/miles")
         assert sql.startswith("BEGIN TRANSACTION READ ONLY;")
         assert "r.trusted" in sql
         assert "r.trusted" not in sql.split("WHERE", 1)[1].split("GROUP BY", 1)[0]
         assert "r.backend = 'cuda'" in sql
+        assert "r.repository = 'radixark/miles'" in sql
         assert "LEFT JOIN metric_values" in sql
         assert "r.test_path = s.test_path" in sql
         assert "mv.metric_key = s.metric_key" in sql
@@ -110,7 +111,7 @@ class TestDiscoveryAndExport:
         rows = [_row(specs, 1, 1.0)]
         path = tmp_path / "export.json"
         path.write_text(json.dumps(_envelope(specs, rows)))
-        assert replay.load_export(path, replay.export_sql(specs)) == rows
+        assert replay.load_export(path, replay.export_sql(specs, "radixark/miles")) == rows
 
     @pytest.mark.parametrize(
         "fault", ["status", "truncated", "error", "sql_sha256", "columns", "extra_table", "row_width"]
@@ -130,7 +131,7 @@ class TestDiscoveryAndExport:
         path = tmp_path / "export.json"
         path.write_text(json.dumps(payload))
         with pytest.raises(ValueError):
-            replay.load_export(path, replay.export_sql(specs))
+            replay.load_export(path, replay.export_sql(specs, "radixark/miles"))
 
 
 class TestChronologicalReplay:
@@ -466,4 +467,4 @@ class TestCLI:
         monkeypatch.setattr(replay, "enforced_specs", lambda: specs)
         monkeypatch.setattr("sys.argv", ["replay", "--export-sql"])
         assert replay.main() == 0
-        assert capsys.readouterr().out == replay.export_sql(specs)
+        assert capsys.readouterr().out == replay.export_sql(specs, "radixark/miles")

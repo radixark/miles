@@ -240,7 +240,11 @@ async def _post(client, url, payload, max_retries=60, action="post", headers=Non
             if isinstance(e, httpx.HTTPStatusError):
                 response_text = e.response.text
                 if 400 <= e.response.status_code < 500 and e.response.status_code not in (408, 429):
-                    raise
+                    # The server's reply says what was wrong with the request (e.g. an expanded multimodal prompt
+                    # past the engine's context length); the status line alone does not.
+                    raise httpx.HTTPStatusError(
+                        f"{e}: {response_text[:2000]}", request=e.request, response=e.response
+                    ) from None
             else:
                 response_text = None
 

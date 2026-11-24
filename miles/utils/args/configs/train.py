@@ -94,6 +94,19 @@ class TrainConfig(BaseConfig):
             help="The method to convert megatron weights to hugging face weights for SGLang.",
         ),
     ] = "raw"
+    routed_expert_qat: A[
+        str | None,
+        Arg(
+            choices=["mxfp4"],
+            help=(
+                "Round the routed-expert weights onto this format's grid at the start of every Megatron "
+                "forward-backward pass, so that each forward computes with them (quantization-aware "
+                "training), to match a rollout that serves them in that format (see "
+                "--rollout-routed-expert-format). The BF16 parameters are rounded in place; the fp32 master "
+                "weights and optimizer states keep their precision."
+            ),
+        ),
+    ] = None
     dsa_attention_backend: A[
         str,
         Arg(
@@ -109,6 +122,15 @@ class TrainConfig(BaseConfig):
             ),
         ),
     ] = "tilelang"
+    use_miles_ext_kernels: A[
+        bool,
+        Arg(
+            help=(
+                "Enable the kernels of the miles-ext-kernels submodule (3rdparty/miles-ext-kernels) and "
+                "register their arguments. Required by every 'cake' backend."
+            )
+        ),
+    ] = False
     extra_high_precision_layers_hf: A[
         list[str] | tuple[str, ...],
         Arg(
@@ -147,7 +169,7 @@ class TrainConfig(BaseConfig):
     log_probs_backend: A[
         str,
         Arg(
-            choices=["torch", "fused"],
+            choices=["torch", "fused", "fused_lm_head"],
             help=(
                 "How per-token log-probs and entropy are computed from the logits. 'torch' upcasts each "
                 "response chunk to fp32 and keeps its softmax for backward. 'fused' streams the logits through "
@@ -156,7 +178,10 @@ class TrainConfig(BaseConfig):
                 " as the rollout engine does, while 'torch' normalizes over Megatron's padded vocabulary "
                 "(except for --loss-type score_centering), so with vocab padding (TP > 1) the two give slightly"
                 " different log-probs, ratios and KL. 'fused' does not support --true-on-policy-mode or "
-                "sampling-support replay (--rollout-top-p below 1 or a positive --rollout-top-k)."
+                "sampling-support replay (--rollout-top-p below 1 or a positive --rollout-top-k). 'fused_lm_head' is"
+                " 'fused' without the logits buffer: the output layer runs --log-probs-chunk-size rows at a time"
+                " (default 4096). On TPU, losses on padded rows with --entropy-coef 0 and TP 1 score with a "
+                "compiled op that keeps no softmax for backward (loss/hub/row_log_prob.py) instead."
             ),
         ),
     ] = "torch"
@@ -177,6 +202,16 @@ class TrainConfig(BaseConfig):
         ),
     ] = False
     allgather_cp: A[bool, Arg()] = False
+    compile_warmup: A[
+        bool,
+        Arg(
+            help=(
+                "Compile every training pass on a synthetic batch at the end of the "
+                "trainer's init, while the rollout engines start, instead of during the first train step. For "
+                "platforms that compile one program per static shape (TPU)."
+            )
+        ),
+    ] = False
     mfu_peak_tflops: A[
         float | None,
         Arg(

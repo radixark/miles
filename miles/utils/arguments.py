@@ -23,14 +23,19 @@ from miles.backends.sglang_utils.arguments import validate_args as sglang_valida
 from miles.backends.sglang_utils.sglang_config import SglangConfig
 from miles.backends.sglang_utils.sglang_scaling_config import SglangScalingConfig
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
-from miles.dashboard.args import validate_dashboard_args
+from miles.backends.training_utils.data.token_space_media_process import RolloutEngineProcessorArgs
 from miles.ray.specs.train import external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.rollout.reward_shaping import validate_length_penalty_args
 from miles.router.backend import RouterKind
+from miles.utils.args.configs.data import DataConfig
 from miles.utils.args.configs.fault_tolerance import _DEFAULT_FT_API_SERVER_PORT
 from miles.utils.args.configs.router import RouterConfig
-from miles.utils.args.custom_function import add_user_provided_function_arguments, resolve_custom_function_configs
+from miles.utils.args.custom_function import (
+    _compute_config_class,
+    add_user_provided_function_arguments,
+    resolve_custom_function_configs,
+)
 from miles.utils.args.runtime import AllConfig
 from miles.utils.args.schema import reset_arg
 from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
@@ -40,11 +45,13 @@ from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.file_arg_utils import resolve_file_arg
+from miles.utils.function_registry import load_function
 from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora.arguments import validate_lora_args, validate_lora_args_after_megatron
+from miles.utils.lora.hf_lora_targets import unembed_lora_targets
 from miles.utils.lora.utils import is_lora_enabled, lora_sync_sends_base
-from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
+from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp, pp_layer_splits
 from miles.utils.object_store_config import (
     MOONCAKE_MASTER_ADDRESS_KEY,
     ObjectStoreBackend,
@@ -52,10 +59,12 @@ from miles.utils.object_store_config import (
     compute_mooncake_init_kwargs_vanilla,
 )
 from miles.utils.output_store.config import check_output_store_args
+from miles.utils.rollout_data_config import RolloutDatasetConfig, check_dataset_length_limits, load_rollout_data_config
 from miles.utils.rollout_topk_logprobs import validate_rollout_topk_logprobs_args
 from miles.utils.run_uuid import generate_run_uuid, validate_run_uuid
 from miles.utils.score_centering import validate_score_centering_args
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
+from miles.utils.workers.argv_utils import with_relax_parser_required_args, with_suppressed_parser_help
 from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH, DNS_LABEL_PATTERN
 from miles.utils.workers.types import ClusterBackend, DeployComponent, WorkerCommBackend, resolve_worker_comm_backend
 from miles.utils.workers.worker_provider.static import parse_host_and_port
@@ -63,6 +72,8 @@ from miles.utils.workers.worker_provider.static import parse_host_and_port
 logger = logging.getLogger(__name__)
 
 LINEAR_ATTENTION_BACKENDS = ("fla", "flashqla")
+# Backend arguments whose 'cake' choice runs a kernel from the miles-ext-kernels submodule.
+CAKE_BACKEND_ARGS = ("linear_attention_backend", "dsa_attention_backend", "miles_dsa_topk_backend")
 LINEAR_ATTENTION_INPUT_NORMS = ("te", "hf")
 
 FULLY_ASYNC_ROLLOUT_PATH = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
@@ -167,6 +178,19 @@ def _resolve_rollout_functions(args) -> None:
     args.eval_uses_snapshots = args.eval_num_gpus > 0 or checkpoint_backend
 
 
+def _add_miles_ext_kernels_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    try:
+        with with_relax_parser_required_args(parser), with_suppressed_parser_help(parser):
+            args_partial, _ = parser.parse_known_args()
+    except SystemExit:
+        return parser
+    if args_partial.use_miles_ext_kernels:
+        import miles_ext_kernels
+
+        miles_ext_kernels.add_arguments(parser)
+    return parser
+
+
 def get_miles_extra_args_provider(
     add_custom_arguments: Callable[[argparse.ArgumentParser], argparse.ArgumentParser] | None = None,
 ) -> Callable[[argparse.ArgumentParser], argparse.ArgumentParser]:
@@ -178,6 +202,7 @@ def get_miles_extra_args_provider(
             parser = add_custom_arguments(parser)
 
         AllConfig.add_arguments(parser=parser)
+        parser = _add_miles_ext_kernels_arguments(parser)
         parser = add_user_provided_function_arguments(parser, modify_args=resolve_rollout_function_paths)
 
         reset_arg(
@@ -240,9 +265,6 @@ def parse_args_and_get_parser(
         nonlocal parser
         training_backend_arg_names.update(action.dest for action in value._actions)
         parser = add_miles_arguments(value)
-        if entry == "serve":
-            # Tinker adapters default to the PEFT / Tinker cookbook layout
-            parser.set_defaults(lora_type="canonical_lora")
         return parser
 
     backend = parse_args_train_backend()
@@ -265,6 +287,7 @@ def parse_args_and_get_parser(
                 hf_config, "compress_ratios", None
             )  # config-access-exempt: model-family schemas differ in optional compress_ratios metadata
             hf_validate_args(args, hf_config)
+            validate_routed_expert_quantization_args(args, hf_config)
 
             if is_dsa(hf_config):
                 getter = getattr(
@@ -309,6 +332,8 @@ def parse_args_and_get_parser(
             args.num_layers = resolve_fsdp_num_layers(load_hf_config(args.hf_checkpoint))
         else:
             args.num_layers = None
+        if args.routed_expert_qat is not None or args.rollout_routed_expert_format is not None:
+            raise ValueError("--routed-expert-qat and --rollout-routed-expert-format require the Megatron backend.")
 
         if backend == "fsdp":
             assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
@@ -341,6 +366,9 @@ def parse_args_and_get_parser(
                 "decoder_first_pipeline_num_layers and decoder_last_pipeline_num_layers should be None when "
                 "pipeline_model_parallel_size is 1."
             )
+        # After megatron_validate_args, which derives the virtual pipeline size. SGLang stores each replay field in
+        # parts split at these layers, so each pipeline stage reads only its own (non-Megatron backends: none).
+        args.replay_layer_splits = pp_layer_splits(args)
         training_backend_arg_names.update(vars(args).keys() - previous_arg_names)
     elif backend == "torchtitan":
         from miles.backends.torchtitan_utils.arguments import validate_torchtitan_args
@@ -390,6 +418,8 @@ def parse_args_and_get_parser(
     sglang, sglang_scaling = SglangConfig.parse_args(args)
     raw_megatron = resolve_megatron_config(args, base_args=backend_values if backend == "megatron" else {})
     check_output_store_args(args, sglang=sglang, megatron=raw_megatron)
+    _check_stop_token_replace_streaming_session(args, sglang=sglang)
+    _check_multimodal_token_space_processing_args(args, sglang=sglang)
     values = {name: value for name, value in vars(args).items() if name in AllConfig.model_fields} | {
         "raw_megatron": raw_megatron,
         "raw_fsdp": FsdpArgsNamespace(**backend_values) if backend == "fsdp" else None,
@@ -473,6 +503,121 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
         args.eval_prompt_data = None
 
     return eval_datasets
+
+
+_DEFAULT_GENERATE_FUNCTION_PATH = "miles.rollout.generate_hub.single_turn.generate"
+# built-in generate functions that never read a sample's metadata["agent_config"]
+_GENERATE_FUNCTIONS_WITHOUT_AGENT_CONFIG = frozenset(
+    {
+        _DEFAULT_GENERATE_FUNCTION_PATH,
+        "miles.rollout.generate_hub.multi_turn.generate",
+        "miles.rollout.sglang_rollout.generate",
+    }
+)
+_DEFAULT_DATA_SOURCE_PATH = DataConfig.model_fields["data_source_path"].default.path
+_DATASET_AGENT_FIELDS = ("agent", "custom_agent_function_path", "max_seq_len")
+
+
+def _dataset_fields_read_by(generate_path: str) -> frozenset[str]:
+    """The per-dataset agent fields a generate function reads.
+
+    The free-form ``agent`` block is open to any non-built-in; ``custom_agent_function_path`` and ``max_seq_len``
+    arrive as Sample fields that only a function marked ``reads_sample_agent_fields`` (agentic_tool_call, or a
+    wrapper) reads.
+    """
+    if generate_path in _GENERATE_FUNCTIONS_WITHOUT_AGENT_CONFIG:
+        return frozenset()
+    generate = load_function(generate_path)
+    if getattr(generate, "reads_sample_agent_fields", False):  # config-access-exempt: generate hook protocol discovery
+        return frozenset(_DATASET_AGENT_FIELDS)
+    return frozenset({"agent"})
+
+
+def _check_dataset_rewards(args, datasets: list[RolloutDatasetConfig]) -> None:
+    """A dataset's custom_rm_path / rm_type become its samples' reward_spec; reject what that spec cannot do."""
+    run_rm_path = getattr(  # config-access-exempt: still a path string before custom hooks resolve
+        args.custom_rm_path, "path", args.custom_rm_path
+    )
+    for dataset in datasets:
+        other_rm_path = dataset.custom_rm_path not in (None, run_rm_path)
+        if args.group_rm and run_rm_path is not None and (other_rm_path or dataset.rm_type is not None):
+            raise ValueError(
+                f"--rollout-data-yaml-config dataset {dataset.name!r} sets its own reward, but --group-rm scores "
+                f"every group with the batched --custom-rm-path {run_rm_path}; drop the dataset's reward fields"
+            )
+        # a custom reward function outranks any rm_type, so the dataset's rm_type would never run
+        if run_rm_path is not None and dataset.rm_type is not None and dataset.custom_rm_path is None:
+            raise ValueError(
+                f"--rollout-data-yaml-config dataset {dataset.name!r} sets rm_type {dataset.rm_type}, but "
+                f"--custom-rm-path {run_rm_path} scores every sample without a custom_rm_path of its own; set the "
+                "dataset's custom_rm_path or drop --custom-rm-path"
+            )
+        if other_rm_path and _compute_config_class(load_function(dataset.custom_rm_path), path=dataset.custom_rm_path):
+            raise ValueError(
+                f"--rollout-data-yaml-config dataset {dataset.name!r}: custom_rm_path {dataset.custom_rm_path} "
+                "declares its own config, which a per-sample reward_spec cannot carry; set it as --custom-rm-path"
+            )
+
+
+def _validate_rollout_data_yaml_config(args) -> None:
+    if args.rollout_data_yaml_config is None:
+        return
+    if args.prompt_data is not None:
+        raise ValueError("--rollout-data-yaml-config replaces --prompt-data; set only one of them")
+    if not args.rollout_global_dataset:
+        raise ValueError("--rollout-data-yaml-config cannot be combined with --disable-rollout-global-dataset")
+    datasets = load_rollout_data_config(args.rollout_data_yaml_config)
+    check_dataset_length_limits(
+        datasets,
+        rollout_max_prompt_len=args.rollout_max_prompt_len,
+        rollout_max_response_len=args.rollout_max_response_len,
+        max_seq_len=args.max_seq_len,
+    )
+    _check_dataset_rewards(args, datasets)
+    default_generate = getattr(  # config-access-exempt: still a path string before custom hooks resolve
+        args.custom_generate_function_path, "path", args.custom_generate_function_path
+    )
+    default_agent = getattr(  # config-access-exempt: still a path string before custom hooks resolve
+        args.custom_agent_function_path, "path", args.custom_agent_function_path
+    )
+    for dataset in datasets:
+        generate_path = dataset.custom_generate_function_path or default_generate or _DEFAULT_GENERATE_FUNCTION_PATH
+        read = _dataset_fields_read_by(generate_path)
+        set_fields = dataset.model_dump(exclude_none=True)
+        if unread := [f for f in _DATASET_AGENT_FIELDS if f in set_fields and f not in read]:
+            raise ValueError(
+                f"--rollout-data-yaml-config dataset {dataset.name!r} sets {', '.join(unread)}, but its generate "
+                f"function {generate_path} never reads it; use an agentic generate function or drop the field"
+            )
+        if (
+            "custom_agent_function_path" in read
+            and dataset.custom_agent_function_path is None
+            and default_agent is None
+        ):
+            raise ValueError(
+                f"--rollout-data-yaml-config dataset {dataset.name!r} runs {generate_path}, which needs an agent; "
+                "set custom_agent_function_path on the dataset or --custom-agent-function-path"
+            )
+    for eval_dataset in args.eval_datasets or []:
+        # eval samples do not come from the mixer, so no dataset agent reaches them
+        eval_generate = eval_dataset.custom_generate_function_path
+        generate_path = (eval_generate.path if eval_generate is not None else None) or default_generate
+        generate_path = generate_path or _DEFAULT_GENERATE_FUNCTION_PATH
+        if "custom_agent_function_path" in _dataset_fields_read_by(generate_path) and default_agent is None:
+            raise ValueError(
+                f"eval dataset {eval_dataset.name!r} runs {generate_path}, which needs an agent, but only "
+                "--rollout-data-yaml-config datasets carry their own; set --custom-agent-function-path"
+            )
+    if args.num_rollout is None:
+        # an epoch has no single length across independently wrapping datasets
+        raise ValueError("--rollout-data-yaml-config needs --num-rollout; --num-epoch is not supported with it")
+    if args.partial_rollout:
+        raise ValueError("--rollout-data-yaml-config does not support --partial-rollout yet")
+    if args.data_source_path != _DEFAULT_DATA_SOURCE_PATH:
+        raise ValueError(
+            f"--rollout-data-yaml-config selects its own data source; drop --data-source-path {args.data_source_path}"
+        )
+    args.data_source_path = "miles.rollout.data_source.MixedRolloutDataSource"
 
 
 def _compute_init_expected_num_cells(
@@ -764,26 +909,82 @@ def _resolve_run_uuid(args: argparse.Namespace) -> str:
     return generate_run_uuid()
 
 
+def validate_miles_ext_kernels_args(args) -> None:
+    for name in CAKE_BACKEND_ARGS:
+        backend = getattr(args, name)  # config-access-exempt: backend flags named in CAKE_BACKEND_ARGS
+        if backend == "cake" and not args.use_miles_ext_kernels:
+            raise ValueError(f"--{name.replace('_', '-')} cake requires --use-miles-ext-kernels")
+    if args.use_miles_ext_kernels:
+        import miles_ext_kernels
+
+        miles_ext_kernels.validate_args(args)
+
+
 def validate_log_probs_backend_args(args) -> None:
-    """Reject settings the fused log-prob op does not cover, at startup rather than mid-run."""
-    if args.log_probs_backend != "fused":
+    """Reject settings the fused log-prob ops do not cover, at startup rather than mid-run."""
+    backend = args.log_probs_backend
+    if backend not in ("fused", "fused_lm_head"):
         return
     if args.true_on_policy_mode:
         raise ValueError(
-            "--log-probs-backend fused does not support --true-on-policy-mode, which needs bitwise "
+            f"--log-probs-backend {backend} does not support --true-on-policy-mode, which needs bitwise "
             "parity with the rollout engine's own log-softmax; use --log-probs-backend torch."
         )
     if args.use_sampling_support_replay:
         raise ValueError(
-            "--log-probs-backend fused does not support sampling-support replay "
+            f"--log-probs-backend {backend} does not support sampling-support replay "
             f"(--rollout-top-p {args.rollout_top_p}, --rollout-top-k {args.rollout_top_k}); "
             "use --log-probs-backend torch."
         )
     # unset, the actor falls back to the tokenizer's vocab_size, which can leave out added special tokens
     if args.train_backend == "megatron" and args.vocab_size is None:
         raise ValueError(
-            "--log-probs-backend fused needs --vocab-size (the HF config's vocab_size) on the megatron "
+            f"--log-probs-backend {backend} needs --vocab-size (the HF config's vocab_size) on the megatron "
             "backend, to exclude Megatron's vocabulary padding from the softmax."
+        )
+    if backend == "fused_lm_head":
+        _validate_fused_lm_head_args(args)
+
+
+def _validate_fused_lm_head_args(args) -> None:
+    """The model returns the output layer's input, so only losses that score target tokens can read it."""
+    if args.train_backend != "megatron":
+        raise ValueError(
+            "--log-probs-backend fused_lm_head needs --train-backend megatron (GPTModel's output_processor)"
+        )
+    if args.loss_type not in ("policy_loss", "sft_loss"):
+        raise ValueError(
+            f"--log-probs-backend fused_lm_head supports --loss-type policy_loss and sft_loss, got {args.loss_type}"
+        )
+    # the raw flag: args.multi_lora is derived from it later, in validate_lora_args
+    if args.multi_lora_n_adapters > 0:
+        raise ValueError("--log-probs-backend fused_lm_head does not support multi-LoRA (--multi-lora-n-adapters)")
+    # Megatron runs the combined 1F1B schedule only with this overlap, and that schedule takes no output_processor
+    if args.overlap_moe_expert_parallel_comm:
+        raise ValueError(
+            "--log-probs-backend fused_lm_head does not support --overlap-moe-expert-parallel-comm (combined 1F1B)"
+        )
+    # Megatron stashes the output layer's input on each call; the tiles' checkpoint replay stashes it twice per gradient
+    if args.defer_embedding_wgrad_compute:
+        raise ValueError("--log-probs-backend fused_lm_head does not support --defer-embedding-wgrad-compute")
+    # Megatron computes the MTP loss inside GPTModel's postprocess, before the output_processor runs
+    if args.enable_mtp_training:
+        logger.warning(
+            "--log-probs-backend fused_lm_head does not cover the MTP heads: with --enable-mtp-training each MTP "
+            "layer's loss still materializes its fp32 logits, [tokens x vocab/TP] per layer"
+        )
+
+
+def _validate_fused_lm_head_lora_targets(args) -> None:
+    """Bridge wraps a LoRA-adapted output layer in LoRALinear, which has none of the Megatron layer's attributes
+    fused_lm_head reads."""
+    if args.log_probs_backend != "fused_lm_head" or not is_lora_enabled(args):
+        return
+    adapted = unembed_lora_targets(args.hf_lora_targets, load_hf_config(args.hf_checkpoint).to_dict())
+    if adapted:
+        raise ValueError(
+            f"--log-probs-backend fused_lm_head does not support LoRA on the output layer ({adapted}); "
+            "leave it out of --target-modules, e.g. --target-modules attn,mlp"
         )
 
 
@@ -853,16 +1054,131 @@ def _resolve_sample_ownership_check(args: argparse.Namespace) -> None:
         )
 
 
+def _resolve_allow_stop_token_replace(args: argparse.Namespace) -> bool:
+    if not args.use_session_server:
+        if args.allow_stop_token_replace is not None:
+            raise ValueError(
+                "--allow-stop-token-replace requires --use-session-server; "
+                "this flag only configures the session-server TITO middleware."
+            )
+        return False
+    family_default = TITOTokenizerType.get_tokenizer_class(TITOTokenizerType(args.tito_model)).allow_stop_token_replace
+    # An explicit flag wins over the --tito-model family default.
+    allowed = family_default if args.allow_stop_token_replace is None else args.allow_stop_token_replace
+    source = (
+        f"--tito-model={args.tito_model} default"
+        if args.allow_stop_token_replace is None
+        else "explicit --allow-stop-token-replace"
+    )
+    logger.info(f"Session server stop-token replacement {'allowed' if allowed else 'rejected'} ({source})")
+    return allowed
+
+
+def _resolve_allow_truncated_continuation(args: argparse.Namespace) -> bool:
+    if not args.use_session_server:
+        if args.allow_truncated_continuation is not None:
+            raise ValueError(
+                "--allow-truncated-continuation requires --use-session-server; "
+                "this flag only configures the session-server TITO middleware."
+            )
+        return False
+    fixed_template = TITOTokenizerType.get_tokenizer_class(TITOTokenizerType(args.tito_model)).FIXED_TEMPLATE
+    family_default = fixed_template.truncation_closer is not None
+    if args.allow_truncated_continuation and not family_default:
+        raise ValueError(
+            f"--allow-truncated-continuation is not supported with --tito-model={args.tito_model}: "
+            "this family declares no closer for a turn cut by finish_reason=length."
+        )
+    # An explicit flag wins over the --tito-model family default.
+    allowed = family_default if args.allow_truncated_continuation is None else args.allow_truncated_continuation
+    source = (
+        f"--tito-model={args.tito_model} default"
+        if args.allow_truncated_continuation is None
+        else "explicit --allow-truncated-continuation"
+    )
+    logger.info(f"Session server truncated-turn continuation {'allowed' if allowed else 'rejected'} ({source})")
+    return allowed
+
+
+def _check_stop_token_replace_streaming_session(args: argparse.Namespace, *, sglang: SglangConfig) -> None:
+    if args.allow_stop_token_replace and sglang.common_value("enable_streaming_session"):
+        raise ValueError(
+            f"Stop-token replacement (allowed by --tito-model={args.tito_model} or --allow-stop-token-replace) "
+            "cannot be combined with --sglang-enable-streaming-session: replacing the sampled stop token rewrites "
+            "the last generated token, while a streaming session extends the engine's stored tokens append-only. "
+            "Change the agent harness so a stop at a role token is followed by the message that token opens and "
+            "pass --no-allow-stop-token-replace, or drop --sglang-enable-streaming-session."
+        )
+
+
+_REMOVED_DASHBOARD_ARGS = {
+    "use_miles_dashboard": "install packages/miles-dashboard and set MILES_DASHBOARD=1 instead",
+    "dashboard_flush_interval": "set MILES_DASHBOARD_FLUSH_INTERVAL instead",
+    "dashboard_gpu_sample_interval": "set MILES_DASHBOARD_GPU_SAMPLE_INTERVAL instead",
+    "dashboard_sglang_scrape_interval": "set MILES_DASHBOARD_SGLANG_SCRAPE_INTERVAL instead",
+    "dashboard_sglang_metrics": "set MILES_DASHBOARD_SGLANG_METRICS instead",
+    "dashboard_forward_prometheus": "set MILES_DASHBOARD_FORWARD_PROMETHEUS=1 instead",
+    "dashboard_sglang_scrape_mode": "drop it: the dashboard always scrapes each engine directly",
+}
+
+
 def _apply_custom_config(args, data: dict) -> None:
     # configs written before --router
     if data.pop("use_miles_router", False):
         data["router"] = RouterKind.MILES
+    # configs written before the dashboard read environment variables
+    if removed := [key for key in data if key in _REMOVED_DASHBOARD_ARGS]:
+        raise ValueError(
+            "The --custom-config-path file sets dashboard arguments that no longer exist: "
+            + ", ".join(f"{key} ({_REMOVED_DASHBOARD_ARGS[key]})" for key in removed)
+        )
     for k, v in data.items():
         if hasattr(args, k):  # config-access-exempt: attribute selected at runtime from k
             logger.info(
                 f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}."
             )  # config-access-exempt: attribute selected at runtime from k
         setattr(args, k, v)
+
+
+def _check_multimodal_token_space_processing_args(args, *, sglang: SglangConfig) -> None:
+    """Reject launch settings under which the trainer cannot rebuild the rollout engines' media features."""
+    if not args.multimodal_token_space_processing:
+        return
+    if args.train_backend != "megatron":
+        raise ValueError(
+            f"--multimodal-token-space-processing supports the Megatron backend only, not {args.train_backend}: "
+            "the other trainers never consume the rebuilt media features."
+        )
+    if not sglang.actor_value("enable_token_space_processor"):
+        raise ValueError(
+            "--multimodal-token-space-processing needs the actor engines to expand media placeholders in token "
+            "space; set --sglang-enable-token-space-processor (a frozen reward or reference engine group that "
+            "serves its own requests may override it off)."
+        )
+    if args.rollout_external_engine_addrs:
+        raise ValueError(
+            "--multimodal-token-space-processing builds the trainer's processor from the server args Miles "
+            "launches its engines with, which external engines do not share."
+        )
+    if args.trainer_mm_processor_worker_num < 1:
+        raise ValueError(
+            f"--trainer-mm-processor-worker-num must be at least 1, got {args.trainer_mm_processor_worker_num}"
+        )
+    if args.trainer_mm_io_worker_num < 0:
+        raise ValueError(f"--trainer-mm-io-worker-num must be at least 0, got {args.trainer_mm_io_worker_num}")
+    for name in ("rl_on_policy_target", "true_on_policy_contract", "decrypted_config_file"):
+        if sglang.actor_value(name) is not None:
+            raise ValueError(
+                f"--multimodal-token-space-processing does not support --sglang-{name.replace('_', '-')}: the "
+                "trainer cannot yet build its processor the way the engines then do."
+            )
+    if sglang.actor_value("mm_attention_backend") is not None:
+        raise ValueError(
+            "--multimodal-token-space-processing does not support --sglang-mm-attention-backend: the trainer runs "
+            "the vision tower with the device's default attention kernel, so the engine must too."
+        )
+    # Actor engine groups that disagree on a processor setting fail here, not after the first rollout.
+    RolloutEngineProcessorArgs.from_sglang_config(sglang, hf_checkpoint=args.hf_checkpoint)
 
 
 def miles_validate_args(args):
@@ -874,11 +1190,18 @@ def miles_validate_args(args):
 
     validate_length_penalty_args(args)
     mode = args.update_weight_transfer_mode
-    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta"):
+    if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "ici", "http-lora"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
-    validate_dashboard_args(args)
+    # NCCL has no float8_e8m0fnu type; the packed mode sends the MXFP4 scales as raw bytes. It is the only
+    # non-colocated mode validated with MXFP4 routed experts.
+    if mode != "broadcast_packed" and not args.colocate and args.rollout_routed_expert_format == "mxfp4":
+        raise ValueError(
+            "Without --colocate, --rollout-routed-expert-format mxfp4 supports only the packed transfer mode, "
+            f"not {mode!r}; use --update-weight-transfer-mode broadcast_packed."
+        )
+    validate_miles_ext_kernels_args(args)
 
     args.ft_components = _resolve_ft_components(args)
     assert "rollout" not in args.ft_components or supports_partial_target_weight_update(args), (
@@ -1012,6 +1335,9 @@ def miles_validate_args(args):
             "the canonical template output. Use at your own risk."
         )
 
+    args.allow_stop_token_replace = _resolve_allow_stop_token_replace(args)
+    args.allow_truncated_continuation = _resolve_allow_truncated_continuation(args)
+
     if args.debug_disable_optimizer:
         args.no_load_optim = True
         args.no_save_optim = True
@@ -1133,10 +1459,37 @@ def miles_validate_args(args):
     if args.save_trigger_sentinel is not None:
         assert args.save is not None, "'--save' is required when save_trigger_sentinel is set."
 
+    assert (args.keep_recent_checkpoints is None) == (
+        args.keep_checkpoint_every is None
+    ), "--keep-recent-checkpoints and --keep-checkpoint-every must be set together."
+    if args.keep_recent_checkpoints is not None:
+        assert args.save is not None, "'--save' is required when keep_recent_checkpoints is set."
+        assert args.keep_recent_checkpoints >= 1 and args.keep_checkpoint_every >= 1
+        # An async save is finalized only at the next save, so the newest complete step must survive this one.
+        assert (
+            not args.async_save or args.keep_recent_checkpoints >= 2
+        ), "--async-save needs --keep-recent-checkpoints >= 2: the newest step is not final until the next save."
+        assert args.save_interval is not None and args.keep_checkpoint_every % args.save_interval == 0, (
+            f"--keep-checkpoint-every {args.keep_checkpoint_every} must be a multiple of --save-interval "
+            f"{args.save_interval}, or decay keeps fewer steps than asked."
+        )
+        assert args.train_backend == "megatron", "--keep-recent-checkpoints relies on megatron's iter_N layout."
+        assert args.save_retain_interval is None, (
+            "--keep-recent-checkpoints cannot be combined with --save-retain-interval, which deletes checkpoints "
+            "on its own schedule, including steps decay keeps or pins. Drop it: --keep-checkpoint-every replaces it."
+        )
+        assert args.megatron_config is None, (
+            "--keep-recent-checkpoints does not support --megatron-config: its trainers save under "
+            "<save>/trainers/<trainer_id>, which decay does not scan."
+        )
+        # use_critic is derived from advantage_estimator further down, so check the source here.
+        assert args.advantage_estimator != "ppo", "--keep-recent-checkpoints does not prune the critic's checkpoints."
+
     if args.custom_megatron_post_save_hook_path is not None:
         assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
 
     validate_lora_args(args)
+    _validate_fused_lm_head_lora_targets(args)
     _resolve_data_source_path(args)
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
@@ -1324,6 +1677,46 @@ def miles_validate_args(args):
                 "--update-weight-transfer-mode=disk-delta cannot resume from a training checkpoint: "
                 f"Requested --load={args.requested_load}."
             )
+
+    if args.update_weight_transfer_mode == "ici":
+        assert (
+            args.train_backend == "torchtitan"
+        ), "ICI weight transfer is implemented for the torchtitan trainer only."
+        assert not args.colocate, "ICI weight transfer needs the engine on its own devices of the shared slice."
+        assert args.prefill_num_servers is None, "ICI weight transfer pairs the trainer with one engine; PD runs two."
+        assert args.lora_rank <= 0, "LoRA weight sync is not supported for ICI weight transfer."
+        assert (
+            not args.use_critic
+        ), "ICI weight transfer joins one trainer job to the slice; a critic would be a second."
+        assert not args.use_fault_tolerance, "ICI weight transfer cannot reconnect a restarted engine to the slice."
+        hf_config = load_hf_config(args.hf_checkpoint).get_text_config()
+        is_moe = any(
+            getattr(hf_config, name, None)  # config-access-exempt: model families name the expert count differently
+            for name in ("n_routed_experts", "num_experts", "num_local_experts")
+        )
+        # trainer rank i sends only its own experts, so engine rank i must own exactly those
+        assert not is_moe or args.sglang_ep_size == args.rollout_num_gpus_per_engine, (
+            f"ICI weight transfer of a MoE model needs --sglang-ep-size {args.rollout_num_gpus_per_engine} (one EP "
+            f"rank per engine device), got {args.sglang_ep_size}; other expert splits would keep stale experts."
+        )
+
+    if args.update_weight_transfer_mode == "http-lora":
+        assert is_lora_enabled(args) and not args.multi_lora, (
+            "--update-weight-transfer-mode=http-lora publishes a single LoRA adapter: it needs --lora-rank > 0 "
+            "and does not support multi-LoRA."
+        )
+        assert not args.colocate, "--update-weight-transfer-mode=http-lora is for non-colocated engines"
+        assert (
+            args.prefill_num_servers is None
+        ), "--update-weight-transfer-mode=http-lora has not been tested when PD is enabled."
+        assert args.http_lora_ship == "tensors" or args.update_weight_disk_dir, (
+            "--http-lora-ship path requires --update-weight-disk-dir as the staging directory (shared with "
+            "the engines, or replicated by --custom-update-weight-post-write-path)."
+        )
+        assert args.http_lora_ship == "tensors" or not args.check_lora_weight_equal, (
+            "--check-lora-weight-equal verifies the adapter in the weight-update session's end_weight_update, "
+            "which only --http-lora-ship tensors uses; path mode has no checksum to compare against."
+        )
 
     if args.colocate:
         if args.offload_train is None:
@@ -1553,6 +1946,18 @@ def miles_validate_args(args):
             )
         args.global_batch_size = global_batch_size
 
+    if args.async_submit_within_staleness:
+        assert (
+            args.fully_async and args.max_weight_staleness is not None and args.max_weight_staleness >= 0
+        ), "--async-submit-within-staleness requires --fully-async and --max-weight-staleness >= 0"
+        assert args.update_weights_interval == 1 and (
+            args.use_dynamic_global_batch_size
+            or args.global_batch_size == args.rollout_batch_size * args.n_samples_per_prompt
+        ), (
+            "--async-submit-within-staleness requires one weight version per step: --update-weights-interval 1 and "
+            "one optimizer step per rollout"
+        )
+
     # Multi-LoRA adapters carry their own n_samples_per_prompt; the per-group
     # normalization path already skips std for singleton groups.
     if args.n_samples_per_prompt == 1 and not args.multi_lora:
@@ -1607,9 +2012,6 @@ def miles_validate_args(args):
 
     if ClusterBackend(args.cluster_backend) == ClusterBackend.KUBERNETES:
         assert (
-            not args.use_miles_dashboard
-        ), "--use-miles-dashboard creates a Ray actor, which --cluster-backend kubernetes has no Ray cluster for"
-        assert (
             not args.use_distributed_post
         ), "--use-distributed-post reads ray.nodes(), which --cluster-backend kubernetes has no Ray cluster for"
         assert (
@@ -1642,21 +2044,17 @@ def miles_validate_args(args):
         args.use_indexer_replay = True
         assert args.context_parallel_size == 1, "indexer replay does not support context parallelism yet"
 
-    if args.eval_max_context_len is None:
-        logger.info(
-            f"args.eval_max_context_len is not set. Use args.rollout_max_context_len {args.rollout_max_context_len} as default value."
-        )
-        args.eval_max_context_len = args.rollout_max_context_len
-
-    if args.rollout_max_context_len is not None:
+    if args.max_seq_len is not None:
         if args.rollout_max_prompt_len is None:
-            args.rollout_max_prompt_len = args.rollout_max_context_len - 1
+            args.rollout_max_prompt_len = args.max_seq_len - 1
             logger.info(
-                f"args.rollout_max_prompt_len is not set. Use args.rollout_max_context_len - 1 ({args.rollout_max_context_len} - 1) as default value so that there is at least one generated token to compute loss."
+                f"args.rollout_max_prompt_len is not set. Use args.max_seq_len - 1 ({args.max_seq_len} - 1) as default value so that there is at least one generated token to compute loss."
             )
         assert (
-            args.rollout_max_prompt_len <= args.rollout_max_context_len - 1
-        ), f"args.rollout_max_prompt_len ({args.rollout_max_prompt_len}) must be smaller than args.rollout_max_context_len ({args.rollout_max_context_len}) so that there is at least one generated token to compute loss."
+            args.rollout_max_prompt_len <= args.max_seq_len - 1
+        ), f"args.rollout_max_prompt_len ({args.rollout_max_prompt_len}) must be smaller than args.max_seq_len ({args.max_seq_len}) so that there is at least one generated token to compute loss."
+
+    _validate_rollout_data_yaml_config(args)
 
     assert not (
         args.prefill_num_servers is not None and args.rollout_external
@@ -1682,6 +2080,9 @@ def miles_validate_args(args):
 
     if args.skip_actor_forward_only:
         validate_skip_actor_forward_only(args)
+
+    if args.compile_warmup:
+        validate_compile_warmup(args)
 
     validate_score_centering_args(args)
 
@@ -1753,6 +2154,46 @@ def validate_skip_actor_forward_only(args) -> None:
             f"{option} requires exactly one optimizer step for {samples_per_rollout} rollout samples; "
             f"got --global-batch-size {args.global_batch_size}"
         )
+
+
+def validate_compile_warmup(args) -> None:
+    """The warmup batch is plain text that each DP rank packs into one microbatch of a separate trainer."""
+    option = "--compile-warmup"
+    if args.train_backend != "torchtitan":
+        raise ValueError(f"{option} only supports --train-backend torchtitan")
+    if not args.use_dynamic_batch_size:
+        raise ValueError(
+            f"{option} packs each DP rank's samples into one microbatch: it needs --use-dynamic-batch-size"
+        )
+    incompatible_options = [
+        name
+        for name, enabled in (
+            ("--colocate", args.colocate),
+            ("--pipeline-model-parallel-size", args.pipeline_model_parallel_size > 1),
+            ("--context-parallel-size", args.context_parallel_size > 1),
+            ("--multimodal-keys", args.multimodal_keys is not None),
+            ("--multimodal-token-space-processing", args.multimodal_token_space_processing),
+            ("--use-opd", args.use_opd),
+            ("--use-critic", args.use_critic),
+            ("--enable-witness", args.enable_witness),
+            ("--enable-sample-ownership-checker", args.enable_sample_ownership_checker),
+            ("--use-dynamic-global-batch-size", args.use_dynamic_global_batch_size),
+            ("--rollout-top-logprobs-num", args.rollout_top_logprobs_num > 0),
+            ("--rollout-top-p below 1 or a positive --rollout-top-k", args.use_sampling_support_replay),
+            (
+                "--custom-convert-samples-to-train-data-path",
+                args.custom_convert_samples_to_train_data_path is not None,
+            ),
+            ("--custom-reward-post-process-path", args.custom_reward_post_process_path is not None),
+            (
+                "--use-routing-replay without --use-rollout-routing-replay",
+                args.use_routing_replay and not args.use_rollout_routing_replay,
+            ),
+        )
+        if enabled
+    ]
+    if incompatible_options:
+        raise ValueError(f"{option} is incompatible with: {', '.join(incompatible_options)}")
 
 
 def validate_async_off_policy_correction(args) -> None:
@@ -1829,6 +2270,64 @@ def resolve_fsdp_num_layers(hf_config) -> int | None:
     return num_layers
 
 
+def validate_routed_expert_quantization_args(args, hf_config) -> None:
+    """Reject routed-expert quantization flags that no code path would apply."""
+    if args.routed_expert_qat is not None:
+        _validate_routed_expert_qat_args(args, hf_config)
+    if args.rollout_routed_expert_format is not None:
+        quantization_config = (
+            getattr(hf_config, "quantization_config", None) or {}
+        )  # config-access-exempt: unquantized HF checkpoints omit quantization_config
+        if hasattr(
+            quantization_config, "to_dict"
+        ):  # config-access-exempt: HF configs hold quantization_config as a dict or a QuantizationConfig
+            quantization_config = quantization_config.to_dict()
+        if quantization_config.get("quant_method") != "fp8":
+            raise ValueError(
+                "--rollout-routed-expert-format overrides the routed experts of a block-wise FP8 rollout "
+                f"checkpoint, but --hf-checkpoint has quantization_config={quantization_config}."
+            )
+
+
+# Models whose routed-expert layout keeps each 1x32 MXFP4 block of the trained weight intact through
+# the conversion to the rollout checkpoint, so that rounding in training matches the rollout encoding.
+_ROUTED_EXPERT_QAT_MODEL_TYPES = ("deepseek_v4",)
+
+
+def _validate_routed_expert_qat_args(args, hf_config) -> None:
+    if args.megatron_to_hf_mode != "bridge":
+        raise ValueError(
+            "--routed-expert-qat is configured through the Megatron-Bridge provider; use --megatron-to-hf-mode bridge."
+        )
+    if args.custom_model_provider_path is not None:
+        raise ValueError(
+            "--routed-expert-qat is configured through the Megatron-Bridge provider, which "
+            "--custom-model-provider-path replaces."
+        )
+    # Whether to round is decided in Python on each forward, which a captured graph does not re-evaluate.
+    if (
+        args.cuda_graph_impl != "none"
+        or getattr(args, "enable_cuda_graph", False)
+        or getattr(args, "external_cuda_graph", False)
+    ):  # config-access-exempt: Megatron's validate_args maps these deprecated flags to cuda_graph_impl and deletes them
+        raise ValueError("--routed-expert-qat does not support Megatron CUDA graphs (--cuda-graph-impl).")
+    if hf_config.model_type not in _ROUTED_EXPERT_QAT_MODEL_TYPES:
+        raise ValueError(
+            f"--routed-expert-qat supports model types {_ROUTED_EXPERT_QAT_MODEL_TYPES}, "
+            f"not {hf_config.model_type!r}."
+        )
+    # The routed-expert weights are rounded in place, which is only straight-through when an optimizer
+    # keeps separate fp32 master weights and overwrites the rounded copies after every step.
+    if not (args.bf16 or args.fp16):
+        raise ValueError("--routed-expert-qat requires --bf16 or --fp16 training with fp32 master weights.")
+    if args.use_precision_aware_optimizer and str(args.main_params_dtype) not in ("fp32", "torch.float32"):
+        raise ValueError("--routed-expert-qat requires fp32 master weights (--main-params-dtype fp32).")
+    if args.fp8_param_gather:
+        raise ValueError("--routed-expert-qat does not support FP8 primary weights (--fp8-param-gather).")
+    if is_lora_enabled(args):
+        raise ValueError("--routed-expert-qat does not support LoRA.")
+
+
 def hf_validate_args(args, hf_config):
     def equal(x, y):
         return x == y
@@ -1902,6 +2401,6 @@ def hf_validate_args(args, hf_config):
 
 
 def _resolve_data_source_path(args: argparse.Namespace) -> None:
-    if args.partial_rollout and args.data_source_path == "miles.rollout.data_source.RolloutDataSource":
+    if args.partial_rollout and args.data_source_path == _DEFAULT_DATA_SOURCE_PATH:
         args.data_source_path = "miles.rollout.data_source.LegacyRolloutDataSourceWithBuffer"
         logger.info("Partial rollout uses the legacy buffered data source by default")

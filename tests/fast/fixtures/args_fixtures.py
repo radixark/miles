@@ -43,6 +43,7 @@ _RESOLVED_AFTER_PARSING: dict[str, Any] = dict(
     multi_lora=False,
     use_sampling_support_replay=False,
     rollout_sampling_logprobs_mode="selected",
+    rollout_dataset_agent_functions=[],
     run_uuid="0" * RUN_UUID_LENGTH,
 )
 

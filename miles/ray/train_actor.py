@@ -6,7 +6,7 @@ import random
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import ray
 import torch
@@ -14,10 +14,15 @@ import torch.distributed as dist
 
 import miles.utils.eval_config
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
+from miles.backends.training_utils.data.token_space_media_process import (
+    RolloutEngineProcessorArgs,
+    TrainerProcessor,
+    build_trainer_processor,
+)
 from miles.backends.training_utils.types import TrainStepOutput
-from miles.platforms import current_platform
+from miles.platforms import current_platform, tpu_shared_slice
 from miles.ray.rollout.inference_controller import UpdatableEngines
-from miles.utils import object_store
+from miles.utils import object_store, observers
 from miles.utils.args.runtime import TrainerConfig
 from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
@@ -33,7 +38,8 @@ from miles.utils.logging_utils import configure_logger, rebind_env_reporting
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port
 from miles.utils.object_store import StoreObjectRef
-from miles.utils.output_store.config import output_store_reader
+from miles.utils.output_store.config import trainer_output_store
+from miles.utils.port_range import service_port_range
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, fault_hook_controller
@@ -43,6 +49,9 @@ from miles.utils.workers.rpc.common.metadata import rpc
 from miles.utils.workers.rpc.common.wire_types import Pickled
 from miles.utils.workers.serving.utils import override_env
 from miles.utils.workers.serving.worker_identity import read_worker_in_pod_index
+
+if TYPE_CHECKING:
+    from radix_transfer_plugins import OutputStore
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +77,13 @@ class WeightUpdateOutput:
         return cls(weight_version=weight_version, failed_cell_ids=tuple(failed_cell_ids))
 
 
+def _held_gpu_ids() -> list[int]:
+    # a train rank in a Kubernetes pod runs outside any Ray worker, on the pod GPU of its index
+    if CELL_INDEX_ENV_VAR in os.environ:
+        return [read_worker_in_pod_index(os.environ)]
+    return ray.get_gpu_ids()
+
+
 def get_local_gpu_id():
     if CELL_INDEX_ENV_VAR in os.environ:
         return read_worker_in_pod_index(os.environ)
@@ -86,8 +102,10 @@ def _get_nvml_pci_bus_id(device: int) -> str:
 
 
 class TrainRayActor(NodeProbeMixin):
-    # This worker's reader of the SGLang output store; set in __init__ with --use-output-store.
-    output_store_read: Callable | None = None
+    # The trainer's token-space processor, built once in load_hf_assets when --multimodal-token-space-processing is on.
+    token_space_processor: TrainerProcessor | None = None
+    # This worker's client of the SGLang output store; set in __init__ with --use-output-store.
+    output_store: "OutputStore | None" = None
 
     def __init__(
         self,
@@ -113,6 +131,10 @@ class TrainRayActor(NodeProbeMixin):
         # os.environ.pop("CUDA_VISIBLE_DEVICES", None)
         # os.environ["LOCAL_RANK"] = str(ray.get_gpu_ids()[0])
         os.environ["LOCAL_RANK"] = str(get_local_gpu_id())
+        if args.update_weight_transfer_mode == "ici":
+            # at construction, not in init(): the engine sharing the slice cannot finish starting (and be
+            # discovered) until the trainer joins it, and init() runs after discovery
+            tpu_shared_slice.join(tpu_shared_slice.spec(), job_rank=self._rank, job_size=self._world_size)
 
         configure_logger(
             args,
@@ -125,7 +147,8 @@ class TrainRayActor(NodeProbeMixin):
         )
 
         object_store.init_instance(args)
-        self.output_store_read = output_store_reader(args)
+        self.output_store = trainer_output_store(args)
+        observers.start_process("train", rank=rank, gpus=_held_gpu_ids)
 
     @functools.cached_property
     def _model_flops(self) -> ModelFlops | None:
@@ -167,9 +190,22 @@ class TrainRayActor(NodeProbeMixin):
                 self.hf_config, "vision_config"
             ):  # config-access-exempt: HF text-only configurations omit vision_config
                 self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)
+        # Built once per rank: it carries the processor clones and I/O threads every rebuild shares.
+        self.token_space_processor = (
+            build_trainer_processor(
+                RolloutEngineProcessorArgs.from_sglang_config(self.args.sglang, hf_checkpoint=self.args.hf_checkpoint),
+                mm_processor_worker_num=self.args.trainer_mm_processor_worker_num,
+                mm_io_worker_num=self.args.trainer_mm_io_worker_num,
+                device=current_platform.current_device(),
+            )
+            if self.args.multimodal_token_space_processing
+            else None
+        )
 
     def propose_master_addr_and_port(self) -> tuple[str, int]:
-        return get_current_node_ip(), get_free_port(start_port=random.randint(20000, 21000))
+        low, high = service_port_range()
+        start_port = random.randint(low, min(low + 1000, high))
+        return get_current_node_ip(), get_free_port(start_port=start_port, port_range=(low, high))
 
     def configure_master_addr_and_port(self, *, master_addr: str, master_port: int) -> None:
         os.environ["MASTER_ADDR"] = master_addr
@@ -210,14 +246,17 @@ class TrainRayActor(NodeProbeMixin):
             assert args.backend.distributed_backend == DET_NCCL_BACKEND_NAME
             logger.info("Deterministic collectives: training world uses the det_nccl backend")
 
-        # FSDP2's CPU offload steps the optimizer on host tensors, which needs a CPU backend alongside NCCL
+        # FSDP2's CPU offload steps the optimizer on host tensors, which needs a CPU backend alongside the device's
         backend = args.backend.distributed_backend
         if (
             args.train_backend in ("fsdp", "torchtitan")
             and args.backend.optimizer_cpu_offload
             and args.backend.fsdp_cpu_backend
         ):
-            backend = f"cpu:{args.backend.fsdp_cpu_backend},cuda:{args.backend.distributed_backend}"
+            backend = (
+                f"cpu:{args.backend.fsdp_cpu_backend},"
+                f"{current_platform.device_type}:{args.backend.distributed_backend}"
+            )
             logger.info(f"FSDP CPU offload enabled, using hybrid backend: {backend}")
 
         with override_env({"TORCH_NCCL_DUMP_ON_TIMEOUT": "0"} if args.indep_dp else {}):

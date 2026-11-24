@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -11,6 +12,7 @@ pytest.importorskip("sglang")
 
 from sglang.srt.server_args import ServerArgs
 
+import miles.backends.sglang_utils.arguments as sglang_arguments
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides, validate_args
 from miles.utils.arguments import parse_args
 from miles.utils.workers.argv_utils import _record_field_names
@@ -106,3 +108,31 @@ class TestParserMethodRestoration:
 
         assert registered == ["--later-extension"]
         assert parser.parse_args(["--later-extension", "17"]).later_extension == 17
+
+
+@pytest.mark.parametrize(
+    ("platform_default", "flag", "expected"),
+    [
+        ("bfloat16", None, "bfloat16"),  # TPU: the engine's fp8 default is not used unless asked for
+        ("bfloat16", "fp8_e4m3", "fp8_e4m3"),
+        (None, None, "auto"),  # CUDA: the engine keeps its own choice
+        (None, "fp8_e4m3", "fp8_e4m3"),
+    ],
+)
+def test_rollout_kv_cache_dtype_defaults_to_the_platform_choice(
+    monkeypatch: pytest.MonkeyPatch, platform_default: str | None, flag: str | None, expected: str
+) -> None:
+    """An explicit --sglang-kv-cache-dtype always wins; "auto" takes the platform's rollout default."""
+    monkeypatch.setattr(sglang_arguments, "current_platform", SimpleNamespace(rollout_kv_cache_dtype=platform_default))
+    args = _parse_sglang_args(["--sglang-kv-cache-dtype", flag] if flag else [])
+    args.loss_type = None
+    args.rollout_num_gpus_per_engine = 1
+    args.true_on_policy_mode = False
+    args.recompute_logprobs_via_prefill = False
+    args.use_session_server = False
+    args.sglang_router_policy = None
+    args.sglang_router_ip = None
+
+    validate_args(args)
+
+    assert args.sglang_kv_cache_dtype == expected

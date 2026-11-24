@@ -19,6 +19,12 @@ class TestExampleHookRegistration:
         "path,options,field,expected",
         [
             (
+                "examples.experimental.bpo.bpo_loss.bpo_loss_function",
+                ["--bpo-smoothing", "0.25", "--bpo-weight-cap", "2.5"],
+                "bpo_weight_cap",
+                2.5,
+            ),
+            (
                 "examples.experimental.hud.rollout.generate",
                 ["--hud-env-dir", "/hud", "--hud-snapshot-name", "snapshot", "--hud-max-steps", "13"],
                 "hud_max_steps",

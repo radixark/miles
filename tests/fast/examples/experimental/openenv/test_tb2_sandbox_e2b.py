@@ -13,10 +13,9 @@ import time
 import types
 from pathlib import Path
 
+import openenv_agent_function
 import pytest
-
 import tb2_sandbox_e2b as sandbox
-
 
 # --- template aliasing -------------------------------------------------------
 
@@ -294,6 +293,32 @@ def test_sandbox_ttl_armed_by_default():
     # lifetime, or a hard-killed caller's orphans run forever.
     assert sandbox._SANDBOX_TTL_S > 0
     assert sandbox._KEEPALIVE_INTERVAL_S < sandbox._SANDBOX_TTL_S  # beats within the window
+
+
+def test_create_bounds_the_sandbox_life_past_the_episode_cap(monkeypatch, fake_e2b):
+    """A sandbox the keepalive keeps re-arming must still end soon after the
+    episode cap, and its create must not ask for a timeout the server refuses."""
+    creates = []
+
+    def create(**kwargs):
+        creates.append(kwargs)
+        return _FakeSandbox()
+
+    fake_e2b.Sandbox = type("S", (), {"create": staticmethod(create)})
+    monkeypatch.setattr(sandbox, "ensure_task_template", lambda task_dir: "tb2-t-abc")
+    monkeypatch.setattr(sandbox, "sandbox_labels", lambda task_dir: {"openenv-tbench2-task": "t"})
+    monkeypatch.setattr(sandbox, "server_cmd", lambda *a, **k: "serve")
+    monkeypatch.setattr(sandbox, "wait_server_ready", lambda url, timeout_s: None)
+    monkeypatch.setattr(sandbox, "_start_keepalive", lambda sb, task_id: None)
+    monkeypatch.setattr(openenv_agent_function, "MAX_ROLLOUT_TIME_S", 1200.0)
+
+    monkeypatch.setattr(sandbox, "_SANDBOX_TTL_S", 1800)
+    sandbox.create_task_sandbox(Path("/tasks/t"))
+    monkeypatch.setattr(sandbox, "_SANDBOX_TTL_S", 7200)
+    sandbox.create_task_sandbox(Path("/tasks/t"))
+
+    labels = {"openenv-tbench2-task": "t", "max_lifetime_secs": "3000"}
+    assert [(c["metadata"], c["timeout"]) for c in creates] == [(labels, 1800), (labels, 3000)]
 
 
 def test_keepalive_beats_then_exits_on_persistent_failure(monkeypatch):

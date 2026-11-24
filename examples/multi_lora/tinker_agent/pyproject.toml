@@ -8,8 +8,8 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.9",
-    "tinker==0.26.2",
-    "tinker-cookbook @ git+https://github.com/thinking-machines-lab/tinker-cookbook@1f962eda3a2cec8de284725f2adc9978e93dfcd3",
+    "tinker==0.36.0",
+    "tinker-cookbook==0.5.9",
 ]
 
 [project.optional-dependencies]

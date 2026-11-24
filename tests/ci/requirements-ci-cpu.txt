@@ -1,11 +1,16 @@
 # SGLang runtime imports reached by the hosted CPU suite. GPU and ROCm images get these from their SGLang base image.
 compressed-tensors==0.17.1
+cryptography==50.0.2  # SSH keys for the age-recipient tests (Tinker external weights)
+deepseek-recipe==0.2.0
 einops==0.8.2
 gguf==0.19.0
 ipython==9.15.0
+jax==0.10.2  # the TPU image's JAX: checks miles/kernels/tpu's private splash-attention calls at that version
+jaxlib==0.10.2
 msgspec==0.21.1
 openai==2.6.1
 partial_json_parser==0.2.1.1.post7
+peft==0.21.2  # HF PEFT loads the adapter export (test_hf_peft_loads_the_peft_export)
 pybind11
 pyzmq==27.1.0
 sentencepiece==0.2.1
@@ -13,7 +18,7 @@ sentencepiece==0.2.1
 # Build requirements for optional Megatron Bridge overrides (--no-build-isolation).
 setuptools<80.0.0
 tiktoken==0.13.0
-tinker==0.26.2  # SDK wire schema for the tinker gateway proto round-trip tests
+tinker==0.36.0  # SDK wire schema for the tinker gateway proto round-trip tests
 torch==2.11.0
 torchvision==0.26.0
 typed-argument-parser>=1.10,<2

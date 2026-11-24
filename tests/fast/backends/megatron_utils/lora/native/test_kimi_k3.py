@@ -11,6 +11,11 @@ from tests.fast.backends.megatron_utils.lora.native.naming_stub import named
 from miles.backends.megatron_utils.lora.native.config import LoRAConfig
 from miles.backends.megatron_utils.lora.native.hf_adapter import export_lora_hf_named, load_lora_adapter_hf
 from miles.backends.megatron_utils.lora.native.merge import merge_lora_into_weights
+from miles.backends.megatron_utils.lora.native.modules.linear import (
+    assert_every_adapter_slotted,
+    iter_adapters,
+    iter_multi_lora_adapters,
+)
 from miles.backends.megatron_utils.lora.native.modules.moe import _grouped_linear
 from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS, resolve_adapter_targets
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext
@@ -77,9 +82,9 @@ def _moe(num_experts=3, intermediate=5):
     return moe
 
 
-def _context(targets=None, *, sequence_parallel=False, tp_size=1, tp_rank=0):
+def _context(targets=None, *, sequence_parallel=False, tp_size=1, tp_rank=0, num_slots=None):
     return AttachContext(
-        lora=LoRAConfig(rank=RANK, alpha=4, dropout=0.0, target_modules=targets),
+        lora=LoRAConfig(rank=RANK, alpha=4, dropout=0.0, target_modules=targets, num_slots=num_slots),
         transformer_config=SimpleNamespace(
             hidden_size=HIDDEN,
             sequence_parallel=sequence_parallel,
@@ -111,12 +116,12 @@ def _single_rank_comms(monkeypatch):
     monkeypatch.setattr(parallel_state, "get_expert_model_parallel_world_size", lambda: 2)
 
 
-def _model(*, include_fc2=True, sequence_parallel=False):
+def _model(*, include_fc2=True, sequence_parallel=False, num_slots=None):
     """Layer 3: MLA attention + dense MLP. Layer 4: KDA attention + routed and shared experts."""
     leaves = ("w1", "w3", "w2") if include_fc2 else ("w1", "w3")
     targets = [f"{PREFIX}*.block_sparse_moe.experts.*.{leaf}" for leaf in leaves]
     targets += [f"{PREFIX}*.{block}.{leaf}" for block, leaf in _NON_EXPERT_TARGETS]
-    context = _context(tuple(targets), sequence_parallel=sequence_parallel)
+    context = _context(tuple(targets), sequence_parallel=sequence_parallel, num_slots=num_slots)
     model = nn.Module()
     model.mla, model.dense, model.kda, model.moe = _attention(False), _mlp(), _attention(True), _moe()
     K3.attention.attach(model.mla, None, named(context, f"{PREFIX}3.self_attn."))
@@ -145,7 +150,7 @@ def _k3_hf_config():
 
 
 def _resolve(targets, **overrides):
-    kwargs = dict(hf_modules=[], lora_type="lora", experts_shared_outer_loras=True) | overrides
+    kwargs = dict(hf_modules=[], lora_type="canonical_lora", experts_shared_outer_loras=True) | overrides
     return resolve_adapter_targets(_k3_hf_config(), targets, **kwargs)
 
 
@@ -161,7 +166,7 @@ def test_export_names_and_shapes_match_sglang(include_fc2):
     targets = resolve_hf_lora_targets(_k3_hf_config())
     if not include_fc2:
         targets = [target for target in targets if not target.endswith(".experts.*.w2")]
-    exported = dict(export_lora_hf_named([_model(include_fc2=include_fc2)]))
+    exported = dict(export_lora_hf_named(iter_adapters([_model(include_fc2=include_fc2)])))
 
     served = _resolve(targets)
     for module in get_adapter_target_modules(exported):
@@ -180,12 +185,38 @@ def test_export_names_and_shapes_match_sglang(include_fc2):
         assert exported[f"{experts}w2.lora_B.weight"].shape == (1, LATENT, RANK)
 
 
+def test_the_checkpoint_probe_exports_one_adapter_at_a_time(monkeypatch):
+    """A float64 export of the whole model holds every gathered expert factor at once (~97 GB per GPU on K3)."""
+    from miles.backends.megatron_utils.lora.native import checkpoint
+
+    model = _model()
+    slots = object.__new__(checkpoint.NativeAdapterSlots)
+    slots._model = [model]
+    slots._multi_lora = False
+    batch_sizes = []
+
+    def export(adapters, dtype):
+        adapters = list(adapters)
+        batch_sizes.append(len(adapters))
+        return export_lora_hf_named(adapters, dtype)
+
+    monkeypatch.setattr(checkpoint, "export_lora_hf_named", export)
+    probed = list(slots._export_probe())
+
+    assert set(batch_sizes) == {1} and len(batch_sizes) == len(list(iter_adapters([model])))
+    whole = export_lora_hf_named(iter_adapters([model]), dtype=torch.float64)
+    assert [name for name, _ in probed] == [name for name, _ in whole]
+    for (name, tensor), (_, expected) in zip(probed, whole, strict=True):
+        assert tensor.dtype == torch.float64
+        torch.testing.assert_close(tensor, expected, rtol=0, atol=0, msg=name)
+
+
 def test_hf_import_round_trips_the_export(tmp_path):
     source, target = _model(), _model()
     with torch.no_grad():
         for parameter in target.parameters():
             parameter.zero_()
-    save_file(dict(export_lora_hf_named([source])), str(tmp_path / "adapter_model.safetensors"))
+    save_file(dict(export_lora_hf_named(iter_adapters([source]))), str(tmp_path / "adapter_model.safetensors"))
 
     load_lora_adapter_hf([target], str(tmp_path))
 
@@ -194,6 +225,80 @@ def test_hf_import_round_trips_the_export(tmp_path):
         if "lora" in name:
             exported_value = source_params[name].to(torch.bfloat16).to(parameter.dtype)
             torch.testing.assert_close(parameter, exported_value, msg=name)
+
+
+def test_hf_import_refuses_tensors_no_selected_module_takes(tmp_path):
+    """An adapter saved with modules the current targets leave out would otherwise restore without them."""
+    exported = dict(export_lora_hf_named(iter_adapters([_model()])))
+    stray = "model.layers.0.linear_attn.in_proj_b.lora_A.weight"
+    save_file({**exported, stray: torch.zeros(RANK, 4)}, str(tmp_path / "adapter_model.safetensors"))
+
+    with pytest.raises(AssertionError, match=rf"no selected module takes: \['{stray}'\]"):
+        load_lora_adapter_hf([_model()], str(tmp_path))
+
+
+def test_hf_import_counts_the_tensors_other_pipeline_stages_take(tmp_path, monkeypatch):
+    """Under PP every stage holds some layers; a tensor another stage takes is not left over."""
+    from megatron.core import parallel_state
+
+    from miles.backends.megatron_utils.lora.native import hf_adapter
+
+    exported = dict(export_lora_hf_named(iter_adapters([_model()])))
+    other_stage = "model.layers.9.self_attn.o_proj.lora_A.weight"
+    save_file({**exported, other_stage: torch.zeros(RANK, 12)}, str(tmp_path / "adapter_model.safetensors"))
+
+    def all_gather_object(stages, payload, group):
+        stages[:] = [payload, ({other_stage}, None)]
+
+    monkeypatch.setattr(hf_adapter.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(hf_adapter.dist, "all_gather_object", all_gather_object)
+    monkeypatch.setattr(parallel_state, "get_pipeline_model_parallel_world_size", lambda: 2)
+    monkeypatch.setattr(parallel_state, "get_pipeline_model_parallel_group", lambda: None)
+
+    load_lora_adapter_hf([_model()], str(tmp_path))
+
+
+@pytest.mark.parametrize("failing_stage", ["local", "local_shape", "other"])
+def test_hf_import_fails_every_pipeline_stage_together(tmp_path, monkeypatch, failing_stage):
+    """A stage missing a tensor or holding a wrong-shaped one still joins the pipeline gather, and every
+    stage raises its failure."""
+    from megatron.core import parallel_state
+
+    from miles.backends.megatron_utils.lora.native import hf_adapter
+
+    exported = dict(export_lora_hf_named(iter_adapters([_model()])))
+    if failing_stage == "local":
+        exported.pop(next(iter(exported)))
+    elif failing_stage == "local_shape":
+        # a wrong --lora-rank: the generic projection load raises ValueError on the global shape
+        name = f"{PREFIX}4.self_attn.o_proj.lora_A.weight"
+        exported[name] = torch.zeros(RANK + 1, exported[name].shape[1])
+    save_file(exported, str(tmp_path / "adapter_model.safetensors"))
+    gathered = []
+
+    def all_gather_object(stages, payload, group):
+        gathered.append(payload)
+        other = (set(), None) if failing_stage != "other" else (set(), "KeyError: missing on stage 1")
+        stages[:] = [payload, other]
+
+    monkeypatch.setattr(hf_adapter.dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(hf_adapter.dist, "all_gather_object", all_gather_object)
+    monkeypatch.setattr(parallel_state, "get_pipeline_model_parallel_world_size", lambda: 2)
+    monkeypatch.setattr(parallel_state, "get_pipeline_model_parallel_group", lambda: None)
+
+    error = "ValueError" if failing_stage == "local_shape" else "KeyError"
+    with pytest.raises(AssertionError, match=f"failed on a pipeline stage: {error}"):
+        load_lora_adapter_hf([_model()], str(tmp_path))
+    assert len(gathered) == 1
+
+
+def test_hf_import_refuses_peft_tensors_it_cannot_load(tmp_path):
+    exported = dict(export_lora_hf_named(iter_adapters([_model()])))
+    dora = "model.layers.0.self_attn.o_proj.lora_magnitude_vector"
+    save_file({**exported, dora: torch.zeros(12)}, str(tmp_path / "adapter_model.safetensors"))
+
+    with pytest.raises(AssertionError, match="native LoRA loads only lora_A / lora_B"):
+        load_lora_adapter_hf([_model()], str(tmp_path))
 
 
 def test_merged_weights_reproduce_the_adapter_forward():
@@ -218,7 +323,7 @@ def test_merged_weights_reproduce_the_adapter_forward():
     )
 
 
-@pytest.mark.parametrize("case", ["missing", "extra", "canonical", "per-expert"])
+@pytest.mark.parametrize("case", ["missing", "extra", "shared-a", "per-expert"])
 def test_target_contract_rejects_unverified_layouts(case):
     targets = resolve_hf_lora_targets(_k3_hf_config())
     overrides = {}
@@ -226,14 +331,14 @@ def test_target_contract_rejects_unverified_layouts(case):
         targets = [target for target in targets if not target.endswith(".q_a_proj")]
     elif case == "extra":
         targets.append(f"{PREFIX}*.self_attn.q_b_proj")
-    elif case == "canonical":
-        overrides["lora_type"] = "canonical_lora"
+    elif case == "shared-a":
+        overrides["lora_type"] = "lora"
     else:
         overrides["experts_shared_outer_loras"] = False
     message = {
         "missing": r"missing=\[.*q_a_proj",
         "extra": r"unexpected=\[.*q_b_proj",
-        "canonical": "canonical_lora",
+        "shared-a": "--lora-type lora shares one lora_A",
         "per-expert": "shared-outer",
     }[case]
     with pytest.raises(AssertionError, match=message):
@@ -304,3 +409,15 @@ def test_kda_o_proj_delta_stays_a_partial_sum(monkeypatch):
         output = output + attention.linear_attn.out_proj(inputs[:, columns])
 
     torch.testing.assert_close(output, inputs @ (weight + scale * lora_b @ lora_a).t())
+
+
+def test_slots_wrap_every_dense_host_and_leave_the_grouped_experts_outside():
+    """The specs' own attach builds slot modules; the grouped experts have none, which a multi-LoRA attach refuses."""
+    model = _model(num_slots=3)
+
+    multi_adapters = list(iter_multi_lora_adapters([model]))
+    assert {len(multi_adapter.adapters) for multi_adapter in multi_adapters} == {3}
+    blocks = {name.rsplit(".", 1)[0] for name, module in model.named_modules() if module in multi_adapters}
+    assert {"mla", "dense", "moe.shared_experts"} <= blocks, blocks
+    with pytest.raises(AssertionError, match="sit outside the slots"):
+        assert_every_adapter_slotted([model])

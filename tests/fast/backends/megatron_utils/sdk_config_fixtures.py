@@ -16,7 +16,9 @@ from miles.utils.tracking_utils.base import TrackingManager
 class _SdkModel(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.config = SimpleNamespace(no_sync_func=None, grad_sync_func=None, param_sync_func=None)
+        self.config = SimpleNamespace(
+            no_sync_func=None, grad_sync_func=None, param_sync_func=None, hidden_dropout=0.0, attention_dropout=0.0
+        )
         self.zeroed = 0
         self.add_module("model_companion", ModelCompanion(pipeline_rank=0, chunk_index=0, replica_id=(0, 0, 0)))
 

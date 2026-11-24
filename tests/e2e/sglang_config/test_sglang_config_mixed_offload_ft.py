@@ -31,8 +31,9 @@ register_cuda_ci(
 )
 register_rocm_ci(
     est_time=600,
-    suite="nightly-stage-c-4-gpu-mi350",
+    suite="stage-c-4-gpu-mi350",
     labels=["short"],
+    nightly=True,
     disabled=(
         "Colocated fault tolerance is unsupported: miles_validate_args rejects rollout fault tolerance without a "
         "partial-target P2P weight update, which --colocate cannot provide. Unblock condition: a decision to port "

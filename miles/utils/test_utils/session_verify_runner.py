@@ -31,37 +31,49 @@ import tempfile
 from typing import Any, Literal
 
 from miles.utils.chat_template_utils import resolve_reasoning_and_tool_call_parser
+from miles.utils.chat_template_utils.truncation import CUT_KINDS
 from miles.utils.external_utils import command_utils
 from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
+from miles.utils.test_utils.session_verify_agent import (
+    SESSION_VERIFY_CUT_KIND_KEY,
+    SESSION_VERIFY_KIND_KEY,
+    SessionVerifyKind,
+)
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
 
 SessionWireFormat = Literal["openai", "anthropic"]
 
-# Soft cap on how many samples may report any assistant_text mismatch.  Hard
-# mismatch types (special_token_count / special_token_type / non_assistant_text)
-# are journaled per sample and rejected by the run-level gate — those must be 0.
+# Soft cap on how many normal-rollout samples may report any assistant_text
+# mismatch.  Hard mismatch types (special_token_count / special_token_type /
+# non_assistant_text) are journaled per sample and rejected by the run-level
+# gate in every rollout — those must be 0.
 ASSISTANT_TEXT_MISMATCH_RATIO_THRESHOLD = 0.2
+# How many per-sample assistant_text examples a failed soft gate quotes, so a CI
+# log shows what drifted without the preserved sidecar file.
+_ASSISTANT_MISMATCH_EXAMPLES = 3
+# Share of a spec or truncate rollout's samples that may stop early because the model did not
+# call the tool, did not stop calling it, or gave no reply to cut, where a step needs that.
+# Measured on CI for the spec rollout: up to 2 of 32.
+UNFINISHED_RATIO_THRESHOLD = 0.2
 
+# Parser default only: every run writes and reads a prompt file of its own (``_ensure_prompt_data``).
 PROMPT_DATA_PATH = "/root/datasets/session_multi_role_verify.jsonl"
 LOCAL_MODELS_ROOT = "/root/models"
 
 # The driver agent synthesizes its own initial conversation, but the rollout
-# pipeline still needs a non-empty prompt-data file as input.  This placeholder
-# matches the agent's own initial prompt so the prompt is well-formed even if
-# something downstream inspects it.
-_PLACEHOLDER_PROMPT_RECORD = {
-    "messages": [
-        {"role": "system", "content": "You are a weather assistant."},
-        {"role": "user", "content": "What's the weather in Beijing?"},
-    ],
-}
+# pipeline still needs a non-empty prompt-data file as input.  These placeholder
+# messages match the agent's own initial prompt so the prompt is well-formed
+# even if something downstream inspects it.
+_PLACEHOLDER_MESSAGES = [
+    {"role": "system", "content": "You are a weather assistant."},
+    {"role": "user", "content": "What's the weather in Beijing?"},
+]
 
 SESSION_VERIFY_INVARIANT_ARGS: dict[str, Any] = {
     "prompt_data": PROMPT_DATA_PATH,
     "input_key": "messages",
-    "num_rollout": 1,
     "rollout_batch_size": 16,
     "rollout_max_response_len": 8192,
     "rollout_temperature": 0.7,
@@ -81,13 +93,25 @@ SESSION_VERIFY_INVARIANT_ARGS: dict[str, Any] = {
 }
 
 
+def session_verify_kinds(spec_trajectory: bool) -> tuple[SessionVerifyKind, ...]:
+    """The rollouts of one verifier run, one per rollout step, in order.
+
+    The spec and truncate rollouts, which probe what the family declares, run
+    first, so the run's last step is the normal rollout, the one the
+    metric-history gate judges (``steps="last"``).
+    """
+    if spec_trajectory:
+        return (SessionVerifyKind.SPEC, SessionVerifyKind.TRUNCATE, SessionVerifyKind.NORMAL)
+    return (SessionVerifyKind.NORMAL,)
+
+
 def session_verify_extras(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     """``add_custom_arguments`` hook for ``miles.utils.arguments.parse_args``.
 
-    Adds the wrapper-only ``--assistant-text-threshold`` knob (a post-process
-    gate on the per-sample metrics JSONL, NOT in ``train_args``) and applies
-    session-verify invariants as parser defaults — user CLI still overrides
-    these via the canonical miles flags.
+    Adds the wrapper-only ``--assistant-text-threshold`` and
+    ``--session-verify-spec-trajectory`` knobs (consumed by this runner, NOT in
+    ``train_args``) and applies session-verify invariants as parser defaults —
+    user CLI still overrides these via the canonical miles flags.
     """
     parser.add_argument(
         "--assistant-text-threshold",
@@ -102,15 +126,42 @@ def session_verify_extras(parser: argparse.ArgumentParser) -> argparse.ArgumentP
             "forwarded to ``train_args``."
         ),
     )
+    parser.add_argument(
+        "--session-verify-spec-trajectory",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Run the spec rollout (every continuation the family's continuation roles "
+            "accept or refuse) and the truncate rollout (continuing a reply cut by "
+            "max_tokens) as rollout steps before the normal rollout.  Turn off to run "
+            "the normal rollout alone."
+        ),
+    )
     parser.set_defaults(**SESSION_VERIFY_INVARIANT_ARGS)
     return parser
 
 
-def _ensure_prompt_data() -> str:
-    os.makedirs(os.path.dirname(PROMPT_DATA_PATH), exist_ok=True)
-    with open(PROMPT_DATA_PATH, "w") as f:
-        f.write(json.dumps(_PLACEHOLDER_PROMPT_RECORD) + "\n")
-    return PROMPT_DATA_PATH
+def _ensure_prompt_data(kinds: tuple[SessionVerifyKind, ...], *, rollout_batch_size: int) -> str:
+    """Write one rollout step's prompts per kind, in step order, to a new file and return its path.
+
+    The agent reads its rollout from each record's metadata; with
+    ``--no-rollout-shuffle`` the data source hands the records out in file
+    order, ``rollout_batch_size`` per step.  A truncate record also names where
+    its sample cuts, cycling through ``CUT_KINDS``.
+
+    The file belongs to one run: its records depend on *kinds*, and the runners
+    of one CI host share ``/root/datasets``, so a fixed path lets a concurrent
+    run replace the prompts between this run's write and its read.
+    """
+    fd, path = tempfile.mkstemp(prefix="session_verify_prompts_", suffix=".jsonl")
+    with os.fdopen(fd, "w") as f:
+        for kind in kinds:
+            for index in range(rollout_batch_size):
+                metadata = {SESSION_VERIFY_KIND_KEY: str(kind)}
+                if kind is SessionVerifyKind.TRUNCATE:
+                    metadata[SESSION_VERIFY_CUT_KIND_KEY] = CUT_KINDS[index % len(CUT_KINDS)]
+                f.write(json.dumps({"messages": _PLACEHOLDER_MESSAGES, "metadata": metadata}) + "\n")
+    return path
 
 
 def _ensure_model_downloaded(hf_checkpoint: str, *, backend: BaseCommandBackend) -> str:
@@ -148,7 +199,9 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
         f"--hf-checkpoint {ns.hf_checkpoint}",
         f"--prompt-data {ns.prompt_data}",
         f"--input-key {ns.input_key}",
-        f"--num-rollout {ns.num_rollout}",
+        f"--num-rollout {len(session_verify_kinds(ns.session_verify_spec_trajectory))}",
+        # The prompt file lays out one rollout step per kind; keep it in file order.
+        "--no-rollout-shuffle",
         f"--rollout-batch-size {ns.rollout_batch_size}",
         f"--n-samples-per-prompt {ns.n_samples_per_prompt}",
         f"--rollout-max-response-len {ns.rollout_max_response_len}",
@@ -157,7 +210,6 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
         f"--custom-generate-function-path {ns.custom_generate_function_path}",
         f"--custom-agent-function-path {ns.custom_agent_function_path}",
         f"--session-verify-cycles {ns.session_verify_cycles}",
-        f"--tool-call-failure-mode {ns.tool_call_failure_mode}",
         f"--tito-model {ns.tito_model}",
         f"--session-message-matcher {ns.session_message_matcher}",
         f"--rollout-num-gpus-per-engine {ns.rollout_num_gpus_per_engine}",
@@ -219,6 +271,11 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
         parts.append("--no-enable-sample-ownership-checker")
     if ns.colocate:
         parts.append("--colocate")
+    allow_truncated_continuation = getattr(
+        ns, "allow_truncated_continuation", None
+    )  # config-access-exempt: launcher helper accepts namespaces from different CLI providers
+    if allow_truncated_continuation is not None:
+        parts.append(f"--{'' if allow_truncated_continuation else 'no-'}allow-truncated-continuation")
     return " ".join(parts) + " "
 
 
@@ -240,16 +297,17 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
     """Boot ``miles`` rollout pipeline and run the session-verification driver.
 
     Returns nothing on success; raises ``AssertionError`` on TITO mismatch
-    (HTTP 500 from server-side prefix check) or coverage shortfall raised by the selected generate wrapper.
+    (HTTP 500 from server-side prefix check), an unmet spec expectation, or a
+    coverage shortfall raised by the selected generate wrapper.
 
     ``args`` MUST be a fully-shaped Namespace carrying miles-canonical field
     names plus the session-verify-specific fields (``session_verify_cycles``,
-    ``tool_call_failure_mode``, ``assistant_text_threshold``).  Build it via
+    ``session_verify_spec_trajectory``, ``assistant_text_threshold``).  Build it via
     the CLI entrypoint's ``_parse_session_verify_args()`` adapter for the CLI
     path or by spreading ``SESSION_VERIFY_INVARIANT_ARGS`` into
     ``argparse.Namespace(...)`` for tests.
 
-    Mutates ``args`` in two places before composing train_args:
+    Mutates ``args`` in three places before composing train_args:
     - ``args.sglang_reasoning_parser`` / ``args.sglang_tool_call_parser`` are
       resolved against the TITO subclass's bound values via
       ``resolve_reasoning_and_tool_call_parser`` — caller-passed values that
@@ -257,17 +315,22 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
       GPU work starts.
     - ``args.hf_checkpoint`` is replaced with the local download path so the
       composed train_args points at the downloaded model, not the HF id.
+    - ``args.prompt_data`` is replaced with this run's own prompt file, whose
+      records name each sample's rollout; a caller's prompt data has none.
     """
     if wire_format not in ("openai", "anthropic"):
         raise ValueError(f"unsupported session verification wire format: {wire_format}")
+    if wire_format == "anthropic" and args.session_verify_spec_trajectory:
+        raise ValueError("the Anthropic session verification agent runs only the normal rollout")
+    kinds = session_verify_kinds(args.session_verify_spec_trajectory)
 
     backend = command_utils.default_config().create_backend()
     args.sglang_reasoning_parser, args.sglang_tool_call_parser = resolve_reasoning_and_tool_call_parser(
         args.tito_model, args.sglang_reasoning_parser, args.sglang_tool_call_parser
     )
-    _ensure_prompt_data()
     _clear_proxy_env()
     args.hf_checkpoint = _ensure_model_downloaded(args.hf_checkpoint, backend=backend)
+    args.prompt_data = _ensure_prompt_data(kinds, rollout_batch_size=args.rollout_batch_size)
 
     train_args = namespace_to_train_args(args)
 
@@ -286,6 +349,7 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
         )
         assert_session_verify_metrics(
             metrics_path,
+            kinds=kinds,
             assistant_text_threshold=args.assistant_text_threshold,
             special_token_count_threshold=args.ci_tito_special_token_count_threshold,
             require_append_tool=wire_format == "openai",
@@ -300,39 +364,93 @@ def run_session_verify(args: argparse.Namespace, *, wire_format: SessionWireForm
             logger.error("Preserved per-sample mismatch payloads at %s for post-mortem", preserved_metrics_path)
         raise
     finally:
-        try:
-            os.unlink(metrics_path)
-        except OSError:
-            pass
+        for path in (metrics_path, args.prompt_data):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
 
 def assert_session_verify_metrics(
     metrics_path: str,
     *,
+    kinds: tuple[SessionVerifyKind, ...],
     assistant_text_threshold: float,
     special_token_count_threshold: float = 0.0,
     require_append_tool: bool = True,
 ) -> None:
-    """Read per-sample JSONL metrics and assert cross-sample verifier gates.
+    """Read per-sample JSONL metrics and apply the cross-sample gates per rollout kind.
 
-    Forbidden mismatch types (special_*, non_assistant_text) are recorded by
-    the agent wrapper and hard-failed here so the rollout loop cannot discard
-    their assertion as a retryable sample failure.  Samples whose only hard
-    type is special_token_count are tolerated up to the caller-provided
-    ``special_token_count_threshold`` ratio.  The assistant_text tier remains
-    soft and is checked only against the caller-provided ratio threshold.
+    A journaled verifier assertion, a rollout of *kinds* with no recorded
+    sample, a probe that got another status than the family declares, more
+    unfinished samples in a rollout than ``UNFINISHED_RATIO_THRESHOLD`` allows,
+    and a normal rollout that never answered a tool call (when
+    ``require_append_tool``) fail.  A truncate rollout also fails when a
+    continued cut turn was not closed by the family's closer, or, in a run that
+    continues truncated turns, when a planned cut kind was never continued.  Every
+    rollout fails on hard mismatches (samples whose only hard type is
+    special_token_count are tolerated up to ``special_token_count_threshold``),
+    and the normal rollout on an assistant_text ratio above
+    ``assistant_text_threshold``.  The other rollouts' assistant_text is not
+    gated: a turn cut inside a tool call differs from its stored message by design.
     """
-    samples_with_mismatch = 0
-    total_samples = 0
-    has_append_tool = False
-    samples_with_special_token_count_only = 0
-    samples_with_hard_mismatch = 0
-    hard_mismatch_count = 0
-    hard_mismatch_types = set()
-    hard_mismatch_example = None
-    verification_error_count = 0
-    verification_error_stages = set()
-    verification_error_example = None
+    entries = _read_sample_records(metrics_path)
+    recorded_kinds = {entry.get("kind") for entry in entries}
+    if not recorded_kinds <= set(kinds):
+        raise AssertionError(
+            f"Session multi-role e2e: samples of kinds {sorted(recorded_kinds - set(kinds))} "
+            f"in a run of {[str(kind) for kind in kinds]}"
+        )
+    summaries = {kind: _summarize([e for e in entries if e.get("kind") == kind]) for kind in kinds}
+    for kind, summary in summaries.items():
+        logger.info("Session verification %s rollout: %s", kind, summary)
+        if summary["samples"] == 0:
+            raise AssertionError(
+                f"Session multi-role e2e: no per-sample metrics for the {kind} rollout at {metrics_path}.  "
+                "Either the rollout produced 0 samples, or the agent wrapper failed to "
+                "run before any sample completed.  Check rollout logs."
+            )
+        if summary["unmet_expectations"]:
+            raise AssertionError(
+                f"Session multi-role e2e: {kind} probes got another status than the family declares "
+                f"in {len(summary['unmet_expectations'])} cases (first={summary['unmet_expectations'][:3]})."
+            )
+        _assert_continued_cuts(kind, summary)
+        _assert_hard_mismatches(kind, summary, special_token_count_threshold=special_token_count_threshold)
+        if len(summary["unfinished"]) > UNFINISHED_RATIO_THRESHOLD * summary["samples"]:
+            raise AssertionError(
+                f"Session multi-role e2e: {len(summary['unfinished'])}/{summary['samples']} {kind} samples "
+                f"stopped before their last step, above the ratio {UNFINISHED_RATIO_THRESHOLD}: the model "
+                f"did not do what a step needs (call the tool, stop calling it, or give a reply to cut) "
+                f"(first={summary['unfinished'][:3]})."
+            )
+
+    if SessionVerifyKind.NORMAL not in summaries:
+        return
+    normal = summaries[SessionVerifyKind.NORMAL]
+    if require_append_tool and not normal["has_append_tool"]:
+        raise AssertionError(
+            "Session multi-role e2e: no normal sample produced an append_tool action — "
+            "the model may not be tool-calling.  Check sampling temperature, "
+            "the tool spec, or parser configuration."
+        )
+    ratio = normal["with_assistant_mismatch"] / normal["samples"]
+    if ratio > assistant_text_threshold:
+        raise AssertionError(
+            f"Session multi-role e2e: assistant_text mismatch ratio "
+            f"{normal['with_assistant_mismatch']}/{normal['samples']}={ratio:.3f} exceeds "
+            f"threshold {assistant_text_threshold}.  TITO "
+            "tokenization for assistant content has drifted from the chat "
+            "template's canonical render — investigate via "
+            "verify_session_tito_tokenizer.py + sample-level mismatch logs.  "
+            f"First examples (expected vs actual): {normal['assistant_examples']!r}"
+        )
+
+
+def _read_sample_records(metrics_path: str) -> list[dict]:
+    """Per-sample records of the sidecar; a journaled verifier assertion fails here."""
+    entries = []
+    errors = []
     with open(metrics_path) as f:
         for line in f:
             line = line.strip()
@@ -340,95 +458,118 @@ def assert_session_verify_metrics(
                 continue
             entry = json.loads(line)
             if "verification_error" in entry:
-                verification_error_count += 1
-                error = entry["verification_error"]
-                if isinstance(error, dict):
-                    stage = error.get("stage")
-                    if stage:
-                        verification_error_stages.add(stage)
-                    if verification_error_example is None:
-                        verification_error_example = {
-                            "stage": stage,
-                            "type": error.get("type"),
-                            "message": str(error.get("message") or "")[:1000],
-                        }
-                elif verification_error_example is None:
-                    verification_error_example = str(error)[:1000]
-                continue
-            total_samples += 1
-            has_append_tool = has_append_tool or "append_tool" in entry.get("driver_events", [])
-            if entry.get("had_assistant_mismatch"):
-                samples_with_mismatch += 1
-            entry_hard_types = entry.get("hard_mismatch_types", [])
-            entry_hard_count = entry.get("hard_mismatch_count", len(entry_hard_types))
-            if entry_hard_count or entry_hard_types:
-                if set(entry_hard_types) == {"special_token_count"}:
-                    samples_with_special_token_count_only += 1
-                samples_with_hard_mismatch += 1
-                hard_mismatch_count += entry_hard_count
-                hard_mismatch_types.update(entry_hard_types)
-                if hard_mismatch_example is None:
-                    entry_example = entry.get("hard_mismatch_example")
-                    if isinstance(entry_example, dict):
-                        hard_mismatch_example = {
-                            "type": entry_example.get("type"),
-                            "segment_index": entry_example.get("segment_index"),
-                            "detail": str(entry_example.get("detail") or "")[:500],
-                        }
-                    elif entry_example is not None:
-                        hard_mismatch_example = str(entry_example)[:500]
-
-    if verification_error_count:
+                errors.append(entry["verification_error"])
+            else:
+                entries.append(entry)
+    if errors:
+        stages = sorted({error.get("stage") for error in errors if isinstance(error, dict) and error.get("stage")})
+        first = errors[0]
+        if isinstance(first, dict):
+            first = {
+                "stage": first.get("stage"),
+                "type": first.get("type"),
+                "message": str(first.get("message") or "")[:1000],
+            }
+        else:
+            first = str(first)[:1000]
         raise AssertionError(
             "Session multi-role e2e: verifier assertions failed in "
-            f"{verification_error_count} attempted trajectories "
-            f"(completed_samples={total_samples}, stages={sorted(verification_error_stages)}, "
-            f"first={verification_error_example})."
+            f"{len(errors)} attempted trajectories "
+            f"(completed_samples={len(entries)}, stages={stages}, first={first})."
         )
+    return entries
 
-    if total_samples == 0:
+
+def _summarize(entries: list[dict]) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "samples": len(entries),
+        "with_assistant_mismatch": 0,
+        "assistant_examples": [],
+        "with_hard_mismatch": 0,
+        "with_special_token_count_only": 0,
+        "hard_mismatch_count": 0,
+        "hard_mismatch_types": set(),
+        "hard_mismatch_example": None,
+        "has_append_tool": False,
+        "unmet_expectations": [],
+        "expects_acceptance": False,
+        "planned_cut_kinds": set(),
+        "continued_cut_kinds": set(),
+        "cut_problems": [],
+        "unfinished": [],
+    }
+    for entry in entries:
+        summary["has_append_tool"] |= "append_tool" in entry.get("driver_events", [])
+        summary["unmet_expectations"] += [
+            e for e in entry.get("expectations", []) if e["actual_status"] != e["expected_status"]
+        ]
+        summary["expects_acceptance"] |= any(e["expected_status"] == 200 for e in entry.get("expectations", []))
+        if entry.get("cut_kind") is not None:
+            summary["planned_cut_kinds"].add(entry["cut_kind"])
+        for cut in entry.get("cuts", []):
+            summary["continued_cut_kinds"].add(cut["kind"])
+            summary["cut_problems"] += cut["problems"]
+        if entry.get("unfinished") is not None:
+            summary["unfinished"].append(entry["unfinished"][:300])
+        if entry.get("had_assistant_mismatch"):
+            summary["with_assistant_mismatch"] += 1
+            if len(summary["assistant_examples"]) < _ASSISTANT_MISMATCH_EXAMPLES and entry.get(
+                "assistant_mismatch_example"
+            ):
+                summary["assistant_examples"].append(entry["assistant_mismatch_example"])
+        hard_types = entry.get("hard_mismatch_types", [])
+        hard_count = entry.get("hard_mismatch_count", len(hard_types))
+        if not (hard_count or hard_types):
+            continue
+        summary["with_hard_mismatch"] += 1
+        summary["with_special_token_count_only"] += set(hard_types) == {"special_token_count"}
+        summary["hard_mismatch_count"] += hard_count
+        summary["hard_mismatch_types"].update(hard_types)
+        if summary["hard_mismatch_example"] is None:
+            example = entry.get("hard_mismatch_example")
+            if isinstance(example, dict):
+                example = {
+                    "type": example.get("type"),
+                    "segment_index": example.get("segment_index"),
+                    "detail": str(example.get("detail") or "")[:500],
+                }
+            elif example is not None:
+                example = str(example)[:500]
+            summary["hard_mismatch_example"] = example
+    return summary
+
+
+def _assert_continued_cuts(kind: SessionVerifyKind, summary: dict[str, Any]) -> None:
+    if kind is not SessionVerifyKind.TRUNCATE:
+        return
+    if summary["cut_problems"]:
         raise AssertionError(
-            f"Session multi-role e2e: no per-sample metrics found at {metrics_path}.  "
-            "Either the rollout produced 0 samples, or the agent wrapper failed to "
-            "run before any sample completed.  Check rollout logs."
+            f"Session multi-role e2e: {len(summary['cut_problems'])} continued cut turns were not closed by the "
+            f"family's closer (first={summary['cut_problems'][:3]})."
+        )
+    # A batch smaller than CUT_KINDS plans only some of them.
+    missing = sorted(summary["planned_cut_kinds"] - summary["continued_cut_kinds"], key=CUT_KINDS.index)
+    if summary["expects_acceptance"] and missing:
+        raise AssertionError(
+            f"Session multi-role e2e: no truncate sample continued a turn cut in {missing}; "
+            f"continued kinds={sorted(summary['continued_cut_kinds'])}, "
+            f"unfinished samples={len(summary['unfinished'])}."
         )
 
-    ratio = samples_with_mismatch / total_samples
-    logger.info(
-        "Token-seq metric summary: samples=%d, with_hard_mismatch=%d, "
-        "with_assistant_text_mismatch=%d, ratio=%.3f, threshold=%.3f",
-        total_samples,
-        samples_with_hard_mismatch,
-        samples_with_mismatch,
-        ratio,
-        assistant_text_threshold,
-    )
-    special_token_count_ratio = samples_with_special_token_count_only / total_samples
-    if samples_with_hard_mismatch > samples_with_special_token_count_only or (
-        special_token_count_ratio > special_token_count_threshold
+
+def _assert_hard_mismatches(
+    kind: SessionVerifyKind, summary: dict[str, Any], *, special_token_count_threshold: float
+) -> None:
+    special_token_count_ratio = summary["with_special_token_count_only"] / summary["samples"]
+    if (
+        summary["with_hard_mismatch"] > summary["with_special_token_count_only"]
+        or special_token_count_ratio > special_token_count_threshold
     ):
         raise AssertionError(
             f"Session multi-role e2e: hard TITO mismatches found in "
-            f"{samples_with_hard_mismatch}/{total_samples} attempted samples "
-            f"({hard_mismatch_count} mismatches, types={sorted(hard_mismatch_types)}, "
-            f"first={hard_mismatch_example}).  These types must be 0 for any "
+            f"{summary['with_hard_mismatch']}/{summary['samples']} attempted {kind} samples "
+            f"({summary['hard_mismatch_count']} mismatches, types={sorted(summary['hard_mismatch_types'])}, "
+            f"first={summary['hard_mismatch_example']}).  These types must be 0 for any "
             f"TITO-correct setup (special_token_count-only samples tolerated up to "
             f"{special_token_count_threshold})."
-        )
-
-    if require_append_tool and not has_append_tool:
-        raise AssertionError(
-            "Session multi-role e2e: no sample produced an append_tool action — "
-            "the model may not be tool-calling.  Check sampling temperature, "
-            "the tool spec, or parser configuration."
-        )
-
-    if ratio > assistant_text_threshold:
-        raise AssertionError(
-            f"Session multi-role e2e: assistant_text mismatch ratio "
-            f"{samples_with_mismatch}/{total_samples}={ratio:.3f} exceeds "
-            f"threshold {assistant_text_threshold}.  TITO "
-            "tokenization for assistant content has drifted from the chat "
-            "template's canonical render — investigate via "
-            "verify_session_tito_tokenizer.py + sample-level mismatch logs."
         )

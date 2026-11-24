@@ -8,7 +8,7 @@ from typing import Any
 
 import ray
 
-from miles.utils.misc import NodeProbeMixin, get_free_port
+from miles.utils.misc import NodeProbeMixin
 from miles.utils.test_utils.mock_sglang_http_server import MockSGLangHttpServer
 
 logger = logging.getLogger(__name__)
@@ -66,8 +66,8 @@ class MockSGLangEngine:
     def get_http_payloads_of(self, path: str) -> list[dict | None]:
         return self._http_server.payloads_of(path) if self._http_server is not None else []
 
-    def run(self, cmd: str, envs: dict[str, str]):
-        self._record("run", (), {"cmd": cmd, "envs": envs})
+    def run(self, cmd: str, envs: dict[str, str], gpu_ids: list[int]):
+        self._record("run", (), {"cmd": cmd, "envs": envs, "gpu_ids": gpu_ids})
         self._maybe_fault("run")
         self._server_args = parse_cmd_flags(cmd)
         self._http_server = MockSGLangHttpServer(port=int(self._server_args["port"]))
@@ -80,6 +80,9 @@ class MockSGLangEngine:
             self._http_server.close()
         return True
 
+    def report_process_end(self):
+        self._record("report_process_end", (), {})
+
     def kill_subprocess(self):
         """Real CommandActor takes the actor down with the subprocess; the
         in-process mock cannot exit the test process, so only the server dies."""
@@ -87,9 +90,9 @@ class MockSGLangEngine:
         if self._http_server is not None:
             self._http_server.close()
 
-    def _get_free_port_block(self, *, start_port: int, count: int) -> int:
+    def _get_free_port_block(self, *, start_port: int | None, count: int) -> int:
         self._record("_get_free_port_block", (), {"start_port": start_port, "count": count})
-        return get_free_port(start_port=start_port, consecutive=count)
+        return NodeProbeMixin._get_free_port_block(start_port=start_port, count=count)
 
     def _get_node_ip(self):
         self._record("_get_node_ip", (), {})

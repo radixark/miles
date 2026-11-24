@@ -33,6 +33,8 @@ class RolloutEnvConfig:
     extra_argv: list[str] | None = None
     data_rows: list[dict] | None = None
     latency: float = 0.0
+    # name -> (rows, extra dataset fields); when set, rollout reads --rollout-data-yaml-config instead of --prompt-data
+    mixed_datasets: dict[str, tuple[list[dict], dict]] | None = None
 
 
 @dataclass(frozen=True)
@@ -42,7 +44,9 @@ class RolloutEnv:
     mock_server: MockSGLangServer
 
 
-def _build_args(*, data_path: str, router_port: int, extra_argv: list[str] | None = None) -> Namespace:
+def _build_args(
+    *, data_path: str, router_port: int, extra_argv: list[str] | None = None, data_argv: list[str] | None = None
+) -> Namespace:
     argv = [
         "pytest",
         "--train-backend",
@@ -61,8 +65,7 @@ def _build_args(*, data_path: str, router_port: int, extra_argv: list[str] | Non
         "1",
         "--hf-checkpoint",
         "Qwen/Qwen3-0.6B",
-        "--prompt-data",
-        data_path,
+        *(data_argv or ["--prompt-data", data_path]),
         "--input-key",
         "input",
         "--label-key",
@@ -103,6 +106,17 @@ def _write_jsonl(path: str, rows: list[dict]) -> None:
     Path(path).write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
 
 
+def _write_mixed_datasets(tmp_path: Path, mixed_datasets: dict[str, tuple[list[dict], dict]]) -> list[str]:
+    datasets = {}
+    for name, (rows, fields) in mixed_datasets.items():
+        path = str(tmp_path / f"{name}.jsonl")
+        _write_jsonl(path, rows)
+        datasets[name] = {"path": path, **fields}
+    config_path = tmp_path / "mix.json"
+    config_path.write_text(json.dumps({"datasets": datasets}))
+    return ["--rollout-data-yaml-config", str(config_path)]
+
+
 DEFAULT_DATA_ROWS = [{"input": "What is 1+7?", "label": "8"}]
 
 
@@ -140,12 +154,15 @@ def rollout_env(tmp_path, request) -> RolloutEnv:
 
     data_path = str(tmp_path / "data.jsonl")
     _write_jsonl(data_path, data_rows)
+    data_argv = _write_mixed_datasets(tmp_path, config.mixed_datasets) if config.mixed_datasets else None
 
     SingletonMeta.clear_all_instances()
 
     with with_mock_server(latency=config.latency) as mock_server:
         router_port = find_available_port(20000)
-        args = _build_args(data_path=data_path, router_port=router_port, extra_argv=config.extra_argv)
+        args = _build_args(
+            data_path=data_path, router_port=router_port, extra_argv=config.extra_argv, data_argv=data_argv
+        )
         with _with_miles_router(args) as router_server:
             r = requests.post(
                 f"{router_server.url}/add_worker",

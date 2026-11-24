@@ -28,6 +28,7 @@ def make_args(**overrides: Any) -> Namespace:
     router_defaults: dict[str, Any] = vars(parser.parse_args([]))
     defaults: dict[str, Any] = dict(
         # rollout core
+        rollout_data_yaml_config=None,
         rollout_num_gpus=8,
         rollout_num_gpus_per_engine=1,
         eval_num_gpus=0,
@@ -104,6 +105,7 @@ def make_args(**overrides: Any) -> Namespace:
         sglang_router_request_timeout_secs=600,
         sglang_dp_size=1,
         sglang_pp_size=1,
+        sglang_pp_layer_partition=None,
         sglang_ep_size=1,
         sglang_api_key=None,
         multi_lora_n_adapters=0,
@@ -113,7 +115,6 @@ def make_args(**overrides: Any) -> Namespace:
         sglang_model_routers=None,
         prefill_num_servers=None,
         # routers / session server
-        use_miles_dashboard=False,
         router="sglang",
         miles_router_timeout=None,
         miles_router_max_connections=None,
@@ -121,6 +122,7 @@ def make_args(**overrides: Any) -> Namespace:
         sglang_server_concurrency=512,
         use_session_server=False,
         use_rollout_routing_replay=False,
+        multimodal_token_space_processing=False,
         sglang_enable_prefill_weight_versions=False,
         session_server_ip=None,
         session_server_external_host=None,
@@ -151,6 +153,7 @@ def make_args(**overrides: Any) -> Namespace:
         fp16=False,
         use_rollout_indexer_replay=False,
         rollout_indexer_topk_num_streams=None,
+        replay_layer_splits=[],
         use_output_store=False,
         env_report_interval_seconds=3600.0,
         # checkpoint / data source
@@ -421,12 +424,17 @@ def dedent(s: str) -> str:
     return textwrap.dedent(s).lstrip("\n")
 
 
+FAKE_SERVICE_PORT_START = 20000
+
+
 def fake_engine(host: str = "10.0.0.1", port_seed: int = 30000) -> MagicMock:
     """MagicMock that mimics the engine ``CommandActor`` enough for ``addr_allocator``.
 
     Mocks ``_get_free_port_block.remote(start_port, count)`` with a
     deterministic ``max(seq, start_port)`` counter so allocator tests can
-    predict and assert on port assignment. ``_get_node_ip.remote()`` is the
+    predict and assert on port assignment. A node without a cursor starts at
+    20000, where the service port range starts on a host with the default
+    ephemeral range. ``_get_node_ip.remote()`` is the
     node-ip probe, which the cell awaits, so it returns an awaitable just like
     a real ``ObjectRef``. It also passes ``isinstance(x, ray.actor.ActorHandle)``
     so it can be handed to ``mark_allocated_uninitialized``."""
@@ -434,8 +442,8 @@ def fake_engine(host: str = "10.0.0.1", port_seed: int = 30000) -> MagicMock:
     e._spec_class = ray.actor.ActorHandle
     e._port_cursor = port_seed
 
-    async def _alloc(start_port: int = 15000, count: int = 1):
-        port = max(e._port_cursor, start_port)
+    async def _alloc(start_port: int | None = None, count: int = 1):
+        port = max(e._port_cursor, FAKE_SERVICE_PORT_START if start_port is None else start_port)
         e._port_cursor = port + count
         return port
 
