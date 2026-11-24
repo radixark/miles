@@ -1180,6 +1180,31 @@ class TestEngineMetaApiKey:
         )
         assert meta["sglang_api_key"] == ""
 
+    def test_admin_api_key_override_env_fallback_and_empty_disabling(self, tmp_path, monkeypatch):
+        """Managed engines resolve sglang_admin_api_key from group override, else SGLANG_ADMIN_API_KEY, ignoring ''."""
+        monkeypatch.setenv("SGLANG_ADMIN_API_KEY", "")
+        meta_empty_env = self._meta_for(tmp_path, sglang_api_key="from-args")
+        assert "sglang_admin_api_key" not in meta_empty_env
+
+        monkeypatch.setenv("SGLANG_ADMIN_API_KEY", "from-env")
+        meta_env = self._meta_for(tmp_path, sglang_api_key="from-args")
+        assert meta_env["sglang_api_key"] == "from-args"
+        assert meta_env["sglang_admin_api_key"] == "from-env"
+
+        meta_override = self._meta_for(
+            tmp_path,
+            overrides_yaml="        overrides:\n          admin_api_key: from-override\n",
+            sglang_api_key="from-args",
+        )
+        assert meta_override["sglang_admin_api_key"] == "from-override"
+
+        meta_disabled = self._meta_for(
+            tmp_path,
+            overrides_yaml='        overrides:\n          admin_api_key: ""\n',
+            sglang_api_key="from-args",
+        )
+        assert "sglang_admin_api_key" not in meta_disabled
+
     def test_a_group_pipeline_override_sets_its_cells_health_check_budget(self, tmp_path, monkeypatch):
         monkeypatch.delenv("SGLANG_HEALTH_CHECK_TIMEOUT", raising=False)
         meta = self._meta_for(

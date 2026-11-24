@@ -115,13 +115,13 @@ class SGLangApiClient:
     def _normal_headers(self) -> dict[str, str]:
         # SGLang NORMAL routes require api_key even when admin_api_key is also configured, and allow any header when
         # only admin_api_key is configured (sglang/srt/utils/auth.py:decide_request_auth).
-        return _compute_headers(self.api_key if self.api_key is not None else self.admin_api_key)
+        return _compute_headers(self.api_key or self.admin_api_key)
 
     @property
     def _headers(self) -> dict[str, str]:
         # SGLang ADMIN_FORCE / ADMIN_OPTIONAL routes require admin_api_key whenever configured, falling back to api_key
         # on pre-#49896 servers or ADMIN_OPTIONAL routes with only api_key configured.
-        return _compute_headers(self.admin_api_key if self.admin_api_key is not None else self.api_key)
+        return _compute_headers(self.admin_api_key or self.api_key)
 
     async def _make_request(
         self,

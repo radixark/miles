@@ -123,9 +123,10 @@ class _ExternalEngineInfo:
 def _resolve_external_engine_keys(args: Any) -> tuple[str | None, str | None]:
     """Return ``(api_key, admin_api_key)`` for an external SGLang server.
 
-    Override order:
-    - ``admin_api_key``: explicit ``--sglang-admin-api-key`` wins over ``SGLANG_ADMIN_API_KEY`` (matching SGLang's
-      ``admin_auth_headers`` helper).
+    Override order (matching SGLang's ``handle_admin_api_key_env`` / ``decide_request_auth``, which treat empty
+    strings as unset):
+    - ``admin_api_key``: explicit ``--sglang-admin-api-key`` wins over ``SGLANG_ADMIN_API_KEY``; an empty value
+      disables admin auth without falling back to the environment.
     - ``api_key`` (for ``AuthLevel.NORMAL`` routes such as ``/server_info`` and ``/model_info``): explicit
       ``--sglang-api-key`` wins even when ``admin_api_key`` is also set, because SGLang's ``decide_request_auth``
       requires ``api_key`` on normal routes when both keys are configured; otherwise falls back to ``admin_api_key``.
@@ -134,9 +135,8 @@ def _resolve_external_engine_keys(args: Any) -> tuple[str | None, str | None]:
     admin_api_key = base_args.get("admin_api_key")
     if admin_api_key is None:
         admin_api_key = os.environ.get("SGLANG_ADMIN_API_KEY")
-    api_key = base_args["api_key"]
-    if api_key is None:
-        api_key = admin_api_key
+    admin_api_key = admin_api_key or None
+    api_key = base_args["api_key"] or admin_api_key
     return api_key, admin_api_key
 
 

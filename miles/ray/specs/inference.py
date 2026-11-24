@@ -408,6 +408,9 @@ def _compute_spec_inference_engine(
         f"remaining ranks"
     )
 
+    admin_api_key = _resolve_managed_engine_admin_api_key(args, group=server_group_config)
+    extra_admin_meta = dict(sglang_admin_api_key=admin_api_key) if admin_api_key is not None else {}
+
     return InferenceEngineSpec(
         args=args,
         model_cfg=model_cfg,
@@ -442,12 +445,22 @@ def _compute_spec_inference_engine(
                 worker_type=server_group_config.worker_type.value,
                 num_gpus_per_engine=server_group_config.num_gpus_per_engine,
                 sglang_api_key=args.sglang.get_value("api_key", group=server_group_config),
+                **extra_admin_meta,
                 needs_offload=server_group_config.needs_offload,
                 update_weights=model_cfg.update_weights,
                 health_check_timeout_seconds=compute_health_check_timeout_seconds(pp_size=server_group_config.pp_size),
             ),
         ),
     )
+
+
+def _resolve_managed_engine_admin_api_key(args: Any, *, group: ServerGroupConfig) -> str | None:
+    if "admin_api_key" in group.overrides:
+        return group.overrides["admin_api_key"] or None
+    admin_api_key = args.sglang.base_args.get("admin_api_key")
+    if admin_api_key is None:
+        admin_api_key = os.environ.get("SGLANG_ADMIN_API_KEY")
+    return admin_api_key or None
 
 
 def compute_inference_engine_env_vars(

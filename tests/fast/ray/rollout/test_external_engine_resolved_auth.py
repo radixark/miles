@@ -66,6 +66,38 @@ class TestResolvedExternalAuth:
         assert client._normal_headers["Authorization"] == "Bearer normal-secret"
         assert client._headers["Authorization"] == "Bearer explicit-admin-secret"
 
+    async def test_empty_admin_api_key_is_treated_as_unset_and_keeps_api_key(
+        self, fake_api_client: Any, monkeypatch: Any
+    ) -> None:
+        """Empty SGLANG_ADMIN_API_KEY or --sglang-admin-api-key '' must not mask api_key on admin routes."""
+        monkeypatch.setenv("SGLANG_ADMIN_API_KEY", "")
+        args = _make_args(["host1:8000"])
+        args.sglang = make_sglang_config(api_key="normal-secret")
+        fake_api_client.answers = [_regular_payload()]
+        provider = StaticInferenceEngineWorkerProvider(args=args)
+
+        await provider.init()
+
+        [cell] = provider.cell_infos
+        assert cell.meta["sglang_api_key"] == "normal-secret"
+        assert "sglang_admin_api_key" not in cell.meta
+
+        monkeypatch.setenv("SGLANG_ADMIN_API_KEY", "env-admin-secret")
+        args_disabled = _make_args(["host1:8000"])
+        args_disabled.sglang = make_sglang_config(api_key="normal-secret", admin_api_key="")
+        fake_api_client.answers = [_regular_payload()]
+        provider_disabled = StaticInferenceEngineWorkerProvider(args=args_disabled)
+
+        await provider_disabled.init()
+
+        [cell_disabled] = provider_disabled.cell_infos
+        assert cell_disabled.meta["sglang_api_key"] == "normal-secret"
+        assert "sglang_admin_api_key" not in cell_disabled.meta
+
+        client = SGLangApiClient(server_url="http://host1:8000", api_key="normal-secret", admin_api_key="")
+        assert client._normal_headers["Authorization"] == "Bearer normal-secret"
+        assert client._headers["Authorization"] == "Bearer normal-secret"
+
 
 def test_deprecated_choice_to_flag_action_prefixes_targets_without_duplicate_default(monkeypatch: Any) -> None:
     class DeprecatedChoiceToFlagAction(argparse.Action):
