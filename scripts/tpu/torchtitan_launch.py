@@ -1,8 +1,9 @@
 """What the TPU launchers share: GRPO on one TPU v7x 2x2x1 host, torchtitan trainer + sglang-torchtpu rollout.
 
-The host's 8 TensorCores form one slice that the two jobs share. sglang serves the policy on devices 4-7 (chips 2-3);
-the torchtitan trainer runs as 4 ranks on devices 0-3 (chips 0-1) and drives that server as an external rollout
-engine. Weights reach the server device to device over ICI (`--update-weight-transfer-mode ici`).
+The host's 8 TensorCores form one slice that the two jobs share. sglang serves the policy on devices 4-7 (chips 2-3),
+as one TP4 server or, with `--engine-tp 1|2`, as 4 or 2 smaller servers side by side; the torchtitan trainer runs
+as 4 ranks on devices 0-3 (chips 0-1) and drives those servers as external rollout engines. Weights reach every
+server device to device over ICI (`--update-weight-transfer-mode ici`).
 scripts/tpu/README.md describes the environment both expect.
 """
 
@@ -79,6 +80,17 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     compile_cache_dir: str = ""
     # compiles the first step's programs while the engine starts; off for a run whose options the warmup refuses
     compile_warmup: bool = True
+    # devices per sglang server: 4 is one TP4 server on devices 4-7; 2 or 1 start 2 or 4 servers side by side, each on
+    # its own devices, slice ranks and port (--sglang-port, +10, ..), for a model whose decode step is latency-bound
+    engine_tp: int = NUM_ENGINE_DEVICES
+
+    @property
+    def num_engines(self) -> int:
+        return NUM_ENGINE_DEVICES // self.engine_tp
+
+    def engine_port(self, index: int) -> int:
+        # sglang reserves --port + 233 .. + 239 for its own sockets, so consecutive servers sit 10 ports apart
+        return self.sglang_port + 10 * index
 
 
 # the associative-scan emitter off: libtpu >= 0.0.44 miscompiles cumulative ops for lengths not a multiple of 1024
@@ -101,6 +113,21 @@ _ENGINE_LIBTPU_ARGS = (
 )
 # the engine's other flags change neither the trainer's compile time nor its step time
 _TRAINER_LIBTPU_ARGS = _SCAN_EMITTER_OFF
+
+
+# sglang-torchtpu's default --nccl-port is a random free port per server; two servers started together on one host can
+# draw the same one. Servers started side by side get the port sgl-project/sglang-torchtpu#2428 derives from --port.
+_NCCL_PORT_DELTA = 466
+
+
+def _validate_engine_layout(args: ScriptArgs, model: TitanTpuModel) -> None:
+    if args.engine_tp not in (1, 2, NUM_ENGINE_DEVICES):
+        raise ValueError(f"--engine-tp {args.engine_tp} must be 1, 2 or {NUM_ENGINE_DEVICES} (the engine devices)")
+    if args.engine_tp != NUM_ENGINE_DEVICES and model.routing_replay:
+        raise ValueError(
+            f"{model.name} serves its experts over the engine's {NUM_ENGINE_DEVICES} devices (--ep-size and "
+            f"--sglang-ep-size in its launcher), so it takes --engine-tp {NUM_ENGINE_DEVICES} only"
+        )
 
 
 def _shared_slice(args: ScriptArgs, rank_offset: int) -> str:
@@ -134,13 +161,32 @@ def _slice_env(args: ScriptArgs, libtpu_args: str) -> dict[str, str]:
 
 
 def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
-    """Serve the policy on devices 4-7 in the foreground."""
+    """Serve the policy on devices 4-7 in the foreground: one TP4 server, or --engine-tp smaller ones side by side."""
+    _validate_engine_layout(args, model)
     U = args.create_backend()
     _clear_chip_masks()
     os.environ.update(_slice_env(args, _ENGINE_LIBTPU_ARGS))
+    servers = [_sglang_server_command(args, model, index) for index in range(args.num_engines)]
+    if len(servers) == 1:
+        U.exec_command_cpu(f"source {args.sglang_env_script} && {servers[0]}")
+        return
+    # every server in the background (the first one keeps this terminal, the others log beside it); the first to
+    # exit ends them all, as one server's exit ends the single-server command
+    launches = " ".join(
+        f"({command}) {'' if index == 0 else f'> sglang-{args.engine_port(index)}.log 2>&1 '}& "
+        for index, command in enumerate(servers)
+    )
     U.exec_command_cpu(
-        f"source {args.sglang_env_script} && "
-        f"SGLANG_TPU_SHARED_SLICE={_shared_slice(args, rank_offset=NUM_TRAINER_DEVICES)} "
+        f"source {args.sglang_env_script} && {launches}"
+        "wait -n; status=$?; kill $(jobs -p) 2> /dev/null; wait; exit $status"
+    )
+
+
+def _sglang_server_command(args: ScriptArgs, model: TitanTpuModel, index: int) -> str:
+    """Server `index`: devices 4 + index * tp .., the slice ranks behind the trainer's, port --sglang-port + 10 index."""
+    first_device = SGLANG_BASE_DEVICE + index * args.engine_tp
+    return (
+        f"SGLANG_TPU_SHARED_SLICE={_shared_slice(args, rank_offset=NUM_TRAINER_DEVICES + index * args.engine_tp)} "
         # the batched ragged paged attention reads this KV layout fastest; the cache stays bf16
         "SGLANG_TPU_USE_SEQ_ALONG_LANE_KV=1 "
         f"{model.sglang_env}"
@@ -159,17 +205,18 @@ def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
         f"--kv-cache-dtype {args.kv_cache_dtype} "
         f"--context-length {SEQ_LEN} "
         "--chunked-prefill-size 2048 "
-        f"--tp-size {NUM_ENGINE_DEVICES} "
-        f"--base-gpu-id {SGLANG_BASE_DEVICE} "
+        f"--tp-size {args.engine_tp} "
+        f"--base-gpu-id {first_device} "
         "--gpu-id-step 1 "
-        # the engine has devices 4-7 to itself; the rest of HBM holds XLA's program buffers
+        # the engine has its devices to itself; the rest of HBM holds XLA's program buffers
         "--mem-fraction-static 0.7 "
         # the bench and full recipes generate 128 samples per rollout: decode them all at once
         "--max-running-requests 128 "
         "--torch-compile-max-bs 128 "
         f"{model.sglang_args}"
         f"{'--enable-return-routed-experts ' if model.routing_replay else ''}"
-        f"--host 0.0.0.0 --port {args.sglang_port}"
+        f"{f'--nccl-port {args.engine_port(index) + _NCCL_PORT_DELTA} ' if args.num_engines > 1 else ''}"
+        f"--host 0.0.0.0 --port {args.engine_port(index)}"
     )
 
 
@@ -207,7 +254,8 @@ def _trainer_env(args: ScriptArgs) -> dict[str, str]:
 
 
 def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str) -> None:
-    """Train on devices 0-3 against the sglang server."""
+    """Train on devices 0-3 against the sglang server(s)."""
+    _validate_engine_layout(args, model)
     U = args.create_backend()
     recipe = _RECIPES[args.recipe]
     _clear_chip_masks()
@@ -258,10 +306,11 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
         "--adam-beta2 0.98 "
     )
 
+    engine_addrs = " ".join(f"http://localhost:{args.engine_port(index)}" for index in range(args.num_engines))
     sglang_args = (
-        f"--rollout-external-engine-addrs http://localhost:{args.sglang_port} "
+        f"--rollout-external-engine-addrs {engine_addrs} "
         f"--rollout-num-gpus {NUM_ENGINE_DEVICES} "
-        f"--rollout-num-gpus-per-engine {NUM_ENGINE_DEVICES} "
+        f"--rollout-num-gpus-per-engine {args.engine_tp} "
         f"--update-weight-transfer-mode {WEIGHT_TRANSFER_MODE} "
     )
 
