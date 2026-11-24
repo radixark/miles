@@ -2185,6 +2185,12 @@ def validate_trie_packing_args(args) -> None:
     ]
     if incompatible_options:
         raise ValueError(f"{option} is incompatible with: {', '.join(incompatible_options)}")
+    if args.use_rollout_routing_replay and args.use_output_store:
+        logger.warning(
+            f"{option} with --use-output-store packs samples on token ids alone: replay reads the routing per "
+            "micro-batch, after the schedule, so a token samples share replays one sample's routing, which is "
+            "the others' only where their rollouts routed it alike"
+        )
 
 
 def validate_compile_warmup(args) -> None:

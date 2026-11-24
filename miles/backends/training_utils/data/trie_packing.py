@@ -11,12 +11,17 @@ Samples merge wherever their tokens agree, responses included: tokens that
 agree on everything before them have the same hidden states. Each sample reads
 its rows back through its own token indices, a row several samples share once for each,
 so every per-sample, per-token value stays the sample's own.
+
+With rollout routing replay, a shared token also replays one routing, so samples
+share a token only where their rollouts routed it alike as well.
 """
 
 from __future__ import annotations
 
 import bisect
+import dataclasses
 import functools
+import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -24,6 +29,41 @@ import torch
 
 from miles.utils.flat_token_trie import IndexedFlatTrie
 from miles.utils.token_trie_builder import TokenTrieBuilder
+
+
+def routing_aware_packing_keys(
+    tokens: Sequence[torch.Tensor], routed_experts: Sequence[torch.Tensor]
+) -> list[list[int]]:
+    """Each sample's packing key per token under rollout routing replay.
+
+    A shared token replays one routing, but the rollout can route it differently for two samples (prefilled on
+    different engines, or decoded in different batches). A token's key is its id together with the routing the
+    rollout recorded for it, so samples share a token only where both agree.
+
+    ``tokens[i]`` holds sample ``i``'s token ids (lengths vary by sample), ``routed_experts[i]`` the experts the
+    rollout routed each of them but the last to, ``[len(tokens[i]) - 1, layers, top_k]``.
+    """
+    packing_keys = []
+    for sample, experts in zip(tokens, routed_experts, strict=True):
+        rows = [row.tobytes() for row in experts.flatten(1).numpy()] + [b""]
+        packing_keys.append(
+            [
+                int.from_bytes(hashlib.blake2b(token.to_bytes(16, "little") + row, digest_size=8).digest(), "little")
+                for token, row in zip(sample.tolist(), rows, strict=True)
+            ]
+        )
+    return packing_keys
+
+
+def _pack_trie_bins_on_packing_keys(
+    tokens: Sequence[Sequence[int]], max_bin_width: int, packing_keys: Sequence[Sequence[int]]
+) -> list[IndexedFlatTrie]:
+    """``pack_trie_bins`` on each sample's packing keys, with the token ids put back in the tries it returns."""
+    token_ids = {}
+    for sample, sample_packing_keys in zip(tokens, packing_keys, strict=True):
+        token_ids.update(zip(sample_packing_keys, sample, strict=True))
+    tries = pack_trie_bins(packing_keys, max_bin_width)
+    return [dataclasses.replace(trie, token_ids=tuple(token_ids[key] for key in trie.token_ids)) for trie in tries]
 
 
 def _best_fit_trie_index(
@@ -46,12 +86,16 @@ def _best_fit_trie_index(
 def pack_trie_bins(
     tokens: Sequence[Sequence[int]],
     max_bin_width: int,
+    packing_keys: Sequence[Sequence[int]] | None = None,
 ) -> list[IndexedFlatTrie]:
     """Best-fit samples into tries of at most ``max_bin_width`` tokens before padding.
 
     A sample longer than ``max_bin_width`` gets a trie of its own, as it trains alone under standard packing: no
-    other sample fits beside it.
+    other sample fits beside it. Samples merge where their ``packing_keys`` agree (``routing_aware_packing_keys``),
+    else where their tokens do.
     """
+    if packing_keys is not None:
+        return _pack_trie_bins_on_packing_keys(tokens, max_bin_width, packing_keys)
     if max_bin_width <= 0:
         raise ValueError(f"max_bin_width must be positive, got {max_bin_width}")
     token_seqs = [tuple(sample) for sample in tokens]
@@ -241,12 +285,13 @@ def micro_batch_trie_layout(
     *,
     window_start_multiple: int,
     pad_multiple: int,
+    packing_keys: Sequence[Sequence[int]] | None = None,
 ) -> TrieLayout:
     """The one trie row holding a scheduled micro-batch's samples, laid out for ``model_spec``'s layers."""
     # a response's first token is predicted from the last prompt token's row
     if any(total - response < 1 for total, response in zip(total_lengths, response_lengths, strict=True)):
         raise ValueError("trie packing needs at least one prompt token per sample")
-    bins = pack_trie_bins(tokens, sum(total_lengths))
+    bins = pack_trie_bins(tokens, sum(total_lengths), packing_keys)
     if len(bins) != 1:
         raise AssertionError(f"a micro-batch packed into {len(bins)} tries, expected 1")
     return build_trie_layout(
@@ -313,8 +358,7 @@ def trie_replay_rows(layout: TrieLayout, rows: Sequence[torch.Tensor]) -> torch.
     ``rows[i]`` holds one row per token of sample ``i`` (``-1`` rows where the rollout recorded none, as for
     its final token). A token takes the row of a sample that holds it, at the token's logical
     position; padding tokens take ``-1`` rows. A token several samples share replays that one sample's
-    rollout routing, so it is exact when the rollout routed those samples' shared prefix alike, as it does
-    when they hit one radix-cache entry.
+    rollout routing, which is each sharing sample's own when the row was packed on ``routing_aware_packing_keys``.
     """
     missing = rows[0].new_full((1, *rows[0].shape[1:]), -1)
     offsets = torch.tensor([0] + [r.size(0) for r in rows]).cumsum(0)

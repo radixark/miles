@@ -29,7 +29,7 @@ from miles.backends.fsdp_utils.adaptations.trie_attention import (
 from miles.backends.training_utils.data import context_parallel
 from miles.backends.training_utils.data import rollout as data_utils
 from miles.backends.training_utils.data import trie_batch
-from miles.backends.training_utils.data.trie_batch import TrieMicroBatches
+from miles.backends.training_utils.data.trie_batch import TrieMicroBatches, trie_packing_keys
 from miles.backends.training_utils.data.trie_packing import TrieKV, TrieModelSpec
 from miles.backends.training_utils.replay import data as replay_data
 from miles.utils.replay_base import routing_replay_manager
@@ -153,7 +153,8 @@ def _solo(model, samples) -> torch.Tensor:
 
 def _trie_iterator(rollout, model_spec: TrieModelSpec, micro_batch_indices=None) -> data_utils.DataIterator:
     micro_batch_indices = micro_batch_indices or [list(range(len(rollout["tokens"])))]
-    trie_micro_batches = TrieMicroBatches(rollout, model_spec, micro_batch_indices)
+    packing_keys = trie_packing_keys(rollout)
+    trie_micro_batches = TrieMicroBatches(rollout, model_spec, micro_batch_indices, packing_keys=packing_keys)
     return data_utils.DataIterator(
         rollout, micro_batch_indices=micro_batch_indices, trie_micro_batches=trie_micro_batches
     )
@@ -243,14 +244,31 @@ def rollout_routing_replay(monkeypatch):
     routing_replay_manager.current = None
 
 
-def test_rollout_routing_replay_on_a_trie_row_matches_each_sample_alone(cpu_trie, rollout_routing_replay):
+def _routed_apart(routes, samples, num_experts: int) -> list[torch.Tensor]:
+    """``routes`` with sample 4 routed apart from its prompt's other samples on a system-prompt token, and
+    sample 1 from sample 0 on the response opening they share, as when siblings prefill on different engines
+    or decode in different batches."""
+    routes = [route.clone() for route in routes]
+    opening = samples["total_lengths"][1] - samples["response_lengths"][1]
+    for sample, position in ((4, 5), (1, opening)):
+        routes[sample][position] = (routes[sample][position] + 1) % num_experts
+    return routes
+
+
+@pytest.mark.parametrize("routed_apart", [False, True], ids=["routed_alike", "routed_apart"])
+def test_rollout_routing_replay_on_a_trie_row_matches_each_sample_alone(
+    cpu_trie, rollout_routing_replay, routed_apart
+):
     """A trie token replays the routing its samples were given at its depth; padding and final tokens none.
-    Two micro-batches, so each must replay its own rows."""
+    Two micro-batches, so each must replay its own rows. Where rollouts routed a shared token apart, the samples
+    part there, so each still replays its own routing."""
     model = _tiny_model("qwen3_moe", sliding=False)
     config = model.config
     routing_replay.install(model, resolve_arch_adapter(config).routing_replay)
     samples = _samples(3)
     routes = _rollout_routing(samples, config.num_hidden_layers, config.num_experts, config.num_experts_per_tok)
+    if routed_apart:
+        routes = _routed_apart(routes, samples, config.num_experts)
 
     def solo_replayed() -> torch.Tensor:
         routing_replay_manager.clear_all()

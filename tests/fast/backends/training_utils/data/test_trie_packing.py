@@ -6,7 +6,13 @@ import pytest
 import torch
 from tests.fast.backends.training_utils.reference_trie_attention import reference_trie_attention
 
-from miles.backends.training_utils.data.trie_packing import TrieKV, build_trie_layout, pack_trie_bins, trie_replay_rows
+from miles.backends.training_utils.data.trie_packing import (
+    TrieKV,
+    build_trie_layout,
+    pack_trie_bins,
+    routing_aware_packing_keys,
+    trie_replay_rows,
+)
 from miles.utils.token_trie_builder import TokenTrieBuilder
 
 
@@ -137,6 +143,43 @@ def test_replay_rows_take_each_token_from_a_sample_that_holds_it():
                 assert sample in holders[token_index] and position == layout.positions[token_index]
             else:
                 assert row == -1
+
+
+def test_routing_keys_share_a_token_only_where_the_recorded_routing_agrees():
+    """Samples whose rollouts routed a shared token apart part there; each still reads back its own tokens."""
+    tokens = [torch.tensor([5, 6, 7, 8, 9])] * 3
+    agree = torch.tensor([[[1, 2]], [[3, 4]], [[5, 6]], [[7, 8]]])  # [T - 1, layers, top_k]
+    apart = agree.clone()
+    apart[2, 0, 1] = 9
+    packing_keys = routing_aware_packing_keys(tokens, [agree, agree, apart])
+    (trie,) = pack_trie_bins([t.tolist() for t in tokens], 100, packing_keys=packing_keys)
+    layout = build_trie_layout(trie)
+    assert layout.num_tokens == 5 + 3  # the third sample shares only the two tokens before the one routed apart
+    for sample, token_indices in _sample_token_indices(layout).items():
+        assert layout.tokens[token_indices].tolist() == tokens[sample].tolist()
+
+
+def test_routing_keyed_rows_replay_each_sample_its_own_routing():
+    """Packed on routing keys, every token a sample reads replays the sample's own recorded routing, even where
+    rollouts routed a shared prompt token or response opening apart."""
+    tokens = _samples(7)
+    rows = []
+    for sample, ids in enumerate(tokens):
+        # a function of the prefix, as when samples hit one radix-cache entry, except where some samples part
+        route = [[hash(tuple(ids[: p + 1])) % 1000] for p in range(len(ids) - 1)]
+        if sample % 3 == 1:
+            route[20][0] += 1000  # inside the system prompt every sample shares
+        if sample % 4 == 2:
+            route[-2][0] += 2000  # inside a response
+        rows.append(torch.tensor(route))
+    packing_keys = routing_aware_packing_keys([torch.tensor(ids) for ids in tokens], rows)
+    padded = [torch.cat([r, r.new_full((1, 1), -1)]) for r in rows]
+    for trie in pack_trie_bins(tokens, 60, packing_keys=packing_keys):
+        layout = build_trie_layout(trie, pad_multiple=8)
+        replayed = trie_replay_rows(layout, padded)
+        for sample, token_indices in _sample_token_indices(layout).items():
+            assert layout.tokens[token_indices].tolist() == tokens[sample]
+            assert torch.equal(replayed[token_indices[:-1]], rows[sample])
 
 
 def test_a_sample_ending_inside_a_segment_gives_its_rows_only_to_its_own_tokens():

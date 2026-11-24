@@ -9,12 +9,21 @@ from tests.fast.backends.training_utils.loss.loss_test_utils import make_args, m
 
 from miles.backends.training_utils.data import context_parallel
 from miles.backends.training_utils.data import rollout as data_utils
-from miles.backends.training_utils.data.trie_batch import TrieMicroBatches, schedule_trie_micro_batches
-from miles.backends.training_utils.data.trie_packing import TrieModelSpec, micro_batch_trie_layout
+from miles.backends.training_utils.data.trie_batch import (
+    TrieMicroBatches,
+    schedule_trie_micro_batches,
+    trie_packing_keys,
+)
+from miles.backends.training_utils.data.trie_packing import (
+    TrieModelSpec,
+    micro_batch_trie_layout,
+    routing_aware_packing_keys,
+)
 from miles.backends.training_utils.loss.hub import math_utils
 from miles.backends.training_utils.loss.hub.logit_processors import get_log_probs_and_entropy
 from miles.ray.rollout.train_data_conversion import _step_block_partitions
 from miles.utils.arguments import validate_trie_packing_args
+from miles.utils.output_store.plan import RoutedExpertsSegments
 
 
 def _rollout(seed: int, num_prompts: int = 2, group_size: int = 3) -> dict:
@@ -49,7 +58,8 @@ def on_cpu(monkeypatch):
 
 def _trie_iterator(rollout: dict, micro_batch_indices: list[list[int]] | None = None) -> data_utils.DataIterator:
     micro_batch_indices = micro_batch_indices or [list(range(len(rollout["tokens"])))]
-    trie_micro_batches = TrieMicroBatches(rollout, TrieModelSpec(), micro_batch_indices)
+    packing_keys = trie_packing_keys(rollout)
+    trie_micro_batches = TrieMicroBatches(rollout, TrieModelSpec(), micro_batch_indices, packing_keys=packing_keys)
     return data_utils.DataIterator(
         rollout, micro_batch_indices=micro_batch_indices, trie_micro_batches=trie_micro_batches
     )
@@ -234,6 +244,8 @@ def _trie_args(**overrides):
         enable_witness=False,
         use_dynamic_batch_size=True,
         max_tokens_per_gpu=8192,
+        use_rollout_routing_replay=False,
+        use_output_store=False,
     )
     return SimpleNamespace(**(values | overrides))
 
@@ -255,3 +267,31 @@ def test_trie_packing_accepts_a_supported_run():
 def test_trie_packing_refuses_what_it_does_not_implement(override, message):
     with pytest.raises(ValueError, match=message):
         validate_trie_packing_args(_trie_args(**override))
+
+
+def test_the_token_budget_holds_for_samples_whose_routing_differs(monkeypatch):
+    """Samples their rollouts routed apart share no token; the schedule must not count those tokens as shared."""
+    rng = random.Random(0)
+    shared = torch.tensor([rng.randrange(1, 50) for _ in range(30)])
+    tokens = [shared] * 8
+    routed_experts = [torch.full((len(shared) - 1, 2, 2), sample) for sample in range(8)]
+    rollout = {
+        "tokens": tokens,
+        "total_lengths": [len(t) for t in tokens],
+        "response_lengths": [3] * len(tokens),
+        "loss_masks": [torch.ones(3, dtype=torch.int)] * len(tokens),
+        "rollout_routed_experts": routed_experts,
+    }
+    assert trie_packing_keys(rollout) == routing_aware_packing_keys(tokens, routed_experts)
+    budget = 3 * len(shared)
+    trie_micro_batches, _ = _schedule(monkeypatch, rollout, peer_counts=[0], max_tokens=budget)
+
+    assert max(_row_sizes(trie_micro_batches)) <= budget
+
+
+def test_routing_keys_need_the_rows_inline():
+    """Without routing replay, or with its rows in the output store (read per micro-batch), samples pack on tokens."""
+    rollout = _rollout(4, num_prompts=2)
+    assert trie_packing_keys(rollout) is None
+    segments = [RoutedExpertsSegments() for _ in rollout["tokens"]]
+    assert trie_packing_keys(rollout | {"rollout_routed_experts": segments}) is None

@@ -38,7 +38,7 @@ from miles.backends.fsdp_utils.adaptations.trie_attention import (
 from miles.backends.fsdp_utils.adaptations.trie_gather import gather_rows
 from miles.backends.training_utils.data import context_parallel
 from miles.backends.training_utils.data import rollout as data_utils
-from miles.backends.training_utils.data.trie_batch import TrieMicroBatches
+from miles.backends.training_utils.data.trie_batch import TrieMicroBatches, trie_packing_keys
 from miles.backends.training_utils.data.trie_packing import WINDOW_START_MULTIPLE, build_trie_layout, pack_trie_bins
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
@@ -151,7 +151,8 @@ def _trie_log_probs(model, samples) -> list[torch.Tensor]:
     model.set_attn_implementation(trie_attn_implementation(model.config, "flash_attention_2"))
     micro_batch_indices = [list(range(len(samples["tokens"])))]
     model_spec = trie_model_spec(model.config.get_text_config())
-    trie_micro_batches = TrieMicroBatches(samples, model_spec, micro_batch_indices)
+    packing_keys = trie_packing_keys(samples)
+    trie_micro_batches = TrieMicroBatches(samples, model_spec, micro_batch_indices, packing_keys=packing_keys)
     iterator = data_utils.DataIterator(
         samples, micro_batch_indices=micro_batch_indices, trie_micro_batches=trie_micro_batches
     )

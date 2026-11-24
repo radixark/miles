@@ -5,6 +5,7 @@ fill then read each micro-batch's trie row from it, the same row on every pass o
 """
 
 import logging
+from collections.abc import Sequence
 
 import torch
 import torch.distributed as dist
@@ -16,10 +17,12 @@ from miles.backends.training_utils.data.trie_packing import (
     micro_batch_trie_layout,
     pack_trie_bins,
     response_logit_rows,
+    routing_aware_packing_keys,
     trie_input_loss_mask,
 )
 from miles.platforms import current_platform
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
+from miles.utils.output_store.plan import is_segments_column
 from miles.utils.seqlen_balancing import expand_bins_by_splitting
 from miles.utils.types import RolloutBatch
 
@@ -27,17 +30,23 @@ logger = logging.getLogger(__name__)
 
 
 class TrieMicroBatches:
-    """A rollout's trie micro-batches: the samples each holds, and its trie row, built on first use."""
+    """A rollout's trie micro-batches: the samples each holds, and its trie row, built on first use.
+
+    ``packing_keys`` are each sample's packing keys (``trie_packing_keys``), as the schedule packed them.
+    """
 
     def __init__(
         self,
         rollout_data: RolloutBatch,
         model_spec: TrieModelSpec,
         micro_batch_indices: list[list[int]],
+        *,
+        packing_keys: list[list[int]] | None,
     ) -> None:
         self.rollout_data = rollout_data
         self.model_spec = model_spec
         self.micro_batch_indices = micro_batch_indices
+        self._packing_keys = packing_keys
         self._layouts: dict[int, TrieLayout] = {}
 
     def layout(self, index: int, *, pad_multiple: int) -> TrieLayout:
@@ -51,6 +60,7 @@ class TrieMicroBatches:
                 self.model_spec,
                 window_start_multiple=WINDOW_START_MULTIPLE,
                 pad_multiple=pad_multiple,
+                packing_keys=_take(self._packing_keys, rows),
             )
         return self._layouts[index]
 
@@ -84,6 +94,10 @@ class TrieMicroBatches:
         return batch
 
 
+def _take(per_sample: list | None, rows: Sequence[int]) -> list | None:
+    return None if per_sample is None else [per_sample[i] for i in rows]
+
+
 def schedule_trie_micro_batches(
     rollout_data: RolloutBatch,
     model_spec: TrieModelSpec,
@@ -95,6 +109,8 @@ def schedule_trie_micro_batches(
 ) -> tuple[TrieMicroBatches, list[int]]:
     """Per step, this rank's samples as prefix tries of at most ``max_tokens_per_gpu`` distinct tokens, split until
     every DP rank runs the same number of micro-batches; and the number of micro-batches per step."""
+    # the schedule packs routing as the trie rows will, so their budget holds
+    packing_keys = trie_packing_keys(rollout_data)
     tokens, total_lengths = rollout_data["tokens"], rollout_data["total_lengths"]
     steps, logical, physical = [], 0, 0
     for step in range(num_steps):
@@ -102,6 +118,7 @@ def schedule_trie_micro_batches(
         tries = pack_trie_bins(
             [tokens[i].tolist() for i in range(start, end)],
             max_tokens_per_gpu,
+            None if packing_keys is None else packing_keys[start:end],
         )
         steps.append([list(trie.tags) for trie in tries])
         logical += sum(total_lengths[start:end])
@@ -120,5 +137,16 @@ def schedule_trie_micro_batches(
         expand_bins_by_splitting(bins, target, total_lengths[start : start + num_local_gbs])
         assert len(bins) == target, f"step {step}: {num_local_gbs} samples cannot fill {target} trie micro-batches"
         micro_batch_indices.extend([[start + i for i in sorted(trie_bin)] for trie_bin in bins])
-    trie_micro_batches = TrieMicroBatches(rollout_data, model_spec, micro_batch_indices)
+    trie_micro_batches = TrieMicroBatches(rollout_data, model_spec, micro_batch_indices, packing_keys=packing_keys)
     return trie_micro_batches, num_microbatches
+
+
+def trie_packing_keys(rollout_data: RolloutBatch) -> list[list[int]] | None:
+    """Each sample's packing keys under rollout routing replay (``routing_aware_packing_keys``), None without it.
+
+    Rows held in the output store are read per micro-batch, after the schedule, so their samples pack on tokens.
+    """
+    routed_experts = rollout_data.get("rollout_routed_experts")
+    if routed_experts is None or is_segments_column(routed_experts):
+        return None
+    return routing_aware_packing_keys(rollout_data["tokens"], routed_experts)
