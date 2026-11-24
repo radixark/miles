@@ -68,6 +68,7 @@ class TestSharedInfraContract:
             "volumes",
             "paths",
             "devShm",
+            "gpuResources",
             "scheduling",
             "env",
         }

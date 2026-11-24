@@ -91,6 +91,7 @@ class PoolEntry(ValuesModel):
     replicas: Annotated[int, Field(ge=1)] | None = None
     size: Annotated[int, Field(ge=1)] | None = None
     resources: _Resources | None = None
+    needs_gpu_runtime: bool | None = None
     restart_at: Annotated[str, Field(min_length=1)] | None = None
     service_account_name: _ObjectName | None = None
 
@@ -226,6 +227,7 @@ class DevShm(ValuesModel):
     mount_path: _AbsolutePath
     host_path: HostPathSource | None = None
     empty_dir: EmptyDirSource | None = None
+    colocate_host_path: HostPathSource | None = None
 
     @model_validator(mode="after")
     def _declares_exactly_one_source(self) -> DevShm:
@@ -248,6 +250,7 @@ class InfraValues(ValuesModel):
     volumes: list[VolumeEntry]
     paths: Paths | None = None
     dev_shm: DevShm | None = None
+    gpu_resources: dict[str, int | str] | None = None
     scheduling: Scheduling | None = None
     env: _EnvVars | None = None
 

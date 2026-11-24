@@ -151,6 +151,9 @@
         },
         "emptyDir": {
           "$ref": "#/definitions/EmptyDirSource"
+        },
+        "colocateHostPath": {
+          "$ref": "#/definitions/HostPathSource"
         }
       },
       "required": [
@@ -266,6 +269,19 @@
         },
         "devShm": {
           "$ref": "#/definitions/DevShm"
+        },
+        "gpuResources": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "type": "object"
         },
         "scheduling": {
           "$ref": "#/definitions/Scheduling"
@@ -574,6 +590,9 @@
         "resources": {
           "additionalProperties": true,
           "type": "object"
+        },
+        "needsGpuRuntime": {
+          "type": "boolean"
         },
         "restartAt": {
           "minLength": 1,

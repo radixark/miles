@@ -22,6 +22,19 @@
         "devShm": {
           "$ref": "#/definitions/DevShm"
         },
+        "gpuResources": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "type": "object"
+        },
         "scheduling": {
           "$ref": "#/definitions/Scheduling"
         },
@@ -83,6 +96,9 @@
         },
         "emptyDir": {
           "$ref": "#/definitions/EmptyDirSource"
+        },
+        "colocateHostPath": {
+          "$ref": "#/definitions/HostPathSource"
         }
       },
       "required": [

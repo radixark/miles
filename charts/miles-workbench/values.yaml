@@ -20,6 +20,7 @@ infra:
     hostPath:
       path: /dev/shm
       type: Directory
+  gpuResources: {}
   scheduling:
     nodeSelector: {}
     tolerations: []

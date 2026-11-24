@@ -11,6 +11,8 @@
 {{- $pool := .pool }}
 {{- $role := include "miles-run.colocateRole" (dict "context" $context "poolId" (default $pool.name $pool.poolId)) }}
 {{- $gated := eq $role "inference" }}
+{{- $colocated := ne $role "" }}
+{{- $needsGpuRuntime := eq (include "miles-run.poolNeedsGpuRuntime" (dict "pool" $pool "gated" $gated)) "true" }}
 {{- $name := $pool.objectName }}
 {{- $labels := dict "context" $context "component" $pool.name }}
 apiVersion: leaderworkerset.x-k8s.io/v1
@@ -51,7 +53,16 @@ spec:
         {{- end }}
         containers:
           - name: {{ $pool.containerName | default "worker" | quote }}
-            {{- include "miles-run.containerDefaultsWith" (dict "context" $context "extraMounts" (include "miles-run.shmVolumeMount" $context)) | nindent 12 }}
+            {{- $shmMount := "" }}
+            {{- if $needsGpuRuntime }}
+            {{- $shmMount = include "miles-run.shmVolumeMountFor" (dict "context" $context "colocated" $colocated) }}
+            {{- end }}
+            {{- include "miles-run.containerDefaultsWith" (dict "context" $context "extraMounts" $shmMount) | nindent 12 }}
+            {{- if $needsGpuRuntime }}
+            {{- include "miles-run.gpuContainerSecurityContext" $context | nindent 12 }}
+            {{- else }}
+            {{- include "miles-run.cpuContainerSecurityContext" $context | nindent 12 }}
+            {{- end }}
             command:
               {{- range $pool.command }}
               - {{ . | quote }}
@@ -77,19 +88,36 @@ spec:
                 containerPort: {{ .port }}
               {{- end }}
             {{- end }}
-            {{- $resources := default dict $pool.resources }}
+            {{- $resources := deepCopy (default dict $pool.resources) }}
             {{- if $gated }}
             {{- $limits := deepCopy ($resources.limits | default dict) }}
-            {{- $resources = deepCopy $resources }}
             {{- $_ := set $limits "nvidia.com/gpu" 0 }}
             {{- $ignored := set $resources "limits" $limits }}
             {{- with $resources.requests }}
             {{- $alsoIgnored := set $resources "requests" (set (deepCopy .) "nvidia.com/gpu" 0) }}
             {{- end }}
             {{- end }}
+            {{- if and $needsGpuRuntime $context.Values.infra.gpuResources }}
+            {{- $limits := deepCopy ($resources.limits | default dict) }}
+            {{- $requests := deepCopy ($resources.requests | default dict) }}
+            {{- range $resKey, $resVal := $context.Values.infra.gpuResources }}
+            {{- if not (hasKey $limits $resKey) }}
+            {{- $_ := set $limits $resKey $resVal }}
+            {{- end }}
+            {{- if not (hasKey $requests $resKey) }}
+            {{- $_ := set $requests $resKey $resVal }}
+            {{- end }}
+            {{- end }}
+            {{- $_ := set $resources "limits" $limits }}
+            {{- $_ = set $resources "requests" $requests }}
+            {{- end }}
             resources:
               {{- toYaml $resources | nindent 14 }}
-        {{- $volumes := compact (list (include "miles-common.volumes" $context | trim) (include "miles-run.shmVolume" $context | trim)) | join "\n" }}
+        {{- $shmVolume := "" }}
+        {{- if $needsGpuRuntime }}
+        {{- $shmVolume = include "miles-run.shmVolumeFor" (dict "context" $context "colocated" $colocated) | trim }}
+        {{- end }}
+        {{- $volumes := compact (list (include "miles-common.volumes" $context | trim) $shmVolume) | join "\n" }}
         {{- with $volumes }}
         volumes:
           {{- . | nindent 10 }}

@@ -292,9 +292,12 @@ class TestContract:
 
         assert rendered == shared
 
-    def test_the_library_chart_owns_every_section_but_the_shared_memory_one(self):
-        """Only miles-run has pods that run a collective, so that one helper stays with the run chart."""
+    def test_the_library_chart_owns_every_section_but_the_gpu_runtime_ones(self):
+        """Only miles-run runs GPU/collective pods, so devShm and gpuResources stay with the run chart."""
         library = (LIBRARY_CHART / "templates" / "_infra.tpl").read_text()
         shared = set(json.loads(SHARED_INFRA_SCHEMA_PATH.read_text())["properties"]["infra"]["properties"])
 
-        assert {section for section in shared if f".Values.infra.{section}" in library} == shared - {"devShm"}
+        assert {section for section in shared if f".Values.infra.{section}" in library} == shared - {
+            "devShm",
+            "gpuResources",
+        }
