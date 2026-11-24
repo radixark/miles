@@ -43,6 +43,7 @@ _BIND_HOST = "0.0.0.0"
 
 _SERVE_MODULE = "miles.utils.workers.serving.serve"
 _SUPERVISOR_MODULE = "miles.utils.workers.process_supervisor"
+_PUBLISH_DEVICES_MODULE = "miles.utils.external_utils.colocate_pairing.publish_devices"
 
 
 def build_entry(
@@ -51,6 +52,7 @@ def build_entry(
     addresses: dict[str, dict[str, NamedHostAndPorts]],
     pairing_layout: PairingLayout | None = None,
     *,
+    colocate_pairing_dir: str | None = None,
     static_connections: StaticConnConfig,
     scaling: ScalingConfig,
 ) -> PoolEntry:
@@ -71,13 +73,19 @@ def build_entry(
     )
     pods_per_cell = scheduling.pods_per_cell()
     gpus_per_pod = scheduling.gpus_per_pod()
+    command = _with_colocate_device_publisher(
+        _command_of_spec(spec, context, static_connections=static_connections, scaling=scaling),
+        spec,
+        colocate_pairing_dir=colocate_pairing_dir,
+        scaling=scaling,
+    )
 
     return PoolEntry(
         name=spec.name,
         object_name=naming.component_name(plan.release, spec.name),
         pool_id=spec.name,
         command=_with_prepare_cmd(
-            _command_of_spec(spec, context, static_connections=static_connections, scaling=scaling),
+            command,
             spec,
             plan=plan,
             scaling=scaling,
@@ -227,7 +235,35 @@ def _serve_command(spec: BaseServeSpec, *, static_connections: StaticConnConfig,
     ] + serve
 
 
+def _with_colocate_device_publisher(
+    command: list[str],
+    spec: BaseSpec,
+    *,
+    colocate_pairing_dir: str | None,
+    scaling: ScalingConfig,
+) -> list[str]:
+    if colocate_pairing_dir is None or SECTION_OF_CATEGORY[spec.category] != TRAINER_ENGINES_SECTION:
+        return command
+    gpus_per_pod = spec.scheduling(scaling).gpus_per_pod()
+    assert gpus_per_pod >= 1, (
+        f"Colocated trainer pool '{spec.name}' requests {gpus_per_pod} gpus, so it has no physical GPU UUIDs to publish"
+    )
+    return [
+        *python_argv_prefix(),
+        "-m",
+        _PUBLISH_DEVICES_MODULE,
+        "--pairing-dir",
+        colocate_pairing_dir,
+        "--pool-id",
+        spec.name,
+        "--expected-gpus",
+        str(gpus_per_pod),
+        "--",
+        *command,
+    ]
+
+
 def _is_sub_node(pairing_layout: PairingLayout | None) -> bool:
     if pairing_layout is None:
         return False
-    return pairing_layout.num_gpus_per_inference_pod < pairing_layout.num_gpus_per_node
+    return pairing_layout.num_gpus_per_inference_pod < pairing_layout.gpus_per_trainer_pod

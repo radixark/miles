@@ -15,6 +15,7 @@ from miles.utils.workers.worker_provider.kubernetes.helm.env import INSTANCE_LAB
 logger = logging.getLogger(__name__)
 
 _RESYNC_PERIOD_SECONDS = 300.0
+_FAILURE_MAX_DELAY_SECONDS = 5.0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -41,6 +42,7 @@ async def _run_forever(config: PairingConfig) -> None:
             reconcile=controller.reconcile,
             key_map=controller.key_of,
             resync_period=_RESYNC_PERIOD_SECONDS,
+            failure_max_delay=_FAILURE_MAX_DELAY_SECONDS,
         )
         controller.set_loop(loop)
         async with loop:

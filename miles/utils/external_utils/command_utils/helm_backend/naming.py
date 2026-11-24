@@ -26,6 +26,7 @@ _RUNS_DIR_NAME = "miles-runs"
 _STATE_DIR_NAME = "state"
 _VALUES_DIR_NAME = "values"
 _RECORDS_DIR_NAME = "launches"
+_PAIRING_DIR_NAME = "pairing"
 _RECORD_FILE_GLOB = "launch-*.json"
 _RECORDED_STATE_FILE_KEY = "state_file"
 _SUPERSEDED_MARKER_SUFFIX = ".superseded"
@@ -132,6 +133,10 @@ class RunFiles:
     @staticmethod
     def new_record_file(*, run_directory: str | Path) -> Path:
         return Path(run_directory) / _RECORDS_DIR_NAME / f"launch-{_new_launch_token()}.json"
+
+    @staticmethod
+    def pairing_dir(*, run_directory: str | Path) -> Path:
+        return Path(run_directory) / _PAIRING_DIR_NAME
 
     @staticmethod
     def superseded_marker(*, state_file: str | Path) -> Path:

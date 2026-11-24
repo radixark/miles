@@ -282,6 +282,7 @@
                 "MILES_CELL_INDEX",
                 "MILES_POD_INDEX",
                 "MILES_POD_UID",
+                "MILES_NODE_NAME",
                 "MILES_BASE_GPU_ID",
                 "MILES_K8S_NAMESPACE",
                 "MILES_K8S_RELEASE",
@@ -417,6 +418,9 @@
           },
           "minItems": 1,
           "type": "array"
+        },
+        "pairing_dir": {
+          "type": "string"
         }
       },
       "required": [
@@ -447,6 +451,10 @@
           "type": "integer"
         },
         "num_gpus_per_node": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "num_gpus_per_trainer_pod": {
           "minimum": 1,
           "type": "integer"
         },
@@ -541,6 +549,7 @@
                 "MILES_CELL_INDEX",
                 "MILES_POD_INDEX",
                 "MILES_POD_UID",
+                "MILES_NODE_NAME",
                 "MILES_BASE_GPU_ID",
                 "MILES_K8S_NAMESPACE",
                 "MILES_K8S_RELEASE",
@@ -668,6 +677,7 @@
                 "MILES_CELL_INDEX",
                 "MILES_POD_INDEX",
                 "MILES_POD_UID",
+                "MILES_NODE_NAME",
                 "MILES_BASE_GPU_ID",
                 "MILES_K8S_NAMESPACE",
                 "MILES_K8S_RELEASE",

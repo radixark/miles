@@ -15,7 +15,11 @@ from tests.fast.charts.utils import (
 from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values import utils as values_utils
 from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values.utils import build_values_as_launched
 
-from miles.utils.external_utils.colocate_pairing.pods import _GATE_NAME, release_patch
+from miles.utils.external_utils.colocate_pairing.pods import (
+    _GATE_NAME,
+    NVIDIA_VISIBLE_DEVICES_ANNOTATION,
+    release_patch,
+)
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import (
     _PLATFORM_OWNED_ENV_VARS,
 )
@@ -23,6 +27,7 @@ from miles.utils.workers.env_vars import (
     BASE_GPU_ID_ENV_VAR,
     CELL_INDEX_ENV_VAR,
     NAMESPACE_ENV_VAR,
+    NODE_NAME_ENV_VAR,
     PLATFORM_IDENTITY_ENV_VARS,
     POD_INDEX_ENV_VAR,
     RELEASE_ENV_VAR,
@@ -126,9 +131,16 @@ class TestColocatedEnginePool:
         """A CUDA IPC handle's reference counter lives in shared memory, so both pods need the same one."""
         assert colocated_engine_pod()["hostIPC"] is True
 
-    def test_sees_every_gpu_on_the_node_it_lands_on(self):
-        """It requests no gpu of its own, so only the device plugin bypass makes the trainer's gpus visible."""
-        assert {"name": "NVIDIA_VISIBLE_DEVICES", "value": "all"} in colocated_engine_pod()["containers"][0]["env"]
+    def test_reads_visible_gpu_devices_from_pod_annotation(self):
+        """The pairing controller writes the exact physical GPU UUID slice before releasing the gate."""
+        entry = _env_entry(colocated_engine_pod()["containers"][0], "NVIDIA_VISIBLE_DEVICES")
+
+        assert entry == {
+            "name": "NVIDIA_VISIBLE_DEVICES",
+            "valueFrom": {
+                "fieldRef": {"fieldPath": f"metadata.annotations['{NVIDIA_VISIBLE_DEVICES_ANNOTATION}']"}
+            },
+        }
 
     def test_requests_no_gpus_of_its_own(self):
         """The trainer requests the whole node, and two claims on one gpu would never both schedule."""
@@ -229,11 +241,11 @@ class TestPairingController:
         assert deployment["spec"]["strategy"] == {"type": "Recreate"}
 
     def test_holds_only_namespaced_rights_over_pods(self):
-        """Releasing a gate is an ordinary pod update, so nothing cluster-scoped is needed."""
+        """Releasing a gate or deleting a stale paired pod is namespaced, so nothing cluster-scoped is needed."""
         role = named_object(render_run(*ENABLE), "Role", PAIRING)
 
         assert role["rules"] == [
-            {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list", "watch", "patch", "update"]}
+            {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list", "watch", "patch", "update", "delete"]}
         ]
 
     def test_never_asks_for_the_binding_subresource(self):
@@ -301,7 +313,13 @@ class TestTheTwoListsOfPlatformVariables:
         reserved = set(_PLATFORM_OWNED_ENV_VARS)
         identity = set(PLATFORM_IDENTITY_ENV_VARS)
 
-        assert reserved - identity == {"PYTHONPATH", BASE_GPU_ID_ENV_VAR, NAMESPACE_ENV_VAR, RELEASE_ENV_VAR}
+        assert reserved - identity == {
+            "PYTHONPATH",
+            BASE_GPU_ID_ENV_VAR,
+            NAMESPACE_ENV_VAR,
+            NODE_NAME_ENV_VAR,
+            RELEASE_ENV_VAR,
+        }
         assert identity - reserved == {SUBPROCESS_INDEX_ENV_VAR}
 
 
@@ -334,7 +352,8 @@ class TestTheCardReachesTheEngineByOneNameAndOneKey:
         assert argv[argv.index("--base-gpu-id") + 1] == f"$({BASE_GPU_ID_ENV_VAR})"
         assert env["valueFrom"]["fieldRef"]["fieldPath"] == f"metadata.annotations['{annotation}']"
         assert [operation["path"] for operation in patch if operation["path"].startswith("/metadata")] == [
-            f"/metadata/annotations/{annotation.replace('/', '~1')}"
+            f"/metadata/annotations/{annotation.replace('/', '~1')}",
+            f"/metadata/annotations/{NVIDIA_VISIBLE_DEVICES_ANNOTATION.replace('/', '~1')}",
         ]
 
 

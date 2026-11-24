@@ -169,7 +169,27 @@ class TestColocateReachesTheValues:
         assert colocate["namespace"] == NAMESPACE
         assert colocate["release"] == RELEASE
         assert colocate["trainer_pool_id"] == "trainer-engine-actor"
+        assert colocate["pairing_dir"] == str(
+            tmp_path / "cluster-storage" / "miles_data" / "miles-runs" / RUN_ID / "pairing"
+        )
         assert [pool["pool_id"] for pool in colocate["inference_pools"]] == ["inference-engine-0-0"]
+
+    def test_a_sub_node_colocated_run_populates_pairing_dir_and_trainer_width(self, monkeypatch, tmp_path):
+        """Launching a 4-on-8 colocated run records pairing_dir and num_gpus_per_trainer_pod=4."""
+        specs = [
+            _engine(num_cells=2, gpus_per_worker_slot=2, workers_per_cell=1),
+            _trainer(num_cells=1, workers_per_cell=4),
+        ]
+
+        _launch(monkeypatch, tmp_path, colocate=True, specs=specs)
+
+        written = _written_values(tmp_path)["run"]
+        colocate = written["colocate"]
+        assert colocate["pairing_dir"] == str(
+            tmp_path / "cluster-storage" / "miles_data" / "miles-runs" / RUN_ID / "pairing"
+        )
+        assert colocate["inference_pools"][0]["layout"]["num_gpus_per_trainer_pod"] == 4
+        assert "miles.utils.external_utils.colocate_pairing.publish_devices" in written["trainerEngines"][0]["command"]
 
     def test_a_disaggregated_colocated_run_writes_every_pool_with_its_own_offset(self, monkeypatch, tmp_path):
         """Prefill and decode both sit on the trainer's gpus, and only their offsets say which nodes."""

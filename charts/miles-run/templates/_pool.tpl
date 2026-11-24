@@ -56,18 +56,15 @@ spec:
               {{- range $pool.command }}
               - {{ . | quote }}
               {{- end }}
-            {{- $entry := $pool }}
-            {{- if $gated }}
-            {{- $entry = merge (dict "env" (merge (dict "NVIDIA_VISIBLE_DEVICES" "all") (deepCopy ($pool.env | default dict)))) (deepCopy $pool) }}
-            {{- end }}
             env:
               {{- include "miles-run.annotationEnv" (dict "name" "MILES_WORKER_METADATA" "annotation" "miles.radixark.io/worker-metadata") | trim | nindent 14 }}
               {{- include "miles-run.labelEnv" (dict "name" "MILES_CELL_INDEX" "label" "leaderworkerset.sigs.k8s.io/group-index") | trim | nindent 14 }}
               {{- include "miles-run.labelEnv" (dict "name" "MILES_POD_INDEX" "label" "leaderworkerset.sigs.k8s.io/worker-index") | trim | nindent 14 }}
               {{- if $gated }}
               {{- include "miles-run.annotationEnv" (dict "name" "MILES_BASE_GPU_ID" "annotation" "miles.radixark.io/base-gpu-id") | trim | nindent 14 }}
+              {{- include "miles-run.annotationEnv" (dict "name" "NVIDIA_VISIBLE_DEVICES" "annotation" "miles.radixark.io/nvidia-visible-devices") | trim | nindent 14 }}
               {{- end }}
-              {{- with include "miles-run.envItems" (dict "context" $context "entry" $entry) | trim }}
+              {{- with include "miles-run.envItems" (dict "context" $context "entry" $pool) | trim }}
               {{- . | nindent 14 }}
               {{- end }}
             {{- with $pool.ports }}
