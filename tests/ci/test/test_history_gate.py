@@ -40,7 +40,7 @@ LAST_KEY = _key("last")
 
 @pytest.fixture
 def store():
-    s = SQLiteMetricHistoryStore(":memory:")
+    s = SQLiteMetricHistoryStore(":memory:", repository="radixark/miles")
     yield s
     s.close()
 

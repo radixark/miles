@@ -46,3 +46,16 @@ class TestLoraBridgeBackendConfiguration:
         assert provider.ddp_config.use_distributed_optimizer is use_distributed
         assert provider.ddp_config.grad_reduce_in_fp32 is True
         assert provider.ddp_config.finalized is True
+
+    def test_provider_receives_the_precision_recipe(self, bridge_args: Namespace, bridge_provider: object) -> None:
+        """A LoRA model built through the bridge must not drop the precision flags and train in BF16."""
+        bridge_args.backend.fp4 = "e2m1"
+        bridge_args.backend.fp8_param_gather = True
+        bridge_args.backend.first_last_layers_bf16 = True
+
+        [provider] = _setup_lora_model_via_bridge(bridge_args)
+
+        assert provider.fp4 == "e2m1"
+        assert provider.fp8_param is True
+        assert provider.first_last_layers_bf16 is True
+        assert provider.quant_recipe is None

@@ -2,8 +2,9 @@
 title: Installation
 description: Install Miles on NVIDIA or AMD GPUs. Docker is the recommended path.
 ---
-There are three ways to install Miles. Docker is recommended because Miles pins patched
-versions of SGLang, Megatron-LM, and a few CUDA kernels.
+There are four ways to install Miles. Docker is recommended because Miles pins patched
+versions of SGLang, Megatron-LM, and a few CUDA kernels. pip covers the FSDP and torchtitan
+backends, which need none of the patched kernels.
 
 ## Method 1: Docker (recommended)
 
@@ -50,7 +51,37 @@ The image ships with:
 
 See [Hardware requirements](#hardware-requirements) for per-GPU status.
 
-## Method 2: From source
+## Method 2: pip (FSDP and torchtitan)
+
+Every tagged release after the v0.2 line publishes a pure-Python `miles` wheel to a pip index at
+`https://radixark.github.io/miles-wheels/simple/`, next to the `sglang` wheel it was tested with, which
+it depends on. Linux x86_64 or aarch64, Python 3.11 or 3.12.
+
+PyPI has an unrelated project named `miles`, and pip gives every index equal weight, so install
+with uv, which takes each package from the first index that has it:
+
+```bash
+uv pip install --index https://radixark.github.io/miles-wheels/simple/ "miles[torchtitan]==<version>"
+```
+
+With plain pip, install the wheel by URL instead, with the index only for `sglang`:
+
+```bash
+pip install "miles[torchtitan] @ https://github.com/radixark/miles/releases/download/v<version>/miles-<version>-py3-none-any.whl" \
+  --extra-index-url https://radixark.github.io/miles-wheels/simple/
+```
+
+- `[torchtitan]` adds torchtitan and its torch floor; leave it off for FSDP alone. torch itself
+  follows SGLang's pin.
+- Megatron-LM is not installable this way: `--train-backend megatron` needs the Docker image.
+  True-on-policy sampling-support replay also needs the image for now (it relies on
+  FlashAttention-3 and the Miles router build).
+
+Training still launches from a checkout's `train.py` ([Quick Start](/getting-started/quick-start));
+the wheel supplies the `miles` package it imports. The Miles dashboard is not in the wheel: install it
+from the same checkout with `pip install -e packages/miles-dashboard`.
+
+## Method 3: From source
 
 Clone and install in an existing environment.
 
@@ -59,6 +90,7 @@ git clone https://github.com/radixark/miles.git
 cd miles
 pip install -r requirements.txt
 pip install -e . --no-deps
+pip install -e packages/miles-dashboard
 ```
 
 <Warning>
@@ -68,7 +100,7 @@ the wrong commit is the most common source of bug reports — use Docker if you 
 
 </Warning>
 
-## Method 3: Update an existing container
+## Method 4: Update an existing container
 
 If you already run a Miles image and want the latest code:
 
@@ -76,6 +108,7 @@ If you already run a Miles image and want the latest code:
 cd /root/miles
 git pull --rebase
 pip install -e . --no-deps
+pip install -e packages/miles-dashboard --no-deps
 ray stop && ray start --head --port=6379
 ```
 

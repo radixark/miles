@@ -204,7 +204,7 @@ def execute(args: ScriptArgs):
         f"--num-gpus-per-node {args.num_gpus_per_node} "
     )
     if args.recipe.use_dashboard:
-        misc_args += "--use-miles-dashboard " f"--dump-details {args.output_dir}/dump_details "
+        misc_args += f"--dump-details {args.output_dir}/dump_details "
 
     train_args = (
         f"{ckpt_args} "
@@ -224,6 +224,7 @@ def execute(args: ScriptArgs):
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.recipe.megatron_model_type,
         megatron_path=args.megatron_path,
+        extra_env_vars={"MILES_DASHBOARD": "1"} if args.recipe.use_dashboard else None,
     )
 
 
