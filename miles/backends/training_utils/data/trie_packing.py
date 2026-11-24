@@ -233,6 +233,80 @@ def build_trie_layout(
     )
 
 
+def micro_batch_trie_layout(
+    tokens: Sequence[Sequence[int]],
+    total_lengths: Sequence[int],
+    response_lengths: Sequence[int],
+    model_spec: TrieModelSpec,
+    *,
+    window_start_multiple: int,
+    pad_multiple: int,
+) -> TrieLayout:
+    """The one trie row holding a scheduled micro-batch's samples, laid out for ``model_spec``'s layers."""
+    # a response's first token is predicted from the last prompt token's row
+    if any(total - response < 1 for total, response in zip(total_lengths, response_lengths, strict=True)):
+        raise ValueError("trie packing needs at least one prompt token per sample")
+    bins = pack_trie_bins(tokens, sum(total_lengths))
+    if len(bins) != 1:
+        raise AssertionError(f"a micro-batch packed into {len(bins)} tries, expected 1")
+    return build_trie_layout(
+        bins[0],
+        window_left=_left_extent(model_spec.sliding_window_size),
+        window_start_multiple=window_start_multiple,
+        pad_multiple=pad_multiple,
+    )
+
+
+def _left_extent(size: int | None) -> int | None:
+    """How many earlier tokens a window of ``size`` tokens reaches: the kernels' left extent."""
+    return None if size is None else size - 1
+
+
+def _sample_token_indices(layout: TrieLayout) -> list[torch.Tensor]:
+    """Each sample's token indices, position by position, in micro-batch (pool) order."""
+    bounds = layout.kv.cu_seqlens.tolist()
+    by_sample = {
+        sample: layout.kv.index[bounds[segment] : bounds[segment] + length]
+        for sample, segment, length in zip(
+            layout.sample_indices, layout.sample_segments, layout.sample_lengths, strict=True
+        )
+    }
+    return [by_sample[sample] for sample in range(len(by_sample))]
+
+
+def response_logit_rows(
+    layout: TrieLayout, total_lengths: Sequence[int], response_lengths: Sequence[int]
+) -> torch.Tensor:
+    """The rows of a trie row that predict each response's tokens, responses back to back.
+
+    Row ``p`` of a sample predicts its token ``p + 1``, so a response of ``R`` tokens ending a sample of ``T``
+    tokens is predicted by the sample's rows at positions ``T - R - 1 .. T - 2``. A row several samples share
+    appears once for each, so each sample's loss reads its own copy.
+    """
+    rows = [
+        token_indices[total - response - 1 : total - 1]
+        for token_indices, total, response in zip(
+            _sample_token_indices(layout), total_lengths, response_lengths, strict=True
+        )
+    ]
+    return torch.cat(rows) if rows else torch.empty(0, dtype=torch.long)
+
+
+def trie_input_loss_mask(
+    layout: TrieLayout,
+    loss_masks: Sequence[torch.Tensor],
+    total_lengths: Sequence[int],
+    response_lengths: Sequence[int],
+) -> torch.Tensor:
+    """``[1, T]`` mask over a trie row: 1 at each token some sample's response trains."""
+    mask = torch.zeros(1, layout.num_tokens, dtype=torch.int)
+    for token_indices, loss_mask, total, response in zip(
+        _sample_token_indices(layout), loss_masks, total_lengths, response_lengths, strict=True
+    ):
+        mask[0, token_indices[total - response : total]] |= loss_mask.to(device=mask.device, dtype=torch.int)
+    return mask
+
+
 @dataclass(frozen=True)
 class TrieModelSpec:
     """What a model's trie rows depend on, read from its config.
