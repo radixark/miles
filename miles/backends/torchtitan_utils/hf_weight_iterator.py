@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 import safetensors
 import torch
 import torch.distributed as dist
-from torch.distributed.tensor import DTensor, Shard
+from torch.distributed.tensor import DTensor
 
 from miles.backends.fsdp_utils.dtensor import gather_full_param
 from miles.backends.torchtitan_utils import lora_names
@@ -136,11 +136,32 @@ def _hf_weights_on_device(
         yield from layout.stream(sd_adapter.to_hf({key: gather_full_param(state[key])}) if key in state else {})
 
 
+def _expert_split(tensor: torch.Tensor, name: str) -> tuple[int, int]:
+    """(this rank's index, group size) of the split that holds ``tensor``'s experts: the one mesh axis a DTensor is
+    Shard(0) along. Under FSDP that axis is the whole world; under HSDP (--dp-replicate-size > 1) it is the shard
+    group beside the replicate axis, and every replica holds the same expert ranges. A plain tensor is the world's."""
+    if not isinstance(tensor, DTensor):
+        return dist.get_rank(), dist.get_world_size()
+    placements = tensor.placements
+    shard_dims = [dim for dim, placement in enumerate(placements) if placement.is_shard(0)]
+    assert len(shard_dims) == 1 and all(
+        placement.is_replicate() for dim, placement in enumerate(placements) if dim not in shard_dims
+    ), (
+        f"{name} is not FSDP's Shard(0) over one mesh axis (replicated along any other, as under HSDP), but "
+        f"{placements} over a mesh of shape {tuple(tensor.device_mesh.shape)}; grouped experts need trainer EP = 1"
+    )
+    [dim] = shard_dims
+    coordinate = tensor.device_mesh.get_coordinate()
+    assert coordinate is not None, f"this rank is not part of {name}'s mesh"
+    return coordinate[dim], tensor.device_mesh.size(dim)
+
+
 def _local_experts(sd_adapter, state, keys: list[str]) -> Iterator[tuple[str, torch.Tensor]]:
     """This rank's experts as whole HF tensors on its device, named by their global expert ids."""
-    rank, world = dist.get_rank(), dist.get_world_size()
     device = current_platform.current_device()
     for key in keys:
+        # the engine paired with this rank owns the experts of this rank's position in the expert split
+        rank, world = _expert_split(state[key], key)
         # under FSDP CPU offload the shards live on the host; the bucket goes out from the device
         converted = sd_adapter.to_hf({key: _on_device(state[key], device)})
         if any(_GROUPED_EXPERT_NAME.search(name) for name in converted):
@@ -179,12 +200,15 @@ def _grouped_experts_by_id(
     rank's Shard(0) slice still as a DTensor. The engine's grouped loader indexes all E experts, so this rank's experts
     go out under the per-expert names the engine also loads (experts.{id}.gate_proj.weight).
 
-    Trainer EP = 1 only: FSDP alone shards the experts, so rank r holds the engine EP rank r's experts. Trainer EP > 1
-    is refused at startup on TPU, and its expert layout (EP and FSDP shards combined) is not handled here."""
+    Trainer EP = 1 only: FSDP alone shards the experts, so shard r of ``world`` holds the engine EP rank r's experts
+    (under HSDP each replica's shard group is one such split, paired with its own engine). Trainer EP > 1 is refused
+    at startup on TPU, and its expert layout (EP and FSDP shards combined) is not handled here."""
     for name, grouped in converted.items():
-        assert (
-            isinstance(grouped, DTensor) and grouped.placements == (Shard(0),) and grouped.device_mesh.size() == world
-        ), f"{name} is not FSDP's Shard(0) over all {world} ranks; grouped experts need trainer EP = 1"
+        assert isinstance(grouped, DTensor), f"{name} is not a DTensor; grouped experts need trainer EP = 1"
+        assert _expert_split(grouped, name) == (
+            rank,
+            world,
+        ), f"{name} is not split like its torchtitan tensor (shard {rank} of {world}); grouped experts need trainer EP = 1"
         num_experts = grouped.shape[0]
         # the engine skips experts it does not own, so an uneven split would leave some stale silently
         assert num_experts % world == 0, f"{num_experts} experts of {name} do not split evenly over {world} ranks"
