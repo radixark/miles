@@ -69,7 +69,8 @@ def _unpack_attention_metadata(attention_metadata):
 def log_probs(logits: torch.Tensor, targets: torch.Tensor, temperature: float) -> torch.Tensor:
     """The engine's returned log-prob: log_softmax(bf16 logits / temperature)[target], from the same kernel."""
     rows = logits.shape[0]
-    t = torch.full((rows,), temperature, dtype=torch.float32, device=logits.device)
+    # greedy sampling (temperature 0) is scored at temperature 1, as the engine scores it
+    t = torch.full((rows,), temperature if temperature > 0 else 1.0, dtype=torch.float32, device=logits.device)
     return ops.logprob(logits, t, targets.to(torch.int32))
 
 
