@@ -42,6 +42,7 @@ from miles.utils.init_once import InitOnce
 from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.output_store import dropped
 from miles.utils.output_store.dropped import take_dropped_refs
+from miles.utils.timer import Timer
 from miles.utils.types import Sample
 from miles.utils.workers.worker_spec import HostAndPort
 
@@ -579,6 +580,42 @@ class TestSampleOwnershipRolloutId:
 
         [event] = [x for x in read_events(event_dir) if isinstance(x, DataSourceIssuedSamplesEvent)]
         assert event.rollout_id == 7
+
+
+class TestGetPhaseTimers:
+    async def test_conversion_and_store_put_are_timed_after_generation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A step's post-generation host work on the executor shows up as its own phases, not inside "rollout"."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        executor.args = _make_runtime_args(load=str(tmp_path), save=str(tmp_path))
+        phases: list[tuple[str, float, float]] = []
+
+        async def generate_rollout_data(*, rollout_id: int, trainer_model_id: str | None):
+            return [Sample(index=10)], {}
+
+        monkeypatch.setattr(executor, "_generate_rollout_data", generate_rollout_data)
+        monkeypatch.setattr(
+            rollout_executor_module, "convert_samples_to_train_data", lambda *_args, **_kw: {"sample_indices": [10]}
+        )
+        shards = [_MooncakeStoreObjectRef(payload="shard-0"), _MooncakeStoreObjectRef(payload="shard-1")]
+        monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *_args: shards)
+        monkeypatch.setattr(rollout_executor_module.object_store, "get_instance", _FakeObjectStore)
+        monkeypatch.setattr(
+            rollout_executor_module.event_analyzer, "run_sample_ownership_analysis", lambda *, args: None
+        )
+        timers = Timer()
+        timers.reset()
+        timers.event_sinks.append(lambda name, t0, t1: phases.append((name, t0, t1)))
+        try:
+            pack = await executor.get(rollout_id=7)
+        finally:
+            timers.event_sinks.pop()
+
+        assert pack.data_ref == shards
+        assert [name for name, _t0, _t1 in phases] == ["convert_train_data", "store_train_data"]
+        assert phases[0][2] <= phases[1][1]
+        assert set(timers.log_dict()) == {"convert_train_data", "store_train_data"}
 
 
 class _CustomDataSource:
