@@ -65,7 +65,7 @@ def block_fp8(weight, block_size):
     block_max = torch.max(torch.abs(qweight), dim=1, keepdim=True)[0]
     block_max = torch.max(block_max, dim=3, keepdim=True)[0]
 
-    scale = block_max.to(torch.float32) / FP8_MAX
+    scale = block_max.to(torch.float32).clamp(min=1e-10) / FP8_MAX
     qweight = (
         (qweight / scale)
         .clamp(min=FP8_MIN, max=FP8_MAX)
@@ -80,14 +80,14 @@ def block_fp8(weight, block_size):
 
 def channel_fp8(weight):
     channel_max = torch.max(weight.abs(), dim=-1, keepdim=True)[0]
-    scale = channel_max.clamp(min=1e-12).to(torch.float32) / FP8_MAX
+    scale = channel_max.to(torch.float32).clamp(min=1e-12) / FP8_MAX
     qweight = (weight / scale).clamp(min=FP8_MIN, max=FP8_MAX)
     qweight = qweight.to(torch.float8_e4m3fn)
     return qweight, scale
 
 
 def tensor_fp8(weight):
-    scale = weight.abs().max().clamp(min=1e-12).to(torch.float32) / FP8_MAX
+    scale = weight.abs().max().to(torch.float32).clamp(min=1e-12) / FP8_MAX
     qweight = (weight / scale).clamp(min=FP8_MIN, max=FP8_MAX)
     qweight = qweight.to(torch.float8_e4m3fn)
     scale = scale.view(1)

@@ -8,6 +8,7 @@ import torch
 
 from miles.backends.megatron_utils.misc_utils import strip_param_name_prefix
 from miles.utils.args.runtime import TrainerConfig
+from miles.utils.bf16_stochastic_rounding import is_bf16_stochastic_rounding_enabled, replay_stochastic_round_copy_back
 from miles.utils.tensor_backper import MainCastContext
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,10 @@ def _build_cast_main_to_params_fn(optimizer, *, precision_aware: bool) -> Callab
 @torch.no_grad()
 def _replay_hybrid_device_copy_back(hdo) -> None:
     """Replay HDO's two step post-hooks, which wrote this shard at step end."""
+    if is_bf16_stochastic_rounding_enabled():
+        # The step hook rounded stochastically; rebuild the same BF16 bits it wrote.
+        replay_stochastic_round_copy_back(hdo)
+        return
     for shard_view, cpu_master in hdo.gpu_params_map_cpu_copy.items():
         shard_view.data.copy_(cpu_master.data)
     # The CPU pass above already covered the params present in both maps.

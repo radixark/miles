@@ -119,12 +119,21 @@ cmd_add() {
   [ ! -e "$SETUP_ROOT/$NAME/.runner" ] || die "$SETUP_ROOT/$NAME still holds a registration; run remove first"
 
   local labels="self-hosted,Linux,X64,gpu-runner,$NAME,$HWTYPE,${NGPU}gpu${TAGS:+,$TAGS}"
-  local hook_args=()
+  install -D -m 0755 "$SKILL_DIR/../../../tests/ci/github_runner/remove-foreign-checkouts.sh" \
+    "$HOOK_ROOT/job-start/remove-foreign-checkouts.sh"
+  install -D -m 0755 "$SKILL_DIR/../../../tests/ci/github_runner/job-container-docker/docker" \
+    "$HOOK_ROOT/job-container-docker/docker"
+  local hook_args=(-v "$HOOK_ROOT/job-start:/opt/runner-hooks/job-start:ro"
+    -e ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/runner-hooks/job-start/remove-foreign-checkouts.sh
+    -v "$HOOK_ROOT/job-container-docker:/opt/runner-hooks/job-container-docker:ro")
+  local runner_path=/opt/runner-hooks/job-container-docker
   if [[ ",$TAGS," == *",aliyun,"* ]]; then
     ensure_rdma_networks
     install -D -m 0755 "$SKILL_DIR/hooks/aliyun/docker" "$HOOK_ROOT/aliyun/docker"
-    hook_args=(-v "$HOOK_ROOT/aliyun:/opt/runner-hooks/aliyun:ro" -e "PATH=/opt/runner-hooks/aliyun:$DEFAULT_PATH")
+    hook_args+=(-v "$HOOK_ROOT/aliyun:/opt/runner-hooks/aliyun:ro")
+    runner_path+=:/opt/runner-hooks/aliyun
   fi
+  hook_args+=(-e "PATH=$runner_path:$DEFAULT_PATH")
   mkdir -p "$SETUP_ROOT/$NAME" "$CACHE_ROOT/$NAME/.cache"
 
   local runner_env=(
@@ -163,10 +172,8 @@ cmd_add() {
   fi
   trap "rm -rf '$token_dir'" EXIT
 
-  if [ ${#hook_args[@]} -gt 0 ]; then
-    [ "$(docker exec "$NAME" sh -c 'command -v docker')" = /opt/runner-hooks/aliyun/docker ] \
-      || die "$NAME does not resolve docker to the aliyun hook"
-  fi
+  [ "$(docker exec "$NAME" sh -c 'command -v docker')" = /opt/runner-hooks/job-container-docker/docker ] \
+    || die "$NAME does not resolve docker to the job-container hook"
 
   echo "started $NAME (cvd=$CVD, labels=$labels)"
   echo "tail logs with: docker logs -f $NAME"

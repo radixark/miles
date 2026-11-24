@@ -19,7 +19,7 @@ register_cuda_ci(
     nightly=True,
     num_gpus=4,
 )
-register_rocm_ci(est_time=800, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron", "short"])
+register_rocm_ci(est_time=800, suite="stage-c-4-gpu-mi350", labels=["megatron", "short"], nightly=True)
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")

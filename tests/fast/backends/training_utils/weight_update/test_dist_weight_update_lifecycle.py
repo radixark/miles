@@ -367,6 +367,7 @@ def test_weight_sync_keeps_the_global_selector_with_group_overrides(
                     ServerGroupConfig(
                         worker_type=WorkerType.REGULAR,
                         num_gpus_per_engine=1,
+                        pp_size=1,
                         overrides={"speculative_algorithm": group_algorithm},
                         needs_offload=False,
                     )
