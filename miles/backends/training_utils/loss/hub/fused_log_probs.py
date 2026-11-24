@@ -108,7 +108,7 @@ class _FusedLogProbsAndEntropy(torch.autograd.Function):
 
 def fused_lm_head_log_probs_and_entropy(
     hidden: Tensor,
-    project: Callable[[Tensor], Tensor],
+    project: Callable[[Tensor, Tensor], Tensor],
     rows: Tensor,
     targets: Tensor,
     *,
@@ -131,7 +131,7 @@ def fused_lm_head_log_probs_and_entropy(
     def tile_log_probs(hidden: Tensor, row_tile: Tensor, target_tile: Tensor) -> tuple[Tensor, Tensor | None]:
         tile_hidden = hidden.index_select(0, row_tile)
         return fused_log_probs_and_entropy(
-            project(tile_hidden),
+            project(tile_hidden, row_tile),
             torch.arange(tile_hidden.size(0), device=tile_hidden.device),
             target_tile,
             tp_group=tp_group,

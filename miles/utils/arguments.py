@@ -956,9 +956,6 @@ def _validate_fused_lm_head_args(args) -> None:
         raise ValueError(
             f"--log-probs-backend fused_lm_head supports --loss-type policy_loss and sft_loss, got {args.loss_type}"
         )
-    # the raw flag: args.multi_lora is derived from it later, in validate_lora_args
-    if args.multi_lora_n_adapters > 0:
-        raise ValueError("--log-probs-backend fused_lm_head does not support multi-LoRA (--multi-lora-n-adapters)")
     # Megatron runs the combined 1F1B schedule only with this overlap, and that schedule takes no output_processor
     if args.overlap_moe_expert_parallel_comm:
         raise ValueError(
@@ -981,7 +978,7 @@ def _validate_fused_lm_head_lora_targets(args) -> None:
     if args.log_probs_backend != "fused_lm_head" or not is_lora_enabled(args):
         return
     adapted = unembed_lora_targets(args.hf_lora_targets, load_hf_config(args.hf_checkpoint).to_dict())
-    if adapted:
+    if adapted and args.multi_lora_n_adapters == 0:
         raise ValueError(
             f"--log-probs-backend fused_lm_head does not support LoRA on the output layer ({adapted}); "
             "leave it out of --target-modules, e.g. --target-modules attn,mlp"

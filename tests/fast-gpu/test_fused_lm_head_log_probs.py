@@ -61,7 +61,7 @@ def _run(op, hidden, weight, rows, targets, upstream, *, entropy_requires_grad=T
 
 def _lm_head(h, w, rows, targets, **kwargs):
     """The op with a plain matmul standing for the output layer."""
-    return fused_lm_head_log_probs_and_entropy(h, lambda rows_hidden: rows_hidden @ w.t(), rows, targets, **kwargs)
+    return fused_lm_head_log_probs_and_entropy(h, lambda rows_hidden, _: rows_hidden @ w.t(), rows, targets, **kwargs)
 
 
 def _materialized(h, w, rows, targets, **kwargs):
@@ -208,7 +208,7 @@ def test_losses_match_the_fused_backend_on_the_projected_logits(nccl_world, qkv_
             model_output = hidden @ weight.t()
         else:
             model_output = hidden * 1
-            batch["lm_head"] = SimpleNamespace(project=lambda rows, w=weight: rows @ w.t())
+            batch["lm_head"] = SimpleNamespace(project=lambda hidden_rows, _, w=weight: hidden_rows @ w.t())
         loss, _, log = loss_function(args, batch, 1, model_output)
         loss.backward()
         metrics = dict(zip(log["keys"], log["values"][1:].tolist(), strict=True))
@@ -314,7 +314,7 @@ def _sequence_parallel_worker(rank: int, world_size: int, port: int) -> None:
         )
         torch.testing.assert_close(log_probs.detach(), ref[0], rtol=1e-5, atol=2e-5)
         torch.testing.assert_close(entropy.detach(), ref[1], rtol=1e-5, atol=5e-5)
-        # no all-reduce here: the layer's backward must sum the hidden gradient over TP exactly once
+        # no explicit all-reduce here: the sequence-parallel gather must sum the TP hidden gradient once
         torch.testing.assert_close(
             local.grad.squeeze(1), ref[2][rank * span : (rank + 1) * span], rtol=1e-4, atol=1e-4
         )
