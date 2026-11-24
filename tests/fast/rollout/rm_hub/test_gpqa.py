@@ -6,6 +6,7 @@ from miles.rollout.rm_hub.gpqa import (
     _strip_chain_of_thought,
     compute_gpqa_reward,
 )
+from miles.rollout.rm_hub.reasoning import REASONING_ANSWER_DELIMITERS
 
 
 class TestStripChainOfThought:
@@ -14,11 +15,37 @@ class TestStripChainOfThought:
         [
             ("Let me think...</think>The answer is A", "The answer is A"),
             ("The answer is A", "The answer is A"),
+            ("<think>The answer is A", "<think>The answer is A"),
+            ("The answer is A</think>", ""),
             ("", ""),
             (None, ""),
         ],
     )
     def test_strip_chain_of_thought(self, text, expected):
+        assert _strip_chain_of_thought(text) == expected
+
+    @pytest.mark.parametrize("delimiter", REASONING_ANSWER_DELIMITERS)
+    def test_strip_all_reasoning_delimiters(self, delimiter):
+        assert _strip_chain_of_thought(f"Answer: B {delimiter}The answer is A") == "The answer is A"
+        assert _strip_chain_of_thought(f"t1{delimiter}Answer: B{delimiter}The answer is A") == "The answer is A"
+        assert _strip_chain_of_thought(f"Answer: A{delimiter}") == ""
+
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("<think>###Response Answer: B</think>The answer is A", "The answer is A"),
+            (
+                "<|content_thinking|>###Response </think>Answer: B<|end_message|><|content_text|>The answer is A",
+                "The answer is A",
+            ),
+            (
+                "<|channel|>analysis<|message|></think>###Response Answer: B<|end|>"
+                "<|start|>assistant<|channel|>final<|message|>The answer is A",
+                "The answer is A",
+            ),
+        ],
+    )
+    def test_model_special_delimiter_precedence(self, text, expected):
         assert _strip_chain_of_thought(text) == expected
 
 
@@ -157,3 +184,13 @@ class TestComputeGpqaReward:
     )
     def test_listing_several_choices_is_a_hedge(self, response, label, metadata, expected):
         assert compute_gpqa_reward(response, label, metadata=metadata) == expected
+
+    @pytest.mark.parametrize("delimiter", REASONING_ANSWER_DELIMITERS)
+    def test_reasoning_delimiters_ignore_distractor_in_thought(self, delimiter):
+        response = f"First guess: Answer: B.{delimiter}The answer is A."
+        assert compute_gpqa_reward(response, "A") == 1.0
+        assert compute_gpqa_reward(response, "B") == 0.0
+
+    def test_unclosed_reasoning_stays_permissive(self):
+        assert compute_gpqa_reward("<think>The answer is A", "A") == 1.0
+        assert compute_gpqa_reward("<|content_thinking|>The answer is A", "A") == 1.0
