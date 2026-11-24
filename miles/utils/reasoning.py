@@ -20,9 +20,9 @@ REASONING_DELIMITERS: dict[str, tuple[str | None, str]] = {
 }
 
 # Turn separators that start a new turn in multi-turn framed traces.
-_TURN_BOUNDARY_TOKENS: dict[str, str] = {
-    "harmony": "<|return|><|start|>",
-    "muse_spark": "<|eot|><|start|>",
+_TURN_BOUNDARY_TOKENS: dict[str, tuple[str, ...]] = {
+    "harmony": ("<|return|><|start|>", "<|end|><|start|>user", "<|end|><|start|>developer", "<|end|><|start|>system"),
+    "muse_spark": ("<|eot|><|start|>",),
 }
 
 # Message transitions that end an answer block before a subsequent block in the same turn.
@@ -52,6 +52,7 @@ _INKLING_FRAME_PREFIXES = (
     REASONING_DELIMITERS["inkling"][1],
     _INKLING_MODEL_ROLE,
     *_INKLING_NON_MODEL_ROLES,
+    _INKLING_END_SAMPLING,
 )
 
 # Disjoint leading wire prefixes that unambiguously identify a response's own format.
@@ -59,25 +60,76 @@ _FRAMED_PREFIXES: dict[str, tuple[str, ...]] = {
     "kimi_k3": ("<|open|>",),
     "harmony": ("<|channel|>", "<|start|>assistant<|channel|>", "<|start|>functions."),
     "inkling": _INKLING_FRAME_PREFIXES,
-    "muse_spark": ("<|start|>assistant to=", "<|start|>tool "),
+    "muse_spark": ("<|start|>tool ",),
     "gemma4": ("<|channel>", "<channel|>"),
     "kimi_vl": ("◁think▷",),
     "think": ("<think>",),
 }
 
 
+def _is_closed_after_think(text: str, open_marker: str, close_token: str) -> bool:
+    """Return True when *open_marker* is closed by *close_token* after any literal ``</think>``."""
+    pos = text.rfind(open_marker)
+    if pos == -1:
+        return False
+    tail = text[pos + len(open_marker) :]
+    think_close = REASONING_DELIMITERS["think"][1]
+    if think_close not in tail:
+        return True
+    close_pos = tail.find(close_token)
+    return close_pos != -1 and close_pos > tail.rfind(think_close)
+
+
 def _detect_framed_family(text: str) -> str | None:
+    """Identify the response's wire format from leading or trailing special tokens."""
     stripped = text.lstrip()
     if not stripped:
         return None
     for family, prefixes in _FRAMED_PREFIXES.items():
         if stripped.startswith(prefixes):
             return family
+
+    # Both Harmony and Muse Spark use `<|start|>assistant to=...` / `to=...`; Harmony headers
+    # always contain `<|channel|>` before `<|message|>`, while Muse Spark headers never do.
+    if stripped.startswith("<|start|>assistant to="):
+        msg_idx = stripped.find("<|message|>")
+        header = stripped[:msg_idx] if msg_idx != -1 else stripped.split("\n", 1)[0]
+        return "harmony" if "<|channel|>" in header else "muse_spark"
+
     first_token = stripped.split(None, 1)[0]
-    if _INKLING_TOOL_INVOKE in first_token:
-        return "inkling"
-    if stripped.startswith("to=") and "<|message|>" in first_token:
-        return "muse_spark"
+    if stripped.startswith("to="):
+        msg_idx = stripped.find("<|message|>")
+        header = stripped[:msg_idx] if msg_idx != -1 else stripped.split("\n", 1)[0]
+        if "\n" not in header and "<|channel|>" in header:
+            return "harmony"
+        if "<|message|>" in first_token:
+            return "muse_spark"
+
+    # Inkling direct tool call right after prompt's `<|message_model|>`: `<recipient><|content_invoke_tool_json|>{...}<|end_message|>`.
+    if _INKLING_TOOL_INVOKE in first_token and _INKLING_END_MESSAGE in stripped:
+        recipient, _ = first_token.split(_INKLING_TOOL_INVOKE, 1)
+        after_invoke = stripped[len(recipient) + len(_INKLING_TOOL_INVOKE) :].lstrip()
+        if (
+            recipient
+            and recipient.replace("_", "").replace("-", "").replace(".", "").isalnum()
+            and after_invoke.startswith("{")
+        ):
+            return "inkling"
+
+    # Prompt-opened completions omit their opening token; identify by trailing closing special tokens.
+    rstripped = text.rstrip()
+    if rstripped.endswith("<|close|>think<|sep|>") or (
+        rstripped.endswith(_ANSWER_END_TOKENS["kimi_k3"])
+        and _is_closed_after_think(text, REASONING_DELIMITERS["kimi_k3"][1], "<|close|>response<|sep|>")
+    ):
+        return "kimi_k3"
+    if rstripped.endswith(_ANSWER_END_TOKENS["gemma4"]) and _is_closed_after_think(
+        text, REASONING_DELIMITERS["gemma4"][1], "<turn|>"
+    ):
+        return "gemma4"
+    if rstripped.endswith(_ANSWER_END_TOKENS["think"]) and REASONING_DELIMITERS["think"][1] in text:
+        return "think"
+
     return None
 
 
@@ -160,25 +212,29 @@ def extract_after_reasoning(text: str | None) -> str | None:
     if not text:
         return None
 
-    # When the response opens with a known wire format, parse only with that family's rules
-    # so foreign markers quoted in reasoning/answers never hijack extraction and an unclosed
+    # When special tokens identify the wire format, parse only with that family's rules so
+    # foreign markers quoted in reasoning/answers never hijack extraction and an unclosed
     # final turn returns None instead of matching an earlier turn or foreign token.
     framed_family = _detect_framed_family(text)
     if framed_family == "inkling":
         return _extract_inkling_answer(text)
     if framed_family is not None:
         turn = text
-        turn_boundary = _TURN_BOUNDARY_TOKENS.get(framed_family)
-        if turn_boundary and (boundary_pos := text.rfind(turn_boundary)) != -1:
-            turn = text[boundary_pos + len(turn_boundary) :]
+        turn_boundaries = _TURN_BOUNDARY_TOKENS.get(framed_family)
+        if turn_boundaries:
+            turn_start = 0
+            for boundary in turn_boundaries:
+                if (boundary_pos := text.rfind(boundary)) != -1:
+                    turn_start = max(turn_start, boundary_pos + len(boundary))
+            turn = text[turn_start:]
         _, delimiter = REASONING_DELIMITERS[framed_family]
         pos = turn.rfind(delimiter)
         if pos == -1:
             return None
         return _trim_answer_end(turn[pos + len(delimiter) :], framed_family)
 
-    # Unframed / prompt-opened completions (e.g. `<think>` emitted in the prompt): pick the
-    # rightmost structural delimiter, falling back to `###Response` only when none matches.
+    # Unframed / prompt-opened completions without trailing end tokens: pick the rightmost
+    # structural delimiter, falling back to `###Response` only when none matches.
     best_pos = -1
     best_answer: str | None = None
     for family, (_, delimiter) in REASONING_DELIMITERS.items():

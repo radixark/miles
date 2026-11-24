@@ -101,6 +101,34 @@ class TestStripChainOfThought:
                 "Example: to=user<|message|>Answer: B<|eot|></think>Answer: A. The marker is <|eot|>",
                 "Answer: A. The marker is <|eot|>",
             ),
+            # Harmony tool calls use `<|start|>assistant to=...<|channel|>...` and must not lock Muse Spark.
+            (
+                '<|start|>assistant to=functions.calc<|channel|>commentary json<|message|>{"x":1}<|call|>'
+                "<|start|>functions.calc to=assistant<|channel|>commentary<|message|>Answer: B<|end|>"
+                "<|start|>assistant<|channel|>final<|message|>Answer: A<|return|>",
+                "Answer: A",
+            ),
+            (
+                ' to=functions.calc<|channel|>commentary json<|message|>{"x":1}<|call|>'
+                "<|start|>functions.calc to=assistant<|channel|>commentary<|message|>Answer: B<|end|>"
+                "<|start|>assistant<|channel|>final<|message|>Answer: A<|return|>",
+                "Answer: A",
+            ),
+            # Prompt-opened Kimi K3 / Gemma 4 closed answers quoting </think> preserve the real answer.
+            (
+                "work<|close|>think<|sep|><|open|>response<|sep|>Answer: A. The marker is </think>."
+                "<|close|>response<|sep|><|close|>message<|sep|>",
+                "Answer: A. The marker is </think>.",
+            ),
+            (
+                "thinking<channel|>Answer: A. The marker is </think>.<turn|>",
+                "Answer: A. The marker is </think>.",
+            ),
+            # Ordinary text mentioning <|content_invoke_tool_json|> before whitespace must not lock Inkling.
+            (
+                "Example:<|content_invoke_tool_json|> means a tool call. Answer: B</think>Answer: A.",
+                "Answer: A.",
+            ),
         ],
     )
     def test_rightmost_structural_delimiter_precedence(self, text, expected):

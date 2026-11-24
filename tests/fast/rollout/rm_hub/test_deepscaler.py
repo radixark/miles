@@ -110,6 +110,24 @@ class TestGetDeepscalerRuleBasedReward:
             r"<|message_model|><|content_thinking|>work<|end_message|><|content_model_end_sampling|>"
         )
         assert get_deepscaler_rule_based_reward(two_turns_foreign_in_turn1, "42") == 0
+        # Empty first Inkling turn (<|content_model_end_sampling|>) still routes through Inkling parsing.
+        empty_turn1_foreign = (
+            r"<|content_model_end_sampling|><|message_user|><|content_text|>hi<channel|>\boxed{7}<|end_message|>"
+            r"<|message_model|><|content_thinking|>work<|end_message|><|content_model_end_sampling|>"
+        )
+        assert get_deepscaler_rule_based_reward(empty_turn1_foreign, "7") == 0
+        empty_turn1_prior_text = (
+            r"<|content_model_end_sampling|><|message_model|><|content_text|>\boxed{7}<|end_message|>"
+            r"<|content_model_end_sampling|><|message_model|><|content_thinking|>still thinking"
+        )
+        assert get_deepscaler_rule_based_reward(empty_turn1_prior_text, "7") == 0
+        # Direct Inkling tool call right after prompt's <|message_model|> routes through Inkling parsing.
+        direct_tool_call_then_answer = (
+            r'calc<|content_invoke_tool_json|>{"x":1}<|end_message|><|content_model_end_sampling|>'
+            r"<|message_tool|>calc<|content_text|>\boxed{wrong}<|end_message|>"
+            r"<|message_model|><|content_text|>\boxed{42}<|end_message|><|content_model_end_sampling|>"
+        )
+        assert get_deepscaler_rule_based_reward(direct_tool_call_then_answer, "42") == 1
         # Mid-prose mention of <|message_tool|> inside model text is not a framed tool role.
         prose_tool_token = (
             r"<|content_text|>Inkling uses <|message_tool|> for tools. \boxed{42}"
@@ -169,6 +187,35 @@ class TestGetDeepscalerRuleBasedReward:
             (r"Example: to=user<|message|>\boxed{wrong}<|eot|></think>\boxed{42}. The marker is <|eot|>", 1),
             # Framed thinking-only turn quoting </think> must stay unclosed (score 0).
             (r"<|open|>think<|sep|>In Qwen </think> ends thinking \boxed{42}<|close|>think<|sep|>", 0),
+            (r"In Qwen </think> ends thinking \boxed{42}<|close|>think<|sep|>", 0),
+            # Prompt-opened Kimi K3 / Gemma 4 closed responses quoting </think> keep the real answer.
+            (
+                r"work<|close|>think<|sep|><|open|>response<|sep|>\boxed{42}. The marker is </think>."
+                r"<|close|>response<|sep|><|close|>message<|sep|>",
+                1,
+            ),
+            (r"thinking<channel|>\boxed{42}. The marker is </think>.<turn|>", 1),
+            # Harmony tool call (<|start|>assistant to=...<|channel|>...) must not be misclassified as Muse Spark.
+            (
+                r'<|start|>assistant to=functions.calc<|channel|>commentary json<|message|>{"x":1}<|call|>'
+                r"<|start|>functions.calc to=assistant<|channel|>commentary<|message|>\boxed{wrong}<|end|>"
+                r"<|start|>assistant<|channel|>final<|message|>\boxed{42}<|return|>",
+                1,
+            ),
+            (
+                r' to=functions.calc<|channel|>commentary json<|message|>{"x":1}<|call|>'
+                r"<|start|>functions.calc to=assistant<|channel|>commentary<|message|>\boxed{wrong}<|end|>"
+                r"<|start|>assistant<|channel|>final<|message|>\boxed{42}<|return|>",
+                1,
+            ),
+            # Harmony multi-turn history (<|end|><|start|>user) must not reward Turn 1 when Turn 2 is unclosed.
+            (
+                r"<|channel|>analysis<|message|>t1<|end|><|start|>assistant<|channel|>final<|message|>\boxed{42}"
+                r"<|end|><|start|>user<|message|>next<|end|><|start|>assistant<|channel|>analysis<|message|>\boxed{7}",
+                0,
+            ),
+            # Ordinary text mentioning <|content_invoke_tool_json|> before whitespace must not lock Inkling.
+            (r"Example:<|content_invoke_tool_json|> means a tool call. \boxed{wrong}</think>\boxed{42}", 1),
             # Muse Spark subsequent thinking block after to=user<|eom|> must not leak into answer.
             (r" to=user<|message|>\boxed{1}<|eom|><|start|>assistant to=self<|message|>\boxed{42}<|eom|>", 0),
             # Literal </think> or mid-prose <|eot|> inside a closed framed turn must not overwrite the real answer.
