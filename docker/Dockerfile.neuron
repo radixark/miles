@@ -1,0 +1,59 @@
+# miles on AWS Trainium (trn3) through torch-neuronx: the sglang-neuron engine and the torchtitan trainer in one image.
+#
+# The base is AWS's sglang-neuron release image (Ubuntu 26.04: torch-neuronx 2.14 needs glibc 2.43), which carries
+# torch 2.14, torch-neuronx, the NKI kernel library and upstream SGLang with the sglang-neuron plugin. The engine keeps
+# that upstream SGLang; the trainer imports sglang-miles from its own tree (/opt/sglang-miles/python), because miles
+# parses SGLang's server arguments the way sglang-miles defines them (scripts/trainium --sglang-miles-pythonpath).
+
+ARG SGLANG_NEURON_IMAGE=public.ecr.aws/neuron/pytorch-inference-sglang-neuron:v0.1.0-neuron-py314-sdk-2.33.0-ubuntu26.04
+FROM ${SGLANG_NEURON_IMAGE}
+
+# ======================================== Arguments =============================================
+
+ARG TORCHTITAN_REPO=pytorch/torchtitan
+# TORCHTITAN_COMMIT equals docker/Dockerfile's
+ARG TORCHTITAN_COMMIT=45e33cd413b64cb37a7840cfd3c9765d3c639ae1
+ARG SGLANG_MILES_REPO=sgl-project/sglang
+ARG SGLANG_MILES_BRANCH=sglang-miles
+ARG MILES_COMMIT=main
+
+# ====================================== sglang-neuron ============================================
+
+# in-place disk reload and /pull_weights, which disk-delta weight sync needs (docker/neuron_patch/)
+COPY docker/neuron_patch/sglang_neuron_weight_sync.patch /tmp/sglang_neuron_weight_sync.patch
+RUN cd "$(python3 -c 'import os, sglang_neuron; print(os.path.dirname(os.path.dirname(sglang_neuron.__file__)))')" && \
+    patch --fuzz=0 -p1 < /tmp/sglang_neuron_weight_sync.patch && rm /tmp/sglang_neuron_weight_sync.patch
+
+# the image's torch and torch-neuronx stay as installed; the constraints keep every later install on them
+RUN pip freeze | grep -iE '^(torch|torch-neuronx|neuronx-cc|libneuronxla|nki|numpy)==' > /opt/torch-constraints.txt
+
+# ====================================== sglang-miles (trainer only) ==============================
+
+RUN git clone --depth 1 -b ${SGLANG_MILES_BRANCH} https://github.com/${SGLANG_MILES_REPO}.git /opt/sglang-miles
+
+# ====================================== Install torchtitan ============================================
+
+RUN git clone https://github.com/${TORCHTITAN_REPO}.git /root/torchtitan && \
+    cd /root/torchtitan && git checkout -f ${TORCHTITAN_COMMIT} && \
+    pip install --no-deps -e . && \
+    pip install -c /opt/torch-constraints.txt "spmd_types==0.3.1" "torch_remat==0.2.2" "torch_checkpointing==0.1.1" \
+        "grain==0.2.18"
+
+# ====================================== Install main package ============================================
+
+# miles, without the CUDA-only requirements
+RUN git clone https://github.com/radixark/miles.git /root/miles && \
+    cd /root/miles && git checkout ${MILES_COMMIT} && \
+    pip install --no-deps -e . && \
+    grep -vE '^\s*(#|$)|nvidia-resiliency-ext|ring_flash_attn|torchft-nightly|onnxscript' requirements.txt \
+        > /tmp/requirements-neuron.txt && \
+    pip install -c /opt/torch-constraints.txt -r /tmp/requirements-neuron.txt && \
+    rm /tmp/requirements-neuron.txt
+
+# imports only: the build host has no Neuron device, so torch must not autoload torch_neuronx
+RUN TORCH_DEVICE_BACKEND_AUTOLOAD=0 python3 -c 'import sglang.srt.entrypoints.http_server, sglang_neuron.weight_sync.pull_weights, torch, ray, \
+miles.backends.torchtitan_utils.actor, torchtitan.training_engine'
+
+ENV MILES_ACCELERATOR=neuron
+WORKDIR /root/miles
+CMD ["/bin/bash"]

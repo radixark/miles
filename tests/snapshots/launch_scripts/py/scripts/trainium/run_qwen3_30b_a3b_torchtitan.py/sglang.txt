@@ -1,0 +1,11 @@
+### 0
+SGLANG_PLATFORM=neuron NEURON_LOGICAL_NC_CONFIG=2 NEURON_RT_VISIBLE_CORES=32-35 TORCH_NEURONX_NEFF_CACHE_DIR=/root/.cache/sglang-neuron/neff TORCH_NEURONX_HLO_CACHE_DIR=/root/.cache/sglang-neuron/hlo SGLANG_NEURON_SAMPLER=temperature python3 -m sglang.launch_server
+  --model-path /root/models/Qwen3-30B-A3B
+  --tp-size 4
+  --context-length 8192
+  --chunked-prefill-size 2048
+  --max-running-requests 64
+  --mem-fraction-static 0.7
+  --ep-size 4
+  --host 0.0.0.0
+  --port 30000

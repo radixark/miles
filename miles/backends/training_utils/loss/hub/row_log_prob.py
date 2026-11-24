@@ -20,7 +20,9 @@ def _compiled(fn):
 def _forward(logits: torch.Tensor, targets: torch.Tensor, inv_temperature: torch.Tensor, with_entropy: bool):
     x = logits.float() * inv_temperature
     lse = torch.logsumexp(x, dim=-1)
-    log_probs = x.gather(-1, targets.unsqueeze(-1)).squeeze(-1) - lse
+    # gathered from the model-precision logits (the same values as from x): neuron's indirect DMA addresses its
+    # source with a 32-bit offset, which an fp32 [8192, 152K] x overflows
+    log_probs = logits.gather(-1, targets.unsqueeze(-1)).squeeze(-1).float() * inv_temperature - lse
     entropy = lse - (torch.exp(x - lse.unsqueeze(-1)) * x).sum(-1) if with_entropy else None
     return log_probs, entropy, lse
 
