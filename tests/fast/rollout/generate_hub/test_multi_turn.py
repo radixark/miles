@@ -687,6 +687,35 @@ class TestRoutedExpertsMultiTurn:
         np.testing.assert_array_equal(sample.rollout_routed_experts, second_routed_experts)
         assert len(sample.tokens) - 1 == second_routed_experts.shape[0]
 
+    @pytest.mark.parametrize(
+        "generation_env",
+        [{"args_kwargs": {"use_rollout_routing_replay": True, "num_layers": 2, "generate_max_turns": 1}}],
+        indirect=True,
+    )
+    # The agentic variant's session records no observation after the last turn.
+    @pytest.mark.parametrize("variant", ["multi_turn"])
+    def test_turn_limit_after_a_tool_call_pads_the_observation_rows(self, variant, generation_env):
+        S = TwoTurnStub
+        num_layers, moe_router_topk = generation_env.args.num_layers, 4
+        rows = len(S.FIRST_PROMPT_TOKEN_IDS) + token_len(S.FIRST_RESPONSE) - 1
+        routed_experts = np.arange(1, rows * num_layers * moe_router_topk + 1, dtype=np.int32).reshape(
+            rows, num_layers, moe_router_topk
+        )
+        generation_env.mock_server.process_fn = lambda _: ProcessResult(
+            text=S.FIRST_RESPONSE,
+            finish_reason="stop",
+            meta_info=ProcessResultMetaInfo(
+                routed_experts=pybase64.b64encode(routed_experts.tobytes()).decode("ascii")
+            ),
+        )
+
+        sample = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT)).sample
+
+        # The rollout ends on the tool observation, which no forward ran.
+        observation = np.full((token_len(S.FIRST_TOOL_RESPONSE), num_layers, moe_router_topk), -1, dtype=np.int32)
+        np.testing.assert_array_equal(sample.rollout_routed_experts, np.concatenate((routed_experts, observation)))
+        sample.validate()
+
 
 _AGENTIC_VARIANTS = ["agentic_tool_call"]
 _AGENT_METADATA = {"reward": 1.0, "exit_status": "Submitted", "eval_report": {"passed": True}}

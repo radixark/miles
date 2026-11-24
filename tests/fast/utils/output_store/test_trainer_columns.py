@@ -17,7 +17,7 @@ from tests.fast.fixtures.driver_fakes import FakeObjectStore
 from tests.fast.ray.rollout.conftest import make_args
 from tests.fast.train_parallel_config_utils import make_train_parallel_config
 from tests.fast.utils.output_store.test_plan import fake_store_refs, read_rows
-from tests.fast.utils.output_store.test_plan_vs_inline import LAYERS, run_case
+from tests.fast.utils.output_store.test_plan_vs_inline import INDEXER_STREAMS, LAYERS, run_case
 
 from miles.ray.rollout.train_data_conversion import (
     convert_samples_to_train_data,
@@ -86,9 +86,10 @@ def rollout(seed: int):
         loss_type="score_centering" if seed % 2 else "policy_loss",
         ci_test=True,
         use_rollout_routing_replay=routed_experts,
+        use_rollout_indexer_replay=routed_experts,
         num_layers=LAYERS,
         # The trainer's TrainerConfig keeps the indexer stream count under backend.
-        backend=SimpleNamespace(rollout_indexer_topk_num_streams=None),
+        backend=SimpleNamespace(rollout_indexer_topk_num_streams=INDEXER_STREAMS),
     )
     return args, inline, store, objects, mode
 
