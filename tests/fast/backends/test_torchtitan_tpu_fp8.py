@@ -30,10 +30,16 @@ def test_torchtitan_parser_exposes_fp8_recipe_and_filter_fqns():
 def test_tpu_launcher_fp8_flags_wire_engine_and_trainer_and_reject_mismatched_train_only(monkeypatch):
     captured_cpu_cmds: list[str] = []
     captured_train_args: list[str] = []
+    captured_train_envs: list[dict[str, str]] = []
 
     fake_backend = MagicMock()
     fake_backend.exec_command_cpu.side_effect = captured_cpu_cmds.append
-    fake_backend.execute_train.side_effect = lambda **kwargs: captured_train_args.append(kwargs["train_args"])
+
+    def _capture_train(**kwargs):
+        captured_train_args.append(kwargs["train_args"])
+        captured_train_envs.append(kwargs["extra_env_vars"])
+
+    fake_backend.execute_train.side_effect = _capture_train
     monkeypatch.setattr(ScriptArgs, "create_backend", lambda self: fake_backend)
 
     model = TitanTpuModel(name="Qwen3-4B", titan_model_name="qwen3", titan_model_flavor="4B")
@@ -58,19 +64,23 @@ def test_tpu_launcher_fp8_flags_wire_engine_and_trainer_and_reject_mismatched_tr
     serve_sglang(qwen35_27b_fp8, qwen35_27b_fp8.model)
     assert "SGLANG_FP8_IGNORED_LAYERS=in_proj_ba,in_proj_b,in_proj_a" in captured_cpu_cmds[-1]
 
+    monkeypatch.setenv("SGLANG_ADMIN_API_KEY", "")
     execute_train(
         ScriptArgs(rollout_fp8=True, train_fp8=True),
         model,
         launcher_file="run_qwen3_4b_torchtitan.py",
     )
     assert "--titan-fp8-recipe rowwise_with_gw_hp " in captured_train_args[-1]
+    assert "SGLANG_ADMIN_API_KEY" not in captured_train_envs[-1]
 
+    monkeypatch.setenv("SGLANG_ADMIN_API_KEY", "tpu-admin-secret")
     execute_train(
         ScriptArgs(rollout_fp8=True, train_fp8=True, titan_fp8_recipe="rowwise"),
         model,
         launcher_file="run_qwen3_4b_torchtitan.py",
     )
     assert "--titan-fp8-recipe rowwise " in captured_train_args[-1]
+    assert captured_train_envs[-1]["SGLANG_ADMIN_API_KEY"] == "tpu-admin-secret"
 
 
 def test_tp_unaligned_linear_and_grouped_projections_stay_in_high_precision():

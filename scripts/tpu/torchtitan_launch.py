@@ -220,7 +220,7 @@ def _trainer_env(args: ScriptArgs) -> dict[str, str]:
     )
     sglang_admin_key = (
         {"SGLANG_ADMIN_API_KEY": admin_api_key}
-        if (admin_api_key := os.environ.get("SGLANG_ADMIN_API_KEY")) is not None
+        if (admin_api_key := os.environ.get("SGLANG_ADMIN_API_KEY"))
         else {}
     )
     return {
