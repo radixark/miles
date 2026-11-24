@@ -19,6 +19,7 @@ register_cuda_ci(
     labels=["long"],
     hardware=["hopper", "blackwell"],
     num_gpus=4,
+    cluster_backends=["ray", "kubernetes"],
 )
 
 # skip the engine-side stacked params a frozen-base LoRA run cannot re-ship

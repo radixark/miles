@@ -22,7 +22,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from linear_attn_reference import ReplicatedKDA, build_layer, gather, packed, rel_err  # noqa: E402
 
 register_cuda_ci(
-    est_time=120, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=2
+    est_time=120, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=2,
+    cluster_backends=["ray"],
 )
 
 register_rocm_ci(est_time=270, suite="stage-c-2-gpu-mi350", labels=["precision"])

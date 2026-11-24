@@ -9,6 +9,7 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     disabled="Inkling replies with several tool calls never match the template render (special-token mismatches); re-enable once they do (#4925)",
     num_gpus=2,
+    cluster_backends=["ray"],
 )
 register_ci_gate(metric_key="rollout/tito_session_mismatch_rate/v1/assistant_text")
 register_ci_gate(metric_key="rollout/tito_session_mismatch_rate/v2/assistant_text")

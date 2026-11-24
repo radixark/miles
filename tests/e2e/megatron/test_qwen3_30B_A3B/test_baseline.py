@@ -11,6 +11,7 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     disabled="Outdated and simple.",
     num_gpus=4,
+    cluster_backends=["ray", "kubernetes"],
 )
 
 register_ci_gate(metric_key="train/grad_norm")

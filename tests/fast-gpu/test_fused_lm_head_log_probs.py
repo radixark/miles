@@ -6,7 +6,8 @@ import sys
 from tests.ci.ci_register import register_cuda_ci
 
 register_cuda_ci(
-    est_time=120, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=2
+    est_time=120, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=2,
+    cluster_backends=["ray"],
 )
 
 import os

@@ -11,7 +11,8 @@ from tests.ci.ci_register import register_cuda_ci
 # toy's rollout entropy legitimately exceeds the checker's real-model bound.
 
 register_cuda_ci(
-    est_time=2400, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts", "lora"], hardware=["hopper"]
+    est_time=2400, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts", "lora"], hardware=["hopper"],
+    cluster_backends=["ray", "kubernetes"],
 )
 
 

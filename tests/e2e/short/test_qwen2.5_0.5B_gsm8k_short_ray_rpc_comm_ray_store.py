@@ -10,6 +10,7 @@ register_cuda_ci(
     labels=["short", "rpc-comm"],
     hardware=["hopper", "blackwell"],
     num_gpus=8,
+    cluster_backends=["ray"],
 )
 register_rocm_ci(est_time=300, suite="stage-c-8-gpu-mi350", labels=["amd"])
 

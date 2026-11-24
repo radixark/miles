@@ -18,6 +18,7 @@ register_cuda_ci(
         "until it has run once: MIN_TRAINED_ROLLOUTS and est_time. See tests/e2e/ft/README.md; tracked in #3724."
     ),
     num_gpus=8,
+    cluster_backends=["ray", "kubernetes"],
 )
 
 _MODE: str = "kill_rollout__dp4"

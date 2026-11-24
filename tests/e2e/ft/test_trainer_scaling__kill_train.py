@@ -12,6 +12,7 @@ register_cuda_ci(
     labels=["ft-long"],
     hardware=["hopper", "blackwell"],
     disabled="needs a Kubernetes cluster backend: the trainer pool is resized as a LeaderWorkerSet (#3739)",
+    cluster_backends=["kubernetes"],
 )
 
 if __name__ == "__main__":

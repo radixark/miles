@@ -11,6 +11,7 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     disabled="Failed due to mismatch between fp8 rollout and bf16 training.",
     num_gpus=4,
+    cluster_backends=["ray", "kubernetes"],
 )
 
 CASE = CaseConfig(

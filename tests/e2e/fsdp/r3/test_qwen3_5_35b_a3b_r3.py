@@ -6,7 +6,7 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 from tests.e2e.fsdp.r3._common import CaseConfig, main
 
-register_cuda_ci(est_time=1800, suite="stage-c-8-gpu-h200", labels=["fsdp", "replay"], hardware=["hopper"], num_gpus=8)
+register_cuda_ci(est_time=1800, suite="stage-c-8-gpu-h200", labels=["fsdp", "replay"], hardware=["hopper"], num_gpus=8, cluster_backends=["ray", "kubernetes"])
 register_rocm_ci(est_time=700, suite="stage-c-8-gpu-mi350", labels=["fsdp", "replay"], nightly=True)
 
 register_ci_gate(metric_key="train/grad_norm")

@@ -13,6 +13,7 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     disabled="FT soak tests pending CI infra support",
     num_gpus=8,
+    cluster_backends=["ray", "kubernetes"],
 )
 
 _MODE: str = "kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer"

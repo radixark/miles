@@ -11,6 +11,7 @@ register_cuda_ci(
     suite="stage-c-8-gpu-h200",
     labels=["ft-short"],
     hardware=["hopper", "blackwell"],
+    cluster_backends=["ray", "kubernetes"],
 )
 
 register_rocm_ci(est_time=2000, suite="stage-c-8-gpu-mi350", labels=["ft-short"])

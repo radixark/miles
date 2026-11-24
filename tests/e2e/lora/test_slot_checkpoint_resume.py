@@ -35,7 +35,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import bas
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
 
-register_cuda_ci(est_time=120, suite="stage-b-2-gpu-h200", labels=["lora"], hardware=["hopper"], num_gpus=2)
+register_cuda_ci(est_time=120, suite="stage-b-2-gpu-h200", labels=["lora"], hardware=["hopper"], num_gpus=2, cluster_backends=["ray"])
 register_rocm_ci(est_time=60, suite="stage-c-2-gpu-mi350", labels=["lora"])
 
 ADAM = dict(learning_rate=3e-4, beta1=0.9, beta2=0.95, eps=1e-8, weight_decay=0.01, grad_clip_norm=1.0)

@@ -15,6 +15,7 @@ register_cuda_ci(
     labels=["megatron", "qwen35"],
     hardware=["hopper", "blackwell"],
     num_gpus=4,
+    cluster_backends=["ray", "kubernetes"],
 )
 register_rocm_ci(est_time=1300, suite="stage-c-4-gpu-mi350", labels=["megatron", "qwen35"])
 

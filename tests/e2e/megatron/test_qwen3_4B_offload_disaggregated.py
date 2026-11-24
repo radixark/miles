@@ -23,6 +23,7 @@ register_cuda_ci(
     labels=["megatron", "weight-update"],
     hardware=["hopper", "blackwell"],
     num_gpus=8,
+    cluster_backends=["ray"],
 )
 register_rocm_ci(est_time=300, suite="stage-c-8-gpu-mi350", labels=["megatron", "weight-update"])
 register_ci_gate(metric_key="train/grad_norm")

@@ -9,7 +9,8 @@ from miles.utils.mxfp4 import E2M1_VALUES, MXFP4_GROUP_SIZE, mxfp4_quantize
 from miles.utils.mxfp4_fake_qat import fake_quantize_mxfp4_weight_tensors
 
 register_cuda_ci(
-    est_time=30, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=1
+    est_time=30, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=1,
+    cluster_backends=["ray"],
 )
 
 

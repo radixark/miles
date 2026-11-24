@@ -7,7 +7,8 @@ from tests.ci.ci_register import register_cuda_ci
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=1500, suite="stage-c-8-gpu-b200", labels=["megatron", "model-scripts"], hardware=["blackwell"], num_gpus=8
+    est_time=1500, suite="stage-c-8-gpu-b200", labels=["megatron", "model-scripts"], hardware=["blackwell"], num_gpus=8,
+    cluster_backends=["ray"],
 )
 
 MODEL_ORG = "Pinaster"

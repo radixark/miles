@@ -2,7 +2,8 @@ from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.torchtitan._common import CaseConfig, execute, prepare
 
 register_cuda_ci(
-    est_time=700, suite="stage-c-4-gpu-h200", labels=["torchtitan", "lora"], hardware=["hopper"], num_gpus=4
+    est_time=700, suite="stage-c-4-gpu-h200", labels=["torchtitan", "lora"], hardware=["hopper"], num_gpus=4,
+    cluster_backends=["ray", "kubernetes"],
 )
 
 # The megatron Qwen3-4B LoRA recipe (examples/lora/run-qwen3-4B-megatron-lora.sh) on

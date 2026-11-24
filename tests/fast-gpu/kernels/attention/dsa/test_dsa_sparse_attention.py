@@ -9,7 +9,8 @@ import torch
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 register_cuda_ci(
-    est_time=300, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=1
+    est_time=300, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=1,
+    cluster_backends=["ray"],
 )
 register_rocm_ci(est_time=400, suite="stage-c-2-gpu-mi350", labels=["precision"])
 

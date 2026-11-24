@@ -9,7 +9,8 @@ from tests.e2e.sglang.utils.sglang_server import start_sglang_server
 from transformers import AutoTokenizer
 
 register_cuda_ci(
-    est_time=190, suite="stage-c-2-gpu-h200", labels=["sglang"], hardware=["hopper", "blackwell"], num_gpus=2
+    est_time=190, suite="stage-c-2-gpu-h200", labels=["sglang"], hardware=["hopper", "blackwell"], num_gpus=2,
+    cluster_backends=["ray"],
 )
 register_rocm_ci(est_time=80, suite="stage-c-2-gpu-mi350", labels=["sglang"])
 

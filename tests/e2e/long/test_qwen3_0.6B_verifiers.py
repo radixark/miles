@@ -14,7 +14,8 @@ from tests.e2e.long.verifiers_contract import verify_sdk_contract
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=300, suite="stage-c-2-gpu-h200", labels=["short"], hardware=["hopper", "blackwell"], num_gpus=2
+    est_time=300, suite="stage-c-2-gpu-h200", labels=["short"], hardware=["hopper", "blackwell"], num_gpus=2,
+    cluster_backends=["ray", "kubernetes"],
 )
 register_rocm_ci(est_time=900, suite="stage-c-2-gpu-mi350", labels=["short"], nightly=True)
 

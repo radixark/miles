@@ -7,6 +7,7 @@ register_cuda_ci(
     labels=["torchtitan", "fully-async", "replay"],
     hardware=["hopper"],
     num_gpus=8,
+    cluster_backends=["ray", "kubernetes"],
 )
 
 # Routing replay while generation and training run at once. The rollout that

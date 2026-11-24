@@ -6,7 +6,8 @@ from tests.e2e.megatron.test_qwen3_30B_A3B._common import CaseConfig, execute, p
 
 # Limited by host memory
 register_cuda_ci(
-    est_time=1300, suite="stage-c-4-gpu-h200", labels=["megatron"], hardware=["hopper", "blackwell"], num_gpus=4
+    est_time=1300, suite="stage-c-4-gpu-h200", labels=["megatron"], hardware=["hopper", "blackwell"], num_gpus=4,
+    cluster_backends=["ray", "kubernetes"],
 )
 
 register_ci_gate(metric_key="train/grad_norm")

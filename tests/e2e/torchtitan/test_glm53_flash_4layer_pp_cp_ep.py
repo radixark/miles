@@ -8,6 +8,7 @@ register_cuda_ci(
     hardware=["hopper"],
     disabled="needs a CI image with GLM-5.3-Flash sglang support (branch sglang-miles-glm53); "
     "re-enable once it lands (#3989).",
+    cluster_backends=["ray", "kubernetes"],
 )
 
 # two layers per stage keep a KDA and a DSA layer on each side of the pipeline cut

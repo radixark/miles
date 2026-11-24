@@ -12,6 +12,7 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     disabled="Disabled due to bugs.",
     num_gpus=8,
+    cluster_backends=["ray"],
 )
 
 ENABLE_EVAL = 0

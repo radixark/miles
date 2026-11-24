@@ -12,6 +12,7 @@ register_cuda_ci(
     labels=["ft-long"],
     hardware=["hopper", "blackwell"],
     num_gpus=8,
+    cluster_backends=["ray", "kubernetes"],
 )
 
 _MODE: str = "kill_train_rollout__dp2_cp2"

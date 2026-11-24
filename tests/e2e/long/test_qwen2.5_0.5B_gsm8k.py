@@ -6,7 +6,8 @@ from tests.utils.dirs import get_test_data_dir, get_test_model_dir
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=7000, suite="stage-c-2-gpu-h200", labels=["long"], hardware=["hopper", "blackwell"], num_gpus=2
+    est_time=7000, suite="stage-c-2-gpu-h200", labels=["long"], hardware=["hopper", "blackwell"], num_gpus=2,
+    cluster_backends=["ray", "kubernetes"],
 )
 register_rocm_ci(est_time=6800, suite="stage-c-2-gpu-mi350", labels=["long"], nightly=True)
 

@@ -1,7 +1,8 @@
 from tests.ci.ci_register import register_cuda_ci
 
 register_cuda_ci(
-    est_time=30, suite="stage-b-2-gpu-h200", labels=["megatron"], hardware=["hopper", "blackwell"], num_gpus=1
+    est_time=30, suite="stage-b-2-gpu-h200", labels=["megatron"], hardware=["hopper", "blackwell"], num_gpus=1,
+    cluster_backends=["ray"],
 )
 
 import sys

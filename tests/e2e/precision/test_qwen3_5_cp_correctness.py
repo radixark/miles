@@ -22,7 +22,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "fast-gpu
 from linear_attn_reference import ReplicatedGDN, ReplicatedKDA, build_layer, packed, rel_err  # noqa: E402
 
 register_cuda_ci(
-    est_time=300, suite="stage-c-4-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=4
+    est_time=300, suite="stage-c-4-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=4,
+    cluster_backends=["ray"],
 )
 register_rocm_ci(est_time=200, suite="stage-c-4-gpu-mi350", labels=["precision"])
 

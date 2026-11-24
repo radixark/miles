@@ -60,6 +60,7 @@ register_cuda_ci(
     labels=["agentic"],
     disabled="CI runners hold no sandbox credential; run it manually on a GPU devbox that has one",
     num_gpus=2,
+    cluster_backends=["ray", "kubernetes"],
 )
 
 REPO = Path(__file__).resolve().parents[3]

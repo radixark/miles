@@ -20,7 +20,8 @@ from miles.utils.test_utils.comparisons.metrics import compare_metrics
 from miles.utils.types import Sample
 
 register_cuda_ci(
-    est_time=1100, suite="stage-c-4-gpu-h200", labels=["precision", "long"], hardware=["hopper"], num_gpus=4
+    est_time=1100, suite="stage-c-4-gpu-h200", labels=["precision", "long"], hardware=["hopper"], num_gpus=4,
+    cluster_backends=["ray", "kubernetes"],
 )
 register_rocm_ci(est_time=800, suite="stage-c-4-gpu-mi350", labels=["precision", "long"], nightly=True)
 

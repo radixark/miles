@@ -10,7 +10,8 @@ from tests.ci.metric_history import register_ci_gate
 from tests.e2e.fsdp._true_on_policy_rollout_topk import main
 
 register_cuda_ci(
-    est_time=500, suite="stage-c-2-gpu-h200", labels=["fsdp", "sglang", "replay"], hardware=["hopper"], num_gpus=2
+    est_time=500, suite="stage-c-2-gpu-h200", labels=["fsdp", "sglang", "replay"], hardware=["hopper"], num_gpus=2,
+    cluster_backends=["ray", "kubernetes"],
 )
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 

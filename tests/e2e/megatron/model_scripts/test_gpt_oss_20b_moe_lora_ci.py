@@ -15,6 +15,7 @@ register_cuda_ci(
     labels=["megatron", "model-scripts", "lora"],
     hardware=["hopper", "blackwell"],
     num_gpus=2,
+    cluster_backends=["ray", "kubernetes"],
 )
 register_rocm_ci(
     est_time=2000, suite="stage-c-2-gpu-mi350", labels=["megatron", "model-scripts", "lora"], nightly=True

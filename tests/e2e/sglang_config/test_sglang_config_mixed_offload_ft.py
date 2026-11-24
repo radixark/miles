@@ -28,6 +28,7 @@ register_cuda_ci(
         "partial-target P2P weight update, which --colocate cannot provide. Unblock condition: a decision to port "
         "this recovery scenario to a disaggregated P2P layout or to delete it; tracked in #3724."
     ),
+    cluster_backends=["ray", "kubernetes"],
 )
 register_rocm_ci(
     est_time=600,

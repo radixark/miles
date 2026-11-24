@@ -24,6 +24,7 @@ register_cuda_ci(
     "linear_kv_up_proj.weight directly; the pinned Megatron-Bridge's LoRALinear has no such "
     "property. Upstream Bridge added an effective-weight property — re-enable after bumping it.",
     num_gpus=8,
+    cluster_backends=["ray", "kubernetes"],
 )
 
 # skip the engine-side stacked params a frozen-base LoRA run cannot re-ship

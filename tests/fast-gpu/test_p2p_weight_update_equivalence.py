@@ -3,7 +3,8 @@
 from tests.ci.ci_register import register_cuda_ci
 
 register_cuda_ci(
-    est_time=300, suite="stage-c-4-gpu-b200", num_gpus=1, labels=["weight-update"], hardware=["blackwell"]
+    est_time=300, suite="stage-c-4-gpu-b200", num_gpus=1, labels=["weight-update"], hardware=["blackwell"],
+    cluster_backends=["ray"],
 )
 
 import os

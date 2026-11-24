@@ -30,6 +30,7 @@ register_cuda_ci(
     hardware=["hopper"],
     nightly=True,
     num_gpus=8,
+    cluster_backends=["ray"],
 )
 
 MODEL_NAME = "mimo26-p4-bf16"

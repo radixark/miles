@@ -16,7 +16,8 @@ from miles.utils.simple_checkpointer import load_simple_checkpoint
 logger = logging.getLogger(__name__)
 
 register_cuda_ci(
-    est_time=1200, suite="stage-c-8-gpu-h100", labels=["ckpt", "fully-async"], hardware=["hopper", "blackwell"]
+    est_time=1200, suite="stage-c-8-gpu-h100", labels=["ckpt", "fully-async"], hardware=["hopper", "blackwell"],
+    cluster_backends=["ray"],
 )
 register_rocm_ci(est_time=1200, suite="stage-c-8-gpu-mi350", labels=["ckpt", "fully-async"])
 

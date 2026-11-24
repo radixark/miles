@@ -13,6 +13,7 @@ register_cuda_ci(
     labels=["long", "multi-policy", "fully-async"],
     hardware=["hopper", "blackwell"],
     num_gpus=4,
+    cluster_backends=["ray", "kubernetes"],
 )
 register_rocm_ci(est_time=1700, suite="stage-c-4-gpu-mi350", labels=["short", "multi-policy", "fully-async"])
 

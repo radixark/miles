@@ -9,6 +9,7 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     disabled="Miles Router is deprecated.",
     num_gpus=4,
+    cluster_backends=["ray", "kubernetes"],
 )
 
 """E2E test: verify sglang router and miles router produce identical rollout

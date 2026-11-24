@@ -10,7 +10,7 @@ from tests.e2e.lora.test_tinker_mimo_v2_6_4layer import MODEL_NAME, SERVE_CMD, _
 from tests.e2e.lora.tinker_gateway import running_gateway
 
 # weekly only: `long` is outside run-ci-lora / run-ci-multi-lora and the nightly scope
-register_cuda_ci(est_time=1500, suite="stage-c-8-gpu-h100", labels=["long"], hardware=["hopper"], num_gpus=8)
+register_cuda_ci(est_time=1500, suite="stage-c-8-gpu-h100", labels=["long"], hardware=["hopper"], num_gpus=8, cluster_backends=["ray"])
 
 # (lora_type, experts_shared_outer_loras)
 _LAYOUTS = [

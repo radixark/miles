@@ -17,6 +17,7 @@ register_cuda_ci(
     labels=["megatron", "weight-update", "fully-async"],
     hardware=["hopper"],
     num_gpus=8,
+    cluster_backends=["ray", "kubernetes"],
 )
 register_rocm_ci(est_time=1400, suite="stage-c-8-gpu-mi350", labels=["megatron", "weight-update", "fully-async"])
 

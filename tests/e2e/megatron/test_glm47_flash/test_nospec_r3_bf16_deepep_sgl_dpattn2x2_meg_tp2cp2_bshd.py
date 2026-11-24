@@ -15,7 +15,8 @@ from tests.e2e.megatron.test_glm47_flash._common import CaseConfig, execute, pre
 
 # 4x H200: the 8x H200 runners cannot bring NVSHMEM up over IB, which DeepEP low-latency mode needs.
 register_cuda_ci(
-    est_time=1500, suite="stage-c-4-gpu-h200", labels=["megatron", "replay"], hardware=["hopper"], num_gpus=4
+    est_time=1500, suite="stage-c-4-gpu-h200", labels=["megatron", "replay"], hardware=["hopper"], num_gpus=4,
+    cluster_backends=["ray", "kubernetes"],
 )
 
 register_ci_gate(metric_key="train/grad_norm")

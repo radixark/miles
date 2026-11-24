@@ -20,7 +20,8 @@ from miles.utils.test_utils.session_verify_agent import SessionVerifyKind
 from miles.utils.test_utils.session_verify_runner import _ensure_prompt_data
 
 register_cuda_ci(
-    est_time=1100, suite="stage-c-4-gpu-h200", labels=["mooncake", "replay"], hardware=["hopper"], num_gpus=4
+    est_time=1100, suite="stage-c-4-gpu-h200", labels=["mooncake", "replay"], hardware=["hopper"], num_gpus=4,
+    cluster_backends=["ray", "kubernetes"],
 )
 
 MODEL_NAME = "Qwen3-30B-A3B"

@@ -22,7 +22,8 @@ from tests.e2e.megatron.test_qwen3_5_35B_A3B._common import CaseConfig, execute,
 # Hopper only until a B200 run of this case passes: on Blackwell, FP8 without DeepEP pairs UE8M0
 # linear scales with fp32 expert scales (quantizer_fp8.py).
 register_cuda_ci(
-    est_time=2100, suite="stage-c-4-gpu-h200", labels=["megatron", "qwen35"], hardware=["hopper"], num_gpus=4
+    est_time=2100, suite="stage-c-4-gpu-h200", labels=["megatron", "qwen35"], hardware=["hopper"], num_gpus=4,
+    cluster_backends=["ray", "kubernetes"],
 )
 register_rocm_ci(est_time=1600, suite="stage-c-4-gpu-mi350", labels=["megatron", "qwen35"])
 

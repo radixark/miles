@@ -9,6 +9,7 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     disabled="needs a Kubernetes cluster backend",
     num_gpus=4,
+    cluster_backends=["kubernetes"],
 )
 
 if __name__ == "__main__":

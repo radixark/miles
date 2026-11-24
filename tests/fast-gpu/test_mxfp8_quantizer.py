@@ -7,6 +7,7 @@ register_cuda_ci(
     hardware=["hopper"],
     disabled="FIXME: re-enable after the MXFP8 H200 reference path is settled.",
     num_gpus=2,
+    cluster_backends=["ray"],
 )
 
 

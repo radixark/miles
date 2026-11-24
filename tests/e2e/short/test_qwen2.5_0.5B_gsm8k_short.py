@@ -13,6 +13,7 @@ register_cuda_ci(
     labels=["short", "mooncake"],
     hardware=["hopper", "blackwell"],
     num_gpus=2,
+    cluster_backends=["ray", "kubernetes"],
 )
 register_rocm_ci(est_time=300, suite="stage-c-2-gpu-mi350", labels=["short", "mooncake"])
 

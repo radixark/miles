@@ -16,6 +16,7 @@ register_cuda_ci(
     labels=["megatron", "precision"],
     hardware=["hopper", "blackwell"],
     num_gpus=1,
+    cluster_backends=["ray"],
 )
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")

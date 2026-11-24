@@ -19,7 +19,8 @@ from tests.ci.metric_history import register_ci_gate
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=1300, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"], hardware=["hopper"], num_gpus=4
+    est_time=1300, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"], hardware=["hopper"], num_gpus=4,
+    cluster_backends=["ray", "kubernetes"],
 )
 
 register_rocm_ci(est_time=800, suite="stage-c-4-gpu-mi350", labels=["megatron", "model-scripts"])

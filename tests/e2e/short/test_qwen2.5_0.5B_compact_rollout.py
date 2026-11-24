@@ -16,6 +16,7 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     nightly=True,
     num_gpus=2,
+    cluster_backends=["ray", "kubernetes"],
 )
 register_rocm_ci(est_time=400, suite="stage-c-2-gpu-mi350", labels=["short"], nightly=True)
 

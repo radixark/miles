@@ -37,7 +37,8 @@ from miles.backends.megatron_utils.model import finalize_model_grads_with_empty_
 from miles.utils.distributed_utils import init_gloo_group
 
 register_cuda_ci(
-    est_time=240, suite="stage-b-2-gpu-h200", labels=["lora", "multi-lora"], hardware=["hopper"], num_gpus=2
+    est_time=240, suite="stage-b-2-gpu-h200", labels=["lora", "multi-lora"], hardware=["hopper"], num_gpus=2,
+    cluster_backends=["ray"],
 )
 register_rocm_ci(est_time=120, suite="stage-c-2-gpu-mi350", labels=["lora", "multi-lora"], nightly=True)
 

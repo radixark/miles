@@ -6,7 +6,7 @@ from tests.ci.ci_register import register_cuda_ci
 
 # CPU-only checks, on this stage because only the GPU image ships Megatron-Bridge's peft (it imports Transformer
 # Engine)
-register_cuda_ci(est_time=30, suite="stage-b-2-gpu-h200", labels=["lora"], hardware=["hopper"], num_gpus=2)
+register_cuda_ci(est_time=30, suite="stage-b-2-gpu-h200", labels=["lora"], hardware=["hopper"], num_gpus=2, cluster_backends=["ray"])
 
 import pytest
 import torch

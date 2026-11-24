@@ -6,7 +6,7 @@ The CPU tests cannot check this: without FLA, causal_conv1d and flash-attn, HF's
 
 from tests.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=300, suite="stage-b-2-gpu-h200", labels=["fsdp"], hardware=["hopper"])
+register_cuda_ci(est_time=300, suite="stage-b-2-gpu-h200", labels=["fsdp"], hardware=["hopper"], cluster_backends=["ray"])
 
 import itertools
 from types import SimpleNamespace

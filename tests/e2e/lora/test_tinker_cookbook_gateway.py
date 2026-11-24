@@ -11,6 +11,7 @@ register_cuda_ci(
     labels=["lora", "weight-update", "multi-lora"],
     hardware=["hopper"],
     num_gpus=8,
+    cluster_backends=["ray"],
 )
 
 

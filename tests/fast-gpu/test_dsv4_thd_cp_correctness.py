@@ -35,6 +35,7 @@ register_cuda_ci(
     labels=["precision", "megatron"],
     hardware=["hopper", "blackwell"],
     num_gpus=4,
+    cluster_backends=["ray"],
 )
 register_rocm_ci(est_time=60, suite="stage-c-4-gpu-mi350", labels=["precision"])
 

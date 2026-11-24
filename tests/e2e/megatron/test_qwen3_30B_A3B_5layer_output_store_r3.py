@@ -18,7 +18,8 @@ from tests.utils.dirs import get_test_data_dir, get_test_model_dir
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=700, suite="stage-c-8-gpu-h200", labels=["mooncake", "replay"], hardware=["hopper"], num_gpus=8
+    est_time=700, suite="stage-c-8-gpu-h200", labels=["mooncake", "replay"], hardware=["hopper"], num_gpus=8,
+    cluster_backends=["ray", "kubernetes"],
 )
 
 MODEL_DIR = get_test_model_dir()

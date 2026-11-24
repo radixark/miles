@@ -5,7 +5,8 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
-    est_time=400, suite="stage-c-2-gpu-h200", labels=["short", "fully-async"], hardware=["hopper", "blackwell"]
+    est_time=400, suite="stage-c-2-gpu-h200", labels=["short", "fully-async"], hardware=["hopper", "blackwell"],
+    cluster_backends=["ray", "kubernetes"],
 )
 
 register_rocm_ci(est_time=700, suite="stage-c-2-gpu-mi350", labels=["short", "fully-async"])

@@ -8,6 +8,7 @@ register_cuda_ci(
     hardware=["hopper"],
     disabled="needs a CI image with GLM-5.3-Flash sglang support (branch sglang-miles-glm53); "
     "re-enable once it lands (#3989).",
+    cluster_backends=["ray", "kubernetes"],
 )
 
 # the host-resident training state of the full flavor, on the slice: CPU-offloaded shards, Adam moments on disk

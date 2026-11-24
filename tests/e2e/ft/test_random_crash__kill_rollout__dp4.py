@@ -13,6 +13,7 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     disabled="FT soak tests pending CI infra support; re-enabling tracked in #3724",
     num_gpus=8,
+    cluster_backends=["ray", "kubernetes"],
 )
 
 _MODE: str = "kill_rollout__dp4"

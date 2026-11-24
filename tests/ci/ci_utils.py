@@ -297,14 +297,15 @@ def build_store_from_env(*, backend: HWBackend = HWBackend.CUDA):
     return None
 
 
-def _shadow_verdict_line(filename: str, result) -> str:
-    """One-line human-readable shadow verdict for a PR run.
+def _shadow_verdict_line(filename: str, result, *, shadow_tag: str | None = None) -> str:
+    """One-line human-readable shadow verdict for a non-enforced run.
 
     Shadow runs never write a row and never change pass/fail; this is the only
     artifact they emit besides the per-metric detail.
     """
     verdict = "TRUSTED" if result.trusted else "NOT-TRUSTED"
-    return f"[CI Gate][shadow] {filename}: {verdict} ({len(result.metrics)} metric(s))"
+    tag = f"[{shadow_tag}]" if shadow_tag else ""
+    return f"[CI Gate][shadow]{tag} {filename}: {verdict} ({len(result.metrics)} metric(s))"
 
 
 def run_gate_hook(
@@ -318,14 +319,15 @@ def run_gate_hook(
     provenance: RunProvenance,
     now_iso: str | None = None,
     enforce: bool = True,
+    shadow_tag: str | None = None,
 ) -> bool:
     """Return whether the passed test also satisfies the enabled history gates.
 
     Baseline writers retain the full trusted/untrusted verdict. Numerical
     enforcement needs ten trusted values per coordinate; missing metrics and
     gate/store errors fail tests with enforcement enabled. Other declarations
-    remain shadow, and ``enforce=False`` (ROCm, until its history is in place)
-    keeps every declaration shadow while still writing baselines.
+    remain shadow, and ``enforce=False`` (ROCm or K8s shadow mode) keeps every
+    declaration shadow without failing the test on deviations or missing data.
     """
     try:
         specs = parse_ci_gate_specs(filename)
@@ -351,7 +353,7 @@ def run_gate_hook(
             line = (
                 f"[CI Gate][enforce] {filename}: {'FAIL' if failed else 'PASS'}"
                 if enforced_keys
-                else _shadow_verdict_line(filename, result)
+                else _shadow_verdict_line(filename, result, shadow_tag=shadow_tag)
             )
             details = []
             for m in result.metrics:
@@ -396,7 +398,8 @@ def run_gate_hook(
             logger.info(f"[CI Gate][baseline] {filename}: wrote baseline")
         return not failed
     except Exception as e:
-        message = f"[CI Gate] hook failed for {filename}: {type(e).__name__}: {e}"
+        prefix = f"[CI Gate][shadow][{shadow_tag}]" if (shadow_tag and not enforce) else "[CI Gate]"
+        message = f"{prefix} hook failed for {filename}: {type(e).__name__}: {e}"
         logger.warning(message)
         write_github_step_summary(message + "\n")
         return not enforced_keys
@@ -449,6 +452,8 @@ def run_unittest_files(
     gate_executing_suite: str = "",
     snapshot_hardware: str | None = None,
     gate_write_baseline: bool = False,
+    gate_enforce: bool | None = None,
+    gate_shadow_tag: str | None = None,
     gate_provenance: RunProvenance | None = None,
     reap_leftovers: bool = False,
 ):
@@ -636,6 +641,7 @@ def run_unittest_files(
                             and isinstance(file, CIRegistry)
                             and file.backend in (HWBackend.CUDA, HWBackend.ROCM)
                         ):
+                            effective_enforce = (file.backend == HWBackend.CUDA) if gate_enforce is None else gate_enforce
                             file_passed = run_gate_hook(
                                 filename,
                                 passing_record_path,
@@ -644,7 +650,8 @@ def run_unittest_files(
                                 executing_suite=gate_executing_suite,
                                 write_baseline=gate_write_baseline,
                                 provenance=gate_provenance or gate_provenance_from_env(),
-                                enforce=file.backend == HWBackend.CUDA,
+                                enforce=effective_enforce,
+                                shadow_tag=gate_shadow_tag,
                             )
                             if not file_passed:
                                 attempt_status = "FAIL"

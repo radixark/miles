@@ -10,6 +10,7 @@ register_cuda_ci(
     labels=["megatron", "model-scripts", "lora"],
     hardware=["hopper", "blackwell"],
     num_gpus=8,
+    cluster_backends=["ray", "kubernetes"],
 )
 register_rocm_ci(
     est_time=400,

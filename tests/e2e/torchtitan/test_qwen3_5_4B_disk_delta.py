@@ -2,7 +2,8 @@ from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.torchtitan._common import CaseConfig, execute, prepare
 
 register_cuda_ci(
-    est_time=1500, suite="stage-c-8-gpu-h100", labels=["torchtitan", "weight-update"], hardware=["hopper"], num_gpus=8
+    est_time=1500, suite="stage-c-8-gpu-h100", labels=["torchtitan", "weight-update"], hardware=["hopper"], num_gpus=8,
+    cluster_backends=["ray"],
 )
 
 # disk-delta is the only transfer that reconciles the weight stream against the

@@ -11,6 +11,7 @@ register_cuda_ci(
     hardware=["blackwell"],
     disabled="Temporarily disabled; superseded by test_deepseek_v32_5layer_ci on H100.",
     num_gpus=8,
+    cluster_backends=["ray"],
 )
 
 MODEL_ORG = "Pinaster"

@@ -14,6 +14,7 @@ register_cuda_ci(
     disabled="needs a CI image with GLM-5.3-Flash sglang support (branch sglang-miles-glm53); "
     "re-enable once it lands.",
     num_gpus=8,
+    cluster_backends=["ray", "kubernetes"],
 )
 
 register_ci_gate(metric_key="train/grad_norm")

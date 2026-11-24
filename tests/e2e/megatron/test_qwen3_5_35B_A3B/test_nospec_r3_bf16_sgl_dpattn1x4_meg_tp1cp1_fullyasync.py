@@ -19,6 +19,7 @@ register_cuda_ci(
     labels=["megatron", "qwen35", "weight-update", "fully-async", "replay"],
     hardware=["hopper", "blackwell"],
     num_gpus=8,
+    cluster_backends=["ray", "kubernetes"],
 )
 register_rocm_ci(
     est_time=1400,

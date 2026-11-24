@@ -12,6 +12,7 @@ register_cuda_ci(
     labels=["ckpt", "lora", "miles-plugin"],
     hardware=["hopper", "blackwell"],
     num_gpus=1,
+    cluster_backends=["ray"],
 )
 
 import transformers

@@ -19,7 +19,8 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
 from miles.utils.workers.types import ClusterBackend
 
 register_cuda_ci(
-    est_time=300, suite="stage-c-4-gpu-h200", labels=["short"], hardware=["hopper", "blackwell"], num_gpus=4
+    est_time=300, suite="stage-c-4-gpu-h200", labels=["short"], hardware=["hopper", "blackwell"], num_gpus=4,
+    cluster_backends=["ray", "kubernetes"],
 )
 register_rocm_ci(est_time=700, suite="stage-c-4-gpu-mi350", labels=["short"])
 

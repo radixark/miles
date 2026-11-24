@@ -18,6 +18,7 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     disabled="Flaky; temporarily disabled to validate PR correctness",
     num_gpus=8,
+    cluster_backends=["ray"],
 )
 
 MODEL_NAME = "Qwen3.5-35B-A3B"

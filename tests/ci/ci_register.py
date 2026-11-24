@@ -8,7 +8,9 @@ from tests.ci.hardware import CUDA_STAGES, KNOWN_ARCHES, auto_arch
 from tests.ci.labels import KNOWN_LABELS, PERF_LABEL
 
 __all__ = [
+    "DEFAULT_CLUSTER_BACKENDS",
     "HWBackend",
+    "KNOWN_CLUSTER_BACKENDS",
     "CIRegistry",
     "collect_tests",
     "discover_ci_files",
@@ -23,10 +25,15 @@ __all__ = [
 # (labels, nightly, disabled) is keyword-only.
 _POSITIONAL_PARAMS = ("est_time", "suite")
 
+KNOWN_CLUSTER_BACKENDS = ("ray", "kubernetes")
+DEFAULT_CLUSTER_BACKENDS = ("ray",)
+
 # All accepted keyword arguments (in addition to the positional pair above).
-# `hardware` is CUDA-only; CPU has no GPU generation and ROCm is a separate
-# backend rather than a CUDA arch.
-_VALID_KWARGS = frozenset({"est_time", "suite", "labels", "nightly", "disabled", "hardware", "num_gpus"})
+# `hardware` and `cluster_backends` are CUDA-only; CPU has no GPU generation
+# and ROCm is a separate backend rather than a CUDA arch.
+_VALID_KWARGS = frozenset(
+    {"est_time", "suite", "labels", "nightly", "disabled", "hardware", "num_gpus", "cluster_backends"}
+)
 
 _REGISTER_NAMES = frozenset({"register_cpu_ci", "register_cuda_ci", "register_rocm_ci"})
 
@@ -48,6 +55,8 @@ class CIRegistry:
     labels: list[str] = field(default_factory=list)
     # GPU generations this test supports; CUDA only, always non-empty there.
     hardware: list[str] = field(default_factory=list)
+    # Cluster execution backends this test supports (`"ray"`, `"kubernetes"`); CUDA only.
+    cluster_backends: list[str] = field(default_factory=list)
     nightly: bool = False
     disabled: str | None = None  # None = enabled, string = disabled reason
     # True only when collect_tests synthesized this entry by directory
@@ -96,6 +105,7 @@ def register_cuda_ci(
     labels: list[str],
     hardware: list[str],
     num_gpus: int | None = None,
+    cluster_backends: list[str] | None = None,
     nightly: bool = False,
     disabled: str | None = None,
 ):
@@ -205,7 +215,7 @@ class RegistryVisitor(ast.NodeVisitor):
                 raise ValueError(f"{self.filename}: duplicated argument '{kw.arg}' in {func_name}()")
             if kw.arg not in _VALID_KWARGS:
                 raise ValueError(f"{self.filename}: unknown argument '{kw.arg}' in {func_name}()")
-            if kw.arg in ("labels", "hardware"):
+            if kw.arg in ("labels", "hardware", "cluster_backends"):
                 parsed[kw.arg] = _extract_list_constant(
                     kw.value, context=f"{self.filename}: {kw.arg} in {func_name}()"
                 )
@@ -253,6 +263,14 @@ class RegistryVisitor(ast.NodeVisitor):
                 f"CPU has no GPU generation and ROCm is a separate backend"
             )
 
+        if "cluster_backends" in parsed:
+            if backend is not HWBackend.CUDA:
+                raise ValueError(f"{self.filename}: cluster_backends in {func_name}() is CUDA-only")
+            cluster_backends = list(parsed["cluster_backends"])
+            self._check_cuda_cluster_backends(func_name, cluster_backends)
+        else:
+            cluster_backends = list(DEFAULT_CLUSTER_BACKENDS) if backend is HWBackend.CUDA else []
+
         num_gpus = parsed.get("num_gpus")
         if "num_gpus" in parsed:
             if backend is not HWBackend.CUDA:
@@ -279,11 +297,29 @@ class RegistryVisitor(ast.NodeVisitor):
             suite=parsed["suite"],
             labels=list(labels),
             hardware=list(hardware),
+            cluster_backends=cluster_backends,
             nightly=nightly,
             disabled=disabled,
             implicit=False,
             num_gpus=num_gpus,
         )
+
+    def _check_cuda_cluster_backends(self, func_name: str, cluster_backends: list[str]) -> None:
+        if not cluster_backends:
+            raise ValueError(
+                f"{self.filename}: cluster_backends in {func_name}() must list at least one backend "
+                f"from {list(KNOWN_CLUSTER_BACKENDS)}"
+            )
+        unknown = [cb for cb in cluster_backends if cb not in KNOWN_CLUSTER_BACKENDS]
+        if unknown:
+            raise ValueError(
+                f"{self.filename}: unknown cluster_backends {unknown} in {func_name}(); "
+                f"valid backends: {list(KNOWN_CLUSTER_BACKENDS)}"
+            )
+        if len(set(cluster_backends)) != len(cluster_backends):
+            raise ValueError(
+                f"{self.filename}: duplicated cluster_backend in {func_name}() cluster_backends={cluster_backends}"
+            )
 
     def _check_cuda_hardware(self, func_name: str, suite: str, hardware: list) -> None:
         """Validate `hardware` and tie it to the declared home stage.

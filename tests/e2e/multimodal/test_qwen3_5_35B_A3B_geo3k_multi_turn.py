@@ -16,6 +16,7 @@ register_cuda_ci(
     labels=["megatron", "multimodal"],
     hardware=["hopper"],
     num_gpus=4,
+    cluster_backends=["ray", "kubernetes"],
 )
 
 register_ci_gate(metric_key="train/grad_norm")

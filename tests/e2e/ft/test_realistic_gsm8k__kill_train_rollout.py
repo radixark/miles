@@ -13,6 +13,7 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     disabled="FT soak tests pending CI infra support",
     num_gpus=8,
+    cluster_backends=["ray", "kubernetes"],
 )
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     disabled="FIXME: re-enable after shared HTTP client concurrency is reset between cases.",
     num_gpus=2,
+    cluster_backends=["ray"],
 )
 
 import pytest

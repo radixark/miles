@@ -22,7 +22,8 @@ from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 from miles.utils.types import Sample
 
 register_cuda_ci(
-    est_time=400, suite="stage-c-2-gpu-h200", labels=["sglang", "replay"], hardware=["hopper"], num_gpus=2
+    est_time=400, suite="stage-c-2-gpu-h200", labels=["sglang", "replay"], hardware=["hopper"], num_gpus=2,
+    cluster_backends=["ray"],
 )
 
 _MODEL_ID = "Qwen/Qwen3-30B-A3B"
