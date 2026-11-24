@@ -67,6 +67,21 @@ class TestStripChainOfThought:
                 "<|message_model|><|content_text|>Answer: A<|end_message|><|content_model_end_sampling|>",
                 "Answer: A",
             ),
+            # Multi-turn Harmony / Muse Spark traces whose final turn stops in reasoning do not extract Turn 1's answer.
+            (
+                "<|start|>assistant<|channel|>final<|message|>A<|end|>"
+                "<|start|>user<|message|>next<|end|>"
+                "<|start|>assistant<|channel|>analysis<|message|>work",
+                "<|start|>assistant<|channel|>final<|message|>A<|end|>"
+                "<|start|>user<|message|>next<|end|>"
+                "<|start|>assistant<|channel|>analysis<|message|>work",
+            ),
+            (
+                "to=user<|message|>A<|eot|><|start|>user<|message|>next<|eot|>"
+                "<|start|>assistant to=self<|message|>work",
+                "to=user<|message|>A<|eot|><|start|>user<|message|>next<|eot|>"
+                "<|start|>assistant to=self<|message|>work",
+            ),
             # Muse Spark subsequent thinking block after to=user<|eom|> stops at <|eom|><|start|>.
             (
                 " to=user<|message|>A<|eom|><|start|>assistant to=self<|message|>Answer: B<|eom|>",
@@ -291,3 +306,14 @@ class TestComputeGpqaReward:
             "<|message_model|><|content_thinking|>The answer is A"
         )
         assert compute_gpqa_reward(tool_then_unclosed, "A") == 1.0
+        # Unclosed final Harmony / Muse Spark turn must not grade an earlier turn's bare-letter answer.
+        harmony_stale = (
+            "<|start|>assistant<|channel|>final<|message|>A<|end|>"
+            "<|start|>user<|message|>next<|end|>"
+            "<|start|>assistant<|channel|>analysis<|message|>work"
+        )
+        muse_stale = (
+            "to=user<|message|>A<|eot|><|start|>user<|message|>next<|eot|><|start|>assistant to=self<|message|>work"
+        )
+        assert compute_gpqa_reward(harmony_stale, "A") == 0.0
+        assert compute_gpqa_reward(muse_stale, "A") == 0.0

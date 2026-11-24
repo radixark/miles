@@ -31,28 +31,40 @@ _INKLING_TURN_BREAK_RE = re.compile(
 )
 _INKLING_TEXT_BLOCK_RE = re.compile(r"<\|message_model\|><\|content_text\|>(.*?)(?:<\|end_message\|>|$)", re.DOTALL)
 
+# Turn separators that bound multi-turn traces so an unclosed final turn cannot match an earlier answer.
+_TURN_BOUNDARY_TOKENS: dict[str, tuple[str, ...]] = {
+    "harmony": ("<|return|><|start|>", "<|end|><|start|>"),
+    "muse_spark": ("<|eot|><|start|>",),
+}
 # Same-turn transitions that end a framed answer block before a subsequent block.
 _NEXT_BLOCK_RE: dict[str, re.Pattern[str]] = {
     "kimi_k3": re.compile(r"<\|close\|>response<\|sep\|>(?:<\|close\|>message<\|sep\|>)?<\|open\|>"),
-    "harmony": re.compile(r"<\|(?:end|return)\|><\|start\|>"),
-    "muse_spark": re.compile(r"<\|(?:eom|eot)\|><\|start\|>"),
+    "muse_spark": re.compile(r"<\|eom\|><\|start\|>"),
 }
-# Trailing end-of-answer / end-of-turn markers stripped when rollout_skip_special_tokens=False.
-_TRAILING_END_RE: dict[str, re.Pattern[str]] = {
-    "kimi_k3": re.compile(r"(?:\s*<\|close\|>(?:response|message)<\|sep\|>)+\s*$"),
-    "harmony": re.compile(r"(?:\s*<\|(?:return|end)\|>)+\s*$"),
-    "muse_spark": re.compile(r"(?:\s*<\|(?:eot|eom)\|>)+\s*$"),
-    "gemma4": re.compile(r"(?:\s*<turn\|>)+\s*$"),
-    "think": re.compile(r"(?:\s*(?:<\|im_end\|>|<｜end▁of▁sentence｜>|\[e~\[))+\s*$"),
+# Trailing end-of-answer / end-of-turn markers stripped in linear time when rollout_skip_special_tokens=False.
+_TRAILING_END_TOKENS: dict[str, tuple[str, ...]] = {
+    "kimi_k3": ("<|close|>response<|sep|>", "<|close|>message<|sep|>"),
+    "harmony": ("<|return|>", "<|end|>"),
+    "muse_spark": ("<|eot|>", "<|eom|>"),
+    "gemma4": ("<turn|>",),
+    "think": ("<|im_end|>", "<｜end▁of▁sentence｜>", "[e~["),
 }
 
 
 def _trim_answer_end(text: str, family: str) -> str:
     if (pattern := _NEXT_BLOCK_RE.get(family)) and (match := pattern.search(text)):
         text = text[: match.start()]
-    if pattern := _TRAILING_END_RE.get(family):
-        text = pattern.sub("", text)
-    return text
+    if not (end_tokens := _TRAILING_END_TOKENS.get(family)):
+        return text
+    trimmed, stripped = text.rstrip(), False
+    while trimmed:
+        for token in end_tokens:
+            if trimmed.endswith(token):
+                trimmed, stripped = trimmed[: -len(token)].rstrip(), True
+                break
+        else:
+            break
+    return trimmed if stripped else text
 
 
 def _extract_inkling_answer(text: str) -> tuple[int, str] | None:
@@ -80,7 +92,11 @@ def extract_after_reasoning(text: str | None) -> str | None:
     for family, (_, delimiter) in REASONING_DELIMITERS.items():
         if family in ("inkling", "legacy_response"):
             continue
-        if (pos := text.rfind(delimiter)) > best_pos:
+        turn_start = 0
+        for boundary in _TURN_BOUNDARY_TOKENS.get(family, ()):
+            if (boundary_pos := text.rfind(boundary)) != -1:
+                turn_start = max(turn_start, boundary_pos + len(boundary))
+        if (pos := text.rfind(delimiter, turn_start)) > best_pos:
             best_pos, best_answer = pos, _trim_answer_end(text[pos + len(delimiter) :], family)
 
     if best_answer is not None:

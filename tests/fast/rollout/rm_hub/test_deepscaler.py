@@ -186,6 +186,43 @@ class TestGetDeepscalerRuleBasedReward:
                 r"<|start|>assistant<|channel|>final<|message|>\boxed{42}<|return|>",
                 1,
             ),
+            # Multi-turn Harmony / Muse Spark traces must scope to the final turn so an unclosed turn never rewards Turn 1.
+            (
+                r"<|start|>assistant<|channel|>final<|message|>\boxed{42}<|end|>"
+                r"<|start|>user<|message|>next<|end|>"
+                r"<|start|>assistant<|channel|>analysis<|message|>\boxed{7}",
+                0,
+            ),
+            (
+                r"<|start|>assistant<|channel|>final<|message|>\boxed{42}<|return|>"
+                r"<|start|>user<|message|>next<|end|>"
+                r"<|start|>assistant<|channel|>analysis<|message|>\boxed{7}",
+                0,
+            ),
+            (
+                r"<|start|>assistant<|channel|>final<|message|>\boxed{42}<|end|>"
+                r"<|start|>functions.calc<|message|>ok<|end|>"
+                r"<|start|>assistant<|channel|>analysis<|message|>\boxed{7}",
+                0,
+            ),
+            (
+                r"<|start|>assistant<|channel|>final<|message|>\boxed{7}<|end|>"
+                r"<|start|>user<|message|>next<|end|>"
+                r"<|start|>assistant<|channel|>analysis<|message|>think<|end|>"
+                r"<|start|>assistant<|channel|>final<|message|>\boxed{42}<|return|>",
+                1,
+            ),
+            (
+                r"to=user<|message|>\boxed{42}<|eot|><|start|>user<|message|>next<|eot|>"
+                r"<|start|>assistant to=self<|message|>work",
+                0,
+            ),
+            (
+                r"to=user<|message|>\boxed{7}<|eot|><|start|>user<|message|>next<|eot|>"
+                r"<|start|>assistant to=self<|message|>think<|eom|>"
+                r"<|start|>assistant to=user<|message|>\boxed{42}<|eot|>",
+                1,
+            ),
             # Muse Spark subsequent thinking block after to=user<|eom|> must not leak into answer, while mid-prose <|eot|> stays intact.
             (r" to=user<|message|>\boxed{1}<|eom|><|start|>assistant to=self<|message|>\boxed{42}<|eom|>", 0),
             (r"to=user<|message|>The marker <|eot|> ends a turn. \boxed{42}<|eot|>", 1),
@@ -213,6 +250,12 @@ class TestGetDeepscalerRuleBasedReward:
     )
     def test_rightmost_structural_delimiter_precedence(self, response, expected):
         assert get_deepscaler_rule_based_reward(response, "42") == expected
+
+    @pytest.mark.parametrize("family", ["kimi_k3", "harmony", "muse_spark", "gemma4", "think"])
+    def test_trailing_whitespace_run_is_linear(self, family):
+        _, delimiter = REASONING_DELIMITERS[family]
+        response = f"{delimiter}\\boxed{{42}}" + " " * 30_000
+        assert get_deepscaler_rule_based_reward(response, "42") == 1
 
 
 class TestGetGemmaMathReward:
