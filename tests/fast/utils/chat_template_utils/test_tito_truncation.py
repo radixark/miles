@@ -35,7 +35,7 @@ from tests.fast.utils.chat_template_utils.tito_families import load_family_tito
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, TITOTokenizerType, extract_template_args
 from miles.utils.chat_template_utils.token_seq_comparator import MismatchType
 from miles.utils.chat_template_utils.truncation import MarkerPair, TruncationGrammar
-from miles.utils.reasoning import LEGACY_RESPONSE_DELIMITER, REASONING_ANSWER_DELIMITERS
+from miles.utils.reasoning import REASONING_DELIMITERS
 
 register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["rollout"])
 
@@ -518,19 +518,21 @@ def test_closing_text_skips_whitespace_already_sampled():
 
 def test_every_tito_closer_delimiter_is_registered_in_reasoning_ssot():
     """Every TITO family's reasoning delimiter must stay registered in the shared SSOT before the legacy fallback."""
-    legacy_idx = REASONING_ANSWER_DELIMITERS.index(LEGACY_RESPONSE_DELIMITER)
+    delimiters = [delimiter for _, delimiter in REASONING_DELIMITERS.values()]
+    legacy_delimiter = REASONING_DELIMITERS["legacy_response"][1]
+    legacy_idx = delimiters.index(legacy_delimiter)
     checked = 0
     for family in TITOTokenizerType:
         closer = TITOTokenizerType.get_tokenizer_class(family).FIXED_TEMPLATE.truncation_closer
         if closer is None:
             continue
         delimiter = closer.reasoning_answer_delimiter
-        assert delimiter in REASONING_ANSWER_DELIMITERS, (
+        assert delimiter in delimiters, (
             f"{family.value}'s truncation_closer delimiter {delimiter!r} is missing from "
-            "miles.utils.reasoning.REASONING_ANSWER_DELIMITERS"
+            "miles.utils.reasoning.REASONING_DELIMITERS"
         )
         assert (
-            REASONING_ANSWER_DELIMITERS.index(delimiter) < legacy_idx
-        ), f"{family.value}'s delimiter {delimiter!r} must precede {LEGACY_RESPONSE_DELIMITER!r}"
+            delimiters.index(delimiter) < legacy_idx
+        ), f"{family.value}'s delimiter {delimiter!r} must precede {legacy_delimiter!r}"
         checked += 1
     assert checked > 0

@@ -1,7 +1,7 @@
 import pytest
 
 from miles.rollout.rm_hub.deepscaler import get_deepscaler_rule_based_reward, get_gemma_math_reward
-from miles.utils.reasoning import REASONING_ANSWER_DELIMITERS
+from miles.utils.reasoning import REASONING_DELIMITERS
 
 _EXPECTED_DELIMITERS = (
     "<|open|>response<|sep|>",
@@ -39,7 +39,7 @@ class TestGetDeepscalerRuleBasedReward:
         assert get_deepscaler_rule_based_reward(response, label) == expected
 
     def test_expected_delimiters_cover_ssot(self):
-        assert REASONING_ANSWER_DELIMITERS == _EXPECTED_DELIMITERS
+        assert tuple(delimiter for _, delimiter in REASONING_DELIMITERS.values()) == _EXPECTED_DELIMITERS
 
     @pytest.mark.parametrize("delimiter", _EXPECTED_DELIMITERS)
     def test_all_delimiters_grade_only_post_delimiter_answer(self, delimiter):

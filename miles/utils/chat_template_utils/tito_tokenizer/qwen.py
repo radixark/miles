@@ -6,11 +6,12 @@ from typing import Any
 
 from miles.utils.chat_template_utils.tito_tokenizer.base import FixedTemplate, TITOTokenizer
 from miles.utils.chat_template_utils.truncation import MarkerPair, TruncationGrammar
-from miles.utils.reasoning import THINK_CLOSE, THINK_OPEN
+from miles.utils.reasoning import REASONING_DELIMITERS
 
+_THINK_OPEN, _THINK_CLOSE = REASONING_DELIMITERS["think"]
 
 _QWEN_TRUNCATION = TruncationGrammar(
-    think=MarkerPair(THINK_OPEN, f"\n{THINK_CLOSE}\n\n"),
+    think=MarkerPair(_THINK_OPEN, f"\n{_THINK_CLOSE}\n\n"),
     tool_blocks=(MarkerPair("<tool_call>", "\n</tool_call>"),),
     end_of_turn="<|im_end|>",
 )

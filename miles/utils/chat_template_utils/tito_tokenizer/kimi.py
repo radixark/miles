@@ -7,7 +7,7 @@ from typing import Any
 from miles.utils.chat_template_utils.tito_tokenizer.base import FixedTemplate, TITOTokenizer
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
 from miles.utils.chat_template_utils.truncation import MarkerPair, TruncationGrammar
-from miles.utils.reasoning import THINK_CLOSE, THINK_OPEN
+from miles.utils.reasoning import REASONING_DELIMITERS
 
 
 def _kimi_segment_special_token_ids(tokenizer: Any) -> set[int]:
@@ -19,7 +19,7 @@ def _kimi_segment_special_token_ids(tokenizer: Any) -> set[int]:
 # ``<|tool_call_argument_begin|>`` separates a call's id from its arguments and
 # closes nothing, so it is not tracked.
 _KIMI_TRUNCATION = TruncationGrammar(
-    think=MarkerPair(THINK_OPEN, THINK_CLOSE),
+    think=MarkerPair(*REASONING_DELIMITERS["think"]),
     tool_blocks=(
         MarkerPair("<|tool_calls_section_begin|>", "<|tool_calls_section_end|>"),
         MarkerPair("<|tool_call_begin|>", "<|tool_call_end|>"),

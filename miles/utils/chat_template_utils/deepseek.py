@@ -21,7 +21,7 @@ from sglang.srt.entrypoints.openai.protocol import Tool
 from tokenizers import Tokenizer
 
 from miles.utils.chat_template_utils.templates import encoding_dsv32
-from miles.utils.reasoning import THINK_CLOSE
+from miles.utils.reasoning import REASONING_DELIMITERS
 
 if TYPE_CHECKING:
     from sglang.srt.parser.deepseek_recipe_renderer import DeepSeekRecipe
@@ -188,7 +188,7 @@ def stripped_content_whitespace(completion_text: str, content: str) -> str:
     *completion_text* is the decoded completion.  Its content starts after ``</think>``
     in thinking mode and at its start otherwise, where the prompt already closed it.
     """
-    _, think_end, after = completion_text.partition(THINK_CLOSE)
+    _, think_end, after = completion_text.partition(REASONING_DELIMITERS["think"][1])
     tail = after if think_end else completion_text
     body = tail.lstrip()
     return tail[: len(tail) - len(body)] if content and body.startswith(content) else ""

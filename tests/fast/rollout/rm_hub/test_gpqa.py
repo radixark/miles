@@ -6,7 +6,9 @@ from miles.rollout.rm_hub.gpqa import (
     _strip_chain_of_thought,
     compute_gpqa_reward,
 )
-from miles.utils.reasoning import REASONING_ANSWER_DELIMITERS
+from miles.utils.reasoning import REASONING_DELIMITERS
+
+_ANSWER_DELIMITERS = tuple(delimiter for _, delimiter in REASONING_DELIMITERS.values())
 
 
 class TestStripChainOfThought:
@@ -24,7 +26,7 @@ class TestStripChainOfThought:
     def test_strip_chain_of_thought(self, text, expected):
         assert _strip_chain_of_thought(text) == expected
 
-    @pytest.mark.parametrize("delimiter", REASONING_ANSWER_DELIMITERS)
+    @pytest.mark.parametrize("delimiter", _ANSWER_DELIMITERS)
     def test_strip_all_reasoning_delimiters(self, delimiter):
         assert _strip_chain_of_thought(f"Answer: B {delimiter}The answer is A") == "The answer is A"
         assert _strip_chain_of_thought(f"t1{delimiter}Answer: B{delimiter}The answer is A") == "The answer is A"
@@ -185,7 +187,7 @@ class TestComputeGpqaReward:
     def test_listing_several_choices_is_a_hedge(self, response, label, metadata, expected):
         assert compute_gpqa_reward(response, label, metadata=metadata) == expected
 
-    @pytest.mark.parametrize("delimiter", REASONING_ANSWER_DELIMITERS)
+    @pytest.mark.parametrize("delimiter", _ANSWER_DELIMITERS)
     def test_reasoning_delimiters_ignore_distractor_in_thought(self, delimiter):
         response = f"First guess: Answer: B.{delimiter}The answer is A."
         assert compute_gpqa_reward(response, "A") == 1.0
