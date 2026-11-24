@@ -239,7 +239,9 @@ class TestBpoPipelineIntegration:
         clean_old = torch.where(old_lp.isnan(), selected.detach(), old_lp)
         expected = _bpo_ref(selected, clean_old, adv)[0].mean()
         torch.testing.assert_close(loss, expected)
-        torch.testing.assert_close(torch.autograd.grad(loss, logits)[0], torch.autograd.grad(expected, dense_logits)[0])
+        torch.testing.assert_close(
+            torch.autograd.grad(loss, logits)[0], torch.autograd.grad(expected, dense_logits)[0]
+        )
 
         # OPSM: rejected -inf hook -> 0 loss/grad; kept fp16 hook promotes to fp32 (no int32-mask overflow)
         opsm_batch = batch | dict(advantages=[torch.full((3,), -1.0)], rollout_log_probs=[torch.zeros(3)])
