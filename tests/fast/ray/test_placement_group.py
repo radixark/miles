@@ -19,6 +19,7 @@ from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.ray import placement_group as placement_group_module
 from miles.ray.placement_group import (
     attach_trainers_to_rollout,
+    compute_rollout_state_run_dir,
     create_rollout_components,
     create_trainer_handles,
     create_training_model,
@@ -649,6 +650,34 @@ class TestUpdateWeights:
         inference_controller.abort_update_weights.assert_awaited_once_with()
         inference_controller.end_update_weights.assert_not_awaited()
         rollout_executor.set_weight_version.assert_not_awaited()
+
+
+class TestRolloutStateRunDir:
+    """Where the rollout side's data position is read from on resume."""
+
+    @staticmethod
+    def _args(*, adapter: str | None, load: str | None = "/ckpt/base_torch_dist", start: int = 100) -> Namespace:
+        return Namespace(lora_adapter_path=adapter, load=load, start_rollout_id=start)
+
+    def test_a_lora_adapter_dir_resumes_from_its_own_run(self):
+        args = self._args(adapter="/runs/a/iter_0000099/adapter")
+        assert compute_rollout_state_run_dir(args) == "/runs/a"
+
+    def test_the_hidden_adapter_dir_behind_the_symlink_resumes_from_its_run_too(self):
+        args = self._args(adapter="/runs/a/iter_0000099/.adapter.3f2a")
+        assert compute_rollout_state_run_dir(args) == "/runs/a"
+
+    @pytest.mark.parametrize("adapter", [None, "/peft/adapter_model_dir", "/runs/a/hf_export"])
+    def test_anything_else_resumes_from_load(self, adapter):
+        assert compute_rollout_state_run_dir(self._args(adapter=adapter)) == "/ckpt/base_torch_dist"
+
+    async def test_attach_loads_the_previous_rollout_from_the_adapter_run(self):
+        rollout_executor = MagicMock(set_train_parallel_config=AsyncMock(), load=AsyncMock())
+        actor_model = MagicMock(get_train_parallel_config=AsyncMock(return_value=None))
+        await attach_trainers_to_rollout(
+            self._args(adapter="/runs/a/iter_0000099/adapter"), rollout_executor, actor_model
+        )
+        rollout_executor.load.assert_awaited_once_with(99, load="/runs/a")
 
 
 def _make_trainer_handle(

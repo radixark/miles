@@ -1,7 +1,9 @@
 import asyncio
 import logging
+import re
 import socket
 from argparse import Namespace
+from pathlib import Path
 from typing import NamedTuple
 
 import ray
@@ -299,7 +301,24 @@ async def attach_trainers_to_rollout(
 ) -> None:
     await rollout_executor.set_train_parallel_config(await actor_model.get_train_parallel_config())
     if args.start_rollout_id > 0:
-        await rollout_executor.load(args.start_rollout_id - 1, load=args.load)
+        await rollout_executor.load(args.start_rollout_id - 1, load=compute_rollout_state_run_dir(args))
+
+
+_ADAPTER_ITERATION_DIRNAME = re.compile(r"iter_\d+")
+
+
+def compute_rollout_state_run_dir(args: OrchestratorConfig) -> str | None:
+    """The run directory whose ``rollout/N`` holds the rollout-side state to resume.
+
+    A single LoRA resumes from an adapter dir ``{save}/iter_N/adapter`` while --load holds the frozen base model,
+    which has no rollout state; the state was saved next to the adapter, under that run's ``{save}``. Every other
+    run resumes it from --load.
+    """
+    if args.lora_adapter_path is not None:
+        adapter = Path(args.lora_adapter_path)
+        if _ADAPTER_ITERATION_DIRNAME.fullmatch(adapter.parent.name):
+            return str(adapter.parent.parent)
+    return args.load
 
 
 # TODO: move (when reorganizing files)
