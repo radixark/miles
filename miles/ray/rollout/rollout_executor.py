@@ -7,6 +7,8 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, TypeVar
 
+import numpy as np
+
 from miles.ray.rollout.debug_data import (
     RolloutDataInjectionUtil,
     drop_conversations_not_dumped,
@@ -34,6 +36,10 @@ from miles.rollout.base_types import (
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
 from miles.rollout.data_source import RolloutDataResumeMismatch
 from miles.rollout.fully_async_data_buffer import Group
+from miles.rollout.generate_utils.generate_endpoint_utils import (
+    _ASYNC_ROUTED_EXPERTS_DECODE_THRESHOLD_BYTES,
+    compact_routed_experts_array,
+)
 from miles.rollout.inference_rollout.compatibility import load_rollout_function
 from miles.utils import object_store, observers
 from miles.utils.args.custom_function import CustomFunctionConfig
@@ -75,6 +81,21 @@ _DATA_SOURCE_DIRNAME = "data_source"
 _GENERATE_ROLLOUT_DIRNAME = "generate_rollout"
 _EVAL_GENERATE_ROLLOUT_DIRNAME = "eval_generate_rollout"
 _EXECUTOR_DIRNAME = "executor"
+
+
+def _compact_routed_experts_list(arrays: list[np.ndarray]) -> list[np.ndarray]:
+    return [compact_routed_experts_array(r) for r in arrays]
+
+
+async def _compact_train_data_routed_experts(train_data: dict[str, Any]) -> None:
+    column = train_data.get("rollout_routed_experts")
+    if not column or not isinstance(column[0], np.ndarray):
+        return
+    total_bytes = sum(r.nbytes for r in column)
+    if total_bytes >= _ASYNC_ROUTED_EXPERTS_DECODE_THRESHOLD_BYTES:
+        train_data["rollout_routed_experts"] = await asyncio.to_thread(_compact_routed_experts_list, column)
+    else:
+        train_data["rollout_routed_experts"] = _compact_routed_experts_list(column)
 
 
 class RolloutExecutor(DedicatedRpcLoopWorker):
@@ -258,6 +279,7 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                 custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
                 custom_reward_post_process_func=self.custom_reward_post_process_func,
             )
+            await _compact_train_data_routed_experts(train_data)
             sample_indices = train_data.get("sample_indices")
             if self.args.delay_split_train_data_by_dp:
                 data_ref = object_store.get_instance().put(value=train_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)

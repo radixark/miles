@@ -116,7 +116,14 @@ def attach_replay_data(
         return torch.cat([data, pad_tensor], dim=0)
 
     def fill(index):
-        samples = [column[j] for j in order[index]]
+        samples = [
+            (
+                column[j].to(torch.int32)
+                if not from_store and column[j].dtype in (torch.uint8, torch.int8, torch.int16)
+                else column[j]
+            )
+            for j in order[index]
+        ]
         tokens = [rollout_data["tokens"][j] for j in order[index]]
         for a, b in zip(samples, tokens, strict=False):
             rows = a.num_rows() if from_store else a.shape[0]
@@ -294,6 +301,8 @@ class _BlockRegion(NamedTuple):
         count = num_rows * math.prod(self.row_shape)
         rows = np.frombuffer(buffer.view, dtype=self.dtype, count=count, offset=self.offset)
         rows = rows.reshape(num_rows, *self.row_shape)
+        if self.dtype.itemsize < 4 or np.issubdtype(self.dtype, np.unsignedinteger):
+            rows = rows.astype(np.int32)
         for start, end in self.pads:
             rows[start:end] = -1
         return rows
