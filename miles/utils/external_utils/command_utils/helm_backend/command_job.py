@@ -9,7 +9,12 @@ from typing import Any
 
 from miles.utils.external_utils.command_utils.common import substitute_placeholders
 from miles.utils.external_utils.command_utils.helm_backend import naming
-from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
+from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import (
+    CI_JOB_ID_LABEL,
+    Helm,
+    Kubectl,
+    current_ci_job_id,
+)
 from miles.utils.external_utils.command_utils.helm_backend.launcher.observability import with_observability
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import CommandJobValues
 from miles.utils.external_utils.command_utils.helm_backend.naming import RunNames
@@ -32,6 +37,8 @@ class CommandJobContext(FrozenStrictBaseModel):
     helm_values_files: tuple[str, ...] = ()
     gpus_per_node: int
     timeout_seconds: float = _TIMEOUT_SECONDS
+    admission_timeout_seconds: float | None = None
+    ci_job_id: str | None = None
 
 
 class _CommandJob(FrozenStrictBaseModel):
@@ -106,6 +113,10 @@ def _run_job(job: _CommandJob, *, command: list[str], capture_output: bool) -> l
 def _render_job(job: _CommandJob, *, command: list[str]) -> str:
     Helm.build_dependencies(job.context.chart_dir)
 
+    ci_job_id = job.context.ci_job_id if job.context.ci_job_id is not None else current_ci_job_id()
+    labels = {CI_JOB_ID_LABEL: ci_job_id} if ci_job_id else None
+    deadline_seconds = int(job.context.timeout_seconds + (job.context.admission_timeout_seconds or 0.0))
+
     command_job = CommandJobValues(
         enabled=True,
         name=job.step,
@@ -113,7 +124,8 @@ def _render_job(job: _CommandJob, *, command: list[str]) -> str:
         command=command,
         completions=job.completions,
         gpus_per_pod=job.gpus_per_pod,
-        active_deadline_seconds=int(job.context.timeout_seconds),
+        labels=labels,
+        active_deadline_seconds=deadline_seconds,
     )
     values: dict[str, Any] = {
         f"commandJob.{key}": value for key, value in command_job.model_dump(by_alias=True, exclude_none=True).items()
@@ -131,14 +143,42 @@ def _render_job(job: _CommandJob, *, command: list[str]) -> str:
 
 
 def _wait(job: _CommandJob) -> str:
-    waited = 0.0
-    while waited < job.context.timeout_seconds:
+    admission_timeout = job.context.admission_timeout_seconds
+    if admission_timeout is None:
+        waited = 0.0
+        while waited < job.context.timeout_seconds:
+            status = _job_status(job)
+            if status in ("complete", "failed"):
+                return status
+            time.sleep(_POLL_INTERVAL_SECONDS)
+            waited += _POLL_INTERVAL_SECONDS
+        return f"did not finish within {job.context.timeout_seconds:.0f}s"
+
+    admission_waited = 0.0
+    execution_waited = 0.0
+    has_started = False
+    while True:
         status = _job_status(job)
         if status in ("complete", "failed"):
             return status
+        if not has_started and status == "running" and _has_started_pod(job):
+            has_started = True
+        if not has_started and admission_waited >= admission_timeout:
+            return f"remained pending admission for {admission_waited:.0f}s (limit {admission_timeout:.0f}s)"
+        if has_started and execution_waited >= job.context.timeout_seconds:
+            return f"did not finish within {job.context.timeout_seconds:.0f}s"
         time.sleep(_POLL_INTERVAL_SECONDS)
-        waited += _POLL_INTERVAL_SECONDS
-    return f"did not finish within {job.context.timeout_seconds:.0f}s"
+        if has_started:
+            execution_waited += _POLL_INTERVAL_SECONDS
+        else:
+            admission_waited += _POLL_INTERVAL_SECONDS
+
+
+def _has_started_pod(job: _CommandJob) -> bool:
+    listed = Kubectl.get_json("pods", return_type=PodList, namespace=job.context.namespace, selector=job.pod_selector)
+    if listed is None:
+        return False
+    return any(pod.status.phase not in (None, "Pending") for pod in listed.items)
 
 
 def _job_status(job: _CommandJob) -> str:

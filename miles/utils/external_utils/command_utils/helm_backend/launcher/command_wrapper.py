@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -16,11 +18,26 @@ from miles.utils.workers.worker_provider.kubernetes.helm.env import INSTANCE_LAB
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 CI_LABEL = "miles.radixark.io/ci-run"
+CI_JOB_ID_LABEL = "miles.radixark.io/ci-job-id"
+CI_JOB_ID_ENV_VAR = "MILES_CI_JOB_ID"
+_K8S_LABEL_VALUE_PATTERN = re.compile(r"^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$")
+_K8S_LABEL_VALUE_MAX_LENGTH = 63
 _JOB_NAME_LABEL = "batch.kubernetes.io/job-name"
 _ALREADY_EXISTS = "AlreadyExists"
 _JOB_COMPLETION_JSONPATH = "jsonpath={.status.succeeded},{.status.failed}"
 _GET_REQUEST_TIMEOUT_SECONDS = 30.0
 _CREATE_REQUEST_TIMEOUT_SECONDS = 60.0
+
+
+def current_ci_job_id() -> str | None:
+    raw = os.environ.get(CI_JOB_ID_ENV_VAR, "").strip()
+    if not raw:
+        return None
+    assert len(raw) <= _K8S_LABEL_VALUE_MAX_LENGTH and _K8S_LABEL_VALUE_PATTERN.fullmatch(raw), (
+        f"{CI_JOB_ID_ENV_VAR}={raw!r} is not a valid Kubernetes label value "
+        f"(must match {_K8S_LABEL_VALUE_PATTERN.pattern} and be <= {_K8S_LABEL_VALUE_MAX_LENGTH} chars)"
+    )
+    return raw
 
 
 class Helm:
@@ -48,7 +65,7 @@ class Helm:
     def render_upgrade(*, release: str, namespace: str, chart: str | Path, values_files: list[str | Path]) -> Manifest:
         rendered = _run(
             [
-                *Helm.upgrade_command(release, namespace, chart, values_files, ci_run=False),
+                *Helm.upgrade_command(release, namespace, chart, values_files, ci_run=False, ci_job_id=""),
                 "--dry-run",
                 "--output",
                 "json",
@@ -134,11 +151,23 @@ class Helm:
 
     @staticmethod
     def upgrade_command(
-        release: str, namespace: str, chart: str | Path, values_files: list[str | Path], *, ci_run: bool
+        release: str,
+        namespace: str,
+        chart: str | Path,
+        values_files: list[str | Path],
+        *,
+        ci_run: bool,
+        ci_job_id: str | None = None,
     ) -> list[str]:
         command = ["helm", "upgrade", "--install", release, str(chart), "--namespace", namespace]
+        resolved_ci_job_id = current_ci_job_id() if ci_job_id is None else (ci_job_id or None)
+        labels: list[str] = []
         if ci_run:
-            command += ["--labels", f"{CI_LABEL}=true"]
+            labels.append(f"{CI_LABEL}=true")
+        if resolved_ci_job_id is not None:
+            labels.append(f"{CI_JOB_ID_LABEL}={resolved_ci_job_id}")
+        if labels:
+            command += ["--labels", ",".join(labels)]
         for values_file in values_files:
             command += ["--values", str(values_file)]
         return command
