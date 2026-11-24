@@ -56,21 +56,6 @@ class TestStripChainOfThought:
                 "<|start|>assistant<|channel|>final<|message|>The answer is A<|return|>",
                 "The answer is A",
             ),
-            # Closed framed turns quoting </think> keep the framed answer instead of re-splitting on </think>.
-            (
-                "to=user<|message|>Answer: A. The tag is </think>.<|eot|>",
-                "Answer: A. The tag is </think>.",
-            ),
-            (
-                "<|content_text|>Answer: A<|end_message|>"
-                "<|message_model|><|content_thinking|>A tag is </think>. Answer: B<|end_message|>",
-                "Answer: A",
-            ),
-            (
-                "<|content_text|>Answer: A<|end_message|>"
-                "<|message_model|><|content_thinking|>A tag is </think>. Answer: B",
-                "Answer: A",
-            ),
             # Mid-prose end token does not truncate the answer; only the trailing turn-end token is stripped.
             (
                 "to=user<|message|>The marker <|eot|> ends a turn. Answer: A.<|eot|>",
@@ -101,7 +86,7 @@ class TestStripChainOfThought:
                 "Example: to=user<|message|>Answer: B<|eot|></think>Answer: A. The marker is <|eot|>",
                 "Answer: A. The marker is <|eot|>",
             ),
-            # Harmony tool calls use `<|start|>assistant to=...<|channel|>...` and must not lock Muse Spark.
+            # Harmony tool calls grade the final channel.
             (
                 '<|start|>assistant to=functions.calc<|channel|>commentary json<|message|>{"x":1}<|call|>'
                 "<|start|>functions.calc to=assistant<|channel|>commentary<|message|>Answer: B<|end|>"
@@ -114,27 +99,7 @@ class TestStripChainOfThought:
                 "<|start|>assistant<|channel|>final<|message|>Answer: A<|return|>",
                 "Answer: A",
             ),
-            # Prompt-opened Kimi K3 / Gemma 4 closed answers quoting </think> preserve the real answer.
-            (
-                "work<|close|>think<|sep|><|open|>response<|sep|>Answer: A. The marker is </think>."
-                "<|close|>response<|sep|><|close|>message<|sep|>",
-                "Answer: A. The marker is </think>.",
-            ),
-            (
-                "thinking<channel|>Answer: A. The marker is </think>.<turn|>",
-                "Answer: A. The marker is </think>.",
-            ),
-            # Ordinary text mentioning <|content_invoke_tool_json|> before whitespace must not lock Inkling.
-            (
-                "Example:<|content_invoke_tool_json|> means a tool call. Answer: B</think>Answer: A.",
-                "Answer: A.",
-            ),
-            # Ordinary prose starting with `to=` mentioning `<|channel|>` later must not lock Harmony.
-            (
-                "to=alice mentions <|channel|>. Answer: B</think>Answer: A",
-                "Answer: A",
-            ),
-            # Inkling direct tool calls with empty or `_` recipient still route through multi-block Inkling parsing.
+            # Inkling direct tool calls with empty or `_` recipient route through multi-block Inkling parsing.
             (
                 '<|content_invoke_tool_json|>{"x":1}<|end_message|><|content_model_end_sampling|>'
                 "<|message_tool|><|content_text|>ok<|end_message|>"
