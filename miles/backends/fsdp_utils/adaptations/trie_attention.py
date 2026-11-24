@@ -36,11 +36,16 @@ TRIE_LAYER_TYPES = frozenset(
         "linear_attention",
     }
 )
+# Layer types that mix no tokens (NemotronH's MLP and MoE blocks).
+_TOKEN_LOCAL_LAYER_TYPES = frozenset({"mlp", "moe"})
 # Attention arguments trie attention does not pass on: attention sinks (gpt-oss) and logit soft-capping (Gemma 2).
 _UNSUPPORTED_ATTENTION_KWARGS = ("s_aux", "softcap")
 
 # The config attribute that names the short convolution's kernel size, by linear-attention architecture.
-_CONV_KERNEL_SIZE_NAMES = ("linear_conv_kernel_dim",)  # GatedDeltaNet
+_CONV_KERNEL_SIZE_NAMES = (
+    "linear_conv_kernel_dim",  # GatedDeltaNet
+    "conv_kernel",  # Mamba2
+)
 
 
 class TrieAttentionArgs:
@@ -75,7 +80,7 @@ def trie_model_spec(text_config: PretrainedConfig, media: tuple[TrieModality, ..
     - ``media``, the image and video modalities of its processor output (``trie_media``)
     """
     layer_types = _layer_types(text_config)
-    if unsupported := sorted(set(layer_types) - TRIE_LAYER_TYPES):
+    if unsupported := sorted(set(layer_types) - TRIE_LAYER_TYPES - _TOKEN_LOCAL_LAYER_TYPES):
         raise ValueError(f"--trie-packing does not implement layer types {unsupported}")
     window = getattr(
         text_config, "sliding_window", None

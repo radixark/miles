@@ -6,12 +6,13 @@ builder and logits path on tiny models with the real kernels:
 
 - Qwen3 on flash-attn, with and without a sliding-window layer
 - Qwen3.5's GatedDeltaNet layers on causal_conv1d and fla
+- NemotronH's Mamba2 layers on causal_conv1d and mamba_ssm
 - Qwen3-VL with images and a video, its vision tower on flash-attn
 """
 
 from tests.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=500, suite="stage-b-2-gpu-h200", labels=["fsdp"], hardware=["hopper"], num_gpus=1)
+register_cuda_ci(est_time=600, suite="stage-b-2-gpu-h200", labels=["fsdp"], hardware=["hopper"], num_gpus=1)
 
 import contextlib
 import inspect
@@ -25,7 +26,8 @@ import torch
 from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 from tests.fast.backends.fsdp_utils.test_trie_packing_hf import _tiny_vl_model, _vl_samples
 from tests.fast.backends.training_utils.reference_trie_attention import reference_trie_attention
-from transformers import Qwen3_5TextConfig, Qwen3Config
+from transformers import NemotronHConfig, Qwen3_5TextConfig, Qwen3Config
+from transformers.models.nemotron_h.modeling_nemotron_h import NemotronHForCausalLM
 from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
 from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM
 
@@ -61,6 +63,10 @@ _WINDOW = 24
 # position moves the response log-probs by orders of magnitude more.
 _LOG_PROB_ATOL = 2e-2
 _GRAD_RTOL = 3e-2
+# Mamba2's decay parameters get gradients that mostly cancel, so bf16 rounding alone moves them by up to 2.6e-2
+# between trie and solo (six seeds); every other gradient stays within 1.6e-2.
+_MAMBA2_DECAY_PARAMETERS = ("dt_bias", "A_log")
+_MAMBA2_DECAY_GRAD_RTOL = 6e-2
 # Trie and standard packing round differently, so on one batch either can land a few percent nearer fp64; over the
 # eight batches trie's error is 1.01x standard packing's (geometric mean), and 1.12x when a shared row's gradient
 # copies are summed in bf16.
@@ -104,6 +110,7 @@ _MODELS = pytest.mark.parametrize(
         "full",
         "sliding",
         "gated_deltanet",
+        "mamba2",
     ],
 )
 
@@ -113,6 +120,7 @@ def _tiny_model(kind: str):
 
     - full, sliding: Qwen3, with sliding-window attention on every other layer for ``sliding``
     - gated_deltanet: Qwen3.5, mixing GatedDeltaNet and attention layers
+    - mamba2: NemotronH, mixing Mamba2, attention and MLP layers
     """
     torch.manual_seed(0)
     common = dict(
@@ -134,6 +142,28 @@ def _tiny_model(kind: str):
             **common,
         )
         model = Qwen3_5ForCausalLM._from_config(config, attn_implementation="flash_attention_2", dtype=torch.bfloat16)
+        install_trie_linear_attention(model)
+        return model.cuda()
+    if kind == "mamba2":
+        config = NemotronHConfig(
+            vocab_size=_VOCAB,
+            hidden_size=256,
+            intermediate_size=512,
+            num_hidden_layers=6,
+            hybrid_override_pattern="M*-M*-",
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=64,
+            mamba_num_heads=8,
+            mamba_head_dim=64,
+            ssm_state_size=64,
+            n_groups=1,
+            time_step_min=0.3,
+            time_step_max=1.0,
+        )
+        model = NemotronHForCausalLM._from_config(
+            config, attn_implementation="flash_attention_2", dtype=torch.bfloat16
+        )
         install_trie_linear_attention(model)
         return model.cuda()
     sliding = kind == "sliding"
@@ -244,6 +274,8 @@ def test_trie_row_gradients_match_the_solo_sum(single_rank, kind):
     for name, p in model.named_parameters():
         error = (p.grad.float() - solo[name]).norm() / solo[name].norm().clamp(min=1e-12)
         bound = _GRAD_RTOL
+        if kind == "mamba2" and name.endswith(_MAMBA2_DECAY_PARAMETERS):
+            bound = _MAMBA2_DECAY_GRAD_RTOL
         assert error <= bound, f"{name}: relative gradient error {error:.3g}"
 
 

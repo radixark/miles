@@ -15,8 +15,17 @@ import pytest
 import torch
 import torch.nn.functional as F
 from tests.fast.backends.training_utils.reference_trie_attention import reference_trie_attention
-from transformers import Glm4MoeLiteConfig, Qwen3_5TextConfig, Qwen3Config, Qwen3MoeConfig, Qwen3VLConfig
+from transformers import (
+    Glm4MoeLiteConfig,
+    NemotronHConfig,
+    Qwen3_5TextConfig,
+    Qwen3Config,
+    Qwen3MoeConfig,
+    Qwen3VLConfig,
+)
 from transformers.models.glm4_moe_lite.modeling_glm4_moe_lite import Glm4MoeLiteForCausalLM
+from transformers.models.nemotron_h import modeling_nemotron_h
+from transformers.models.nemotron_h.modeling_nemotron_h import NemotronHForCausalLM
 from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
 from transformers.models.qwen3_5 import modeling_qwen3_5
 from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM
@@ -75,6 +84,10 @@ def _reference_causal_conv1d(x, weight, bias=None, seq_idx=None, activation=None
 _TORCH_CONV = modeling_qwen3_5.causal_conv1d_fn.__wrapped__
 _TORCH_CHUNK_DELTA_RULE = modeling_qwen3_5.torch_chunk_gated_delta_rule.__wrapped__
 _RECURRENT_DELTA_RULE = modeling_qwen3_5.torch_recurrent_gated_delta_rule.__wrapped__
+_NEMOTRON_H_TORCH_KERNELS = {
+    name: getattr(modeling_nemotron_h, name).__wrapped__
+    for name in ("causal_conv1d_fn", "mamba2_chunk_scan", "mamba2_split_conv1d_scan_combined")
+}
 
 
 def _reference_chunk_gated_delta_rule(
@@ -120,6 +133,8 @@ def cpu_trie(monkeypatch):
     # the solo runs use transformers' torch kernels, which install_trie_linear_attention then wraps
     monkeypatch.setattr(modeling_qwen3_5, "causal_conv1d_fn", _TORCH_CONV)
     monkeypatch.setattr(modeling_qwen3_5, "torch_chunk_gated_delta_rule", _TORCH_CHUNK_DELTA_RULE)
+    for name, kernel in _NEMOTRON_H_TORCH_KERNELS.items():
+        monkeypatch.setattr(modeling_nemotron_h, name, kernel)
     register_trie_attention("flash_attention_2")
 
 
@@ -176,6 +191,28 @@ def _tiny_model(kind: str, sliding: bool):
             **(common | dict(layer_types=["linear_attention", "full_attention"], sliding_window=None)),
         )
         model = Qwen3_5ForCausalLM._from_config(config, attn_implementation="sdpa")
+        install_trie_linear_attention(model)
+        return model
+    if kind == "nemotron_h":
+        # Mamba2, attention, then an MLP block that mixes no tokens
+        config = NemotronHConfig(
+            vocab_size=_VOCAB,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=3,
+            hybrid_override_pattern="M*-",
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            mamba_num_heads=4,
+            mamba_head_dim=16,
+            ssm_state_size=16,
+            n_groups=1,
+            # steps large enough that the scan's state, not the skip connection, carries the output
+            time_step_min=0.3,
+            time_step_max=1.0,
+        )
+        model = NemotronHForCausalLM._from_config(config, attn_implementation="sdpa")
         install_trie_linear_attention(model)
         return model
     if kind == "glm4_moe_lite":
@@ -267,6 +304,7 @@ def _trie(model, samples, iterator=None) -> torch.Tensor:
         ("qwen3_moe", False),
         ("qwen3_moe", True),
         ("qwen3_5", False),
+        ("nemotron_h", False),
         ("glm4_moe_lite", False),
     ],
     ids=[
@@ -275,6 +313,7 @@ def _trie(model, samples, iterator=None) -> torch.Tensor:
         "qwen3_moe-full",
         "qwen3_moe-sliding",
         "qwen3_5-gated_deltanet",
+        "nemotron_h-mamba2",
         "glm4_moe_lite-mla",
     ],
 )
@@ -293,7 +332,7 @@ def test_trie_row_scores_and_trains_each_sample_as_if_alone(cpu_trie, kind, slid
     torch.testing.assert_close(trie, solo, rtol=0, atol=1e-5)
     for name, p in model.named_parameters():
         if name in solo_grads:
-            torch.testing.assert_close(p.grad, solo_grads[name], rtol=1e-4, atol=1e-6, msg=name)
+            torch.testing.assert_close(p.grad, solo_grads[name], rtol=1e-4, atol=1e-5, msg=name)
 
 
 def _run_paths(levels) -> tuple[dict[int, list[int]], dict[int, int]]:

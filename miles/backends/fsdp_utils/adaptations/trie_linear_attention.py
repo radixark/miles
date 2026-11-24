@@ -2,6 +2,7 @@
 recurrence kernel), for these mixers:
 
 - GatedDeltaNet (Qwen3.5, Qwen3-Next): the gated delta rule, on fla
+- Mamba2 (NemotronH): the chunked scan, on mamba_ssm
 
 A recurrent layer's state at a token depends only on the tokens before it on its path, and a child segment
 continues its parent's last token. So over a trie row:
@@ -17,6 +18,7 @@ The delta rule matches standard packing bit for bit in the forward. Its kernels 
 recompute the parent's tokens after its last grid point (fewer than a chunk), each from the same state. And
 FlashQLA, fla's backend on Hopper and Blackwell, runs without its intra-card context parallel (see
 ``_delta_rule_kernel``).
+Mamba2's scan runs on the same runs.
 
 transformers' linear-attention mixers call their kernels as module-level functions of their modeling module
 and hand them the model's ``**kwargs``; ``install_trie_linear_attention`` wraps those names (``_MIXER_KERNELS``)
@@ -25,11 +27,13 @@ so a call carrying ``miles_trie_attn_args`` takes this path and every other call
 
 import functools
 import itertools
+import math
 import os
 import sys
 from dataclasses import dataclass
 
 import torch
+import torch.nn.functional as F
 
 from miles.backends.fsdp_utils.adaptations.trie_gather import gather_rows
 from miles.backends.training_utils.data.trie_packing import TrieLayout
@@ -55,6 +59,9 @@ class TrieLevel:
     sources: tuple[int, ...]  # the segment whose run's final state starts each run, -1 for a zero state
     out_rows: torch.Tensor  # the rows of this level's output that are their token's output
     out_token_indices: torch.Tensor  # those rows' token indices
+    width: int  # the longest run's length
+    padded_index: torch.Tensor  # [runs * width] row token indices, right-padded with the row's length
+    padded_rows: torch.Tensor  # the rows of the padded batch that hold tokens, in ``token_index`` order
 
 
 class TrieLinearSchedule:
@@ -135,6 +142,11 @@ def _levels(
         offsets = [0, *itertools.accumulate(len(run_token_indices[s]) for s in level_runs)]
         token_index = torch.cat([run_token_indices[s] for s in level_runs])
         rows = torch.cat([out_rows[s] + offset for s, offset in zip(level_runs, offsets[:-1], strict=True)])
+        width = max(len(run_token_indices[s]) for s in level_runs)
+        padded_index = torch.full((len(level_runs), width), q_bounds[-1], dtype=torch.long)
+        for row, s in enumerate(level_runs):
+            padded_index[row, : len(run_token_indices[s])] = run_token_indices[s]
+        padded_index = padded_index.flatten()
         levels.append(
             TrieLevel(
                 token_index=token_index.to(device),
@@ -143,6 +155,9 @@ def _levels(
                 sources=tuple(source(s) for s in level_runs),
                 out_rows=rows.to(device),
                 out_token_indices=token_index[rows].to(device),
+                width=width,
+                padded_index=padded_index.to(device),
+                padded_rows=(padded_index < q_bounds[-1]).nonzero().squeeze(1).to(device),
             )
         )
     return tuple(levels)
@@ -234,6 +249,62 @@ def _delta_rule_kernel(query, key, value, g, beta):
     return functools.partial(flash_qla.chunk_gated_delta_rule, auto_cp=False)
 
 
+def trie_mamba2_chunk_scan(
+    kernel,
+    hidden_states: torch.Tensor,
+    dt: torch.Tensor,
+    A: torch.Tensor,
+    B: torch.Tensor,
+    C: torch.Tensor,
+    chunk_size: int,
+    schedule: TrieLinearSchedule,
+    *,
+    D: torch.Tensor | None,
+    dt_bias: torch.Tensor | None,
+    dt_softplus: bool,
+    dt_limit: tuple[float, float],
+) -> torch.Tensor:
+    """``[1, T, H, P]`` in and out: Mamba2's chunked scan (``kernel``) over each root-to-leaf path, level by level.
+
+    A level's runs go as one batch, each right-padded to the longest with ``dt = 0``: such a step neither
+    decays nor feeds the state, so every final state is exact. ``dt`` is discretized here, before that padding,
+    in fp32 as mamba_ssm's kernels discretize it.
+    """
+    dt = dt.float()
+    if dt_bias is not None:
+        dt = dt + dt_bias.float()
+    if dt_softplus:
+        dt = F.softplus(dt)
+    dt = dt.clamp(min=dt_limit[0], max=dt_limit[1])
+    out = None
+    final_states: dict[int, torch.Tensor] = {}
+    for level in schedule.levels:
+
+        def batched(x: torch.Tensor, level: TrieLevel = level) -> torch.Tensor:
+            padded = torch.cat([x[0], x.new_zeros(1, *x.shape[2:])])
+            return gather_rows(padded, level.padded_index).view(len(level.segments), level.width, *x.shape[2:])
+
+        level_out, level_states = kernel(
+            batched(hidden_states),
+            batched(dt),
+            A,
+            batched(B),
+            batched(C),
+            chunk_size,
+            D=D,
+            initial_states=_initial_state(level.sources, final_states),
+            dt_softplus=False,
+            return_final_states=True,
+        )
+        level_out = level_out.flatten(0, 1).index_select(0, level.padded_rows).index_select(0, level.out_rows)
+        if out is None:
+            out = level_out.new_zeros(hidden_states.size(1), *level_out.shape[1:])
+        # TODO: as in trie_chunk_gated_delta_rule, keep each level's rows and permute once.
+        out = out.index_copy(0, level.out_token_indices, level_out)
+        final_states.update(zip(level.segments, level_states, strict=True))
+    return out.unsqueeze(0)
+
+
 # TODO: the kernel wrappers share one dispatch (pop miles_trie_attn_args, run the wrapped kernel without it); one
 # factory could build them all.
 def _wrap_conv(kernel):
@@ -265,9 +336,57 @@ def _wrap_delta_rule(kernel):
     return call
 
 
+def _wrap_mamba2_scan(kernel):
+    @functools.wraps(kernel)
+    def call(hidden_states, dt, A, B, C, chunk_size, **kwargs):
+        trie = kwargs.pop("miles_trie_attn_args", None)
+        if trie is None:
+            return kernel(hidden_states, dt, A, B, C, chunk_size, **kwargs)
+        if (
+            kwargs.get("initial_states") is not None
+            or kwargs.get("return_final_states")
+            or kwargs.get("z") is not None
+        ):
+            raise ValueError("trie-packed Mamba2 trains ungated from a zero state and returns no final state")
+        return trie_mamba2_chunk_scan(
+            kernel,
+            hidden_states,
+            dt,
+            A,
+            B,
+            C,
+            chunk_size,
+            trie.linear,
+            D=kwargs.get("D"),
+            dt_bias=kwargs.get("dt_bias"),
+            dt_softplus=kwargs.get("dt_softplus", False),
+            dt_limit=kwargs.get("dt_limit", (0.0, math.inf)),
+        )
+
+    call.miles_trie_wrapped = True
+    return call
+
+
+def _wrap_fused_mamba2(kernel):
+    @functools.wraps(kernel)
+    def call(*args, **kwargs):
+        if kwargs.pop("miles_trie_attn_args", None) is not None:
+            # no fused output: the mixer then runs the separate convolution and scan, which take the trie row
+            return None
+        return kernel(*args, **kwargs)
+
+    call.miles_trie_wrapped = True
+    return call
+
+
 # By the suffix of the mixer's class name: the module-level kernels its forward calls, and their wrappers.
 _MIXER_KERNELS = {
     "GatedDeltaNet": {"causal_conv1d_fn": _wrap_conv, "torch_chunk_gated_delta_rule": _wrap_delta_rule},
+    "Mamba2Mixer": {
+        "causal_conv1d_fn": _wrap_conv,
+        "mamba2_split_conv1d_scan_combined": _wrap_fused_mamba2,
+        "mamba2_chunk_scan": _wrap_mamba2_scan,
+    },
 }
 
 
