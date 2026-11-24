@@ -212,6 +212,38 @@ def test_mla_with_dsa_caps_keys_at_topk_and_charges_the_indexer_only_where_it_ru
     assert per_layer(flops, 1).indexer_per_token == 0
 
 
+def test_glm5_next_indexed_attention_is_sized_as_deepseek_sparse_attention():
+    """transformers loads GLM-5.3-Flash's DSA layers as indexed_attention; MFU used to fail on that name."""
+    glm53_flash = dict(
+        model_type="glm5_next_text",
+        hidden_size=4096,
+        num_attention_heads=64,
+        q_lora_rank=1536,
+        kv_lora_rank=512,
+        qk_nope_head_dim=256,
+        qk_rope_head_dim=0,
+        v_head_dim=256,
+        head_dim=0,
+        intermediate_size=12288,
+        num_hidden_layers=4,
+        vocab_size=154880,
+        index_topk=2048,
+        index_n_heads=32,
+        index_head_dim=128,
+        index_kpool=4,
+        indexer_types=["full"] * 4,
+        linear_attn_config={"num_heads": 64, "head_dim": 128, "short_conv_kernel_size": 4, "kda_layers": [0, 1, 2]},
+    )
+    as_loaded = model_flops_from_hf_config(
+        config(**glm53_flash, layer_types=["linear_attention"] * 3 + ["indexed_attention"])
+    )
+    as_on_disk = model_flops_from_hf_config(
+        config(**glm53_flash, layer_types=["linear_attention"] * 3 + ["deepseek_sparse_attention"])
+    )
+    assert as_loaded == as_on_disk
+    assert per_layer(as_loaded, 3).indexer_per_token > 0
+
+
 def test_kda_layers_are_one_indexed_and_mla_fills_the_rest():
     kimi_linear = config(
         model_type="kimi_linear",
