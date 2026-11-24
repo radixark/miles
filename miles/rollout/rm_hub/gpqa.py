@@ -2,7 +2,7 @@ import re
 import string
 from collections.abc import Iterable
 
-from miles.rollout.rm_hub.reasoning import extract_after_reasoning
+from miles.utils.reasoning import extract_after_reasoning
 
 DEFAULT_VALID_LETTERS = list(string.ascii_uppercase[:8])
 

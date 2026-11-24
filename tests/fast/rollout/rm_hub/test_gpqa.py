@@ -6,7 +6,7 @@ from miles.rollout.rm_hub.gpqa import (
     _strip_chain_of_thought,
     compute_gpqa_reward,
 )
-from miles.rollout.rm_hub.reasoning import REASONING_ANSWER_DELIMITERS
+from miles.utils.reasoning import REASONING_ANSWER_DELIMITERS
 
 
 class TestStripChainOfThought:

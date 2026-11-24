@@ -8,13 +8,14 @@ from typing import Any
 from miles.rollout.session.errors import MessageValidationError
 from miles.utils.chat_template_utils.tito_tokenizer.base import FixedTemplate, TITOTokenizer
 from miles.utils.chat_template_utils.truncation import MarkerPair, TruncationGrammar
+from miles.utils.reasoning import THINK_CLOSE, THINK_OPEN
 
 logger = logging.getLogger(__name__)
 
 
 # No end-of-turn token: the next message's role token ends the turn.
 _GLM_TRUNCATION = TruncationGrammar(
-    think=MarkerPair("<think>", "</think>"),
+    think=MarkerPair(THINK_OPEN, THINK_CLOSE),
     tool_blocks=(
         MarkerPair("<tool_call>", "</tool_call>"),
         MarkerPair("<arg_key>", "</arg_key>"),

@@ -7,6 +7,7 @@ from typing import Any
 
 from miles.utils.chat_template_utils.inkling_parser import InklingResponseParser
 from miles.utils.chat_template_utils.tito_tokenizer.base import FixedTemplate, TITOTokenizer
+from miles.utils.reasoning import INKLING_ANSWER_DELIMITER
 
 # Control tokens that finish the message a cut left open (``ParsedAssistantCompletion.open_part``)
 # and end the turn; an unfinished content block of any kind only needs its end.
@@ -30,6 +31,10 @@ class InklingTruncation:
     comparator boundary, so the stored message must hold the unfinished message
     too; ``InklingResponseParser`` keeps it for a completion cut by length.
     """
+
+    @property
+    def reasoning_answer_delimiter(self) -> str:
+        return INKLING_ANSWER_DELIMITER
 
     def close_truncated_turn(
         self, token_ids: list[int], completion_start: int, *, tokenizer: Any, message_boundary_ids: set[int]

@@ -95,7 +95,7 @@ async def async_rm(args, sample: Sample, **kwargs):
     if rm_type == "remote_rm":
         return await remote_rm(args, sample)
     elif rm_type == "deepscaler":
-        # DeepScaleR-style strict grading: requires an end-of-reasoning delimiter (see reasoning.py),
+        # DeepScaleR-style strict grading: requires an end-of-reasoning delimiter (see miles.utils.reasoning),
         # grades only what follows it, and returns 0 when none is present.
         return get_deepscaler_rule_based_reward(response, label)
     elif rm_type == "gemma_math":

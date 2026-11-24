@@ -29,6 +29,10 @@ class TruncationCloser(Protocol):
     family's comparator segment boundaries.
     """
 
+    @property
+    def reasoning_answer_delimiter(self) -> str:
+        """Marker separating reasoning from the final answer in decoded text."""
+
     def close_truncated_turn(
         self, token_ids: list[int], completion_start: int, *, tokenizer: Any, message_boundary_ids: set[int]
     ) -> list[int]:
@@ -89,6 +93,10 @@ class TruncationGrammar:
         pattern = re.compile("|".join(re.escape(marker) for marker in sorted(roles, key=len, reverse=True)))
         object.__setattr__(self, "_roles", roles)
         object.__setattr__(self, "_pattern", pattern)
+
+    @property
+    def reasoning_answer_delimiter(self) -> str:
+        return self.think.close_marker
 
     def close_truncated_turn(
         self, token_ids: list[int], completion_start: int, *, tokenizer: Any, message_boundary_ids: set[int]

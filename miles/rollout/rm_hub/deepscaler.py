@@ -1,5 +1,5 @@
 from miles.rollout.rm_hub.math_utils import extract_answer, grade_answer_mathd, grade_answer_sympy, has_boxed
-from miles.rollout.rm_hub.reasoning import extract_after_reasoning
+from miles.utils.reasoning import GEMMA4_ANSWER_DELIMITER, extract_after_reasoning
 
 
 def _grade_boxed_solution(model_solution, label):
@@ -45,6 +45,6 @@ def get_deepscaler_rule_based_reward(response, label):
 
 def get_gemma_math_reward(response, label):
     # Gemma-4 closes thinking with <channel|>; grade text after the last one.
-    if "<channel|>" in response:
-        response = response.split("<channel|>")[-1]
+    if GEMMA4_ANSWER_DELIMITER in response:
+        response = response.rsplit(GEMMA4_ANSWER_DELIMITER, 1)[-1]
     return _grade_boxed_solution(response, label)

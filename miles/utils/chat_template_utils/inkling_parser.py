@@ -14,6 +14,8 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from miles.utils.reasoning import INKLING_ANSWER_DELIMITER
+
 
 @dataclass(frozen=True)
 class ParsedAssistantCompletion:
@@ -39,7 +41,7 @@ class InklingResponseParser:
     _TOKEN_TEXT = {
         "message_model": "<|message_model|>",
         "content_thinking": "<|content_thinking|>",
-        "content_text": "<|content_text|>",
+        "content_text": INKLING_ANSWER_DELIMITER,
         "content_invoke_tool_json": "<|content_invoke_tool_json|>",
         "content_invoke_tool_text": "<|content_invoke_tool_text|>",
         "end_message": "<|end_message|>",

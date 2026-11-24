@@ -1,7 +1,7 @@
 import pytest
 
 from miles.rollout.rm_hub.deepscaler import get_deepscaler_rule_based_reward, get_gemma_math_reward
-from miles.rollout.rm_hub.reasoning import REASONING_ANSWER_DELIMITERS
+from miles.utils.reasoning import REASONING_ANSWER_DELIMITERS
 
 _EXPECTED_DELIMITERS = (
     "<|open|>response<|sep|>",

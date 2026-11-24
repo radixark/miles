@@ -8,6 +8,7 @@ from typing import Any
 
 from miles.utils.chat_template_utils.tito_tokenizer.base import FixedTemplate, TITOTokenizer
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
+from miles.utils.reasoning import MUSE_SPARK_ANSWER_DELIMITER
 
 _START, _MESSAGE, _EOM, _EOT = "<|start|>", "<|message|>", "<|eom|>", "<|eot|>"
 # The generation prompt is "<|start|>assistant", so the turn's first header continues after the role.
@@ -18,7 +19,7 @@ _TEXT_RECIPIENTS = ("self", "user", "commentary")
 # Recipients whose message may end the turn with <|eom|>, as the template renders them.
 _EOM_ENDS_TURN = ("self", "commentary")
 # An empty final message: tail-only closing cannot turn a sampled <|eom|> into <|eot|>.
-_FINAL_MESSAGE = _START + _HEADER + "user" + _MESSAGE + _EOT
+_FINAL_MESSAGE = f"{_START}{_ROLE} {MUSE_SPARK_ANSWER_DELIMITER}{_EOT}"
 
 # Complete ATEM tags; a partial opening tag is sampled text.  A sampled opening tag may hold
 # more than the name="..." the template writes.
@@ -176,6 +177,10 @@ class MuseSparkTruncation:
     stored message must hold the cut turn too: ``closed_turn_messages`` is the
     stored view ``MuseSparkTITOTokenizer.postprocess_completion`` keeps.
     """
+
+    @property
+    def reasoning_answer_delimiter(self) -> str:
+        return MUSE_SPARK_ANSWER_DELIMITER
 
     def close_truncated_turn(
         self, token_ids: list[int], completion_start: int, *, tokenizer: Any, message_boundary_ids: set[int]

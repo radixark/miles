@@ -21,12 +21,12 @@ from sglang.srt.entrypoints.openai.protocol import Tool
 from tokenizers import Tokenizer
 
 from miles.utils.chat_template_utils.templates import encoding_dsv32
+from miles.utils.reasoning import THINK_CLOSE
 
 if TYPE_CHECKING:
     from sglang.srt.parser.deepseek_recipe_renderer import DeepSeekRecipe
 
 _ASSISTANT_SP_TOKEN = "<｜Assistant｜>"
-_THINK_END = "</think>"
 # A stored V4 / V4.1 assistant turn keeps here the whitespace the model sampled before
 # its content, which deepseek-recipe's output parser strips, so a re-render reproduces it.
 CONTENT_LEADING_WHITESPACE_KEY = "content_leading_whitespace"
@@ -188,7 +188,7 @@ def stripped_content_whitespace(completion_text: str, content: str) -> str:
     *completion_text* is the decoded completion.  Its content starts after ``</think>``
     in thinking mode and at its start otherwise, where the prompt already closed it.
     """
-    _, think_end, after = completion_text.partition(_THINK_END)
+    _, think_end, after = completion_text.partition(THINK_CLOSE)
     tail = after if think_end else completion_text
     body = tail.lstrip()
     return tail[: len(tail) - len(body)] if content and body.startswith(content) else ""

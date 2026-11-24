@@ -7,6 +7,7 @@ from typing import Any
 from miles.utils.chat_template_utils.tito_tokenizer.base import FixedTemplate
 from miles.utils.chat_template_utils.tito_tokenizer.qwen import _QWEN35_TRUNCATION, Qwen3TITOTokenizer
 from miles.utils.chat_template_utils.truncation import MarkerPair, TruncationGrammar
+from miles.utils.reasoning import THINK_CLOSE, THINK_OPEN
 
 
 class Nemotron3TITOTokenizer(Qwen3TITOTokenizer):
@@ -38,7 +39,7 @@ class Nemotron3TITOTokenizer(Qwen3TITOTokenizer):
         # Qwen3.5's markers, but the template puts no blank line after ``</think>``
         # and a newline after ``</tool_call>``.
         truncation_closer=TruncationGrammar(
-            think=MarkerPair("<think>", "\n</think>"),
+            think=MarkerPair(THINK_OPEN, f"\n{THINK_CLOSE}"),
             tool_blocks=(MarkerPair("<tool_call>", "\n</tool_call>\n"), *_QWEN35_TRUNCATION.tool_blocks[1:]),
             end_of_turn="<|im_end|>",
         ),
