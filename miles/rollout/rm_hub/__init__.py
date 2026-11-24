@@ -95,7 +95,7 @@ async def async_rm(args, sample: Sample, **kwargs):
     if rm_type == "remote_rm":
         return await remote_rm(args, sample)
     elif rm_type == "deepscaler":
-        # DeepScaleR-style strict grading: requires an end-of-reasoning closer (see deepscaler.py),
+        # DeepScaleR-style strict grading: requires an end-of-reasoning delimiter (see miles.utils.reasoning),
         # grades only what follows it, and returns 0 when none is present.
         return get_deepscaler_rule_based_reward(response, label)
     elif rm_type == "gemma_math":
@@ -104,7 +104,7 @@ async def async_rm(args, sample: Sample, **kwargs):
         return compute_score_dapo(response, label)
     elif rm_type == "math":
         # Intentional verl-aligned grading: extracts the last \boxed{} from the full response without
-        # stripping thinking tags (use `deepscaler` or `gemma_math` for strict post-reasoning grading).
+        # stripping thinking tags (use `deepscaler` for strict post-reasoning grading).
         return 1 if grade_answer_verl(response, label) else 0
     elif rm_type == "f1":
         return f1_score(response, label)[0]
