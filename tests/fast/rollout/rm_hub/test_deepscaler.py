@@ -15,6 +15,7 @@ class TestGetDeepscalerRuleBasedReward:
             (r"</think>The answer is 42", "42", 0),
             (r"</think>\boxed{42}", "", 0),
             (r"</think>\boxed{42}", r"\boxed{42}", 1),
+            (r"</think>\fbox{42}", r"Therefore, $\fbox{42}$.", 1),
             (r"</think>\boxed{123}", 123, 1),
             (r"</think>\boxed{3.14}", 3.14, 1),
             (r"</think>\boxed{1/2}", "0.5", 1),
