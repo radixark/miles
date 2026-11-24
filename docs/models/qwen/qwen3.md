@@ -102,7 +102,7 @@ Rollout uses `--rm-type deepscaler` against `dapo-math-17k`. The SFT recipe (`py
 --sglang-mem-fraction-static 0.7
 ```
 
-`Qwen3-32B` additionally pins `--sglang-cuda-graph-bs-decode 1 2 4 8 $(seq 16 8 256)`. The FSDP variant uses `--attn-implementation flash_attention_3`, SGLang attention backend `fa3`, and adds `--update-weight-buffer-size 536870912 --gradient-checkpointing`.
+`Qwen3-32B` additionally pins `--sglang-cuda-graph-bs-decode 1 2 4 8 $(seq 16 8 256)`. The FSDP variant picks its attention backends from `--hardware` (auto-detected by default): FA3 (`--attn-implementation flash_attention_3`, SGLang `fa3`) on Hopper, and `flash_attention_2` with SGLang `flashinfer` on Blackwell, where FA3 has no kernels. It also adds `--update-weight-buffer-size 536870912 --gradient-checkpointing`.
 
 ### 5.4 Optimizer
 

@@ -2,12 +2,21 @@
 
 dapo-math-17k @ 4k response len, AIME-2024 eval @ 4k every 10 rollouts.
 
+Attention backends follow the GPU generation: FA3 on Hopper; flashinfer rollout and FA2 training
+on Blackwell, where FA3 has no kernels.
+
+Args:
+    --hardware    auto (default) detects the GPU of the node the launcher runs on; pass H100/H200/B200/...
+                  to override.
+
 Usage:
     python3 scripts/run_qwen3_0_6b_fsdp.py
+    python3 scripts/run_qwen3_0_6b_fsdp.py --hardware B200
 """
 
 import os
 from dataclasses import dataclass
+from typing import Literal
 
 import typer
 
@@ -18,6 +27,19 @@ MODEL_NAME = "Qwen3-0.6B"
 WANDB_GROUP = "qwen3-0.6B-fsdp-dapo4k"
 
 
+@dataclass(frozen=True)
+class _AttentionBackends:
+    sglang: str
+    train: str
+
+
+# Keyed by command_utils.GENERATION_HARDWARE. FA3 kernels are built for Hopper (SM 9.0) only.
+_ATTENTION_BACKENDS_OF_GENERATION = {
+    "Hopper": _AttentionBackends(sglang="fa3", train="flash_attention_3"),
+    "Blackwell": _AttentionBackends(sglang="flashinfer", train="flash_attention_2"),
+}
+
+
 @dataclass
 class ScriptArgs(command_utils.ExecuteTrainConfig):
     num_gpus_per_node: int = 4
@@ -26,6 +48,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     model_dir: str = "/root/models"
     wandb_project: str = "miles-fsdp-curve"
     extra_args: str = ""
+    hardware: Literal["auto", "H100", "H200", "B200", "B300", "GB200", "GB300"] = "auto"
 
 
 def prepare(args: ScriptArgs):
@@ -39,6 +62,10 @@ def prepare(args: ScriptArgs):
 def execute(args: ScriptArgs):
     U = args.create_backend()
     model_path = f"{args.model_dir}/{MODEL_NAME}"
+    # resolved here, not in __post_init__: prepare runs GPU-free and auto-detection needs a GPU
+    attention = _ATTENTION_BACKENDS_OF_GENERATION[
+        command_utils.GENERATION_HARDWARE[command_utils.resolve_hardware(args)]
+    ]
 
     ckpt_args = f"--hf-checkpoint {model_path} " f"--ref-load {model_path} "
 
@@ -98,7 +125,7 @@ def execute(args: ScriptArgs):
         "--rollout-num-gpus-per-engine 1 "
         "--sglang-decode-log-interval 1000 "
         "--sglang-mem-fraction-static 0.75 "
-        "--sglang-attention-backend fa3 "
+        f"--sglang-attention-backend {attention.sglang} "
         "--sglang-chunked-prefill-size 4096 "
     )
 
@@ -106,7 +133,7 @@ def execute(args: ScriptArgs):
         "--train-backend fsdp "
         "--update-weight-buffer-size 536870912 "
         "--gradient-checkpointing "
-        "--attn-implementation flash_attention_3 "
+        f"--attn-implementation {attention.train} "
         """--train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}' """
     )
 
