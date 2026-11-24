@@ -18,12 +18,15 @@ from typing import Any
 import orjson
 
 from miles.rollout.generate_utils.rollout_topk_logprobs import configure_rollout_topk_logprobs_request
-from miles.rollout.generate_utils.sampling_mask import validate_sampling_support_request
+from miles.rollout.generate_utils.sampling_mask import (
+    configure_sampling_mask_request,
+    validate_sampling_support_request,
+)
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import MessageValidationError
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, extract_template_args
 from miles.utils.lora.utils import LORA_ADAPTER_NAME, lora_rollout_enabled
-from miles.utils.output_store.plan import FIELDS, OUTPUT_STORE_REQUEST_KEY
+from miles.utils.output_store.plan import FIELDS, OUTPUT_STORE_REQUEST_KEY, REPLAY_LAYER_SPLITS_KEY
 
 DEFAULT_TURN_ARGS_DROP_KEYS = ("input_ids", "messages")
 
@@ -112,14 +115,19 @@ def prepare_chat_request(
             request_args["return_sampling_mask"] = True
         else:
             request_args.pop("return_sampling_mask", None)
-    # The launch flag owns the output store, as it owns the replay outputs: a client's value is replaced.
+    # The launch flag owns the output store, as it owns the replay outputs, and the run's pipeline layout owns the
+    # layer splits: a client's values are replaced.
     request_args.pop(OUTPUT_STORE_REQUEST_KEY, None)
+    request_args.pop(REPLAY_LAYER_SPLITS_KEY, None)
     if (
         config.output_store_backend_config is not None
         and not evaluation
         and any(request_args.get(field.request_key) for field in FIELDS)
     ):
         request_args[OUTPUT_STORE_REQUEST_KEY] = True
+        if config.replay_layer_splits:
+            request_args[REPLAY_LAYER_SPLITS_KEY] = list(config.replay_layer_splits)
+    configure_sampling_mask_request(request_args)
     return PreparedChatRequest(
         body=request_args, template_args=extract_template_args(request_args), response_intent=response_intent
     )

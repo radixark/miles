@@ -24,7 +24,7 @@ from miles.backends.training_utils.loss.objective import (
     count_loss_tokens,
     loss_function,
 )
-from miles.backends.training_utils.metrics import perf
+from miles.backends.training_utils.metrics import perf, train_dump
 from miles.backends.training_utils.metrics.checks import check_grad_norm
 from miles.backends.training_utils.metrics.log_utils import (
     aggregate_forward_results,
@@ -84,6 +84,8 @@ class TorchNativeTrainRayActor(TrainRayActor):
     align_token_side_channel: Callable[[torch.Tensor, int], torch.Tensor] | None = None
     # True when the model moves multimodal inputs to the GPU itself
     multimodal_on_host: ClassVar[bool] = False
+    # every rank holds its own slice of the rollout; a backend whose CP peers share one sets this on one of them
+    dumps_train_data: bool = True
 
     def _step_runner(self) -> StepRunner:
         raise NotImplementedError
@@ -171,7 +173,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
             rollout_data, store_get_result = get_rollout_data(
                 args=self.args,
                 rollout_data_ref=rollout_data_ref,
-                output_store_read=self.output_store_read,
+                output_store=self.output_store,
                 witness_info=None,
                 train_parallel_config=self.train_parallel_config,
                 sample_device=response_layout_type(self.args).sample_device,
@@ -180,7 +182,11 @@ class TorchNativeTrainRayActor(TrainRayActor):
             with store_get_result:
                 if self.args.debug_rollout_only:
                     return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
-                self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
+                try:
+                    self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
+                finally:
+                    # Before the shard is released, on failure too: the replay fills still read it.
+                    routing_replay.reset()
 
         perf.log_perf_data_raw(
             rollout_id=rollout_id,
@@ -221,21 +227,22 @@ class TorchNativeTrainRayActor(TrainRayActor):
 
         with routing_replay.stage(routing_replay.REPLAY_BACKWARD), timer("actor_train"):
             self._optimizer_steps(runner, data_iterator, num_microbatches, rollout_id)
-        routing_replay.reset()
 
         self.prof.step(rollout_id=rollout_id)
+        if self.dumps_train_data:
+            train_dump.save_debug_train_data(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
         self._after_rollout(rollout_id, rollout_data)
 
     def _score_rollout(self, runner: StepRunner, rollout_data: dict) -> tuple[DataIterator, list[int]]:
         """The passes before the optimizer steps: ref and actor log-probs, then advantages."""
         data_iterators, num_microbatches = get_data_iterator(self.args, self.model_parts, rollout_data)
         assert num_microbatches, f"empty microbatch schedule for micro_batch_size={self.args.micro_batch_size}"
-        routing_replay.fill(
+        routing_replay.attach(
             self.args,
-            self.model_parts,
             data_iterators,
             num_microbatches,
             rollout_data,
+            output_store=self.output_store,
             align=self.align_token_side_channel,
         )
         data_iterator = data_iterators[0]

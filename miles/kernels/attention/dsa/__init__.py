@@ -5,6 +5,7 @@ from miles.kernels.attention.dsa.indexer import (
     indexer_logits_sbhd,
     indexer_topk_scores,
     lighting_indexer,
+    score_rows,
 )
 from miles.kernels.attention.dsa.sparse_attention import sparse_attention
 from miles.kernels.attention.dsa.topk import get_dsa_topk_fn
@@ -17,5 +18,6 @@ __all__ = [
     "indexer_logits_sbhd",
     "indexer_topk_scores",
     "lighting_indexer",
+    "score_rows",
     "sparse_attention",
 ]

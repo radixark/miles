@@ -28,7 +28,7 @@ STEPS=".github/workflows/scripts/spur/container_steps.sh"
 # Passed by name into the container (values never appear on a command line).
 CONTAINER_ENV=(
     CI_COMMAND CI_SKIP_DEPENDENCY_INSTALL SGLANG_PR MEGATRON_PR BRIDGE_REF
-    MILES_HARDWARE_PLATFORM GITHUB_COMMIT_NAME WANDB_API_KEY HF_TOKEN
+    MILES_HARDWARE_PLATFORM GITHUB_COMMIT_NAME WANDB_API_KEY AMD_NEON_DATABASE_URL PGCONNECT_TIMEOUT HF_TOKEN
     GITHUB_ACTIONS GITHUB_SHA GITHUB_REF GITHUB_EVENT_NAME GITHUB_RUN_ID
     GITHUB_RUN_ATTEMPT GITHUB_REPOSITORY GITHUB_SERVER_URL
 )
@@ -42,12 +42,25 @@ remove_job() {  # remove_job CONTAINER WORKSPACE
     rm -rf "$2" 2>/dev/null || true
 }
 
+# Each PR that changes the ROCm image inputs leaves a ~49 GiB radixark/miles:pr-<number>-rocm10-mi35x image here.
+# Remove those built over MILES_PR_IMAGE_KEEP_HOURS (default 72) ago that no container uses; other images are kept.
+remove_old_pr_images() {
+    local keep="${MILES_PR_IMAGE_KEEP_HOURS:-72}" now ref created
+    now=$(date +%s)
+    for ref in $(docker image ls --format '{{.Repository}}:{{.Tag}}' radixark/miles 2>/dev/null | grep -E ':pr-[0-9]+-rocm10-mi35x$' || true); do
+        created=$(date -d "$(docker image inspect -f '{{.Created}}' "$ref" 2>/dev/null)" +%s 2>/dev/null) || continue
+        (( now - created > keep * 3600 )) || continue
+        docker image rm "$ref" >/dev/null 2>&1 && echo "[miles-ci-job] removed $ref, built over ${keep}h ago" || true
+    done
+}
+
 finish() {
     local rc=$?
     cp "$WS/.ci-step-summary.md" "$CI_SUMMARY_FILE" 2>/dev/null || true
     remove_job "$CONTAINER" "$WS"
     echo "$rc" > "$CI_EXIT_FILE"
     echo "[miles-ci-job] exit $rc"
+    remove_old_pr_images
 }
 trap finish EXIT
 

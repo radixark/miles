@@ -9,6 +9,7 @@ Every group-level decision lives here — what to keep, what to hand to
 
 import asyncio
 import logging
+import random
 import time
 from abc import ABC, abstractmethod
 from argparse import ArgumentParser, Namespace
@@ -139,7 +140,7 @@ class DataBuffer(ABC):
 
 
 class DefaultDataBuffer(DataBuffer):
-    """FIFO buffer of finished groups, filtering out what training should not see.
+    """Buffer of finished groups, filtering out what training should not see.
 
     Rejected on put, because the verdict is fixed once the group is generated:
 
@@ -156,7 +157,9 @@ class DefaultDataBuffer(DataBuffer):
     (1) capacity: ``--async-data-buffer-capacity-factor`` bounds the buffer at
         floor(factor * rollout_batch_size) groups; when full, put blocks until
         training consumes.
-    (2) unused handling: ``--async-unused-samples-handler`` decides what happens
+    (2) selection: ``--async-data-buffer-selection`` hands a get the earliest
+        finished groups (fifo) or a random subset of the buffered ones.
+    (3) unused handling: ``--async-unused-samples-handler`` decides what happens
         to aborted and stale groups: drop discards them, retry recycles their
         prompts for regeneration. Missing-reward and custom-filter rejections
         are discarded directly.
@@ -177,6 +180,7 @@ class DefaultDataBuffer(DataBuffer):
         self._unused_handler_fn = input.unused_handler_fn
         self._dynamic_filter = load_function(args.dynamic_sampling_filter_path)
         self._cond = asyncio.Condition()
+        self._rng = random.Random(args.rollout_seed)
         self._current_version: int | None = None
         self._get_pending = False
 
@@ -256,8 +260,13 @@ class DefaultDataBuffer(DataBuffer):
                 except asyncio.TimeoutError:
                     pass
 
-            entries = self._buffer[:num_groups]
-            del self._buffer[:num_groups]
+            if self._args.async_data_buffer_selection == "random":
+                taken = set(self._rng.sample(range(len(self._buffer)), num_groups))
+                entries = [entry for i, entry in enumerate(self._buffer) if i in taken]
+                self._buffer = [entry for i, entry in enumerate(self._buffer) if i not in taken]
+            else:
+                entries = self._buffer[:num_groups]
+                del self._buffer[:num_groups]
             self._cond.notify_all()  # wake producers blocked on a full buffer
             for entry in entries:
                 version_stats = group_weight_version_stats(entry.group)
@@ -318,8 +327,9 @@ class DefaultDataBuffer(DataBuffer):
     def admits(self, *, in_flight: int) -> bool:
         if not self._args.async_submit_within_staleness:
             return True
-        # get() hands out groups in completion order, one weight version per call, so a group that enters the
-        # buffer is trained at most max_weight_staleness versions later.
+        # With fifo selection get() hands out groups in completion order, one weight version per call, so a group
+        # that enters the buffer is trained at most max_weight_staleness versions later; random selection can keep
+        # a group longer, until the staleness filter drops it.
         window = self._args.max_weight_staleness + int(self._get_pending)
         return len(self._buffer) + in_flight < window * self._args.rollout_batch_size
 

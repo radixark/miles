@@ -9,7 +9,11 @@ from unittest.mock import patch
 
 import pytest
 import torch
+import torch.distributed as dist
 from tests.ci.ci_register import register_cpu_ci
+from torch.distributed.device_mesh import init_device_mesh
+from torch.distributed.tensor import DTensor, Replicate, Shard
+from torch.testing._internal.distributed.fake_pg import FakeStore
 
 from miles import platforms
 from miles.backends.torchtitan_utils import arguments
@@ -40,7 +44,6 @@ def _args(**overrides) -> Namespace:
         max_seq_len=8192,
         rollout_max_response_len=4096,
         ref_update_interval=None,
-        save_debug_train_data=None,
         ci_test=False,
         use_routing_replay=False,
         use_rollout_routing_replay=False,
@@ -77,6 +80,7 @@ def _args(**overrides) -> Namespace:
         custom_pg_loss_reducer_function_path=None,
         dump_details=None,
         multi_lora=False,
+        multimodal_keys=None,
     )
     return Namespace(**{**base, **overrides})
 
@@ -112,6 +116,7 @@ _TPU_FACTS = (
     "compile_backend",
     "triton_kernels",
     "flex_attention",
+    "trains_multimodal_encoders",
     "rooted_reduce",
     "premul_sum_reduce",
     "weight_transfer_modes",
@@ -147,17 +152,23 @@ def test_a_tpu_microbatch_cannot_outgrow_the_largest_length_bucket(monkeypatch, 
 
 
 def test_tpu_sequence_length_is_a_whole_number_of_attention_blocks(monkeypatch, on_tpu):
-    """The largest length bucket is --seq-length, and the TPU attention kernel reshapes it into 1024-token blocks."""
+    """Every microbatch pads to --seq-length, which the TPU attention kernel reshapes into 1024-token blocks."""
     monkeypatch.setattr(torch, "__version__", "2.14.0")
     with pytest.raises(ValueError, match="seq-length 3000 must be a multiple of 1024"):
         validate_torchtitan_args(_tpu_args(seq_length=3000, max_seq_len=None, rollout_max_response_len=2048))
     validate_torchtitan_args(_tpu_args(seq_length=8192))
 
 
-def test_tpu_refuses_context_and_expert_parallelism(monkeypatch, on_tpu):
+def test_tpu_context_parallelism_needs_a_sequence_length_that_shards_evenly(monkeypatch, on_tpu):
     monkeypatch.setattr(torch, "__version__", "2.14.0")
-    with pytest.raises(ValueError, match="context-parallel-size 2"):
-        validate_torchtitan_args(_tpu_args(context_parallel_size=2))
+    validate_torchtitan_args(_tpu_args(context_parallel_size=2))
+    validate_torchtitan_args(_tpu_args(context_parallel_size=3, seq_length=3072, max_seq_len=3072))
+    with pytest.raises(ValueError, match="context-parallel-size 3 does not divide --seq-length 4096"):
+        validate_torchtitan_args(_tpu_args(context_parallel_size=3, seq_length=4096, max_seq_len=4096))
+
+
+def test_tpu_refuses_expert_parallelism(monkeypatch, on_tpu):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
     with pytest.raises(ValueError, match="expert-model-parallel-size 2"):
         validate_torchtitan_args(_tpu_args(expert_model_parallel_size=2))
 
@@ -183,18 +194,8 @@ def test_gpu_validation_ignores_the_tpu_limits(monkeypatch):
     )
 
 
-@pytest.mark.parametrize("seq_len", [1000, 1024, 3000, 8192])
-def test_the_recompile_limit_counts_every_length_bucket(seq_len):
-    """A bucket the limit misses is one compile too many, which a fullgraph block turns into a crash."""
-    from miles.utils.data import fixed_shape_length_bucket, fixed_shape_length_buckets
-
-    buckets = {fixed_shape_length_bucket(n, seq_len) for n in range(1, seq_len + 1)}
-    assert buckets == fixed_shape_length_buckets(seq_len)
-    assert max(buckets) == seq_len
-
-
-@pytest.mark.parametrize(("n_tokens", "padded"), [(1, 1024), (1024, 1024), (1025, 2048), (5000, 8192), (8192, 8192)])
-def test_a_static_shape_platform_pads_each_microbatch_to_a_length_bucket(monkeypatch, n_tokens, padded):
+@pytest.mark.parametrize("n_tokens", [1, 1024, 5000, 8192])
+def test_a_static_shape_platform_pads_each_microbatch_to_the_sequence_length(monkeypatch, n_tokens):
     pytest.importorskip("torchtitan")
     from miles.backends.torchtitan_utils.trainer import TitanTrainer
 
@@ -204,8 +205,8 @@ def test_a_static_shape_platform_pads_each_microbatch_to_a_length_bucket(monkeyp
     )
     assert TitanTrainer.padded_length(trainer, n_tokens) == n_tokens, "a dynamic-shape platform keeps the length"
     monkeypatch.setattr(platforms.current_platform, "dynamic_shapes", False)
-    assert TitanTrainer.padded_length(trainer, n_tokens) == padded
-    with pytest.raises(ValueError, match="largest length bucket"):
+    assert TitanTrainer.padded_length(trainer, n_tokens) == 8192
+    with pytest.raises(ValueError, match="the fixed shape every microbatch pads to"):
         TitanTrainer.padded_length(trainer, 8193)
 
 
@@ -251,11 +252,11 @@ def test_a_static_shape_platform_compiles_static_graphs_for_every_pass_and_bucke
 
         monkeypatch.setattr(platforms.current_platform, "dynamic_shapes", False)
         configure_fixed_shape_compile(num_passes=2)
-        # buckets 1024, 2048, 4096, 8192, and two block variants (dense and MoE) per class
-        assert torch._dynamo.config.recompile_limit == 2 * 2 * 4
+        # one shape, and two block variants (dense and MoE) per class
+        assert torch._dynamo.config.recompile_limit == 2 * 2
         assert not torch._dynamo.config.automatic_dynamic_shapes
         configure_fixed_shape_compile(num_passes=3)
-        assert torch._dynamo.config.recompile_limit == 2 * 3 * 4
+        assert torch._dynamo.config.recompile_limit == 2 * 3
 
 
 def test_context_parallelism_is_rejected_for_qwen3_5(monkeypatch):
@@ -268,8 +269,6 @@ def test_unsupported_flags_are_rejected_rather_than_ignored(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.14.0")
     with pytest.raises(ValueError, match="ref-update-interval"):
         validate_torchtitan_args(_args(ref_update_interval=4))
-    with pytest.raises(ValueError, match="save-debug-train-data"):
-        validate_torchtitan_args(_args(save_debug_train_data="/tmp/dump"))
 
 
 def test_the_replay_checker_is_refused_where_blocks_compile_fullgraph(monkeypatch):
@@ -543,6 +542,88 @@ def test_mla_keeps_its_wrapper_and_runs_tpu_flash_attention_inside_it(on_tpu):
     assert {type(wrapper.inner_attention) for wrapper in mla} == {TpuFlashInnerAttention.Config}
 
 
+def test_gated_delta_layers_get_the_tpu_gated_delta_and_attention_layers_tpu_flash(on_tpu):
+    pytest.importorskip("torchtitan")
+    from torchtitan.config.parallelism import ParallelismConfig
+
+    from miles.backends.torchtitan_utils.config import (
+        TpuFlashInnerAttention,
+        TpuGatedDeltaInnerAttention,
+        build_model_config,
+    )
+
+    model = build_model_config(
+        _config_args(titan_model_name="qwen3_5", titan_model_flavor="debugmodel"), parallelism=ParallelismConfig()
+    )
+    inner = [type(layer.attention.inner_attention) for layer in model.layers]
+    assert set(inner) == {TpuGatedDeltaInnerAttention.Config, TpuFlashInnerAttention.Config}
+
+
+@pytest.mark.parametrize("tpu", [True, False], ids=["tpu", "gpu"])
+def test_tpu_trains_the_language_model_alone_but_reads_the_multimodal_checkpoint(
+    request, tmp_path, single_gpu_dims, tpu
+):
+    """Built for the trained model alone, the adapter would read text-only HF names from the multimodal checkpoint,
+    find none, and leave the language model at its random init."""
+    from torchtitan.models.qwen3_5.state_dict_adapter import Qwen35StateDictAdapter
+
+    from miles.backends.torchtitan_utils.config import build_trainer_config
+
+    if tpu:
+        request.getfixturevalue("on_tpu")
+    config = build_trainer_config(
+        _config_args(titan_model_name="qwen3_5", titan_model_flavor="debugmodel"),
+        hf_assets_path=_checkpoint_dir(tmp_path, tie_word_embeddings=False),
+        lr_total_steps=1,
+        dump_subdir="x",
+    )
+    assert (config.model.vision_encoder is None) == tpu
+    assert Qwen35StateDictAdapter(config.checkpoint_model, None).hf_language_model_prefix == "model.language_model"
+
+
+def test_the_engine_reads_the_checkpoint_through_an_adapter_for_its_layout(monkeypatch):
+    """torchtitan builds the adapter from the trained model's config, which lacks the parts the trainer drops."""
+    pytest.importorskip("torchtitan")
+    from torchtitan.training_engine import TrainingEngine
+
+    from miles.backends.torchtitan_utils.trainer import _TrainingEngine
+
+    class _Adapter:
+        def __init__(self, model_config, hf_assets_path):
+            self.model = model_config
+
+    def build_adapter(self, *, hf_assets_path, create_seed_checkpoint=False):
+        self.state_dict_adapter = _Adapter(self.model_config, hf_assets_path)
+
+    monkeypatch.setattr(TrainingEngine, "_initialize_model", build_adapter)
+    engine = object.__new__(_TrainingEngine)
+    engine.model_config, engine._checkpoint_model = "language model", "language model and encoders"
+    engine._initialize_model(hf_assets_path="hf")
+    assert engine.state_dict_adapter.model == "language model and encoders"
+
+
+def test_tpu_gated_delta_layers_refuse_tensor_parallelism(on_tpu):
+    """The TPU gated delta-net replacement runs unsharded, so TP would compute each layer on a share of its heads."""
+    pytest.importorskip("torchtitan")
+    from torchtitan.config.parallelism import ParallelismConfig
+
+    from miles.backends.torchtitan_utils.config import build_model_config
+
+    args = _config_args(titan_model_name="qwen3_5", titan_model_flavor="debugmodel")
+    with pytest.raises(ValueError, match="tensor-model-parallel-size 2"):
+        build_model_config(args, parallelism=ParallelismConfig(tensor_parallel_degree=2))
+    build_model_config(args, parallelism=ParallelismConfig())
+    # a model with no gated delta-net layers keeps TP
+    build_model_config(_config_args(), parallelism=ParallelismConfig(tensor_parallel_degree=2))
+
+
+def test_tpu_refuses_multimodal_training(monkeypatch, on_tpu):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    with pytest.raises(ValueError, match="multimodal training is not supported"):
+        validate_torchtitan_args(_tpu_args(multimodal_keys={"image": "images"}))
+    validate_torchtitan_args(_tpu_args())
+
+
 def test_context_parallelism_swaps_in_the_all_gather_kv_attention(tmp_path, monkeypatch):
     """torchtitan refuses CP on a plain flex attention; the backend converts every layer's inner attention."""
     pytest.importorskip("torchtitan")
@@ -561,6 +642,25 @@ def test_context_parallelism_swaps_in_the_all_gather_kv_attention(tmp_path, monk
     assert config.parallelism.context_parallel_load_balancer is None
     inner = {type(layer.attention.inner_attention) for layer in config.model.layers}
     assert inner == {AllGatherKVFlexInnerAttention.Config}
+
+
+def test_tpu_context_parallelism_shards_heads_around_the_flash_attention(on_tpu):
+    """Without sparse flex attention, CP runs Ulysses around the TPU kernel, which then sees the whole sequence."""
+    pytest.importorskip("torchtitan")
+    from torchtitan.config.parallelism import ParallelismConfig
+
+    from miles.backends.torchtitan_utils.config import UlyssesTpuFlashInnerAttention, build_model_config
+
+    # qwen3 0.6B: 16 query heads, 8 key/value heads
+    model = build_model_config(_config_args(), parallelism=ParallelismConfig(context_parallel_degree=8))
+    assert {type(layer.attention.inner_attention) for layer in model.layers} == {UlyssesTpuFlashInnerAttention.Config}
+    with pytest.raises(ValueError, match="16 query and 8 key/value heads do not divide by 16"):
+        build_model_config(_config_args(), parallelism=ParallelismConfig(context_parallel_degree=16))
+    # each rank holds a tensor-parallel share of the heads
+    with pytest.raises(ValueError, match="2 TP x 8 CP ranks"):
+        build_model_config(
+            _config_args(), parallelism=ParallelismConfig(context_parallel_degree=8, tensor_parallel_degree=2)
+        )
 
 
 class _Mesh:
@@ -922,6 +1022,103 @@ def test_local_experts_find_their_range_under_the_names_the_adapter_converted_to
 
     with pytest.raises(AssertionError, match="not the engine's even split"):
         list(hf_weight_iterator._local_experts(_SplittingExpertAdapter(0, 4), state, [key]))
+
+
+def test_grouped_experts_go_out_per_expert_under_their_global_ids():
+    """Qwen3.5-MoE's adapter keeps HF's grouped experts.gate_up_proj [E, 2F, D]; rank 1 of 4 holds experts 2-3 of 8."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils import hf_weight_iterator
+
+    prefix = "model.language_model.layers.5.mlp.experts"
+    gate_up = torch.arange(2 * 4 * 3, dtype=torch.float32).reshape(2, 4, 3)  # 2 local experts, F=2, D=3
+    exported = dict(hf_weight_iterator._per_expert(f"{prefix}.gate_up_proj", gate_up, first_expert=2))
+    assert list(exported) == [
+        f"{prefix}.2.gate_proj.weight",
+        f"{prefix}.2.up_proj.weight",
+        f"{prefix}.3.gate_proj.weight",
+        f"{prefix}.3.up_proj.weight",
+    ]
+    assert torch.equal(exported[f"{prefix}.3.gate_proj.weight"], gate_up[1, :2])
+    assert torch.equal(exported[f"{prefix}.3.up_proj.weight"], gate_up[1, 2:])
+
+    down = torch.zeros(2, 3, 2)
+    assert list(dict(hf_weight_iterator._per_expert(f"{prefix}.down_proj", down, first_expert=2))) == [
+        f"{prefix}.2.down_proj.weight",
+        f"{prefix}.3.down_proj.weight",
+    ]
+
+
+class _GroupedExpertAdapter:
+    """Converts w13 [E, 2, F, D] to HF's grouped gate_up_proj as Qwen3.5's adapter does ([E, 2F, D]), or as gpt-oss's
+    does ([E, D, 2F], gate and up interleaved); the rank's slice stays a DTensor."""
+
+    def __init__(self, *, gpt_oss: bool = False) -> None:
+        self._gpt_oss = gpt_oss
+
+    def to_hf(self, state):
+        ((_key, w13),) = state.items()
+        gate_up = w13.transpose(1, 2).flatten(1, 2).transpose(1, 2) if self._gpt_oss else w13.flatten(1, 2)
+        return {"model.language_model.layers.1.mlp.experts.gate_up_proj": gate_up}
+
+
+@pytest.fixture
+def rank_1_of_4_mesh():
+    dist.init_process_group("fake", rank=1, world_size=4, store=FakeStore())
+    try:
+        yield init_device_mesh("cpu", (4,))
+    finally:
+        dist.destroy_process_group()
+
+
+def test_grouped_experts_go_out_only_under_an_even_split_in_torchtitans_layout(monkeypatch, rank_1_of_4_mesh):
+    """The engine skips experts it does not own, so any other split of a grouped tensor would leave some stale; a
+    transposed grouped layout would send the wrong rows as each expert's gate_proj and up_proj."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils import hf_weight_iterator
+
+    monkeypatch.setattr(
+        hf_weight_iterator, "current_platform", SimpleNamespace(current_device=lambda: torch.device("cpu"))
+    )
+    key = "layers.1.feed_forward.routed_experts.w13.weight"
+    local = torch.zeros(2, 2, 2, 3)  # 2 local experts of w13 [2, F=2, D=3]
+
+    def export(placement, num_experts, *, gpt_oss=False):
+        shape = (num_experts, 2, 2, 3)
+        w13 = DTensor.from_local(
+            local, rank_1_of_4_mesh, [placement], shape=shape, stride=torch.empty(shape).stride(), run_check=False
+        )
+        return list(hf_weight_iterator._local_experts(_GroupedExpertAdapter(gpt_oss=gpt_oss), {key: w13}, [key]))
+
+    prefix = "model.language_model.layers.1.mlp.experts"
+    assert [name for name, _ in export(Shard(0), num_experts=8)] == [
+        f"{prefix}.2.gate_proj.weight",
+        f"{prefix}.2.up_proj.weight",
+        f"{prefix}.3.gate_proj.weight",
+        f"{prefix}.3.up_proj.weight",
+    ]
+    with pytest.raises(AssertionError, match="grouped experts need trainer EP = 1"):
+        export(Replicate(), num_experts=2)
+    with pytest.raises(AssertionError, match="do not split evenly"):
+        export(Shard(0), num_experts=6)
+    with pytest.raises(AssertionError, match="projections stacked as rows"):
+        export(Shard(0), num_experts=8, gpt_oss=True)
+
+
+@pytest.mark.parametrize(
+    ("name", "grouped"),
+    [
+        ("model.layers.5.mlp.experts.7.gate_proj.weight", "model.layers.5.mlp.experts.gate_up_proj"),
+        ("model.layers.5.mlp.experts.7.up_proj.weight", "model.layers.5.mlp.experts.gate_up_proj"),
+        ("model.layers.5.mlp.experts.7.down_proj.weight", "model.layers.5.mlp.experts.down_proj"),
+        ("model.layers.5.mlp.shared_expert.gate_proj.weight", "model.layers.5.mlp.shared_expert.gate_proj.weight"),
+        ("model.layers.5.mlp.gate_proj.weight", "model.layers.5.mlp.gate_proj.weight"),
+    ],
+)
+def test_per_expert_names_find_the_grouped_checkpoint_tensor_they_came_from(name, grouped):
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils import hf_weight_iterator
+
+    assert hf_weight_iterator._grouped_expert_name(name) == grouped
 
 
 def test_fsdp_gather_once_is_refused_under_pipeline_parallelism(monkeypatch):

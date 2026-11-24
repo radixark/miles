@@ -167,6 +167,11 @@ class ModelCompanionWeightVersionUtils:
         for companion in companions:
             companion.weight_version.add_(1)
 
+    @staticmethod
+    def set_weight_version(model: Sequence[torch.nn.Module], weight_version: int) -> None:
+        for companion in _get_companions_of_model(model):
+            companion.weight_version.fill_(weight_version)
+
 
 class SampleIdentityExtractor:
     @staticmethod

@@ -14,7 +14,7 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     num_gpus=4,
 )
-register_rocm_ci(est_time=400, suite="nightly-stage-c-4-gpu-mi350", labels=["short", "eval", "fully-async"])
+register_rocm_ci(est_time=400, suite="stage-c-4-gpu-mi350", labels=["short", "eval", "fully-async"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"

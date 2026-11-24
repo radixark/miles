@@ -44,6 +44,51 @@ def patch_megatron_model(model):
             delattr(model_config, "share_embeddings_and_output_weights")
 
 
+def apply_pipeline_layout(provider, args) -> None:
+    # arg name != provider field; arg default None, so propagate only when the user set it
+    if args.backend.decoder_first_pipeline_num_layers is not None:
+        provider.num_layers_in_first_pipeline_stage = args.backend.decoder_first_pipeline_num_layers
+    if args.backend.decoder_last_pipeline_num_layers is not None:
+        provider.num_layers_in_last_pipeline_stage = args.backend.decoder_last_pipeline_num_layers
+    if args.backend.pipeline_model_parallel_layout is not None:
+        provider.pipeline_model_parallel_layout = args.backend.pipeline_model_parallel_layout
+
+
+# provider field <- args field, as core_transformer_config_from_args maps them; only the *_param names differ
+BRIDGE_PRECISION_FIELDS = {
+    "fp8": "fp8",
+    "fp8_recipe": "fp8_recipe",
+    "fp8_param": "fp8_param_gather",
+    "fp8_quantizer_factory": "fp8_quantizer_factory",
+    "fp8_margin": "fp8_margin",
+    "fp8_interval": "fp8_interval",
+    "fp8_amax_history_len": "fp8_amax_history_len",
+    "fp8_amax_compute_algo": "fp8_amax_compute_algo",
+    "fp8_wgrad": "fp8_wgrad",
+    "fp8_output_proj": "fp8_output_proj",
+    "fp4": "fp4",
+    "fp4_recipe": "fp4_recipe",
+    "fp4_param": "fp4_param_gather",
+    "fp4_quantizer_factory": "fp4_quantizer_factory",
+    "first_last_layers_bf16": "first_last_layers_bf16",
+    "num_layers_at_start_in_bf16": "num_layers_at_start_in_bf16",
+    "num_layers_at_end_in_bf16": "num_layers_at_end_in_bf16",
+}
+
+
+def apply_precision_args(provider, args) -> None:
+    """Set the low-precision recipe from args; a field left at the provider default silently trains in BF16."""
+    for provider_field, args_field in BRIDGE_PRECISION_FIELDS.items():
+        setattr(
+            provider, provider_field, getattr(args.backend, args_field)
+        )  # config-access-exempt: names come from BRIDGE_PRECISION_FIELDS
+    provider.quant_recipe = None
+    if args.backend.te_precision_config_file:
+        from megatron.core.quantization.utils import load_quantization_recipe  # this module imports without Megatron
+
+        provider.quant_recipe = load_quantization_recipe(args.backend.te_precision_config_file)
+
+
 def apply_dsa_backend_args(provider, args) -> None:
     """Resolve DSV4 kernel selection separately from the GLM DSA backend option."""
     explicit = getattr(
