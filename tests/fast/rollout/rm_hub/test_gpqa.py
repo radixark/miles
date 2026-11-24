@@ -6,9 +6,17 @@ from miles.rollout.rm_hub.gpqa import (
     _strip_chain_of_thought,
     compute_gpqa_reward,
 )
-from miles.utils.reasoning import REASONING_DELIMITERS
 
-_ANSWER_DELIMITERS = tuple(delimiter for _, delimiter in REASONING_DELIMITERS.values())
+_ANSWER_MARKERS = (
+    "<|open|>response<|sep|>",
+    "<|channel|>final<|message|>",
+    "<|message_model|><|content_text|>",
+    "to=user<|message|>",
+    "<channel|>",
+    "◁/think▷",
+    "</think>",
+    "###Response",
+)
 
 
 class TestStripChainOfThought:
@@ -26,28 +34,31 @@ class TestStripChainOfThought:
     def test_strip_chain_of_thought(self, text, expected):
         assert _strip_chain_of_thought(text) == expected
 
-    @pytest.mark.parametrize("delimiter", _ANSWER_DELIMITERS)
-    def test_strip_all_reasoning_delimiters(self, delimiter):
-        assert _strip_chain_of_thought(f"Answer: B {delimiter}The answer is A") == "The answer is A"
-        assert _strip_chain_of_thought(f"t1{delimiter}Answer: B{delimiter}The answer is A") == "The answer is A"
-        assert _strip_chain_of_thought(f"Answer: A{delimiter}") == ""
+    @pytest.mark.parametrize("marker", _ANSWER_MARKERS)
+    def test_strip_all_reasoning_delimiters(self, marker):
+        assert _strip_chain_of_thought(f"Answer: B {marker}The answer is A") == "The answer is A"
+        assert _strip_chain_of_thought(f"Answer: A{marker}") == ""
 
     @pytest.mark.parametrize(
         "text,expected",
         [
             ("<think>###Response Answer: B</think>The answer is A", "The answer is A"),
+            ("<think>quote <|content_text|> Answer: B</think>Answer: A", "Answer: A"),
+            ("<think>quote <|message_model|><|content_text|> Answer: B</think>Answer: A", "Answer: A"),
+            ("<think>quote <|channel|>final<|message|> Answer: B</think>Answer: A", "Answer: A"),
             (
-                "<|content_thinking|>###Response </think>Answer: B<|end_message|><|content_text|>The answer is A",
+                "<|content_thinking|>###Response </think>Answer: B<|end_message|>"
+                "<|message_model|><|content_text|>The answer is A<|end_message|><|content_model_end_sampling|>",
                 "The answer is A",
             ),
             (
                 "<|channel|>analysis<|message|></think>###Response Answer: B<|end|>"
-                "<|start|>assistant<|channel|>final<|message|>The answer is A",
+                "<|start|>assistant<|channel|>final<|message|>The answer is A<|return|>",
                 "The answer is A",
             ),
         ],
     )
-    def test_model_special_delimiter_precedence(self, text, expected):
+    def test_rightmost_structural_delimiter_precedence(self, text, expected):
         assert _strip_chain_of_thought(text) == expected
 
 
@@ -187,12 +198,33 @@ class TestComputeGpqaReward:
     def test_listing_several_choices_is_a_hedge(self, response, label, metadata, expected):
         assert compute_gpqa_reward(response, label, metadata=metadata) == expected
 
-    @pytest.mark.parametrize("delimiter", _ANSWER_DELIMITERS)
-    def test_reasoning_delimiters_ignore_distractor_in_thought(self, delimiter):
-        response = f"First guess: Answer: B.{delimiter}The answer is A."
+    @pytest.mark.parametrize("marker", _ANSWER_MARKERS)
+    def test_reasoning_delimiters_ignore_distractor_in_thought(self, marker):
+        response = f"First guess: Answer: B.{marker}The answer is A."
+        assert compute_gpqa_reward(response, "A") == 1.0
+        assert compute_gpqa_reward(response, "B") == 0.0
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            "<|content_thinking|>Answer: B<|end_message|><|message_model|><|content_text|>A<|end_message|><|content_model_end_sampling|>",
+            "<|content_text|>A<|end_message|><|content_model_end_sampling|>",
+            " to=self<|message|>Answer: B<|eom|><|start|>assistant to=user<|message|>A<|eot|>",
+            "<|channel|>analysis<|message|>Answer: B<|end|><|start|>assistant<|channel|>final<|message|>A<|return|>",
+            "<|open|>think<|sep|>Answer: B<|close|>think<|sep|><|open|>response<|sep|>A<|close|>response<|sep|><|close|>message<|sep|>",
+            "<|channel>thought\nAnswer: B<channel|>A<turn|>",
+        ],
+    )
+    def test_framed_bare_letter_with_end_tokens_scores_one(self, response):
         assert compute_gpqa_reward(response, "A") == 1.0
         assert compute_gpqa_reward(response, "B") == 0.0
 
     def test_unclosed_reasoning_stays_permissive(self):
         assert compute_gpqa_reward("<think>The answer is A", "A") == 1.0
         assert compute_gpqa_reward("<|content_thinking|>The answer is A", "A") == 1.0
+        # Inkling tool observations carrying <|content_text|> must not trigger splitting when the final turn is unclosed.
+        tool_then_unclosed = (
+            "<|message_tool|>search<|content_text|>irrelevant<|end_message|>"
+            "<|message_model|><|content_thinking|>The answer is A"
+        )
+        assert compute_gpqa_reward(tool_then_unclosed, "A") == 1.0

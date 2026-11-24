@@ -35,7 +35,7 @@ from tests.fast.utils.chat_template_utils.tito_families import load_family_tito
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, TITOTokenizerType, extract_template_args
 from miles.utils.chat_template_utils.token_seq_comparator import MismatchType
 from miles.utils.chat_template_utils.truncation import MarkerPair, TruncationGrammar
-from miles.utils.reasoning import REASONING_DELIMITERS
+from miles.utils.reasoning import REASONING_DELIMITERS, extract_after_reasoning
 
 register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["rollout"])
 
@@ -517,7 +517,7 @@ def test_closing_text_skips_whitespace_already_sampled():
 
 
 def test_every_tito_closer_delimiter_is_registered_in_reasoning_ssot():
-    """Every TITO family's reasoning delimiter must stay registered in the shared SSOT before the legacy fallback."""
+    """Every TITO family's reasoning delimiter must stay registered in the shared SSOT and extract real answers."""
     delimiters = [delimiter for _, delimiter in REASONING_DELIMITERS.values()]
     legacy_delimiter = REASONING_DELIMITERS["legacy_response"][1]
     legacy_idx = delimiters.index(legacy_delimiter)
@@ -536,3 +536,17 @@ def test_every_tito_closer_delimiter_is_registered_in_reasoning_ssot():
         ), f"{family.value}'s delimiter {delimiter!r} must precede {legacy_delimiter!r}"
         checked += 1
     assert checked > 0
+
+    # Verify each TITO closer's real wire format round-trips through extract_after_reasoning.
+    assert extract_after_reasoning("<think>\nwork\n</think>\n\nfinal") == "\n\nfinal"
+    assert (
+        extract_after_reasoning(
+            "<|content_thinking|>work<|end_message|><|message_model|><|content_text|>final<|end_message|>"
+            "<|content_model_end_sampling|>"
+        )
+        == "final"
+    )
+    assert (
+        extract_after_reasoning(" to=self<|message|>work<|eom|><|start|>assistant to=user<|message|>final<|eot|>")
+        == "final"
+    )

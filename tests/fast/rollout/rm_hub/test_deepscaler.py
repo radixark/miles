@@ -3,10 +3,22 @@ import pytest
 from miles.rollout.rm_hub.deepscaler import get_deepscaler_rule_based_reward, get_gemma_math_reward
 from miles.utils.reasoning import REASONING_DELIMITERS
 
-_EXPECTED_DELIMITERS = (
+_EXPECTED_DELIMITERS = {
+    "kimi_k3": ("<|open|>think<|sep|>", "<|open|>response<|sep|>"),
+    "harmony": ("<|channel|>analysis<|message|>", "<|channel|>final<|message|>"),
+    "inkling": ("<|content_thinking|>", "<|content_text|>"),
+    "muse_spark": ("to=self<|message|>", "to=user<|message|>"),
+    "gemma4": ("<|channel>", "<channel|>"),
+    "kimi_vl": ("◁think▷", "◁/think▷"),
+    "think": ("<think>", "</think>"),
+    "legacy_response": (None, "###Response"),
+}
+
+# Wire markers that open a model answer segment in each family's decoded response.
+_ANSWER_MARKERS = (
     "<|open|>response<|sep|>",
     "<|channel|>final<|message|>",
-    "<|content_text|>",
+    "<|message_model|><|content_text|>",
     "to=user<|message|>",
     "<channel|>",
     "◁/think▷",
@@ -39,28 +51,66 @@ class TestGetDeepscalerRuleBasedReward:
         assert get_deepscaler_rule_based_reward(response, label) == expected
 
     def test_expected_delimiters_cover_ssot(self):
-        assert tuple(delimiter for _, delimiter in REASONING_DELIMITERS.values()) == _EXPECTED_DELIMITERS
+        assert REASONING_DELIMITERS == _EXPECTED_DELIMITERS
 
-    @pytest.mark.parametrize("delimiter", _EXPECTED_DELIMITERS)
-    def test_all_delimiters_grade_only_post_delimiter_answer(self, delimiter):
-        assert get_deepscaler_rule_based_reward(rf"thought {delimiter} \boxed{{42}}", "42") == 1
-        assert get_deepscaler_rule_based_reward(rf"thought {delimiter} \boxed{{wrong}}", "42") == 0
-        # Correct box inside reasoning must not pass when the final answer is wrong.
-        assert get_deepscaler_rule_based_reward(rf"\boxed{{42}} {delimiter} \boxed{{wrong}}", "42") == 0
-        # Wrong box inside reasoning must not override a correct final answer.
-        assert get_deepscaler_rule_based_reward(rf"\boxed{{wrong}} {delimiter} \boxed{{42}}", "42") == 1
-        # Repeated delimiters grade only text after the last occurrence.
-        assert get_deepscaler_rule_based_reward(rf"t1{delimiter}\boxed{{wrong}}t2{delimiter}\boxed{{42}}", "42") == 1
-        assert get_deepscaler_rule_based_reward(rf"t1{delimiter}\boxed{{42}}t2{delimiter}\boxed{{wrong}}", "42") == 0
+    @pytest.mark.parametrize("marker", _ANSWER_MARKERS)
+    def test_all_delimiters_grade_only_post_delimiter_answer(self, marker):
+        assert get_deepscaler_rule_based_reward(rf"thought {marker} \boxed{{42}}", "42") == 1
+        assert get_deepscaler_rule_based_reward(rf"thought {marker} \boxed{{wrong}}", "42") == 0
+        # Correct box before the boundary with no box after must score 0 (proves slicing ran).
+        assert get_deepscaler_rule_based_reward(rf"\boxed{{42}} {marker} no final box", "42") == 0
+        assert get_deepscaler_rule_based_reward(rf"\boxed{{42}} {marker} \boxed{{wrong}}", "42") == 0
+        assert get_deepscaler_rule_based_reward(rf"\boxed{{wrong}} {marker} \boxed{{42}}", "42") == 1
+        # Repeated markers grade only the final answer segment.
+        assert get_deepscaler_rule_based_reward(rf"t1{marker}\boxed{{wrong}}t2{marker}\boxed{{42}}", "42") == 1
+        assert get_deepscaler_rule_based_reward(rf"t1{marker}\boxed{{42}}t2{marker}\boxed{{wrong}}", "42") == 0
+
+    def test_inkling_multi_block_and_tool_observations(self):
+        # Direct text turn starting at index 0 (right after prompt's <|message_model|>).
+        assert (
+            get_deepscaler_rule_based_reward(
+                r"<|content_text|>\boxed{42}<|end_message|><|content_model_end_sampling|>", "42"
+            )
+            == 1
+        )
+        # A thinking block emitted after a text block must not leak into the graded answer.
+        text_then_think = (
+            r"<|content_text|>\boxed{1}<|end_message|>"
+            r"<|message_model|><|content_thinking|>\boxed{42}<|end_message|><|content_model_end_sampling|>"
+        )
+        assert get_deepscaler_rule_based_reward(text_then_think, "1") == 1
+        assert get_deepscaler_rule_based_reward(text_then_think, "42") == 0
+        # Multiple text blocks in the final turn concatenate so earlier text is preserved.
+        two_text_blocks = (
+            r"<|content_thinking|>work<|end_message|>"
+            r"<|message_model|><|content_text|>\boxed{42}<|end_message|>"
+            r"<|message_model|><|content_text|> units<|end_message|><|content_model_end_sampling|>"
+        )
+        assert get_deepscaler_rule_based_reward(two_text_blocks, "42") == 1
+        # Tool observation carrying <|content_text|> must not count as a model answer when final turn stops in thinking.
+        tool_then_unclosed_think = (
+            r"<|content_thinking|>call tool<|end_message|>"
+            r"<|message_model|>calc<|content_invoke_tool_json|>{}<|end_message|><|content_model_end_sampling|>"
+            r"<|message_tool|>calc<|content_text|>\boxed{42}<|end_message|>"
+            r"<|message_model|><|content_thinking|>still thinking \boxed{42}"
+        )
+        assert get_deepscaler_rule_based_reward(tool_then_unclosed_think, "42") == 0
+        # Tool observation followed by a real model answer grades the final model turn.
+        tool_then_answer = (
+            r"<|message_tool|>calc<|content_text|>\boxed{wrong}<|end_message|>"
+            r"<|message_model|><|content_thinking|>check<|end_message|>"
+            r"<|message_model|><|content_text|>\boxed{42}<|end_message|><|content_model_end_sampling|>"
+        )
+        assert get_deepscaler_rule_based_reward(tool_then_answer, "42") == 1
 
     @pytest.mark.parametrize(
         "response",
         [
-            r"<|open|>think<|sep|>work \boxed{42}<|close|>think",
+            r"<|open|>think<|sep|>work \boxed{42}<|close|>think<|sep|>",
             r"<|channel|>analysis<|message|>work \boxed{42}<|end|>",
             r"<|content_thinking|>work \boxed{42}<|end_message|>",
             r" to=self<|message|>work \boxed{42}<|eom|>",
-            r"<|thought>work \boxed{42}",
+            r"<|channel>thought\nwork \boxed{42}",
             r"◁think▷work \boxed{42}",
             r"<think>work \boxed{42}",
             "",
@@ -75,21 +125,33 @@ class TestGetDeepscalerRuleBasedReward:
         [
             (r"<think>###Response \boxed{wrong}</think>\boxed{42}", 1),
             (r"<think>###Response \boxed{42}</think>\boxed{wrong}", 0),
-            (r"<|content_thinking|>###Response </think>\boxed{42}<|end_message|><|content_text|>\boxed{wrong}", 0),
-            (r"<|content_thinking|>###Response </think>\boxed{wrong}<|end_message|><|content_text|>\boxed{42}", 1),
+            # Foreign markers quoted inside <think> must not shadow the real </think> closer.
+            (r"<think>quote <|content_text|> \boxed{42}</think>no final box", 0),
+            (r"<think>quote <|message_model|><|content_text|> \boxed{42}</think>no final box", 0),
+            (r"<think>quote <|channel|>final<|message|> \boxed{42}</think>no final box", 0),
+            (
+                r"<|content_thinking|>###Response </think>\boxed{42}<|end_message|>"
+                r"<|message_model|><|content_text|>\boxed{wrong}<|end_message|>",
+                0,
+            ),
+            (
+                r"<|content_thinking|>###Response </think>\boxed{wrong}<|end_message|>"
+                r"<|message_model|><|content_text|>\boxed{42}<|end_message|>",
+                1,
+            ),
             (
                 r"<|channel|>analysis<|message|></think>###Response\boxed{42}<|end|>"
-                r"<|start|>assistant<|channel|>final<|message|>\boxed{wrong}",
+                r"<|start|>assistant<|channel|>final<|message|>\boxed{wrong}<|return|>",
                 0,
             ),
             (
                 r"<|channel|>analysis<|message|></think>###Response\boxed{wrong}<|end|>"
-                r"<|start|>assistant<|channel|>final<|message|>\boxed{42}",
+                r"<|start|>assistant<|channel|>final<|message|>\boxed{42}<|return|>",
                 1,
             ),
         ],
     )
-    def test_model_special_delimiter_precedence_over_generic_markers(self, response, expected):
+    def test_rightmost_structural_delimiter_precedence(self, response, expected):
         assert get_deepscaler_rule_based_reward(response, "42") == expected
 
 
