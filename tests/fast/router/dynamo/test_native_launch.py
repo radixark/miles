@@ -1,16 +1,24 @@
+import json
+import os
 import shlex
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
 from tests.fast.backends.sglang_utils.conftest import make_engine_args
+from tests.fast.fixtures.rollout_args_fixtures import make_args
 
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import ServerGroupConfig
 from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
+from miles.ray.specs.inference import InferenceEngineSpec
 from miles.router.dynamo.config import DynamoConfig
 from miles.router.dynamo.sidecar import sidecar_command, sidecar_env, sidecar_overrides, sidecar_ports
-from miles.utils.workers.worker_spec import HostAndPort
+from miles.utils.args.configs.scaling import ScalingConfig
+from miles.utils.workers.launch_gate import GATE_PORT_NAME
+from miles.utils.workers.worker_spec import HostAndPort, LaunchCommandContext, WorkerLaunchContext
 
 
 @pytest.fixture
@@ -20,6 +28,62 @@ def config():
         discovery={"backend": "etcd", "endpoints": [{"host": "localhost", "port": 2379}]},
         pins={"dynamo": "a" * 40, "sglang": "b" * 40},
     )
+
+
+def test_miles_allocates_and_launches_sidecar_with_engine(config, monkeypatch):
+    captured = {}
+
+    def launch(**kwargs):
+        captured.update(kwargs)
+        return "python -m sglang.launch_server"
+
+    monkeypatch.setattr("miles.ray.specs.inference.compute_engine_launch_cmd", launch)
+    args = make_args(dynamo_config=config, sglang_api_key="test-key", rollout_num_gpus_per_engine=2)
+    scaling = ScalingConfig.model_validate({name: getattr(args, name) for name in ScalingConfig.model_fields})
+    spec = InferenceEngineSpec.create(args)[0]
+    ctx = LaunchCommandContext(
+        args=args,
+        scaling=scaling,
+        cell_index=0,
+        worker_in_cell_index=0,
+        num_workers_per_cell=1,
+        gpu_ids=[4, 5],
+        local_gpu_ids=[4, 5],
+        pool_addrs={},
+        self_addrs={
+            port.name: HostAndPort(host="127.0.0.1", port=20000 + index) for index, port in enumerate(spec.port_infos)
+        },
+    )
+    command = shlex.split(spec.launch_command(ctx))
+    assert command[0] == "env"
+    assert "sglang.launch_server" in command
+    overrides = captured["sglang_overrides"]
+    assert overrides["sidecar"] == "dynamo.sglang.sidecar"
+    assert overrides["grpc_port"] == ctx.self_addrs["dynamo_grpc"].port
+    assert overrides["incremental_streaming_output"] is True
+    assert "--controller-managed" in overrides["sidecar_args"]
+    assert captured["gated_launch_port"] == ctx.self_addrs[GATE_PORT_NAME].port
+    assert spec.env_var(ctx)["DYN_SGLANG_API_KEY"] == "test-key"
+    assert spec.category == "inference_engine"
+    assert spec.scheduling(scaling).pg_name == "rollout"
+
+
+@pytest.mark.parametrize("api_key", [None, "group-key"])
+def test_engine_env_uses_effective_credentials_before_ports_are_allocated(config, monkeypatch, api_key):
+    monkeypatch.setenv("DYN_SGLANG_API_KEY", "inherited-key")
+    args = make_args(dynamo_config=config, sglang_api_key="base-key")
+    model = args.sglang.models[0]
+    group = model.server_groups[0]
+    group = group.model_copy(update={"overrides": {**group.overrides, "api_key": api_key}})
+    args.sglang = args.sglang.model_copy(update={"models": [model.model_copy(update={"server_groups": [group]})]})
+    spec = InferenceEngineSpec.create(args)[0]
+    ctx = WorkerLaunchContext(args=args, cell_index=0, worker_in_cell_index=0, num_workers_per_cell=1, gpu_ids=[0])
+
+    env = spec.env_var(ctx)
+
+    assert env.get("DYN_SGLANG_API_KEY") == api_key
+    assert "DYN_SYSTEM_HOST" not in env
+    assert "DYN_SYSTEM_PORT" not in env
 
 
 def test_sidecar_does_not_accept_conflicting_admission_env(config):
@@ -46,8 +110,63 @@ def test_allocated_listener_replaces_inherited_address_without_changing_engine_a
 
     ctx = SimpleNamespace(self_addrs={"dynamo_system": HostAndPort(host="[::1]", port=18003)})
     engine_argv = ["python", "-m", "sglang.launch_server", "--model-path", "/models/a b;$HOME"]
-    command = sidecar_command(shlex.join(engine_argv), ctx=ctx)
-    assert shlex.split(command) == ["env", "DYN_SYSTEM_PORT=18003", "DYN_SYSTEM_HOST=::1", *engine_argv]
+    command = sidecar_command(shlex.join(engine_argv), ctx=ctx, config=config, api_key=None)
+    argv = shlex.split(command)
+    assert argv[0] == "env"
+    assert "DYN_SYSTEM_PORT=18003" in argv
+    assert "DYN_SYSTEM_HOST=::1" in argv
+    assert argv[-len(engine_argv) :] == engine_argv
+    assert argv[argv.index("DYN_SGLANG_API_KEY") - 1] == "-u"
+
+
+@pytest.mark.parametrize("api_key", [None, "engine-key"])
+def test_sidecar_env_is_a_delta_and_cleanup_runs_on_engine_node(config, monkeypatch, api_key):
+    driver_keys = (
+        "PATH",
+        "LD_LIBRARY_PATH",
+        "HOSTNAME",
+        "NCCL_SOCKET_IFNAME",
+        "GLOO_SOCKET_IFNAME",
+        "CUDA_VISIBLE_DEVICES",
+    )
+    for key in (*driver_keys, "MILES_DRIVER_ONLY"):
+        monkeypatch.setenv(key, "driver-value")
+    config = config.model_copy(update={"env": {"MILES_EXPLICIT_SETTING": "enabled"}})
+    args = make_args(dynamo_config=config, sglang_api_key=api_key)
+    spec = InferenceEngineSpec.create(args)[0]
+    ctx = WorkerLaunchContext(args=args, cell_index=0, worker_in_cell_index=0, num_workers_per_cell=1, gpu_ids=[0])
+    delta = spec.env_var(ctx)
+    assert not set((*driver_keys, "MILES_DRIVER_ONLY")) & delta.keys()
+    assert delta["MILES_EXPLICIT_SETTING"] == "enabled"
+
+    worker_env = {key: "engine-value" for key in driver_keys}
+    worker_env.update(
+        PATH=f"/engine/bin:{os.defpath}",
+        MILES_ENGINE_ONLY="worker-owned",
+        DYN_SGLANG_API_KEY="stale-worker-key",
+        DYN_SYSTEM_HOST="old-host",
+        DYN_SYSTEM_PORT="9999",
+        DYN_NAMESPACE_PREFIX="old-prefix",
+        NATS_SERVER="nats://old-server:4222",
+        DYN_FILE_KV="/old-discovery",
+    )
+    names = [*worker_env, "MILES_DRIVER_ONLY", "MILES_EXPLICIT_SETTING"]
+    code = f"import json, os; print(json.dumps({{key: os.environ.get(key) for key in {names!r}}}))"
+    launch_ctx = SimpleNamespace(self_addrs={"dynamo_system": HostAndPort(host="[::1]", port=18003)})
+    command = sidecar_command(shlex.join([sys.executable, "-c", code]), ctx=launch_ctx, config=config, api_key=api_key)
+    result = subprocess.run(shlex.split(command), env=worker_env | delta, capture_output=True, text=True, check=True)
+    actual = json.loads(result.stdout)
+
+    for key in driver_keys:
+        assert actual[key] == worker_env[key]
+    assert actual["MILES_ENGINE_ONLY"] == "worker-owned"
+    assert actual["MILES_DRIVER_ONLY"] is None
+    assert actual["MILES_EXPLICIT_SETTING"] == "enabled"
+    assert actual["DYN_SGLANG_API_KEY"] == api_key
+    assert actual["DYN_SYSTEM_HOST"] == "::1"
+    assert actual["DYN_SYSTEM_PORT"] == "18003"
+    for key in ("DYN_NAMESPACE_PREFIX", "NATS_SERVER", "DYN_FILE_KV"):
+        assert actual[key] is None
 
 
 @pytest.mark.parametrize("api_key", [None, "test-key"])
@@ -147,3 +266,18 @@ def test_kv_event_ports_reserve_every_dp_rank(dp_size):
     assert first + dp_size <= second
     assert ports["dynamo_grpc"].num_consecutive == 1
     assert ports["dynamo_system"].num_consecutive == 1
+
+
+@pytest.mark.parametrize("scope", ["base", "group"])
+@pytest.mark.parametrize("dp_size", [1, 2])
+def test_engine_spec_reserves_effective_dp_ports(config, scope, dp_size):
+    args = make_args(dynamo_config=config, sglang_dp_size=dp_size if scope == "base" else 1)
+    if scope == "group":
+        model = args.sglang.models[0]
+        group = model.server_groups[0]
+        group = group.model_copy(update={"overrides": {**group.overrides, "dp_size": dp_size}})
+        args.sglang = args.sglang.model_copy(update={"models": [model.model_copy(update={"server_groups": [group]})]})
+    spec = InferenceEngineSpec.create(args)[0]
+    ports = {port.name: port for port in spec.port_infos}
+    assert ports["dynamo_kv"].num_consecutive == dp_size
+    assert ports["dist_init"].num_consecutive == 30 + dp_size

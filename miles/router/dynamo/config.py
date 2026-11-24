@@ -85,7 +85,9 @@ class SidecarConfig(LaunchOptions):
 
 
 class DynamoConfig(FrozenStrictBaseModel):
-    request_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 600.0
+    # Long CoT and async weight-update pauses have no total generation deadline by default.
+    # An explicit value opts into a deadline for the entire HTTP attempt, including queueing.
+    request_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] | None = None
     control_timeout_seconds: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 120.0
     namespace: Name
     discovery: Annotated[EtcdDiscovery | FileDiscovery, Field(discriminator="backend")]
