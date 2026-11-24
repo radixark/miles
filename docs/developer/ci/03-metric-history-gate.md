@@ -66,7 +66,7 @@ register_ci_gate(metric_key="rollout/raw_reward")  # rejects reward drops after 
 Three roles, connected only by JSONL files and one DB — there is no long-lived "metrics manager"; the pipeline is per-test, driven by the harness:
 
 - **Collector (training process)** — `miles.utils.tracking_utils.TrackingManager` fans every `log()` out to all enabled backends; `WandbBackend` and `CiHistoryBackend` are parallel siblings in that registry, so wandb receives the same data independently and nothing downstream ever reads it back. `CiHistoryBackend` snapshots the fixed metric whitelist into per-process JSONL files under the harness-assigned record dir (`MILES_CI_GATE_RECORD_DIR`, injected by the CI harness; no CLI flag).
-- **Harness / finalizer (CI runner)** — `run_suite.py` builds the store from env (`NEON_DATABASE_URL`, a CI secret), resolves the baseline-write signal + provenance, and allocates the record dir (CUDA suites only); `ci_utils.run_unittest_files` hands each attempt its own record subdir and merges the PASSING attempt's per-process records into the merged per-run JSONL record (a metric key appearing in several processes gets its series concatenated and sorted by step); `ci_utils.run_gate_hook` then assigns identity — taking the suite from the executing stage `run_suite.py` was invoked with, and the rest from the registration — runs the gate, and acts on the verdict.
+- **Harness / finalizer (CI runner)** — `run_suite.py` builds the store from env (`NEON_DATABASE_URL` for CUDA or `AMD_NEON_DATABASE_URL` for ROCm, optional CI secrets), resolves the baseline-write signal + provenance, and allocates the record dir (CUDA and ROCm suites); `ci_utils.run_unittest_files` hands each attempt its own record subdir and merges the PASSING attempt's per-process records into the merged per-run JSONL record (a metric key appearing in several processes gets its series concatenated and sorted by step); `ci_utils.run_gate_hook` then assigns identity — taking the suite from the executing stage `run_suite.py` was invoked with, and the rest from the registration — runs the gate, and acts on the verdict.
 - **Gate library (pure functions, read-only against storage)** — `register.py` parses `register_ci_gate` declarations out of the test file's AST at evaluation time (the call itself is a runtime no-op; nothing registers at runtime), `selection.py` picks comparison coordinates, `constraints.py` judges pass/fail, `gate.py:evaluate_gate` composes them over the store's baseline read.
 
 One CUDA test run, end to end:
@@ -191,9 +191,10 @@ Chart key: rectangle = a step or check; rounded box = a data artifact; diamond =
 
 **Tables & read path**:
 
-- `runs` — one row per CI run of one series: the identity above + provenance (`commit_sha`, `pr_number`, `github_run_id`, `github_run_attempt`, `event_name`, `ref`) + `created_at` + `trusted` (run-level).
+- `runs` — one row per CI run of one series: the `repository` the store is bound to (`GITHUB_REPOSITORY` in CI) + the identity above + provenance (`commit_sha`, `pr_number`, `github_run_id`, `github_run_attempt`, `event_name`, `ref`) + `created_at` + `trusted` (run-level).
 - `metric_values` — one row per value: `run_id` FK + `(metric_key, step)` + `value`, plus the judging declaration's `steps_key` / `constraint_key`.
-- The baseline read is served by the composite index `runs(test_path, backend, suite, trusted, created_at DESC)`.
+- Every read, write, and revocation is scoped to the store's `repository`, so repositories that share a database keep separate baselines.
+- The baseline read is served by the composite index `runs(repository, test_path, backend, suite, trusted, created_at DESC)`.
 
 **Operations** — hosted Postgres setup is out-of-band: the two tables and application role are provisioned outside this repo, and runtime gate code stays DML-only (`NeonMetricHistoryStore` never issues DDL). Old-row cleanup policy is a later operational concern, not part of the M0/M1 substrate.
 
@@ -225,7 +226,9 @@ Every `register_ci_gate(...)` declaration defaults to `enforce=True`; tests and 
 - Below 10 trusted values, the comparison still controls baseline trust but does not fail CI for numerical drift; the summary explicitly reports insufficient history. Each step and executing suite is counted independently.
 - Missing, empty, invalid or non-finite metrics fail tests with enforcement enabled. With a configured store, record-merge, gate-evaluation and database errors also fail instead of silently bypassing the gate.
 - The harness reports the verdict and metric details before writing a baseline. Nightly/weekly retain the original trusted/untrusted verdict, including numerical regressions that fail enforcement. Ordinary PR and release runs only read history. Gate failures affect suite exit status, honor fail-fast/continue policy, and do not retry successful child processes. Invalid declarations fail CI.
-- Without `NEON_DATABASE_URL`, local and secretless runs explicitly skip the history gate; they do not provide enforcement evidence. CPU and ROCm behavior is unchanged.
+- A missing or empty backend-specific URL explicitly skips the history gate: CUDA reads `NEON_DATABASE_URL`, and ROCm reads only `AMD_NEON_DATABASE_URL`. CPU behavior is unchanged.
+- ROCm runs record metrics and write `backend=rocm` baselines under the same cadence rules as CUDA. While ROCm has [no scheduled run](00-stage.md#rocm-prnightlyweekly-mirror), only PRs with the `nightly` label write them. Every ROCm declaration stays shadow: under `run_gate_hook(enforce=False)` a store error or a regression does not fail a ROCm test; only an invalid declaration, which fails CUDA too, does. Enforcing ROCm is a later switch, once its series have ten trusted values and the Spur jobs reach the store reliably.
+- The AMD credential is provisioned separately, so it can be revoked and rotated independently of the CUDA credential. History is selected by exact `(test_path, backend, executing suite, metric_key, step)` coordinates; physical GPU model and node are not additional keys. Database role permissions are provisioned separately from this query scoping.
 
 CUDA [`/rerun-test`](01-label.md#manage-ci-from-pr-comments) runs use the same harness and gate, with baseline writes disabled. The default-branch command workflow must include that wiring; a PR-only workflow edit does not change the dispatched command.
 

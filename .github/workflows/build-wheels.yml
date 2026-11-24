@@ -79,6 +79,8 @@ env:
 
 jobs:
   check:
+    # Publishes into the public miles-wheels releases; a fork or mirror must never sync them.
+    if: github.repository == 'radixark/miles'
     runs-on: ubuntu-latest
     outputs:
       router_matrix: ${{ steps.check.outputs.router_matrix }}

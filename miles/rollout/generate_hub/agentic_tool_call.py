@@ -39,8 +39,8 @@ from typing import Any
 import httpx
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 
-from miles.dashboard.hooks import push_sandbox_reports
 from miles.rollout.agentic.agent_function import AGENT_FUNCTION_MODES, call_agent_function
+from miles.rollout.agentic.sandbox_reporter import push_sandbox_reports
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY

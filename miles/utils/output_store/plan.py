@@ -3,8 +3,9 @@
 With the output store, SGLang writes a training response's replay arrays (routed experts, indexer
 top-k, sampling mask) as one object and returns its ref; the rollout never reads an object. Every
 event on a sample edits its ``StorePlan`` only: which rows of which objects each field takes, and
-where forced rows go. The trainer reads the objects once and has the plan materialize the training
-columns of the inline path.
+where forced rows go. The trainer reads the sampling mask's objects once and has the plan materialize
+its training columns; a forward field's column is its segments, whose rows each trainer rank reads
+per micro batch (``ForwardSegments.range_reads``).
 
 Three things, and nothing else:
 
@@ -18,13 +19,17 @@ Three things, and nothing else:
 What a row of an object means is SGLang's definition: a forward field (routed experts, indexer
 top-k) stores a row per forward position; routed experts may start at ``routed_experts_start_len``
 (an incremental forward); the sampling mask stores a row per output token. A sample's fields count
-rows like the inline path: forward fields ``len(tokens) - 1``, the mask ``response_length``.
+rows like the inline path: forward fields ``len(tokens) - 1``, the mask ``response_length``. A forward
+field is stored as parts along its stream axis, each holding every row (``ForwardSegments.parts``).
 """
 
 from __future__ import annotations
 
+import bisect
+import itertools
 import json
-from collections.abc import Iterable, Mapping
+import re
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 
@@ -32,6 +37,8 @@ import numpy as np
 import torch
 
 from miles.utils.retry_utils import NonRetryableError
+from miles.utils.rollout_topk_logprobs import rollout_topk_from_support
+from miles.utils.sampling_mask import validate_sampling_support
 
 if TYPE_CHECKING:
     from radix_transfer_plugins import StoreRef
@@ -46,6 +53,8 @@ MASK_SUPPORT_LOGPROBS = "output_token_sampling_logprobs"
 # The request field that has SGLang store the response's replay arrays, and the meta_info key of the ref.
 OUTPUT_STORE_REQUEST_KEY = "return_outputs_via_store"
 OUTPUT_STORE_REF_KEY = "output_store_ref"
+# The request field with the layers at which SGLang splits a forward field into stored parts (``ForwardSegments``).
+REPLAY_LAYER_SPLITS_KEY = "replay_layer_splits"
 
 
 class StorePlanError(NonRetryableError, ValueError):
@@ -64,6 +73,15 @@ class Seg(NamedTuple):
     end: int
 
 
+class RowRead(NamedTuple):
+    """Bytes ``[src_offset, src_offset + nbytes)`` of a field of the object ``ref`` land at ``dst_offset``."""
+
+    ref: StoreRef
+    src_offset: int
+    nbytes: int
+    dst_offset: int
+
+
 # ============================== one field's segments ==============================
 
 
@@ -74,7 +92,8 @@ class Segments:
     segs: tuple[Seg, ...] = ()
 
     name: ClassVar[str]
-    # Stored array names; the first one's leading dimension counts the object's rows.
+    # Stored array names (a forward field's: the name of its parts); the first one's leading dimension counts the
+    # object's rows.
     stored: ClassVar[tuple[str, ...]]
     # The request field that makes SGLang return this field.
     request_key: ClassVar[str]
@@ -115,15 +134,25 @@ class Segments:
         cls, ref: StoreRef | None, specs: Mapping[str, Any], rows: int, *, no_output_abort: bool
     ) -> tuple[Seg, ...]:
         """All rows of the response's object, which must hold exactly ``rows``."""
-        spec = specs.get(cls.stored[0])
-        if spec is None:
+        counted = cls._row_specs(specs)
+        if not counted:
             # Aborted in SGLang's waiting queue: no ref; aborted after prefill: no mask.
             if no_output_abort and (ref is None or rows == 0):
                 return ()
-            raise StorePlanError(f"the request asked for {cls.name}, but the response's output store ref has none")
-        if spec.shape[0] != rows:
-            raise StorePlanError(f"stored {cls.stored[0]} has {spec.shape[0]} rows; expected {rows}")
+            raise StorePlanError(
+                f"the request asked for {cls.name}, but the response's output store ref has none: "
+                f"it holds {sorted(specs)}"
+            )
+        for spec in counted:
+            if spec.shape[0] != rows:
+                raise StorePlanError(f"stored {spec.name} has {spec.shape[0]} rows; expected {rows}")
         return (Seg(ref, 0, rows),) if rows else ()
+
+    @classmethod
+    def _row_specs(cls, specs: Mapping[str, Any]) -> list[Any]:
+        """The specs of the stored arrays whose leading dimension counts the object's rows."""
+        spec = specs.get(cls.stored[0])
+        return [] if spec is None else [spec]
 
     def append(self, new: Segments) -> Segments:
         """A later response of the same sample."""
@@ -160,7 +189,12 @@ class Segments:
 
 
 class ForwardSegments(Segments):
-    """A forward output: a row per sequence position but the last.
+    """A forward output: a row per sequence position but the last, a stream per layer (or indexer layer).
+
+    SGLang stores it in parts along the stream axis, split at the request's ``replay_layer_splits``:
+    part ``{name}.{start}-{end}`` holds streams ``[start, end)`` of every row, ``[rows, end - start, ...]``.
+    Its training column is the segments themselves: each trainer rank reads only its own rows of its own
+    parts, per micro batch, with ``range_reads``.
 
     The request's start position (``start_key``) alone decides how a response's rows combine
     with the earlier ones; ``from_ref`` reads it once:
@@ -188,7 +222,11 @@ class ForwardSegments(Segments):
         start = (request.get(cls.start_key) or 0) if cls.start_key else 0
         rows = cls.expected_rows(num_tokens=num_tokens, response_length=response_length)
         covered = (Seg(None, 0, start),) if start else ()
-        return cls(covered + cls._whole_object(ref, specs, rows - start, no_output_abort=no_output_abort))
+        stored = cls._whole_object(ref, specs, rows - start, no_output_abort=no_output_abort)
+        if stored:
+            # Miles forces the splits on the request; whatever is between it and SGLang may drop them.
+            cls.check_split(sorted(_part_ranges(cls.stored[0], ref)), request.get(REPLAY_LAYER_SPLITS_KEY) or [])
+        return cls(covered + stored)
 
     def append(self, new: Segments) -> Segments:
         first = new.segs[0] if new.segs else None
@@ -204,6 +242,11 @@ class ForwardSegments(Segments):
         # The next forward covers the inserted tokens.
         return self
 
+    @classmethod
+    def _row_specs(cls, specs: Mapping[str, Any]) -> list[Any]:
+        # Every part holds every row.
+        return [spec for name, spec in specs.items() if _part_block(cls.stored[0], name) is not None]
+
     @staticmethod
     def expected_rows(*, num_tokens: int, response_length: int) -> int:
         return num_tokens - 1
@@ -216,17 +259,112 @@ class ForwardSegments(Segments):
         support_topk: int,
         indexer_streams: int | None,
     ) -> dict[str, Any]:
-        (name,) = self.stored
-        for key in dict.fromkeys(seg.ref.key for seg in self.segs):
-            self.check(objects[key][name], indexer_streams=indexer_streams)
-        return {self.column: np.concatenate([objects[seg.ref.key][name][seg.start : seg.end] for seg in self.segs])}
+        self.check_streams(self.parts()[-1][1], indexer_streams=indexer_streams)
+        return {self.column: self}
 
-    def check(self, rows: np.ndarray, *, indexer_streams: int | None) -> None:
-        """The field's check of every row one response stored."""
+    def needed(self, *, support_topk: int) -> tuple[str, ...]:
+        # Read per micro batch by range_reads, never whole.
+        return ()
+
+    def parts(self) -> list[tuple[int, int]]:
+        """The ``(start, end)`` stream ranges of the field's parts, ascending, the same in every object it uses.
+
+        They tile the stream axis: the last ``end`` is the field's stream count.
+        """
+        layouts = {tuple(sorted(_part_ranges(self.stored[0], seg.ref))) for seg in self.segs if seg.ref is not None}
+        if len(layouts) != 1:
+            raise StorePlanError(
+                f"{self.name} is stored in {len(layouts)} part layouts: {sorted(layouts)}; expected one"
+            )
+        parts = list(layouts.pop())
+        if not parts or [start for start, _ in parts] != [0] + [end for _, end in parts[:-1]]:
+            raise StorePlanError(f"{self.name} parts {parts} do not cover its streams from 0 without a gap")
+        return parts
+
+    def part_name(self, block: tuple[int, int]) -> str:
+        """The stored array holding streams ``[start, end)`` of ``block``."""
+        start, end = block
+        return f"{self.stored[0]}.{start}-{end}"
+
+    def row_format(self, block: tuple[int, int]) -> tuple[np.dtype, tuple[int, ...]]:
+        """The dtype and shape of one stored row of ``block``'s part, the same in every object the segments use."""
+        name = self.part_name(block)
+        formats = set()
+        for seg in self.segs:
+            if seg.ref is None:
+                continue
+            spec = next((spec for spec in seg.ref.fields if spec.name == name), None)
+            if spec is None:
+                raise StorePlanError(
+                    f"{self.name} streams {block[0]}-{block[1]} are not a stored part: object {seg.ref.key} has parts "
+                    f"{sorted(_part_ranges(self.stored[0], seg.ref))}"
+                )
+            formats.add((spec.dtype, tuple(spec.shape[1:])))
+        if len(formats) != 1:
+            raise StorePlanError(
+                f"{name} has rows of {len(formats)} formats in its objects: {sorted(formats)}; expected one"
+            )
+        ((dtype, row_shape),) = formats
+        if row_shape[0] != block[1] - block[0]:
+            raise StorePlanError(f"stored {name} has {row_shape[0]} streams; its name says {block[1] - block[0]}")
+        return np.dtype(dtype), row_shape
+
+    def range_reads(
+        self, ranges: Sequence[tuple[int, int]], *, dst_offset: int, block: tuple[int, int]
+    ) -> tuple[list[RowRead], list[tuple[int, int]]]:
+        """Reads of ``block``'s part at a rank's local positions, and the local rows to pad.
+
+        ``ranges`` are the rank's positions of this sample in local order (``CPLayout.local_ranges``).
+        Local row k lands at ``dst_offset + k * row_bytes``, a row of the part. Position p has row p for
+        p < ``num_rows()``; the local rows of later positions come back as ``[start, end)`` spans the caller pads.
+        """
+        dtype, row_shape = self.row_format(block)
+        row_bytes = dtype.itemsize * int(np.prod(row_shape, dtype=np.int64))
+        # Field row where each segment starts.
+        starts = list(itertools.accumulate((seg.end - seg.start for seg in self.segs), initial=0))
+        num_rows = starts[-1]
+        reads: list[list] = []
+        pads = []
+        local = 0
+        for a, b in ranges:
+            row = a
+            while row < min(b, num_rows):
+                i = bisect.bisect_right(starts, row) - 1
+                seg = self.segs[i]
+                if seg.ref is None:
+                    raise StorePlanError(f"{self.name} rows {starts[i]}-{starts[i + 1]} have no object to read")
+                count = min(b, num_rows, starts[i + 1]) - row
+                src = (seg.start + row - starts[i]) * row_bytes
+                dst = dst_offset + (local + row - a) * row_bytes
+                last = reads[-1] if reads else None
+                if (
+                    last is not None
+                    and last[0].key == seg.ref.key
+                    and last[1] + last[2] == src
+                    and last[3] + last[2] == dst
+                ):
+                    last[2] += count * row_bytes  # e.g. the two zigzag chunks of the last CP rank
+                else:
+                    reads.append([seg.ref, src, count * row_bytes, dst])
+                row += count
+            if max(a, num_rows) < b:
+                pads.append((local + max(a, num_rows) - a, local + b - a))
+            local += b - a
+        return [RowRead(*read) for read in reads], pads
+
+    @classmethod
+    def check_split(cls, parts: list[tuple[int, int]], splits: Sequence[int]) -> None:
+        """The field's check that a response's object is split as the request's ``replay_layer_splits`` asked."""
+
+    def check_streams(self, num_streams: int, *, indexer_streams: int | None) -> None:
+        """The field's check of its stored stream count."""
+
+    def check_rows(self, rows: Sequence[np.ndarray]) -> None:
+        """The field's check of rows read from one object: the same rows of each part read."""
 
 
 class RoutedExpertsSegments(ForwardSegments):
-    """Routed experts, ``[rows, layers, topk]``."""
+    """Routed experts, ``[rows, layers, topk]``: a stream per layer."""
 
     name = "routed_experts"
     stored = ("routed_experts",)
@@ -235,9 +373,20 @@ class RoutedExpertsSegments(ForwardSegments):
     column = "rollout_routed_experts"
     start_key = "routed_experts_start_len"
 
-    def check(self, rows: np.ndarray, *, indexer_streams: int | None) -> None:
-        # As on the inline path, per response: all zeros means the engine did not capture routed experts.
-        if rows.size and not rows.any():
+    @classmethod
+    def check_split(cls, parts: list[tuple[int, int]], splits: Sequence[int]) -> None:
+        # A stream per layer: the parts must meet exactly at the requested layers. Reads handle any split, so a
+        # router that drops the field would only make every pipeline rank read whole rows: fail instead of run slow.
+        if (split_at := [end for _, end in parts[:-1]]) != list(splits):
+            raise StorePlanError(
+                f"stored routed_experts is split at layers {split_at}, but the request's {REPLAY_LAYER_SPLITS_KEY} "
+                f"are {list(splits)}: SGLang, and any router in between, must keep them"
+            )
+
+    def check_rows(self, rows: Sequence[np.ndarray]) -> None:
+        # As on the inline path: all zeros means the engine did not capture routed experts. One part may be all
+        # zeros, holding only dense layers.
+        if any(part.size for part in rows) and not any(part.any() for part in rows):
             raise StorePlanError(
                 "routed_experts payload is all zeros: the sglang engine did not capture routed experts "
                 "(topk-bypassing --moe-runner-backend such as flashinfer_trtllm?)."
@@ -253,11 +402,12 @@ class IndexerTopkSegments(ForwardSegments):
     required_by = "use_rollout_indexer_replay"
     column = "rollout_indexer_topk"
     # No start_key: SGLang stores every indexer row of each forward, so a response replaces them all.
+    # No check_split: SGLang maps the requested layers onto indexer layers, which Miles does not count.
 
-    def check(self, rows: np.ndarray, *, indexer_streams: int | None) -> None:
-        if indexer_streams is not None and rows.shape[1] != indexer_streams:
+    def check_streams(self, num_streams: int, *, indexer_streams: int | None) -> None:
+        if indexer_streams is not None and num_streams != indexer_streams:
             raise StorePlanError(
-                f"stored indexer_topk has {rows.shape[1]} streams but the model has {indexer_streams} indexer layers; "
+                f"stored indexer_topk has {num_streams} streams but the model has {indexer_streams} indexer layers; "
                 "replaying it would map streams to the wrong layers."
             )
 
@@ -324,57 +474,35 @@ class SamplingMaskSegments(Segments):
         offsets = np.concatenate(([0], np.cumsum(row_lengths)))
         ids = np.concatenate(ids).astype(np.int32, copy=False)
         forced = np.concatenate(forced)
-        _check_support(ids=ids, offsets=offsets, sampled_tokens=response_tokens, exactly_once=support_mode)
         columns = {
             "rollout_sampling_mask_ids": torch.from_numpy(ids),
             "rollout_sampling_mask_offsets": torch.from_numpy(offsets),
         }
-        if support_mode:
-            topk_ids, topk_logprobs = _support_topk(
-                ids=ids, offsets=offsets, logprobs=np.concatenate(logprobs), forced=forced, k=support_topk
+        try:
+            validate_sampling_support(
+                ids=ids, offsets=offsets, sampled_tokens=response_tokens, exactly_once=support_mode
             )
-            columns["rollout_topk_token_ids"] = topk_ids
-            columns["rollout_topk_log_probs"] = topk_logprobs
+            if support_mode:
+                columns["rollout_topk_token_ids"], columns["rollout_topk_log_probs"] = rollout_topk_from_support(
+                    ids=ids, offsets=offsets, logprobs=np.concatenate(logprobs), forced=forced, k=support_topk
+                )
+        except ValueError as exc:
+            raise StorePlanError(str(exc)) from exc
         return columns
 
 
 FIELDS: tuple[type[Segments], ...] = (RoutedExpertsSegments, IndexerTopkSegments, SamplingMaskSegments)
 
 
-def _check_support(ids: np.ndarray, offsets: np.ndarray, sampled_tokens: np.ndarray, *, exactly_once: bool) -> None:
-    """Every support is non-empty and holds its sampled token (exactly once in support mode)."""
-    row_lengths = np.diff(offsets)
-    if (empty := row_lengths == 0).any():
-        raise StorePlanError(f"sampling support must contain at least one token (row {int(np.argmax(empty))})")
-    entry_row = np.repeat(np.arange(len(row_lengths)), row_lengths)
-    hits = np.bincount(entry_row[ids == sampled_tokens[entry_row]], minlength=len(row_lengths))
-    bad = hits != 1 if exactly_once else hits == 0
-    if bad.any():
-        row = int(np.argmax(bad))
-        what = "must occur exactly once in" if exactly_once else "is absent from"
-        raise StorePlanError(f"sampled token {int(sampled_tokens[row])} {what} its sampling support (row {row})")
+def _part_block(name: str, stored_name: str) -> tuple[int, int] | None:
+    """The stream range of ``stored_name`` if it names a part of forward field ``name``, else None."""
+    match = re.fullmatch(rf"{re.escape(name)}\.(\d+)-(\d+)", stored_name)
+    return None if match is None else (int(match[1]), int(match[2]))
 
 
-def _support_topk(
-    ids: np.ndarray, offsets: np.ndarray, logprobs: np.ndarray, forced: np.ndarray, k: int
-) -> tuple[np.ndarray, np.ndarray]:
-    """Support-mode top-k candidates ``[rows, k]``: each row's support and its log-probs.
-
-    Unused slots and forced rows hold -1 / -inf, as the inline path pads them.
-    """
-    row_lengths = np.diff(offsets)
-    if (too_long := (row_lengths > k) & ~forced).any():
-        raise StorePlanError(
-            f"Rollout top-k logprobs sampling support exceeds --rollout-top-logprobs-num (row {int(np.argmax(too_long))})"
-        )
-    out_ids = np.full((len(row_lengths), k), -1, dtype=np.int32)
-    out_logprobs = np.full((len(row_lengths), k), -np.inf, dtype=np.float32)
-    entry_row = np.repeat(np.arange(len(row_lengths)), row_lengths)
-    entry_col = np.arange(len(entry_row)) - offsets[entry_row]
-    keep = ~forced[entry_row]
-    out_ids[entry_row[keep], entry_col[keep]] = ids[keep]
-    out_logprobs[entry_row[keep], entry_col[keep]] = logprobs[keep]
-    return out_ids, out_logprobs
+def _part_ranges(name: str, ref: StoreRef) -> list[tuple[int, int]]:
+    """The stream ranges of forward field ``name``'s parts in ``ref``."""
+    return [block for spec in ref.fields if (block := _part_block(name, spec.name)) is not None]
 
 
 # ============================== one sample's plan ==============================
@@ -506,18 +634,27 @@ class StorePlan:
         )
 
 
+def is_segments_column(column: Sequence[Any]) -> bool:
+    """Whether a forward replay column holds each sample's ``ForwardSegments`` rather than its rows.
+
+    A shard's forward columns are all from the output store or all inline.
+    """
+    return bool(column) and isinstance(column[0], ForwardSegments)
+
+
 def store_reads(plans: Iterable[StorePlan], *, support_topk: int) -> dict[str, tuple[StoreRef, list[str]]]:
     """What ``materialize`` reads for these plans, by store key: the ref, and the arrays it needs from the object.
 
     Each object and array once; ``support_topk`` as in ``Segments.materialize``. An array the ref
     lacks is still asked for, so the read, not ``materialize``, fails on it. Objects a plan owns
-    without using, such as replaced forward rows, are not read.
+    without using, such as replaced forward rows, are not read, nor are forward fields, which
+    trainer ranks read per micro batch.
     """
     reads: dict[str, tuple[StoreRef, list[str]]] = {}
     for plan in plans:
         for segments in plan.fields.values():
             needed = segments.needed(support_topk=support_topk)
-            for seg in segments.segs:
+            for seg in segments.segs if needed else ():
                 if seg.ref is None:
                     continue
                 names = reads.setdefault(seg.ref.key, (seg.ref, []))[1]

@@ -132,8 +132,8 @@ def test_the_engine_registers_the_env_vars_the_launcher_sets():
     registered = {
         field.name for envs in (Envs, TpuEnvs) for field in vars(envs).values() if isinstance(field, EnvField)
     }
-    # scripts/tpu/torchtitan_launch.py serve_sglang
-    launcher_sets = {"SGLANG_TPU_USE_SEQ_ALONG_LANE_KV"}
+    # scripts/tpu/torchtitan_launch.py serve_sglang and run_qwen3_5_torchtitan.py's engine env
+    launcher_sets = {"SGLANG_TPU_USE_SEQ_ALONG_LANE_KV", "SGLANG_TPU_VIT_PRECOMPILE_SIZES"}
     assert launcher_sets <= registered, f"sglang-torchtpu no longer reads {sorted(launcher_sets - registered)}"
     assert shared_slice.ENV_VAR == "SGLANG_TPU_SHARED_SLICE"
 

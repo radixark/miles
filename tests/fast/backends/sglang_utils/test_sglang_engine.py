@@ -44,6 +44,8 @@ def _cmd(
         base_gpu_id=base_gpu_id,
         sglang_overrides={},
         num_gpus_per_engine=1,
+        tp_size=1,
+        pp_size=1,
         dist_init_addr=addr_and_ports["dist_init_addr"],
         nccl_port=addr_and_ports["nccl_port"],
         host=addr_and_ports["host"],

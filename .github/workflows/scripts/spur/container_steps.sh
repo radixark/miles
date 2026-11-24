@@ -7,7 +7,7 @@
 #   CI_COMMAND                  the suite command (run_suite.py ...)
 #   CI_SKIP_DEPENDENCY_INSTALL  "true" keeps the SGLang / Megatron-LM baked
 #                               into the image
-#   SGLANG_PR, MEGATRON_PR      refs to fetch over the baked copies (empty: keep)
+#   SGLANG_PR, MEGATRON_PR      resolved refs to fetch when dependency sync is enabled
 #   BRIDGE_REF                  Megatron Bridge ref to install (empty: keep)
 
 set -euo pipefail
@@ -38,32 +38,47 @@ fi
 echo "::endgroup::"
 
 echo "::group::Install dependencies"
+dependency_install_started=$SECONDS
 if [[ "${CI_SKIP_DEPENDENCY_INSTALL:-true}" != "true" ]]; then
-  if command -v rustup >/dev/null 2>&1; then
-    rustup default stable
-  fi
+  : "${SGLANG_PR:?resolved SGLang ref is required}" "${MEGATRON_PR:?resolved Megatron-LM ref is required}"
   if ! command -v protoc >/dev/null 2>&1; then
     apt-get update
     apt-get install -y protobuf-compiler
   fi
-  rustc --version
   protoc --version
-  if [ -n "${SGLANG_PR:-}" ]; then
-    cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages && \
-      pip install -e radix_transfer_plugins --no-deps --break-system-packages
+
+  cd /sgl-workspace/sglang
+  git reset --hard HEAD
+  git clean -fd
+  git fetch -- origin "$SGLANG_PR"
+  git checkout -f FETCH_HEAD
+  git log --oneline -1
+  # The image preinstalls its SGLang pin. A newer selected checkout may
+  # pin a different toolchain. Prepare it before pip or any server
+  # workers can invoke cargo concurrently.
+  if [ -f rust/rust-toolchain.toml ]; then
+    (
+      cd rust
+      if ! RUSTUP_AUTO_INSTALL=0 cargo --version --verbose; then
+        rustup toolchain install --no-self-update
+        RUSTUP_AUTO_INSTALL=0 cargo --version --verbose
+      fi
+    )
   fi
-  if [ -n "${MEGATRON_PR:-}" ]; then
-    cd /root/Megatron-LM
-    git reset --hard HEAD
-    git clean -fd
-    git fetch origin "$MEGATRON_PR"
-    git checkout -f FETCH_HEAD
-    git log --oneline -1
-    pip install -e . --no-deps --break-system-packages
-  fi
+  pip install -e python --no-deps --break-system-packages
+  pip install -e radix_transfer_plugins --no-deps --break-system-packages
+
+  cd /root/Megatron-LM
+  git reset --hard HEAD
+  git clean -fd
+  git fetch -- origin "$MEGATRON_PR"
+  git checkout -f FETCH_HEAD
+  git log --oneline -1
+  pip install -e . --no-deps --break-system-packages
 fi
-cd "$GITHUB_WORKSPACE" && pip install -e . --no-deps --break-system-packages
+cd "$GITHUB_WORKSPACE" && pip install -e . -e packages/miles-dashboard --no-deps --break-system-packages
 pip install polars zstandard xxhash blake3 "numba==0.65.1" --break-system-packages
+echo "Install dependencies elapsed=$((SECONDS - dependency_install_started))s"
 echo "::endgroup::"
 
 if [ -n "${BRIDGE_REF:-}" ]; then

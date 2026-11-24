@@ -25,7 +25,7 @@ The publish job requests only `Contents: write` on `radixark/miles-wheels`. `CI_
 
 ## Schedule and manual runs
 
-It runs hourly and by `workflow_dispatch` (`wheels`, `force`, `te_ref`, `keep_superseded`). `docker/Dockerfile` installs the `+miles` TE triplet, so scheduled runs rebuild TE like the other sets, and an upload replaces superseded wheels unless `keep_superseded` is true. There is no self-hosted ARM64 runner, so aarch64 `int4_qat` and `te` are rebuilt by hand with the miles-wheels README commands.
+It runs hourly and by `workflow_dispatch` (`wheels`, `force`, `te_ref`, `keep_superseded`), only in `radixark/miles`: its `check` job, which every other job needs, requires that repository, so a fork or mirror never publishes into `miles-wheels`. `docker/Dockerfile` installs the `+miles` TE triplet, so scheduled runs rebuild TE like the other sets, and an upload replaces superseded wheels unless `keep_superseded` is true. There is no self-hosted ARM64 runner, so aarch64 `int4_qat` and `te` are rebuilt by hand with the miles-wheels README commands.
 
 ```bash
 # Rebuild stale TE wheels.
