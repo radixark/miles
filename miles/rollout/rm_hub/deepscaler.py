@@ -1,4 +1,4 @@
-from .math_utils import extract_answer, grade_answer_mathd, grade_answer_sympy
+from .math_utils import extract_answer, grade_answer_mathd, grade_answer_sympy, has_boxed
 
 
 def _grade_boxed_solution(model_solution, label):
@@ -16,7 +16,7 @@ def _grade_boxed_solution(model_solution, label):
     processed_ground_truths = []
     for truth in ground_truths:
         truth = str(truth)
-        if "\\boxed" in truth:
+        if has_boxed(truth):
             processed_truth = extract_answer(truth)
             if processed_truth is not None:
                 processed_ground_truths.append(processed_truth)
