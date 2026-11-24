@@ -177,7 +177,11 @@ def test_rank_0_opens_the_group_and_posts_each_bucket(membership, receiver_contr
     )
 
 
-def test_an_engine_that_does_not_fill_the_slice_is_rejected():
+@pytest.mark.parametrize(
+    ("counts", "offsets"),
+    [([3, 1], [4, 7]), ([2], [4]), ([2, 2, 2], [4, 6, 8])],  # unequal; too few; too many
+)
+def test_engines_that_do_not_fill_the_slice_evenly_are_rejected(counts, offsets):
     protocol = UpdateWeightFromIci(Namespace(update_weight_engine_request_timeout=10, ft_components=()))
     with (
         patch.object(tpu_shared_slice, "spec", return_value=_SHARED),
@@ -185,7 +189,32 @@ def test_an_engine_that_does_not_fill_the_slice_is_rejected():
         patch("torch.distributed.get_rank", return_value=0),
         pytest.raises(ValueError, match="with TP rank i of one engine"),
     ):
-        protocol.connect([_Engine(), _Engine()], [2, 2], [4, 6], ["cell-0", "cell-1"], None, None, "all")
+        protocol.connect(
+            [_Engine() for _ in counts], counts, offsets, [f"cell-{i}" for i in range(len(counts))], None, None, "all"
+        )
+
+
+def test_equal_engines_filling_the_second_half_pair_rank_i_with_slice_rank_t_plus_i(membership):
+    """Two 2-device engines behind a 4-rank trainer: rank 3 sends to slice rank 7 = engine 1's TP rank 1; rank 0 opens
+    one group per engine over the whole slice."""
+    engines = [_Engine(), _Engine()]
+    protocol = UpdateWeightFromIci(Namespace(update_weight_engine_request_timeout=10, ft_components=()))
+    with (
+        patch.object(tpu_shared_slice, "spec", return_value=_SHARED),
+        patch("torch.distributed.get_world_size", return_value=4),
+        patch("torch.distributed.get_rank", return_value=3),
+    ):
+        protocol.connect(engines, [2, 2], [4, 6], ["cell-0", "cell-1"], None, None, "all")
+    assert protocol._engine_slice_rank == 7 and all(engine.calls == [] for engine in engines)
+    with (
+        patch.object(tpu_shared_slice, "spec", return_value=_SHARED),
+        patch("torch.distributed.get_world_size", return_value=4),
+        patch("torch.distributed.get_rank", return_value=0),
+    ):
+        protocol.connect(engines, [2, 2], [4, 6], ["cell-0", "cell-1"], None, None, "all")
+    assert [
+        (name, kwargs["rank_offset"], kwargs["world_size"]) for engine in engines for name, kwargs in engine.calls
+    ] == [("init_weights_update_group", 0, 8)] * 2
 
 
 def test_a_trainer_not_at_slice_rank_0_is_rejected():

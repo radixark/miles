@@ -11,6 +11,9 @@ serves rollouts as an external engine. Megatron-LM is not supported on TPU.
 One v7x 2x2x1 host has 4 chips with 2 TensorCores each, so 8 devices. The trainer runs as 4 ranks
 on devices 0-3 and the engine serves on devices 4-7. Both jobs share the host's slice, so weights
 move from trainer to engine over ICI (`--update-weight-transfer-mode ici`) without touching disk.
+The engine half may also be several engines of equal size, listed in slice order
+(`--rollout-num-gpus-per-engine k`, n engines with n x k = trainer ranks): trainer rank i then feeds
+TP rank i % k of engine i // k, so a 16-rank trainer can serve 16 TP1 engines or 2 TP8 engines alike.
 
 ## Image
 
