@@ -227,6 +227,8 @@ class TrieLayout:
     last token and ``sample_lengths[i]`` the sample's length: the first
     ``sample_lengths[i]`` entries of that segment's ``kv`` gather are the
     sample's token indices, position by position.
+    ``segment_parents[s]`` is the segment whose last token segment ``s``
+    continues, ``-1`` for a root (padding included).
     """
 
     tokens: torch.Tensor
@@ -235,9 +237,12 @@ class TrieLayout:
     max_seqlen_q: int
     kv: TrieKV
     window_kv: TrieKV | None
+    conv_kv: TrieKV | None
+    conv_window_left: int | None
     sample_indices: tuple[int, ...]
     sample_segments: tuple[int, ...]
     sample_lengths: tuple[int, ...]
+    segment_parents: tuple[int, ...]
 
     @property
     def num_tokens(self) -> int:
@@ -303,6 +308,7 @@ def build_trie_layout(
     *,
     window_left: int | None = None,
     window_start_multiple: int = 1,
+    conv_window_left: int | None = None,
     pad_multiple: int = 1,
     pad_token_id: int = 0,
 ) -> TrieLayout:
@@ -314,6 +320,8 @@ def build_trie_layout(
     ``window_start_multiple`` moves the start of that gather down to a logical position
     that is a multiple of it, so a kernel that tiles keys from the start of each
     sequence cuts the window into the same tiles as for an unpacked sample.
+    ``conv_window_left`` is a causal convolution's left extent (kernel size - 1);
+    with it the layout carries the same gather for that window, unaligned.
     """
     segments = trie.segments
     lengths = [segment.length for segment in segments]
@@ -330,6 +338,7 @@ def build_trie_layout(
         start_positions[segment] + last - physical_starts[segment] + 1
         for segment, last in zip(sample_segments, trie.last_token_indices, strict=True)
     ]
+    parents = [-1 if segment.parent_idx is None else segment.parent_idx for segment in segments]
 
     unpadded_width = len(trie.token_ids)
     padding = (-unpadded_width) % pad_multiple
@@ -338,6 +347,7 @@ def build_trie_layout(
         start_positions = start_positions + [0]
         physical_starts = physical_starts + [unpadded_width]
         ancestors = ancestors + [[]]
+        parents = parents + [-1]
     tokens = torch.tensor(list(trie.token_ids) + [pad_token_id] * padding, dtype=torch.long)
     positions = torch.cat(
         [torch.arange(start, start + length) for start, length in zip(start_positions, lengths, strict=True)]
@@ -360,9 +370,12 @@ def build_trie_layout(
         window_kv=(
             None if window_left is None else gathered_kv(window_left=window_left, start_multiple=window_start_multiple)
         ),
+        conv_kv=None if conv_window_left is None else gathered_kv(window_left=conv_window_left),
+        conv_window_left=conv_window_left,
         sample_indices=tuple(trie.tags),
         sample_segments=tuple(sample_segments),
         sample_lengths=tuple(sample_lengths),
+        segment_parents=tuple(parents),
     )
 
 
@@ -388,6 +401,7 @@ def micro_batch_trie_layout(
         bins[0],
         window_left=_left_extent(model_spec.sliding_window_size),
         window_start_multiple=window_start_multiple,
+        conv_window_left=_left_extent(model_spec.conv_kernel_size),
         pad_multiple=pad_multiple,
     )
 
@@ -501,8 +515,10 @@ class TrieModelSpec:
     """What a model's trie rows depend on, read from its config.
 
     ``sliding_window_size`` is the number of tokens a sliding layer attends over, if any layer slides.
+    ``conv_kernel_size`` is the kernel size of a causal convolution the model runs over the row, if any.
     ``media`` are the media modalities of the model's processor output.
     """
 
     sliding_window_size: int | None = None
+    conv_kernel_size: int | None = None
     media: tuple[TrieModality, ...] = ()

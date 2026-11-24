@@ -5,22 +5,27 @@ registered attention and mask functions, the actor's model inputs, logical posit
 windows, and response-only logits. ``tests/fast-gpu/test_fsdp_trie_packing.py`` runs the kernels.
 """
 
+import itertools
 import random
 import sys
+import types
 from types import SimpleNamespace
 
 import pytest
 import torch
+import torch.nn.functional as F
 from tests.fast.backends.training_utils.reference_trie_attention import reference_trie_attention
-from transformers import Glm4MoeLiteConfig, Qwen3Config, Qwen3MoeConfig, Qwen3VLConfig
+from transformers import Glm4MoeLiteConfig, Qwen3_5TextConfig, Qwen3Config, Qwen3MoeConfig, Qwen3VLConfig
 from transformers.models.glm4_moe_lite.modeling_glm4_moe_lite import Glm4MoeLiteForCausalLM
 from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
+from transformers.models.qwen3_5 import modeling_qwen3_5
+from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM
 from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeForCausalLM
 from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLForConditionalGeneration
 
 from miles.backends.fsdp_utils import actor as fsdp_actor
 from miles.backends.fsdp_utils.actor import FSDPTrainRayActor
-from miles.backends.fsdp_utils.adaptations import routing_replay
+from miles.backends.fsdp_utils.adaptations import routing_replay, trie_linear_attention
 from miles.backends.fsdp_utils.adaptations.packing import keep_packing_kwargs_out_of_vision
 from miles.backends.fsdp_utils.adaptations.specs import resolve_arch_adapter
 from miles.backends.fsdp_utils.adaptations.trie_attention import (
@@ -29,6 +34,7 @@ from miles.backends.fsdp_utils.adaptations.trie_attention import (
     trie_media,
     trie_model_spec,
 )
+from miles.backends.fsdp_utils.adaptations.trie_linear_attention import install_trie_linear_attention
 from miles.backends.training_utils.data import context_parallel
 from miles.backends.training_utils.data import rollout as data_utils
 from miles.backends.training_utils.data import trie_batch
@@ -51,6 +57,48 @@ def _reference_flash_attn_varlen(
     return reference_trie_attention(q, k, v, kv, cu_seqlens_q, window_left=window_left, softmax_scale=softmax_scale)
 
 
+def _reference_causal_conv1d(x, weight, bias=None, seq_idx=None, activation=None):
+    """causal_conv1d_fn's contract: a depthwise causal convolution that restarts at every seq_idx change."""
+    ids, outs, start = seq_idx[0].tolist(), [], 0
+    for end in range(1, len(ids) + 1):
+        if end == len(ids) or ids[end] != ids[start]:
+            piece = F.conv1d(
+                x[:, :, start:end], weight.unsqueeze(1), bias, padding=weight.shape[-1] - 1, groups=x.size(1)
+            )
+            outs.append(piece[:, :, : end - start])
+            start = end
+    out = torch.cat(outs, dim=2)
+    return F.silu(out) if activation in ("silu", "swish") else out
+
+
+# transformers binds these to the CUDA kernels when installed; the solo runs need its own torch versions
+_TORCH_CONV = modeling_qwen3_5.causal_conv1d_fn.__wrapped__
+_TORCH_CHUNK_DELTA_RULE = modeling_qwen3_5.torch_chunk_gated_delta_rule.__wrapped__
+_RECURRENT_DELTA_RULE = modeling_qwen3_5.torch_recurrent_gated_delta_rule.__wrapped__
+
+
+def _reference_chunk_gated_delta_rule(
+    q, k, v, g, beta, initial_state=None, output_final_state=False, cu_seqlens=None, use_qk_l2norm_in_kernel=False
+):
+    """fla's varlen contract on HF's exact recurrent rule: one sequence per cu_seqlens span, each with its own
+    initial state, returning every sequence's final state."""
+    bounds, outs, states = cu_seqlens.tolist(), [], []
+    for i, (start, end) in enumerate(zip(bounds, bounds[1:], strict=False)):
+        out, state = _RECURRENT_DELTA_RULE(
+            q[:, start:end],
+            k[:, start:end],
+            v[:, start:end],
+            g=g[:, start:end],
+            beta=beta[:, start:end],
+            initial_state=None if initial_state is None else initial_state[i : i + 1],
+            output_final_state=True,
+            use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
+        )
+        outs.append(out)
+        states.append(state[0])
+    return torch.cat(outs, dim=1), torch.stack(states)
+
+
 @pytest.fixture
 def cpu_trie(monkeypatch):
     state = SimpleNamespace(cp=SimpleNamespace(rank=0, size=1), tp=SimpleNamespace(rank=0, size=1))
@@ -63,6 +111,15 @@ def cpu_trie(monkeypatch):
     )
     # a key tile short enough that these prompts' window gathers drop ancestors
     monkeypatch.setattr(trie_batch, "WINDOW_START_MULTIPLE", 4)
+    monkeypatch.setitem(sys.modules, "causal_conv1d", SimpleNamespace(causal_conv1d_fn=_reference_causal_conv1d))
+    fla_ops = types.ModuleType("fla.ops.gated_delta_rule")
+    fla_ops.chunk_gated_delta_rule = _reference_chunk_gated_delta_rule
+    monkeypatch.setitem(sys.modules, "fla.ops.gated_delta_rule", fla_ops)
+    # a chunk short enough that these prompts' delta-rule runs start at many depths, and part-way into a parent
+    monkeypatch.setattr(trie_linear_attention, "DELTA_RULE_CHUNK", 4)
+    # the solo runs use transformers' torch kernels, which install_trie_linear_attention then wraps
+    monkeypatch.setattr(modeling_qwen3_5, "causal_conv1d_fn", _TORCH_CONV)
+    monkeypatch.setattr(modeling_qwen3_5, "torch_chunk_gated_delta_rule", _TORCH_CHUNK_DELTA_RULE)
     register_trie_attention("flash_attention_2")
 
 
@@ -109,6 +166,18 @@ def _tiny_model(kind: str, sliding: bool):
     )
     if kind == "qwen3":
         return Qwen3ForCausalLM._from_config(Qwen3Config(intermediate_size=128, **common), attn_implementation="sdpa")
+    if kind == "qwen3_5":
+        config = Qwen3_5TextConfig(
+            intermediate_size=128,
+            linear_num_key_heads=2,
+            linear_num_value_heads=4,
+            linear_key_head_dim=16,
+            linear_value_head_dim=16,
+            **(common | dict(layer_types=["linear_attention", "full_attention"], sliding_window=None)),
+        )
+        model = Qwen3_5ForCausalLM._from_config(config, attn_implementation="sdpa")
+        install_trie_linear_attention(model)
+        return model
     if kind == "glm4_moe_lite":
         # multi-head latent attention: values narrower than queries and keys
         config = Glm4MoeLiteConfig(
@@ -197,6 +266,7 @@ def _trie(model, samples, iterator=None) -> torch.Tensor:
         ("qwen3", True),
         ("qwen3_moe", False),
         ("qwen3_moe", True),
+        ("qwen3_5", False),
         ("glm4_moe_lite", False),
     ],
     ids=[
@@ -204,6 +274,7 @@ def _trie(model, samples, iterator=None) -> torch.Tensor:
         "qwen3-sliding",
         "qwen3_moe-full",
         "qwen3_moe-sliding",
+        "qwen3_5-gated_deltanet",
         "glm4_moe_lite-mla",
     ],
 )
@@ -223,6 +294,51 @@ def test_trie_row_scores_and_trains_each_sample_as_if_alone(cpu_trie, kind, slid
     for name, p in model.named_parameters():
         if name in solo_grads:
             torch.testing.assert_close(p.grad, solo_grads[name], rtol=1e-4, atol=1e-6, msg=name)
+
+
+def _run_paths(levels) -> tuple[dict[int, list[int]], dict[int, int]]:
+    """Each run's path positions (row token indices, in path order) and the run whose output each token takes."""
+    token_indices, owner = {}, {}
+    for level in levels:
+        bounds = level.cu_seqlens.tolist()
+        index = level.token_index.tolist()
+        for segment, start, end in zip(level.segments, bounds, bounds[1:], strict=False):
+            token_indices[segment] = index[start:end]
+        for row, token_index in zip(level.out_rows.tolist(), level.out_token_indices.tolist(), strict=True):
+            assert token_index not in owner, f"token {token_index} is the output of two runs"
+            owner[token_index] = next(
+                s for s, (a, b) in zip(level.segments, itertools.pairwise(bounds), strict=True) if a <= row < b
+            )
+    return token_indices, owner
+
+
+def test_delta_rule_runs_start_on_the_chunk_grid_and_cover_every_token_once():
+    """Segments (depth-first): a root of 10 tokens; under it one of 1 (inside a chunk) with children of 5 and 6, and
+    one of 7 with a child of 1; then a second root (padding) of 3. With chunks of 4, a run starts at the last
+    multiple of 4 on its segment's path, and a parent with children stops at its last multiple."""
+    parents = (-1, 0, 1, 1, 0, 4, -1)
+    lengths = (10, 1, 5, 6, 7, 1, 3)
+    q_bounds = [0, *itertools.accumulate(lengths)]
+    levels = trie_linear_attention._levels(parents, q_bounds, torch.device("cpu"), chunk=4)
+    token_indices, owner = _run_paths(levels)
+
+    path_starts = (0, 10, 11, 11, 10, 17, 0)
+    # segment 1 (path positions 10..10) has children and no grid point inside it: no run of its own
+    assert set(token_indices) == {0, 2, 3, 4, 5, 6}
+    for segment, indices in token_indices.items():
+        recomputed = path_starts[segment] % 4
+        own = list(range(q_bounds[segment], q_bounds[segment + 1]))
+        assert indices[recomputed:] == own[: len(indices) - recomputed]
+    # the children of segment 1 recompute segment 0's tokens after its last grid point, and segment 1's
+    assert token_indices[2][:3] == token_indices[3][:3] == [8, 9, 10]
+    assert token_indices[4][:2] == [8, 9]
+    assert token_indices[5] == [28, 29]
+    # every token is one run's output; a recomputed token is the first run's, depth-first
+    assert sorted(owner) == list(range(q_bounds[-1]))
+    assert owner[8] == owner[9] == owner[10] == 2
+    # each run starts from the final state of the run that ends where it starts
+    sources = {s: source for level in levels for s, source in zip(level.segments, level.sources, strict=True)}
+    assert sources == {0: -1, 2: 0, 3: 0, 4: 0, 5: 4, 6: -1}
 
 
 def _rollout_routing(samples, num_layers: int, num_experts: int, top_k: int) -> list[torch.Tensor]:

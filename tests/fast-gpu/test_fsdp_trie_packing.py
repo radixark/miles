@@ -5,12 +5,13 @@ The CPU tests check the layout against a plain-PyTorch reference; this runs the 
 builder and logits path on tiny models with the real kernels:
 
 - Qwen3 on flash-attn, with and without a sliding-window layer
+- Qwen3.5's GatedDeltaNet layers on causal_conv1d and fla
 - Qwen3-VL with images and a video, its vision tower on flash-attn
 """
 
 from tests.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=300, suite="stage-b-2-gpu-h200", labels=["fsdp"], hardware=["hopper"], num_gpus=1)
+register_cuda_ci(est_time=500, suite="stage-b-2-gpu-h200", labels=["fsdp"], hardware=["hopper"], num_gpus=1)
 
 import contextlib
 import inspect
@@ -21,10 +22,12 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 from tests.fast.backends.fsdp_utils.test_trie_packing_hf import _tiny_vl_model, _vl_samples
 from tests.fast.backends.training_utils.reference_trie_attention import reference_trie_attention
-from transformers import Qwen3Config
+from transformers import Qwen3_5TextConfig, Qwen3Config
 from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
+from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM
 
 from miles.backends.fsdp_utils import actor as fsdp_actor
 from miles.backends.fsdp_utils.actor import FSDPTrainRayActor
@@ -39,6 +42,12 @@ from miles.backends.fsdp_utils.adaptations.trie_attention import (
     trie_model_spec,
 )
 from miles.backends.fsdp_utils.adaptations.trie_gather import gather_rows
+from miles.backends.fsdp_utils.adaptations.trie_linear_attention import (
+    DELTA_RULE_CHUNK,
+    _levels,
+    install_trie_linear_attention,
+    trie_chunk_gated_delta_rule,
+)
 from miles.backends.training_utils.data import context_parallel
 from miles.backends.training_utils.data import rollout as data_utils
 from miles.backends.training_utils.data.trie_batch import TrieMicroBatches, trie_media_items, trie_packing_keys
@@ -56,6 +65,9 @@ _GRAD_RTOL = 3e-2
 # eight batches trie's error is 1.01x standard packing's (geometric mean), and 1.12x when a shared row's gradient
 # copies are summed in bf16.
 _ACCURACY_RATIO = 1.05
+# The trie sums a shared state's gradient over its children before the delta rule's backward runs it, standard
+# packing after; the two bf16 summation orders leave the input gradients about 0.6% apart.
+_DELTA_RULE_GRAD_RTOL = 2e-2
 
 
 def _actor_for(model):
@@ -91,6 +103,7 @@ _MODELS = pytest.mark.parametrize(
     [
         "full",
         "sliding",
+        "gated_deltanet",
     ],
 )
 
@@ -99,6 +112,7 @@ def _tiny_model(kind: str):
     """A tiny model of each ``_MODELS`` kind, in bf16 on the GPU:
 
     - full, sliding: Qwen3, with sliding-window attention on every other layer for ``sliding``
+    - gated_deltanet: Qwen3.5, mixing GatedDeltaNet and attention layers
     """
     torch.manual_seed(0)
     common = dict(
@@ -110,6 +124,18 @@ def _tiny_model(kind: str):
         num_key_value_heads=2,
         head_dim=64,
     )
+    if kind == "gated_deltanet":
+        config = Qwen3_5TextConfig(
+            layer_types=["linear_attention", "full_attention"] * 2,
+            linear_num_key_heads=2,
+            linear_num_value_heads=4,
+            linear_key_head_dim=64,
+            linear_value_head_dim=64,
+            **common,
+        )
+        model = Qwen3_5ForCausalLM._from_config(config, attn_implementation="flash_attention_2", dtype=torch.bfloat16)
+        install_trie_linear_attention(model)
+        return model.cuda()
     sliding = kind == "sliding"
     config = Qwen3Config(
         sliding_window=_WINDOW if sliding else None,
@@ -267,6 +293,7 @@ def _plain_pytorch_kernels(model):
 def _fp64_gradients(model, samples, advantages) -> dict[str, torch.Tensor]:
     """The GRPO loss's gradient in fp64, each sample alone, from the model's weights: on eager attention and the
     modeling module's plain-PyTorch functions.
+    Its linear-attention kernels compute in fp32 inside, far below bf16's rounding.
     """
     reference = type(model)._from_config(model.config, attn_implementation="eager", dtype=torch.float64).cuda()
     reference.load_state_dict({name: value.double() for name, value in model.state_dict().items()})
@@ -416,3 +443,56 @@ def test_flash_attn_trie_attention_matches_the_reference(window, attn_implementa
         window_left=None if window is None else window - 1,
     )
     torch.testing.assert_close(got[0].double().cpu(), want, rtol=0, atol=2e-2)
+
+
+def test_trie_delta_rule_matches_standard_packing_bit_for_bit():
+    """The trie's delta rule against standard packing's call on the kernels the actor runs (FlashQLA on Hopper, else
+    fla): every sample's outputs bit for bit, and gradients as close as two bf16 summation orders get.
+
+    The root is no multiple of the chunk long, one segment lies inside a chunk, and the root alone in a call is what
+    FlashQLA cuts for its intra-card context parallel, where standard packing's call of four sequences is not.
+    """
+    parents = (-1, 0, 1, 1, 0, 4, 4)
+    lengths = (1000, 10, 300, 200, 30, 100, 64)
+    q_bounds = [0]
+    for length in lengths:
+        q_bounds.append(q_bounds[-1] + length)
+    paths = []
+    for leaf in (2, 3, 5, 6):
+        segment, token_indices = leaf, []
+        while segment >= 0:
+            token_indices = list(range(q_bounds[segment], q_bounds[segment + 1])) + token_indices
+            segment = parents[segment]
+        paths.append(torch.tensor(token_indices, device="cuda"))
+    tokens, heads, dim = q_bounds[-1], 32, 128
+    generator = torch.Generator(device="cuda").manual_seed(0)
+    q, k, v = (torch.randn(1, tokens, heads, dim, device="cuda", generator=generator).bfloat16() for _ in range(3))
+    decay = torch.logspace(-4, -1, heads, device="cuda")  # slow to fast, as trained heads decay
+    g = -decay * (0.5 + torch.rand(1, tokens, heads, device="cuda", generator=generator))
+    beta = torch.rand(1, tokens, heads, device="cuda", generator=generator).bfloat16()
+    weights = [torch.randn(1, len(path), heads, dim, device="cuda", generator=generator) for path in paths]
+
+    trie_inputs = [x.clone().requires_grad_() for x in (q, k, v, g, beta)]
+    schedule = SimpleNamespace(levels=_levels(parents, q_bounds, torch.device("cuda"), chunk=DELTA_RULE_CHUNK))
+    trie = trie_chunk_gated_delta_rule(*trie_inputs, schedule, use_qk_l2norm_in_kernel=True)
+    trie_outputs = [trie[:, path] for path in paths]
+
+    standard_inputs = [x.clone().requires_grad_() for x in (q, k, v, g, beta)]
+    rows = torch.cat(paths)
+    cu_seqlens = torch.tensor([0, *torch.tensor([len(p) for p in paths]).cumsum(0)], device="cuda").int()
+    standard, _ = chunk_gated_delta_rule(
+        *(gather_rows(x[0], rows).unsqueeze(0) for x in standard_inputs[:3]),
+        g=gather_rows(standard_inputs[3][0], rows).unsqueeze(0),
+        beta=gather_rows(standard_inputs[4][0], rows).unsqueeze(0),
+        cu_seqlens=cu_seqlens,
+        use_qk_l2norm_in_kernel=True,
+    )
+    standard_outputs = standard.split([len(p) for p in paths], dim=1)
+
+    for got, want in zip(trie_outputs, standard_outputs, strict=True):
+        assert torch.equal(got, want), f"max |trie - standard| {(got.float() - want.float()).abs().max().item():.3g}"
+    sum((out.float() * w).sum() for out, w in zip(trie_outputs, weights, strict=True)).backward()
+    sum((out.float() * w).sum() for out, w in zip(standard_outputs, weights, strict=True)).backward()
+    for name, got, want in zip(("q", "k", "v", "g", "beta"), trie_inputs, standard_inputs, strict=True):
+        error = (got.grad.double() - want.grad.double()).norm() / want.grad.double().norm()
+        assert error <= _DELTA_RULE_GRAD_RTOL, f"d{name}: relative difference {error:.3g}"

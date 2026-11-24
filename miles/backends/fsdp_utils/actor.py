@@ -16,6 +16,7 @@ from miles.backends.fsdp_utils.adaptations.trie_attention import (
     trie_media,
     trie_model_spec,
 )
+from miles.backends.fsdp_utils.adaptations.trie_linear_attention import install_trie_linear_attention
 from miles.backends.fsdp_utils.config import FsdpArgsNamespace
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.training_utils.data.trie_packing import TrieModelSpec
@@ -236,6 +237,8 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
 
         self.arch_adapter.patch_model(model, self.args)
         self.hub_kernels.bind(model)
+        if self.model_spec is not None:
+            install_trie_linear_attention(model)
         if keep_fp32_master:
             model = apply_fp32_master(model, self.precision_policy.sync_dtype_resolver)
         return model

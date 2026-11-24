@@ -15,6 +15,7 @@ from transformers import AttentionInterface, PretrainedConfig
 from transformers.masking_utils import AttentionMaskInterface, flash_attention_mask
 
 from miles.backends.fsdp_utils.adaptations.trie_gather import gather_rows
+from miles.backends.fsdp_utils.adaptations.trie_linear_attention import TrieLinearSchedule
 from miles.backends.training_utils.data.trie_packing import TrieLayout, TrieModality, TrieModelSpec
 
 TRIE_ATTENTION = "miles_trie"
@@ -32,10 +33,14 @@ TRIE_LAYER_TYPES = frozenset(
     {
         "full_attention",
         "sliding_attention",
+        "linear_attention",
     }
 )
 # Attention arguments trie attention does not pass on: attention sinks (gpt-oss) and logit soft-capping (Gemma 2).
 _UNSUPPORTED_ATTENTION_KWARGS = ("s_aux", "softcap")
+
+# The config attribute that names the short convolution's kernel size, by linear-attention architecture.
+_CONV_KERNEL_SIZE_NAMES = ("linear_conv_kernel_dim",)  # GatedDeltaNet
 
 
 class TrieAttentionArgs:
@@ -52,6 +57,8 @@ class TrieAttentionArgs:
         self.window_kv_index = None if window is None else window.index.to(device)
         self.window_kv_cu_seqlens = None if window is None else window.cu_seqlens.to(device=device, dtype=torch.int32)
         self.window_kv_max_seqlen = None if window is None else window.max_seqlen
+        # the convolution and recurrence schedule, for linear-attention layers
+        self.linear = None if layout.conv_kv is None else TrieLinearSchedule(layout, device)
 
 
 def _layer_types(text_config: PretrainedConfig) -> tuple[str, ...]:
@@ -64,6 +71,7 @@ def trie_model_spec(text_config: PretrainedConfig, media: tuple[TrieModality, ..
     """What this model's trie layouts need, read from its config:
 
     - a window gather, if any layer slides
+    - a gather for the short convolution of linear-attention layers, if any
     - ``media``, the image and video modalities of its processor output (``trie_media``)
     """
     layer_types = _layer_types(text_config)
@@ -75,8 +83,10 @@ def trie_model_spec(text_config: PretrainedConfig, media: tuple[TrieModality, ..
     if window is not None and "sliding_attention" not in layer_types:
         # such models' layers may pass it anyway (Mistral, Phi-3, StarCoder2), but the rows would lack its gather
         raise ValueError(f"--trie-packing: sliding_window={window} is set, but no layer type is sliding_attention")
+    conv_kernel_size = _conv_kernel_size(text_config) if "linear_attention" in layer_types else None
     return TrieModelSpec(
         sliding_window_size=window,
+        conv_kernel_size=conv_kernel_size,
         media=media,
     )
 
@@ -103,6 +113,15 @@ def trie_attn_implementation(config: PretrainedConfig, tower_attn_implementation
     if not towers:
         return TRIE_ATTENTION
     return {"": TRIE_ATTENTION, "text_config": TRIE_ATTENTION} | {key: tower_attn_implementation for key in towers}
+
+
+def _conv_kernel_size(text_config: PretrainedConfig) -> int:
+    """The short convolution's kernel size, under the name its architecture's config gives it."""
+    return next(
+        getattr(text_config, name)
+        for name in _CONV_KERNEL_SIZE_NAMES
+        if hasattr(text_config, name)  # config-access-exempt: linear-attention configs name it differently
+    )
 
 
 def trie_attention_forward(
