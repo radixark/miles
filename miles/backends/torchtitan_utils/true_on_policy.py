@@ -53,9 +53,10 @@ def install(model: torch.nn.Module) -> None:
 def _forward_with_starts(orig_forward, *args, **kwargs):
     """Precompute `sequence_starts` once per microbatch instead of sorting `segment_ids` inside every layer."""
     if attention_metadata := kwargs.get("attention_metadata"):
-        first = next(iter(attention_metadata.values()))
-        starts = packed_sequences.sequence_starts(first, MAX_SEQUENCES)
-        kwargs["attention_metadata"] = {k: (v, starts) for k, v in attention_metadata.items()}
+        kwargs["attention_metadata"] = {
+            kind: (segment_ids, packed_sequences.sequence_starts(segment_ids, MAX_SEQUENCES))
+            for kind, segment_ids in attention_metadata.items()
+        }
     return orig_forward(*args, **kwargs)
 
 
@@ -129,7 +130,7 @@ def _engine_rope(attention) -> RotaryEmbedding:
 
 
 def _attend(attention, rope):
-    """The attention sublayer as `(x, segment_ids, positions) -> output`, for this block's layer type."""
+    """The attention sublayer as `(x, attention_metadata, positions) -> output`, for this block's layer type."""
     if isinstance(attention, GDN):
         return functools.partial(_gated_delta_net, attention)
     if isinstance(attention, Qwen35Attention):
