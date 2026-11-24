@@ -92,6 +92,18 @@ checkpoint it serves, and the Qwen3.5 launcher's adds dapo-math's "Answer:" inst
    at full shapes without eval, for timing. `--compile-cache-dir <dir>` reuses compiled programs across runs.
    Pass extra `train.py` flags through `--extra-args`.
 
+`--engine-tp 1` or `--engine-tp 2` (both `sglang` and `train`, same value) serves the policy as 4 TP1 or 2 TP2
+servers side by side on devices 4-7 instead of one TP4 server: each gets its own devices, slice ranks and port
+(`--sglang-port`, +10, ...; the first server keeps the terminal, the others log to `sglang-<port>.log`), and the
+trainer drives them as that many external engines, with weights synced to each over ICI. A small model's decode
+step is bound by its per-token latency, not by throughput, so splitting the engine devices into independent servers
+raises the batch's throughput by the number of servers: on tpu7x with Qwen3.5-0.8B at 512 samples per step, 16 TP1
+servers on the same chips as 2 TP8 ones took the step from 22.1 s to 14.6 s (GSM8K unchanged). A TP4 or larger
+server stays right for a model whose weights or KV cache need the HBM of 4 devices, and the MoE launchers (whose
+`--ep-size` equals the engine's 4 devices) take `--engine-tp 4` only. Weight sync to several engines in one shared
+slice needs the ICI protocol of radixark/miles#4962 on the trainer and sgl-project/sglang-torchtpu#2306 on the
+engine; before those, `--engine-tp 4` is the only layout the weight update accepts.
+
 wandb is on when `WANDB_API_KEY` is set.
 
 CI runs each launcher's smoke recipe this way on a v7x host (`.github/workflows/pr-test-tpu.yml`, label
