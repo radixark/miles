@@ -1,4 +1,4 @@
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -65,6 +65,7 @@ class _Provider(TorchNativeTrainRayActor):
             qkv_format="thd",
             ci_test=False,
             use_sampling_support_replay=False,
+            save_debug_train_data=None,
         )
         self.model_parts = [MagicMock()]
         self.optimizers = [object()]
@@ -86,7 +87,7 @@ def step(monkeypatch):
         FALLTHROUGH="fallthrough",
         REPLAY_BACKWARD="replay_backward",
         stage=lambda name: _recording(stages, name),
-        fill=MagicMock(side_effect=lambda *a, **k: stages.append("fill")),
+        attach=MagicMock(side_effect=lambda *a, **k: stages.append("attach")),
         log_prob_stage=lambda args: "replay_forward",
         rewind=MagicMock(side_effect=lambda: stages.append("rewind")),
         reset=MagicMock(side_effect=lambda: stages.append("reset")),
@@ -123,7 +124,7 @@ def test_the_rollout_step_runs_ref_then_actor_then_optimizer_under_the_right_sta
     actor._train_core(rollout_id=3, rollout_data=rollout_data)
 
     assert step["stages"] == [
-        "fill",
+        "attach",
         "enter:fallthrough",
         "enter:ref",
         "exit:ref",
@@ -133,12 +134,43 @@ def test_the_rollout_step_runs_ref_then_actor_then_optimizer_under_the_right_sta
         "rewind",
         "enter:replay_backward",
         "exit:replay_backward",
-        "reset",
     ]
     assert step["log_probs"] == [(actor.ref_runner, "ref_"), (actor.runner, "")]
     assert step["steps"] == [actor.runner]
     assert rollout_data == {"ref_log_probs": [1], "log_probs": [1], "adv": True}
-    assert step["replay"].fill.call_args.kwargs["align"] is actor.align_token_side_channel
+    assert step["replay"].attach.call_args.kwargs["align"] is actor.align_token_side_channel
+
+
+@pytest.mark.parametrize("dumps_train_data", [True, False])
+def test_only_a_rank_that_owns_its_rollout_slice_dumps_train_data(step, monkeypatch, dumps_train_data):
+    """torchtitan's CP peers share one rollout, so only one of them writes the dump."""
+    dump = MagicMock()
+    monkeypatch.setattr(base_module.train_dump, "save_debug_train_data", dump)
+    actor = _Provider()
+    actor.dumps_train_data = dumps_train_data
+
+    actor._train_core(rollout_id=3, rollout_data={})
+
+    assert dump.called == dumps_train_data
+
+
+def test_the_step_resets_the_replay_queues_even_when_training_fails(step, monkeypatch):
+    actor = _Provider()
+    actor.output_store = None
+    actor._before_train = lambda: None
+    monkeypatch.setattr(TorchNativeTrainRayActor, "train_parallel_config", None)
+    monkeypatch.setattr(base_module, "get_rollout_data", lambda **kwargs: ({}, nullcontext()))
+    monkeypatch.setattr(base_module, "inverse_timer", _noop_timer)
+
+    def fail(self, rollout_id, rollout_data):
+        raise RuntimeError("the forward failed")
+
+    monkeypatch.setattr(TorchNativeTrainRayActor, "_train_core", fail)
+
+    with pytest.raises(RuntimeError, match="the forward failed"):
+        actor.train(3, rollout_data_ref=object())
+
+    assert step["stages"] == ["reset"]
 
 
 _VOCAB_SIZE = 11

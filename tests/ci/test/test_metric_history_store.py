@@ -55,7 +55,7 @@ def _recent(store, metric_key, *, step=-1, identity=IDENTITY, limit=10):
 
 @pytest.fixture
 def store():
-    s = SQLiteMetricHistoryStore(":memory:")
+    s = SQLiteMetricHistoryStore(":memory:", repository="radixark/miles")
     yield s
     s.close()
 
@@ -109,6 +109,24 @@ def test_limit_caps_and_orders_newest_first(store):
         _write(store, created_at=created, values=[_sample("reward_mean", float(i))])
 
     assert _recent(store, "reward_mean", limit=2) == [2.0, 1.0]
+
+
+def test_repository_isolation(tmp_path):
+    database = str(tmp_path / "history.db")
+    main = SQLiteMetricHistoryStore(database, repository="radixark/miles")
+    other = SQLiteMetricHistoryStore(database, repository="example/miles-fork")
+    try:
+        _write(main, created_at="2026-06-01T00:00:00+00:00", values=[_sample("reward_mean", 0.5)])
+        _write(other, created_at="2026-06-02T00:00:00+00:00", values=[_sample("reward_mean", 9.9)])
+
+        assert _recent(main, "reward_mean") == [0.5]
+        assert _recent(other, "reward_mean") == [9.9]
+        # Both runs share PROVENANCE.commit_sha; revoking one repository's run leaves the other's.
+        assert other.mark_untrusted(commit_sha=PROVENANCE.commit_sha) == 1
+        assert _recent(main, "reward_mean") == [0.5]
+    finally:
+        main.close()
+        other.close()
 
 
 def test_identity_isolation(store):
@@ -231,4 +249,4 @@ def test_neon_store_requires_dsn(monkeypatch):
 
     monkeypatch.delenv(NEON_DATABASE_URL_ENV, raising=False)
     with pytest.raises(RuntimeError, match=NEON_DATABASE_URL_ENV):
-        NeonMetricHistoryStore()
+        NeonMetricHistoryStore(repository="radixark/miles")

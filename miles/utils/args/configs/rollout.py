@@ -167,6 +167,16 @@ class RolloutRelatedConfig(BaseConfig):
     ] = None
 
     # update weight
+    rollout_routed_expert_format: A[
+        str | None,
+        Arg(
+            choices=["mxfp8", "mxfp4"],
+            help=(
+                "Format of the routed experts in a rollout model whose other weights are block-wise FP8. "
+                "Online updates encode the routed experts in this format instead of block-wise FP8."
+            ),
+        ),
+    ] = None
     update_weight_buffer_size: A[
         int,
         Arg(
@@ -575,6 +585,17 @@ class RolloutRelatedRolloutOnlyConfig(BaseConfig):
             )
         ),
     ] = 2.0
+    async_data_buffer_selection: A[
+        str,
+        Arg(
+            choices=["fifo", "random"],
+            help=(
+                "Which buffered groups a training step takes in fully async mode: fifo (default) takes the "
+                "earliest finished; random takes a uniformly random subset, seeded by --rollout-seed. Either "
+                "way the groups taken, and those left, keep their completion order."
+            ),
+        ),
+    ] = "fifo"
     custom_async_data_buffer_path: A[
         str | None,
         Arg(

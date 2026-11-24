@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from miles.utils import observers
 from miles.utils.args.configs.scaling import ScalingConfig
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.function_registry import load_function
@@ -62,9 +63,26 @@ class RayWorkerManager:
         self.port_allocator = PortAllocator()
 
     @staticmethod
-    def launch(args, specs: list[BaseSpec], pgs: dict[str, PlacementGroupInfo], *, comm_backend: WorkerCommBackend):
+    def launch(
+        args,
+        specs: list[BaseSpec],
+        pgs: dict[str, PlacementGroupInfo],
+        *,
+        comm_backend: WorkerCommBackend,
+        worker_env: dict[str, str] | None = None,
+        report_process_ends: bool = False,
+    ):
         obj = ray.remote(RayWorkerManager).options(name=_ACTOR_NAME).remote()
-        ray.get(obj.init.remote(args, specs, pgs, comm_backend=comm_backend))
+        ray.get(
+            obj.init.remote(
+                args,
+                specs,
+                pgs,
+                comm_backend=comm_backend,
+                worker_env=worker_env,
+                report_process_ends=report_process_ends,
+            )
+        )
         return obj
 
     @staticmethod
@@ -72,12 +90,22 @@ class RayWorkerManager:
         return ray.get_actor(_ACTOR_NAME)
 
     async def init(
-        self, args, specs: list[BaseSpec], pgs: dict[str, PlacementGroupInfo], *, comm_backend: WorkerCommBackend
+        self,
+        args,
+        specs: list[BaseSpec],
+        pgs: dict[str, PlacementGroupInfo],
+        *,
+        comm_backend: WorkerCommBackend,
+        worker_env: dict[str, str] | None = None,
+        report_process_ends: bool = False,
     ):
         configure_logger(args, source=SimpleProcessIdentity(component="worker_manager"))
 
         self.scaling = ScalingConfig.slice_from(args)
         self.comm_backend = comm_backend
+        # set in every worker on top of its spec's env, e.g. what run observers need; never secrets
+        self.worker_env = dict(worker_env or {})
+        self.report_process_ends = report_process_ends
         self.pgs = pgs
         self._pools = {spec.name: _PoolManager.initial(spec, self) for spec in specs}
         assert len(self._pools) == len(specs)
@@ -103,7 +131,9 @@ class RayWorkerManager:
 
     async def shutdown(self) -> None:
         async with self._membership_lock:
-            await asyncio.gather(*[cell.stop() for cell in self._all_cells()])
+            await asyncio.gather(
+                *[cell.stop(report_process_end=self.report_process_ends) for cell in self._all_cells()]
+            )
 
     def observe_fault_target(self, cell_id: str, *, rank: int) -> ObservedFaultHookTarget:
         cell = self._find_cell(cell_id)
@@ -261,10 +291,10 @@ class _CellManager(Generic[SpecT]):
     async def post_setup(self) -> None:
         await self._for_all_actors(lambda a: a.post_setup())
 
-    async def stop(self) -> None:
+    async def stop(self, *, report_process_end: bool = False) -> None:
         if self.actors is None:
             return
-        await self._for_all_actors(lambda a: a.stop())
+        await self._for_all_actors(lambda a: a.stop(report_process_end=report_process_end))
         self.actors = None
 
     async def _scan_liveness_forever(self, generation: int) -> None:
@@ -406,7 +436,7 @@ class _BaseActorManager(Generic[SpecT]):
             num_cpus=scheduling.num_cpus_per_worker,
             num_gpus=scheduling.num_gpus_per_worker,
             **(dict(scheduling_strategy=s) if (s := scheduling_strategy) is not None else {}),
-            runtime_env={"env_vars": self.spec.env_var(self.launch_context)},
+            runtime_env={"env_vars": {**self.manager.worker_env, **self.spec.env_var(self.launch_context)}},
             **(compute_ray_pin_head_options() if scheduling.pin_to_head else {}),
         ).remote(**ctor_kwargs)
 
@@ -415,11 +445,14 @@ class _BaseActorManager(Generic[SpecT]):
             return False
         return await RayWorkerHandle(self.actor_handle).probe_is_dead()
 
-    async def stop(self) -> None:
+    async def stop(self, *, report_process_end: bool = False) -> None:
         if self.actor_handle is None:
             return
 
         await self._shutdown_gracefully()
+        # only at the run's end: a stop holds the membership lock, so mid-run a stuck worker would block recovery
+        if report_process_end:
+            await self._report_process_end()
 
         try:
             ray.kill(self.actor_handle)
@@ -429,6 +462,14 @@ class _BaseActorManager(Generic[SpecT]):
 
     async def _shutdown_gracefully(self) -> None:
         pass
+
+    async def _report_process_end(self) -> None:
+        try:
+            await asyncio.wait_for(
+                self.actor_handle.report_process_end.remote(), timeout=observers.END_PROCESS_TIMEOUT_S
+            )
+        except Exception as e:
+            logger.warning(f"Reporting the end of {self=} to its run observers failed ({e!r}); killing it anyway")
 
     @property
     def name(self) -> str:
@@ -475,7 +516,7 @@ class _CommandActorManager(_BaseActorManager[BaseCommandSpec]):
         launch_cmd = self.spec.launch_command(ctx)
         # exec lets the command replace /bin/sh, so parent death and Ray's child cleanup kill the
         # command itself rather than a shell that would leave it orphaned with its ports.
-        self.actor_handle.run.remote(cmd=f"exec {launch_cmd}", envs={})
+        self.actor_handle.run.remote(cmd=f"exec {launch_cmd}", envs={}, gpu_ids=self.gpu_ids)
 
     async def _shutdown_gracefully(self) -> None:
         try:
@@ -573,6 +614,9 @@ def bootstrapped_worker_class(worker_class_path: str) -> type:
             self, *, ctor_kwargs: Callable[[WorkerCtorContext], dict[str, Any]], context: WorkerLaunchContext
         ) -> None:
             super().__init__(**ctor_kwargs(_ctor_context(context)))
+
+        def report_process_end(self) -> None:
+            observers.Observers().end_process()
 
     BootstrappedWorker.__name__ = worker_class.__name__
     BootstrappedWorker.__qualname__ = worker_class.__qualname__

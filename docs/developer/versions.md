@@ -11,6 +11,7 @@ version problem or land a bump.
 | Tree | Comes from | Installed as | Lives at |
 |---|---|---|---|
 | Miles | this repository | `pip install -e . --no-deps` | `/root/miles` |
+| Miles dashboard plugin | `packages/miles-dashboard` in this repository | `pip install -e packages/miles-dashboard --no-deps` | `/root/miles/packages/miles-dashboard` |
 | SGLang | the `sglang-miles` branch of [`sgl-project/sglang`](https://github.com/sgl-project/sglang), on top of the `lmsysorg/sglang:<tag>` base image | `pip install -e "python[all]" --no-deps` | `/sgl-workspace/sglang` |
 | Megatron-LM | the `miles-main` branch of [`radixark/Megatron-LM`](https://github.com/radixark/Megatron-LM) | `pip install -e .` | `/root/Megatron-LM` |
 
@@ -126,7 +127,7 @@ It never reinstalls the three source trees, because they are editable installs. 
 | SGLang or Megatron-LM code | No. Point CI at a ref instead |
 | Miles code | No |
 
-The ROCm stage is the exception: it takes SGLang and Megatron-LM from `rocm/sgl-dev` unless the run names a ref for one, and never reads `release-lock.json`. ROCm CI runs independently and is not part of the versioned release gate.
+ROCm stages select SGLang and Megatron-LM refs in the same order and install them editable over the copies baked into `rocm/sgl-dev`; that image is rebuilt by SGLang's nightly, not by this repository. ROCm CI runs independently and is not part of the versioned release gate.
 
 ## Bumping principle
 

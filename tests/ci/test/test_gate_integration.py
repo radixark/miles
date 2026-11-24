@@ -23,9 +23,13 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import re
 import shlex
+import subprocess
 import sys
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -51,6 +55,7 @@ _GITHUB_ENV_VARS = (
     "GITHUB_REF",
     "GITHUB_STEP_SUMMARY",
     "NEON_DATABASE_URL",
+    "AMD_NEON_DATABASE_URL",
     "GITHUB_ACTIONS",
     ci_utils.CI_GATE_RECORD_DIR_ENV,
 )
@@ -66,7 +71,7 @@ def _clear_github_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def store():
-    s = SQLiteMetricHistoryStore(":memory:")
+    s = SQLiteMetricHistoryStore(":memory:", repository="radixark/miles")
     yield s
     s.close()
 
@@ -169,24 +174,26 @@ class TestBuildStoreFromEnv:
         constructed = []
 
         class _FakeNeonStore:
-            def __init__(self, dsn=None):
-                constructed.append(dsn)
+            def __init__(self, dsn=None, repository=None):
+                constructed.append((dsn, repository))
 
         monkeypatch.setattr("tests.ci.ci_utils.NeonMetricHistoryStore", _FakeNeonStore)
         monkeypatch.setenv("NEON_DATABASE_URL", "postgres://example/db")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "radixark/miles")
 
         store = build_store_from_env()
         assert isinstance(store, _FakeNeonStore), "NEON_DATABASE_URL must route to NeonMetricHistoryStore"
-        assert constructed == [None], "the factory constructs the store with no explicit DSN"
+        assert constructed == [("postgres://example/db", "radixark/miles")]
 
     def test_store_construction_failure_propagates(self, monkeypatch):
         # A configured store must not silently disable enforcement on failure.
         class _ExplodingStore:
-            def __init__(self, dsn=None):
+            def __init__(self, dsn=None, repository=None):
                 raise RuntimeError("connection refused")
 
         monkeypatch.setattr("tests.ci.ci_utils.NeonMetricHistoryStore", _ExplodingStore)
         monkeypatch.setenv("NEON_DATABASE_URL", "postgres://unreachable/db")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "radixark/miles")
 
         with pytest.raises(RuntimeError, match="connection refused"):
             build_store_from_env()
@@ -590,7 +597,7 @@ class TestShadowNeverBlocks:
             def write_run(self, *a, **k):
                 raise RuntimeError("DB down")
 
-        store = _ExplodingStore(":memory:")
+        store = _ExplodingStore(":memory:", repository="radixark/miles")
         try:
             result = run_gate_hook(
                 test_file,
@@ -647,10 +654,10 @@ def test_hook_signature_matches_metric_sample_contract(tmp_path, store, monkeypa
 # --- default enforcement --------------------------------------------------
 
 
-def _seed_history(store, registry, n, *, values=None):
+def _seed_history(store, registry, n, *, values=None, backend="cuda"):
     for index in range(n):
         store.write_run(
-            RunIdentity(registry.filename, "cuda", registry.suite),
+            RunIdentity(registry.filename, backend, registry.suite),
             PROVENANCE,
             created_at=f"2026-06-{index + 1:02d}T00:00:00+00:00",
             trusted=True,
@@ -983,7 +990,7 @@ def test_comment_file_command_runs_gate_without_writing_history(
     argv = shlex.split(command)
     monkeypatch.setattr(sys, "argv", argv[argv.index("python3") + 1 :])
     monkeypatch.setattr(run_suite, "discover_ci_files", lambda: [test_file.name, other.name])
-    monkeypatch.setattr(run_suite, "build_store_from_env", lambda: store)
+    monkeypatch.setattr(run_suite, "build_store_from_env", lambda **kwargs: store)
     monkeypatch.setattr(run_suite, "reaping_is_isolated", lambda: False)
     monkeypatch.setattr(run_suite.tempfile, "mkdtemp", lambda **kwargs: str(tmp_path / "records"))
     monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
@@ -1005,3 +1012,180 @@ def test_comment_file_command_runs_gate_without_writing_history(
     assert attempted == [test_file.name]
     assert _count_runs(store) == baseline_n
     assert f"[CI Gate][enforce] {test_file.name}: {'PASS' if allowed else 'FAIL'}" in caplog.text
+
+
+class TestRocmNeonCredential:
+    @pytest.mark.parametrize("amd_url", [None, ""])
+    def test_missing_amd_key_never_falls_back_to_cuda(self, monkeypatch, caplog, amd_url):
+        monkeypatch.setenv("NEON_DATABASE_URL", "postgres://cuda/fixture")
+        if amd_url is not None:
+            monkeypatch.setenv("AMD_NEON_DATABASE_URL", amd_url)
+        with caplog.at_level("INFO"):
+            assert build_store_from_env(backend=HWBackend.ROCM) is None
+        assert "skipped: AMD_NEON_DATABASE_URL is not set" in caplog.text
+
+    @pytest.mark.parametrize(
+        "backend,expected",
+        [(HWBackend.CUDA, "postgres://cuda/fixture"), (HWBackend.ROCM, "postgres://amd/fixture")],
+    )
+    def test_each_backend_uses_only_its_credential(self, monkeypatch, backend, expected):
+        constructed = []
+
+        class Store:
+            def __init__(self, dsn=None, repository=None):
+                constructed.append(dsn)
+
+        monkeypatch.setattr(ci_utils, "NeonMetricHistoryStore", Store)
+        monkeypatch.setenv("NEON_DATABASE_URL", "postgres://cuda/fixture")
+        monkeypatch.setenv("AMD_NEON_DATABASE_URL", "postgres://amd/fixture")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "radixark/miles")
+        assert isinstance(build_store_from_env(backend=backend), Store)
+        assert constructed == [expected]
+
+    @pytest.mark.parametrize("amd_url", [None, ""])
+    def test_secretless_rocm_suite_runs_without_history(self, tmp_path, monkeypatch, amd_url):
+        test_file = tmp_path / "test_rocm_fixture.py"
+        test_file.write_text(
+            "from tests.ci.ci_register import register_rocm_ci\n"
+            'register_rocm_ci(est_time=1, suite="stage-c-2-gpu-mi350", labels=["short"])\n'
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("NEON_DATABASE_URL", "postgres://cuda/fixture")
+        if amd_url is not None:
+            monkeypatch.setenv("AMD_NEON_DATABASE_URL", amd_url)
+        monkeypatch.setattr(run_suite, "discover_ci_files", lambda: [test_file.name])
+        monkeypatch.setattr(run_suite, "reaping_is_isolated", lambda: False)
+        observed = []
+
+        def run_files(files, **kwargs):
+            observed.append(kwargs["gate_store"])
+            return 0
+
+        monkeypatch.setattr(run_suite, "run_unittest_files", run_files)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["run_suite.py", "--hw", "rocm", "--suite", "stage-c-2-gpu-mi350", "--cadence", "release"],
+        )
+        with pytest.raises(SystemExit) as result:
+            run_suite.main()
+        assert result.value.code == 0
+        assert observed == [None]
+        assert ci_utils.CI_GATE_RECORD_DIR_ENV not in os.environ
+
+
+class TestRocmHistoryShadow:
+    @pytest.mark.parametrize("write_baseline", [False, True], ids=["pr", "nightly"])
+    def test_harness_records_rocm_regression_without_failing_child(self, tmp_path, store, monkeypatch, write_baseline):
+        monkeypatch.setenv(ci_utils.CI_GATE_RECORD_DIR_ENV, str(tmp_path / "records"))
+        test_file = _write_test_file(
+            tmp_path,
+            'register_ci_gate(metric_key="rollout/raw_reward", steps="last", '
+            'constraint={"rel_up": 0.20, "rel_down": 0.20})',
+        )
+        registry = replace(_registry(test_file), backend=HWBackend.ROCM, suite="stage-c-2-gpu-mi350", hardware=[])
+        _seed_history(store, registry, 10)
+        _seed_history(store, registry, 10, backend="rocm")
+
+        def run_child(func, args, kwargs, timeout):
+            record_dir = Path(kwargs["record_dir"])
+            record_dir.mkdir(parents=True, exist_ok=True)
+            _write_record(record_dir, {"rollout/raw_reward": [[0, 0.90]]}, name="child.jsonl")
+            return 0
+
+        monkeypatch.setattr(ci_utils, "run_with_timeout", run_child)
+        rc = ci_utils.run_unittest_files(
+            [registry],
+            timeout_per_file=10,
+            snapshot_hardware="cpu",
+            gate_store=store,
+            gate_executing_suite=registry.suite,
+            gate_write_baseline=write_baseline,
+            gate_provenance=PROVENANCE,
+        )
+        assert rc == 0
+        assert _count_runs(store) == 20 + int(write_baseline)
+        assert (
+            store.recent_trusted_values(test_file, "cuda", registry.suite, "rollout/raw_reward", -1, 20) == [0.30] * 10
+        )
+        assert (
+            store.recent_trusted_values(test_file, "rocm", registry.suite, "rollout/raw_reward", -1, 20) == [0.30] * 10
+        )
+        if write_baseline:
+            row = store._conn.execute(
+                "SELECT backend, suite, trusted FROM runs ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            assert row == ("rocm", registry.suite, 0)
+
+    @pytest.mark.parametrize("record_exists", [False, True])
+    @pytest.mark.parametrize("enforce", [False, True])
+    def test_store_error_or_missing_record_stays_shadow(self, tmp_path, record_exists, enforce):
+        test_file = _write_test_file(tmp_path, 'register_ci_gate(metric_key="rollout/raw_reward")')
+        registry = replace(_registry(test_file), backend=HWBackend.ROCM, suite="stage-c-2-gpu-mi350", hardware=[])
+        record = _write_record(tmp_path, {}, name="empty.jsonl") if record_exists else None
+
+        class UnreachableStore:
+            def __getattr__(self, name):
+                def fail(*args, **kwargs):
+                    raise RuntimeError("store unreachable")
+
+                return fail
+
+        assert run_gate_hook(
+            test_file,
+            record,
+            store=UnreachableStore(),
+            registry=registry,
+            executing_suite=registry.suite,
+            write_baseline=True,
+            provenance=PROVENANCE,
+            enforce=enforce,
+        ) is (not enforce)
+
+
+class TestRocmNeonWorkflow:
+    def test_only_amd_credential_is_forwarded_for_rocm(self):
+        root = Path(__file__).parents[3]
+        pr_workflow = yaml.safe_load((root / ".github/workflows/pr-test-rocm.yml").read_text())
+        calls = [j for j in pr_workflow["jobs"].values() if j.get("uses") == "./.github/workflows/_run-ci-rocm.yml"]
+        assert len(calls) == 4
+        for job in calls:
+            assert job["secrets"]["AMD_NEON_DATABASE_URL"] == "${{ secrets.AMD_NEON_DATABASE_URL }}"
+            assert "NEON_DATABASE_URL" not in job["secrets"]
+        reusable = yaml.safe_load((root / ".github/workflows/_run-ci-rocm.yml").read_text())
+        triggers = reusable.get("on", reusable.get(True))
+        assert triggers["workflow_call"]["secrets"]["AMD_NEON_DATABASE_URL"]["required"] is False
+        step = next(s for s in reusable["jobs"]["run"]["steps"] if s.get("name") == "Run tests on a cluster node")
+        assert step["env"]["AMD_NEON_DATABASE_URL"] == "${{ secrets.AMD_NEON_DATABASE_URL }}"
+        assert "NEON_DATABASE_URL" not in step["env"]
+        assert step["env"]["PGCONNECT_TIMEOUT"] == "10"
+        manual = yaml.safe_load((root / ".github/workflows/run-ci-file.yml").read_text())
+        rocm = manual["jobs"]["run-rocm-file"]["secrets"]
+        assert rocm["AMD_NEON_DATABASE_URL"] == (
+            "${{ needs.resolve-file-run.outputs.head_is_fork != 'true' && secrets.AMD_NEON_DATABASE_URL || '' }}"
+        )
+        assert "NEON_DATABASE_URL" not in rocm
+        assert "NEON_DATABASE_URL" in manual["jobs"]["run-cuda-file"]["secrets"]
+        job_script = (root / ".github/workflows/scripts/spur/job.sh").read_text()
+        names = re.search(r"CONTAINER_ENV=\((.*?)\)", job_script, re.S).group(1).split()
+        assert "AMD_NEON_DATABASE_URL" in names
+        assert "NEON_DATABASE_URL" not in names
+
+    @pytest.mark.parametrize("fork", [False, True])
+    def test_fork_file_launch_withholds_amd_key(self, tmp_path, fork):
+        root = Path(__file__).parents[3]
+        reusable = yaml.safe_load((root / ".github/workflows/_run-ci-rocm.yml").read_text())
+        step = next(s for s in reusable["jobs"]["run"]["steps"] if s.get("name") == "Run tests on a cluster node")
+        stub = tmp_path / ".github/workflows/scripts/spur/launch.sh"
+        stub.parent.mkdir(parents=True)
+        stub.write_text('printf "%s" "${AMD_NEON_DATABASE_URL-unset}"\n')
+        command = step["run"].replace("${{ inputs.num_gpus }}", "2")
+        result = subprocess.run(
+            ["bash", "-c", command],
+            cwd=tmp_path,
+            env={**os.environ, "WITHHOLD_RUNNER_SECRETS": str(fork).lower(), "AMD_NEON_DATABASE_URL": "amd-fixture"},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert result.stdout == ("unset" if fork else "amd-fixture")

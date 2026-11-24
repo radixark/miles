@@ -41,7 +41,7 @@ COMMAND_MARKERS = (
 TEST_FILE_PATTERN = re.compile(
     r"tests/(?:e2e|fast|fast-gpu|ci)(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*)*/test_[A-Za-z0-9_][A-Za-z0-9_.-]*\.py"
 )
-RUN_FILE_COMMAND_PATTERN = re.compile(rf"/{RUN_FILE_COMMAND} +({TEST_FILE_PATTERN.pattern})")
+RUN_FILE_COMMAND_PATTERN = re.compile(rf"/{RUN_FILE_COMMAND} +({TEST_FILE_PATTERN.pattern})(?: +--hw +(rocm))?")
 # PR-body dependency pins, mirroring the exact patterns the pr-test.yml
 # resolve steps grep for; each match is forwarded as one dispatch input.
 PR_BODY_PINS = (
@@ -65,6 +65,12 @@ PR_BODY_PINS = (
         re.compile(r"^ci-sglang-pr:\s+(\S+)", re.MULTILINE),
         re.compile(r"#[0-9]+|[A-Za-z0-9_][A-Za-z0-9_./-]*"),
     ),
+)
+# ROCm runs take their image from ci-rocm-image-tag:, as pr-test-rocm.yml does;
+# ci-image-tag: names a radixark/miles tag.
+ROCM_PR_BODY_PINS = (
+    ("ci_image_tag", re.compile(r"^ci-rocm-image-tag:\s+(\S+)", re.MULTILINE), PR_BODY_PINS[0][2]),
+    *PR_BODY_PINS[1:],
 )
 # Shapes a policy entry may take. Widening this does not widen what a comment
 # can add: `commands.add_label.allowed_labels` stays an exact default-deny
@@ -110,6 +116,7 @@ class RerunFailedCI(NamedTuple):
 
 class RunTestFile(NamedTuple):
     test_file: str
+    hw: str = "auto"
 
 
 class CommandSpec(NamedTuple):
@@ -280,10 +287,10 @@ def parse_command(body):
         return AddLabel(match.group(1))
     match = RUN_FILE_COMMAND_PATTERN.fullmatch(command)
     if match is not None:
-        return RunTestFile(match.group(1))
+        return RunTestFile(match.group(1), match.group(2) or "auto")
     if any(marker in command for marker in COMMAND_MARKERS):
         raise CommentCommandError(
-            "comment must contain one exact /<label>, /rerun-test <test-file>, /clear-labels, "
+            "comment must contain one exact /<label>, /rerun-test <test-file> [--hw rocm], /clear-labels, "
             "or /rerun-failed-ci command"
         )
     return None
@@ -911,23 +918,22 @@ def _handle_clear_labels(context, request):
     }
 
 
-def _pr_body_pins(body):
+def _pr_body_pins(body, table=PR_BODY_PINS):
     pins = {}
-    for input_name, body_pattern, value_pattern in PR_BODY_PINS:
+    for input_name, body_pattern, value_pattern in table:
         match = body_pattern.search(body)
         if match is None:
             continue
         value = match.group(1)
         if value_pattern.fullmatch(value) is None:
-            raise CommentCommandError(
-                f"PR body pin {input_name.replace('_', '-')} has an unsupported value: {value!r}"
-            )
+            directive = body_pattern.pattern.removeprefix("^").split(":", 1)[0]
+            raise CommentCommandError(f"PR body pin {directive} has an unsupported value: {value!r}")
         pins[input_name] = value
     return pins
 
 
 def _handle_run_test_file(context, request):
-    if type(request) is not RunTestFile:
+    if not isinstance(request, RunTestFile):
         raise CommentCommandError("rerun-test handler received the wrong request type")
     if context.head_repository_id != REPOSITORY_ID:
         # A fork head is the normal shape of a non-write contributor's PR —
@@ -957,7 +963,9 @@ def _handle_run_test_file(context, request):
         "head_sha": context.head_sha,
         "test_file": request.test_file,
     }
-    inputs.update(_pr_body_pins(context.body))
+    if request.hw != "auto":
+        inputs["hw"] = request.hw
+    inputs.update(_pr_body_pins(context.body, ROCM_PR_BODY_PINS if request.hw == "rocm" else PR_BODY_PINS))
     workflow_run_url = context.api.create_workflow_dispatch(
         RUN_FILE_WORKFLOW,
         RUN_FILE_WORKFLOW_REF,
@@ -992,7 +1000,7 @@ def _rerun_command_value(request):
 
 
 def _run_file_value(request):
-    if type(request) is not RunTestFile:
+    if not isinstance(request, RunTestFile):
         raise CommentCommandError("rerun-test audit received the wrong request type")
     return request.test_file
 
@@ -1179,6 +1187,7 @@ class FileRunStatus(NamedTuple):
     suite: str
     resolve_result: str
     execute_result: str
+    rocm_timeout: str = ""
 
 
 def _file_run_status_inputs(environ):
@@ -1197,15 +1206,19 @@ def _file_run_status_inputs(environ):
         "resolve": environ.get("FILE_RUN_RESOLVE_RESULT", ""),
         "cuda": environ.get("FILE_RUN_CUDA_RESULT", ""),
         "cpu": environ.get("FILE_RUN_CPU_RESULT", ""),
+        "rocm": environ.get("FILE_RUN_ROCM_RESULT", ""),
     }
     for name, value in results.items():
         if value not in FILE_RUN_RESULTS:
             raise CommentCommandError(f"file run {name} result is invalid")
-    # Exactly one hardware job executes the file; the other is skipped by its
+    # Exactly one hardware job executes the file; the others are skipped by their
     # own `if`, so the executed result is the one that is not "skipped".
-    executed = [value for value in (results["cuda"], results["cpu"]) if value not in {"skipped", ""}]
+    executed = [value for value in (results["cuda"], results["cpu"], results["rocm"]) if value not in {"skipped", ""}]
     if len(executed) > 1:
         raise CommentCommandError("file run reported two executing jobs")
+    rocm_timeout = environ.get("FILE_RUN_ROCM_TIMEOUT", "")
+    if rocm_timeout and re.fullmatch(r"[0-9]+/[0-9]+", rocm_timeout) is None:
+        raise CommentCommandError("file run ROCm timeout result is invalid")
     comment_id = None
     if mode == "report":
         comment_id = _parse_positive_int(environ.get("FILE_RUN_COMMENT_ID"), "comment ID")
@@ -1218,6 +1231,7 @@ def _file_run_status_inputs(environ):
             suite=suite,
             resolve_result=results["resolve"],
             execute_result=executed[0] if executed else "",
+            rocm_timeout=rocm_timeout,
         ),
         comment_id,
     )
@@ -1234,12 +1248,15 @@ def _file_run_outcome(status):
     if status.resolve_result == "cancelled" or status.execute_result == "cancelled":
         return "cancelled", "The run was cancelled."
     if status.resolve_result != "success":
+        if status.rocm_timeout:
+            required, limit = status.rocm_timeout.split("/")
+            return "failed", f"The ROCm file needs {required} s but the Spur file budget is {limit} s after setup."
         return "failed", "The run never started: resolving the test file's execution plan failed."
     if status.execute_result == "success":
         return "passed", ""
     if status.execute_result == "failure":
         return "failed", "The execution job failed; inspect the workflow run for the failing step."
-    return "failed", "No execution job ran: the resolved plan selected neither the CUDA nor the CPU job."
+    return "failed", "No CPU, CUDA, or ROCm execution job ran."
 
 
 def announce_file_run(api, status):

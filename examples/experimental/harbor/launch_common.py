@@ -2,17 +2,22 @@
 
 Separate from run.py so it imports without the trainer's heavy dependencies:
 the launchers pull in miles' command utils, while this module needs only the
-credential contract.
+credential contract and the agent function's own checks.
 """
 
 import os
 from pathlib import Path
 
-from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, provision_provider
+from aenv_cli import preflight_aenv
+from harbor_agent_function import task_dir_errors
+
+from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, provision_provider, resolve_provider
 
 HARBOR_EXAMPLE_DIR = Path(__file__).resolve().parent
 # reward_func / RolloutFn (agent-metric aggregation) are reused from the agent-server example
 HARBOR_DOCKER_EXAMPLE_DIR = HARBOR_EXAMPLE_DIR.parents[1] / "swe-agent-harbor-docker"
+# the --metadata-key every Harbor launcher passes: the column holding each row's instance_id
+METADATA_KEY = "metadata"
 
 
 def agentic_pythonpath_dirs() -> list[str]:
@@ -56,8 +61,8 @@ def harbor_env_vars(args) -> dict[str, str]:
     """The Harbor-side environment for rollout workers, preflighted on the launcher.
 
     HARBOR_ENV_TYPE is passed through untouched (Harbor validates it). The
-    provider's credential goes by key-file PATH, its endpoint variables by
-    value, on the contract every sandbox backend shares.
+    credential of the provider it runs on goes by key-file PATH, its endpoint
+    variables by value, on the contract every sandbox backend shares.
     """
     # normalized the same way the agent function reads it, so the guards
     # below see the value the worker will act on
@@ -70,6 +75,7 @@ def harbor_env_vars(args) -> dict[str, str]:
         raise ValueError(
             "docker needs a Docker daemon next to Trial.run(); use examples/swe-agent-harbor-docker (agent server) for it"
         )
+    preflight_aenv(env_type)
     try:
         import harbor  # noqa: F401  # the fork branch, see README
     except ImportError as e:
@@ -86,7 +92,7 @@ def harbor_env_vars(args) -> dict[str, str]:
     }
     if args.harbor_env_kwargs:
         env["HARBOR_ENV_KWARGS"] = args.harbor_env_kwargs
-    if spec := PROVIDER_CREDENTIALS.get(env_type):
+    if spec := PROVIDER_CREDENTIALS.get(resolve_provider(env_type)):
         provision_provider(
             env, spec, arg_path=getattr(args, spec["arg_attr"], "") or ""
         )  # config-access-exempt: provider registry selects credential fields; launchers may instead use environment credentials
@@ -122,3 +128,22 @@ def harbor_env_vars(args) -> dict[str, str]:
         if value := os.environ.get(var, "").strip():
             env[var] = value
     return env
+
+
+def preflight_task_dirs(prompt_data: str, tasks_dir: str) -> None:
+    """Raise, listing every row of ``prompt_data`` whose instance_id has no usable task dir.
+
+    During the run such a row only drops its own sample, so the run would
+    quietly train on fewer tasks than its data names.
+    """
+    # miles.utils.data imports the trainer's dependencies (torch, ray, sglang); only a launch reads the data
+    from miles.utils.data import read_file
+
+    instance_ids = dict.fromkeys(
+        str((row.get(METADATA_KEY) or {}).get("instance_id", "")) for row in read_file(prompt_data)
+    )
+    if errors := task_dir_errors(Path(tasks_dir), instance_ids):
+        raise ValueError(
+            f"{len(errors)} instance_id(s) in {prompt_data} have no usable task dir; point HARBOR_TASKS_DIR at "
+            "the directory that holds them or drop those rows:\n  " + "\n  ".join(errors)
+        )

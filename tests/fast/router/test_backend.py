@@ -11,7 +11,9 @@ from miles.utils.args.configs.router import RouterConfig
 
 
 def _model_cfg(*worker_types: WorkerType) -> ModelConfig:
-    groups = [ServerGroupConfig(worker_type=t, num_gpus_per_engine=1, needs_offload=False) for t in worker_types]
+    groups = [
+        ServerGroupConfig(worker_type=t, num_gpus_per_engine=1, pp_size=1, needs_offload=False) for t in worker_types
+    ]
     return ModelConfig(name="default", model_path=None, server_groups=groups, update_weights=True)
 
 
