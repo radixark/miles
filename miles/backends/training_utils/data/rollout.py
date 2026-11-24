@@ -21,6 +21,8 @@ from miles.backends.training_utils.data.token_space_media_process import (
     resolved_mrope_position_ids,
     resolved_multimodal_train_inputs,
 )
+from miles.backends.training_utils.data.trie_batch import TrieMicroBatches, schedule_trie_micro_batches
+from miles.backends.training_utils.data.trie_packing import TrieModelSpec
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.platforms import current_platform
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
@@ -262,6 +264,11 @@ def get_batch(
     # fetch it here so callers don't have to know. None for non-multi-LoRA runs.
     if "adapter_slots" not in keys:
         keys = [*keys, "adapter_slots"]
+    # --trie-packing: a DataIterator's trie rows
+    trie_micro_batches = getattr(
+        data_iterator, "trie_micro_batches", None
+    )  # config-access-exempt: iterators that only provide get_next have no trie rows
+    micro_batch_index = data_iterator.offset if trie_micro_batches is not None else None
     batch = data_iterator.get_next(keys)
 
     if "dynamic_global_batch_size" in data_iterator.rollout_data:
@@ -280,6 +287,10 @@ def get_batch(
     pad_token_id = 0
     pad_size = parallel_state.tp.size * pad_multiplier
     pad = 0
+
+    if trie_micro_batches is not None:
+        assert qkv_format == "thd" and not allgather_cp and parallel_state.cp.size == 1, "trie rows are thd, no CP"
+        return trie_micro_batches.fill_batch(micro_batch_index, batch, pad_multiple=pad_size)
 
     # for cp, we need all tokens to calculate logprob
     batch["unconcat_tokens"] = tokens
@@ -488,6 +499,7 @@ class DataIterator:
         rollout_data: RolloutBatch,
         micro_batch_size: int | None = None,
         micro_batch_indices: list[list[int]] | None = None,
+        trie_micro_batches: TrieMicroBatches | None = None,
     ) -> None:
         """Initialize an iterator over `rollout_data`.
 
@@ -496,12 +508,15 @@ class DataIterator:
             micro_batch_size: Fixed contiguous slice size when not using dynamic scheduling.
             micro_batch_indices: Explicit indices per micro-batch when using dynamic balancing.
                 Must be mutually exclusive with `micro_batch_size`.
+            trie_micro_batches: With --trie-packing, the micro-batches' trie rows; `micro_batch_indices` is then
+                its schedule.
         """
         self.rollout_data = rollout_data
         self.micro_batch_size = micro_batch_size
         self.micro_batch_indices = micro_batch_indices
         assert micro_batch_size is None or micro_batch_indices is None
         self.offset = 0
+        self.trie_micro_batches = trie_micro_batches
 
     def get_next(self, keys: Sequence[str]) -> dict[str, list[object] | None]:
         """Return the next micro-batch for the requested keys.
@@ -561,6 +576,7 @@ def get_data_iterator(
     args: Namespace,
     model: torch.nn.Module | Sequence[torch.nn.Module],
     rollout_data: RolloutBatch,
+    model_spec: TrieModelSpec | None = None,
 ) -> tuple[list[DataIterator], list[int]]:
     """
     Create iterators and a micro-batch schedule for a rollout step.
@@ -627,6 +643,23 @@ def get_data_iterator(
             )
         num_microbatches = [num_local_gbs // args.backend.micro_batch_size for _ in range(num_steps_per_rollout)]
         data_iterator = _generate_data_iterator(rollout_data, args.backend.micro_batch_size)
+    elif args.trie_packing:
+        assert vpp_size == 1, "trie packing does not support virtual pipeline parallelism"
+        trie_micro_batches, num_microbatches = schedule_trie_micro_batches(
+            rollout_data,
+            model_spec,
+            num_steps=num_steps_per_rollout,
+            num_local_gbs=num_local_gbs,
+            max_tokens_per_gpu=args.max_tokens_per_gpu,
+            dp_group=dp_group,
+        )
+        data_iterator = [
+            DataIterator(
+                rollout_data,
+                micro_batch_indices=trie_micro_batches.micro_batch_indices,
+                trie_micro_batches=trie_micro_batches,
+            )
+        ]
     else:
         assert args.max_tokens_per_gpu is not None
         # calculate the number of mirobatches for each step
