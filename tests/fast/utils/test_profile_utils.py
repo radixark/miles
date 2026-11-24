@@ -167,3 +167,93 @@ def test_trace_options_follow_the_megatron_flags(monkeypatch: pytest.MonkeyPatch
     (kwargs,) = profiles_built
     assert (kwargs["record_shapes"], kwargs["with_stack"]) == (collect, collect)
     assert not kwargs.get("profile_memory") and not kwargs.get("with_flops")
+
+
+class TestXprofBackend:
+    """On a platform whose trace backend is xprof, --use-pytorch-profiler drives libtpu's tracer on the same window."""
+
+    @pytest.fixture
+    def tpu_profiler(self, monkeypatch: pytest.MonkeyPatch) -> Mock:
+        import sys
+        from types import ModuleType
+
+        sdk = Mock()
+        sdk.ProfileOptions.side_effect = lambda **levels: dict(levels)
+        package = ModuleType("torch_tpu")
+        internal = ModuleType("torch_tpu._internal")
+        profiler = ModuleType("torch_tpu._internal.profiler")
+        profiler._impl = sdk
+        package._internal, internal.profiler = internal, profiler
+        for name, module in (
+            ("torch_tpu", package),
+            ("torch_tpu._internal", internal),
+            ("torch_tpu._internal.profiler", profiler),
+            ("torch_tpu._internal.profiler._impl", sdk),
+        ):
+            monkeypatch.setitem(sys.modules, name, module)
+        monkeypatch.setattr(profile_utils, "current_platform", SimpleNamespace(trace_backend="xprof"))
+        monkeypatch.setattr(profile_utils.torch.accelerator, "synchronize", sdk.synchronize)
+        monkeypatch.setattr(profile_utils.torch.distributed, "get_rank", lambda: 7)
+        monkeypatch.setattr(profile_utils.torch.profiler, "profile", Mock(side_effect=AssertionError("torch")))
+        return sdk
+
+    @pytest.mark.parametrize("callstack", [False, True])
+    def test_train_overall_traces_the_schedule_window_into_the_tensorboard_dir(
+        self, tmp_path: Path, tpu_profiler: Mock, callstack: bool
+    ) -> None:
+        args = _args(
+            tmp_path,
+            profile_ranks=[],
+            profile_step_start=1,
+            profile_step_end=3,
+            pytorch_profiler_collect_callstack=callstack,
+        )
+        args.profile_target = ["train_overall"]
+
+        profiler = TrainProfiler(args)
+        profiler.on_init_end()
+        tpu_profiler.start_trace.assert_not_called()
+        profiler.step(rollout_id=0)  # step 1 begins: the window opens
+        directory = tmp_path / "train_overall_rank_7"
+        tpu_profiler.start_trace.assert_called_once_with(
+            str(directory), dict(device_tracer_level=1, host_tracer_level=2, python_tracer_level=int(callstack))
+        )
+        assert directory.is_dir()
+        profiler.step(rollout_id=1)  # step 2 begins: still inside the window
+        tpu_profiler.stop_trace.assert_not_called()
+        profiler.step(rollout_id=2)  # step 3 begins: the window closes after the device finished step 2
+
+        assert tpu_profiler.mock_calls.index(call.synchronize()) < tpu_profiler.mock_calls.index(call.stop_trace())
+        tpu_profiler.stop_trace.assert_called_once_with()
+        profiler.step(rollout_id=3)
+        tpu_profiler.start_trace.assert_called_once()
+
+    def test_a_window_from_step_zero_opens_at_start(self, tmp_path: Path, tpu_profiler: Mock) -> None:
+        args = _args(tmp_path, profile_ranks=[], profile_step_start=0, profile_step_end=1)
+        args.profile_target = ["train_overall"]
+
+        TrainProfiler(args).on_init_end()
+
+        tpu_profiler.start_trace.assert_called_once()
+
+    def test_a_loop_shorter_than_the_window_still_writes_its_trace(self, tmp_path: Path, tpu_profiler: Mock) -> None:
+        """libtpu keeps one session per process, so a loop that ends inside the window must close it."""
+        args = _args(tmp_path, profile_ranks=[], profile_step_start=1, profile_step_end=10)
+        args.profile_target = ["train_actor"]
+        values = [object(), object(), object()]
+
+        assert list(TrainProfiler(args).iterate_train_actor(values)) == values
+
+        tpu_profiler.start_trace.assert_called_once()
+        tpu_profiler.stop_trace.assert_called_once_with()
+        assert str(tmp_path / "train_actor_rank_7") == tpu_profiler.start_trace.call_args.args[0]
+
+    def test_an_unlisted_rank_builds_no_tracer(self, tmp_path: Path, tpu_profiler: Mock) -> None:
+        args = _args(tmp_path, profile_ranks=[0])
+        args.profile_target = ["train_overall"]
+
+        profiler = TrainProfiler(args)
+        profiler.on_init_end()
+        profiler.step(rollout_id=0)
+
+        tpu_profiler.start_trace.assert_not_called()

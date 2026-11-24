@@ -35,6 +35,8 @@ class Platform:
     nvml_numa_affinity = True
     # the rollout engines' KV cache dtype when --sglang-kv-cache-dtype is left at "auto"; None keeps the engine's choice
     rollout_kv_cache_dtype: str | None = None
+    # what --use-pytorch-profiler records with: torch.profiler here, "xprof" (libtpu's tracer through torch_tpu) on TPU
+    trace_backend = "torch"
 
     def bind_device_before_process_group(self, local_rank: int) -> None:
         torch.cuda.set_device(f"cuda:{local_rank}")
