@@ -180,6 +180,12 @@ def _glm_dsa_targets(config):
     return _mla_attention_targets(config), tuple(mlp)
 
 
+def _glm5_targets(config):
+    # SGLang's DSA prefill rejects a kv_b_proj adapter (sgl-project/sglang#49848)
+    attention, mlp = _glm_dsa_targets(config)
+    return tuple(target for target in attention if target != "self_attn.kv_b_proj"), mlp
+
+
 def _glm5_next_targets(config):
     # GLM-5.3-Flash interleaves KDA layers into the GLM-5 DSA stack
     dsa_attention, mlp = _glm_dsa_targets(config)
@@ -338,7 +344,7 @@ _HF_LORA_MODELS = {
     "glm4_moe": _HfLoraModelSpec(_glm4_moe_targets),
     # GLM-4.7-Flash: MLA attention with dense / sparse MLPs chosen per layer, as GLM-5's DSA stack
     "glm4_moe_lite": _HfLoraModelSpec(_glm_dsa_targets),
-    "glm_moe_dsa": _HfLoraModelSpec(_glm_dsa_targets),
+    "glm_moe_dsa": _HfLoraModelSpec(_glm5_targets),
     "glm5_next": _HfLoraModelSpec(
         _glm5_next_targets, layer_prefix="model.language_model.layers.*", unwrap_text_config=True
     ),
@@ -376,6 +382,13 @@ def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
         vocab_size=text_config.get("vocab_size"),
         packed_expert_gate_up_layout=spec.packed_expert_gate_up_layout,
     )
+
+
+def unembed_lora_targets(targets: list[str], hf_config: dict) -> list[str]:
+    """The resolved HF targets that adapt the output layer."""
+    spec = _HF_LORA_MODELS.get(hf_config["model_type"])
+    unembed = spec.unembed if spec is not None else _HfLoraModelSpec.unembed
+    return [target for target in targets if matches_lora_target(unembed, target)]
 
 
 def resolve_hf_lora_targets(

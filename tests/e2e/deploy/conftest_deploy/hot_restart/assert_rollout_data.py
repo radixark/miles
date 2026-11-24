@@ -9,8 +9,6 @@ def assert_generations_recorded_their_steps(
 ) -> None:
     directories = [Path(template).parent for template in templates]
     allowed = set(directories)
-    if (dashboard := directories[0].parent / "dashboard_columns").is_dir():
-        allowed.add(dashboard)
     stray = sorted(set(directories[0].parent.iterdir()) - allowed)
     assert not stray, (
         f"{directories[0].parent} holds {[one.name for one in stray]} beside the {len(templates)} generation "

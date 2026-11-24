@@ -149,11 +149,10 @@ class TestTrainParallelConfigWiring:
             ),
         )
 
-        await placement_group.create_training_models(
-            args,
-            rollout_executor=rollout_executor,
-            handles={trainer_config.trainer_id: actor_handle},
+        actor_model, _ = await placement_group.init_training_models(
+            args, handles={trainer_config.trainer_id: actor_handle}
         )
+        await placement_group.attach_trainers_to_rollout(args, rollout_executor, actor_model)
 
         assert rollout_executor.received_config is train_parallel_config
 
@@ -279,6 +278,14 @@ class TestTheLocalGpuIsFoundWithoutRay:
         monkeypatch.setattr(train_actor.ray, "get_gpu_ids", lambda: [5])
 
         assert train_actor.get_local_gpu_id() == 5
+
+    def test_observers_hear_the_gpu_a_pod_rank_runs_on(self, monkeypatch):
+        """A pod rank is outside Ray, so asking Ray would report it on no GPU at all."""
+        monkeypatch.setenv(CELL_INDEX_ENV_VAR, "0")
+        monkeypatch.setenv(SUBPROCESS_INDEX_ENV_VAR, "3")
+        monkeypatch.setattr(train_actor.ray, "get_gpu_ids", lambda: [])
+
+        assert train_actor._held_gpu_ids() == [3]
 
 
 # PCI bus numbers of the eight GPUs on an HGX H200 board, in NVML (physical) index order.

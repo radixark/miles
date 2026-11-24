@@ -22,8 +22,9 @@ register_ci_gate(metric_key="perf/actor_train_mfu")
 
 register_rocm_ci(
     est_time=2000,
-    suite="nightly-stage-c-4-gpu-mi350",
+    suite="stage-c-4-gpu-mi350",
     labels=["megatron", "weight-update", "short", "mooncake"],
+    nightly=True,
     disabled="Outdated and simple.",
 )
 

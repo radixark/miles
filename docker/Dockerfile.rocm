@@ -43,7 +43,7 @@ ARG RCCL_TESTS_PATH=projects/rccl-tests
 
 ARG TRANSFORMER_ENGINE_REPO=https://github.com/ROCm/TransformerEngine.git
 ARG TRANSFORMER_ENGINE_BRANCH=v2.8_rocm
-ARG MOONCAKE_VERSION=0.3.12.post1
+ARG MOONCAKE_VERSION=0.3.13
 
 ARG TARGETARCH
 
@@ -235,10 +235,14 @@ RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-t
 
 # ====================================== Install main package ===================================
 
+# the dashboard plugin is installed only when MILES_COMMIT already has it
 RUN git clone https://github.com/radixark/miles.git /root/miles && \
     cd /root/miles && \
     git checkout ${MILES_COMMIT} && \
-    pip install -e . --no-deps
+    pip install -e . --no-deps && \
+    if [ -d packages/miles-dashboard ]; then pip install -e packages/miles-dashboard --no-deps; fi
+
+RUN pip install /root/miles/miles/kernels/quant/int4_fake --no-build-isolation --no-deps
 
 RUN python -c "import miles.backends.fsdp_utils.actor; import miles.backends.fsdp_utils.arguments; import miles.backends.megatron_utils; print('miles backends: OK')"
 
@@ -264,10 +268,14 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       cp /build/sgl-model-gateway/target/release/sgl-model-gateway /usr/local/bin/sgl-model-gateway && \
       chmod +x /usr/local/bin/sgl-model-gateway && \
       pip install --force-reinstall --no-deps /build/gateway_wheels/sglang_router-*.whl && \
-      rm -rf /root/.cargo /root/.rustup /build/sgl-model-gateway /build/gateway_wheels; \
+      rm -rf /build/sgl-model-gateway /build/gateway_wheels; \
     fi
 
 RUN rm -rf /tmp/wheels
+
+# SGLang's Rust extension loader fingerprints the workspace-pinned toolchain.
+RUN cd /sgl-workspace/sglang/rust && rustup toolchain install --no-self-update && \
+    RUSTUP_AUTO_INSTALL=0 cargo --version --verbose
 
 # Collapse duplicate wheel-SDK libs (devel vs core/libraries) that can be loaded twice (ROCm/TheRock#7818).
 RUN set -eux; \

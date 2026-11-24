@@ -1,15 +1,18 @@
 import logging
 from argparse import Namespace
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
 from miles.backends.training_utils.data.context_parallel import (
+    CPLayout,
     natural_to_local_cp_rows,
     slice_log_prob_with_cp,
     slice_with_cp,
+    take_ranges,
 )
 from miles.backends.training_utils.data.multimodal import expand_multimodal_rollout_data_in_place
 from miles.backends.training_utils.data.token_space_media_process import (
@@ -21,13 +24,17 @@ from miles.backends.training_utils.data.token_space_media_process import (
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.platforms import current_platform
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
-from miles.utils.data import get_minimum_num_micro_batch_size, process_rollout_data
+from miles.utils.data import get_minimum_num_micro_batch_size, padded_token_count, process_rollout_data
 from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
 from miles.utils.object_store import ObjectStoreGetResult
+from miles.utils.output_store.plan import is_segments_column
 from miles.utils.ray_utils import Box
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
+
+if TYPE_CHECKING:
+    from radix_transfer_plugins import OutputStore
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +54,7 @@ def get_rollout_data(
     witness_info: WitnessInfo | None = None,
     *,
     train_parallel_config: TrainParallelConfig,
-    output_store_read: Callable | None = None,
+    output_store: "OutputStore | None" = None,
     sample_device: torch.device | None = None,
     token_space_processor: TrainerProcessor | None = None,
 ) -> tuple[RolloutBatch, ObjectStoreGetResult]:
@@ -55,19 +62,33 @@ def get_rollout_data(
 
     `sample_device` defaults to the accelerator; `PaddedRows` keeps them on the host.
     """
-    if sample_device is None:
-        sample_device = current_platform.current_device()
-    parallel_state = get_parallel_state()
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
     # Both first pp stage and the last pp stage will receive the data.
     rollout_data, store_get_result = process_rollout_data(
         args,
         rollout_data_ref,
-        dp_rank=parallel_state.effective_dp.rank,
+        dp_rank=get_parallel_state().effective_dp.rank,
         train_parallel_config=train_parallel_config,
         witness_info=witness_info,
-        output_store_read=output_store_read,
+        output_store=output_store,
     )
+    rollout_data = prepare_rollout_data(
+        args, rollout_data, sample_device=sample_device, token_space_processor=token_space_processor
+    )
+    return rollout_data, store_get_result
+
+
+def prepare_rollout_data(
+    args: Namespace,
+    rollout_data: RolloutBatch,
+    *,
+    sample_device: torch.device | None = None,
+    token_space_processor: TrainerProcessor | None = None,
+) -> RolloutBatch:
+    """This rank's shard, with its per-sample lists as tensors; see `get_rollout_data` for `sample_device`."""
+    if sample_device is None:
+        sample_device = current_platform.current_device()
+    parallel_state = get_parallel_state()
     rollout_data["tokens"] = [torch.tensor(t, dtype=torch.long, device=sample_device) for t in rollout_data["tokens"]]
     rollout_data["loss_masks"] = [
         torch.tensor(t, dtype=torch.int, device=sample_device) for t in rollout_data["loss_masks"]
@@ -150,11 +171,11 @@ def get_rollout_data(
                     )
                 )
             ]
-    if "rollout_routed_experts" in rollout_data:
-        rollout_data["rollout_routed_experts"] = [torch.from_numpy(r) for r in rollout_data["rollout_routed_experts"]]
-    if "rollout_indexer_topk" in rollout_data:
-        rollout_data["rollout_indexer_topk"] = [torch.from_numpy(r) for r in rollout_data["rollout_indexer_topk"]]
-    return rollout_data, store_get_result
+    # An output store column holds segments, whose rows replay reads per micro batch.
+    for key in ("rollout_routed_experts", "rollout_indexer_topk"):
+        if key in rollout_data and not is_segments_column(rollout_data[key]):
+            rollout_data[key] = [torch.from_numpy(r) for r in rollout_data[key]]
+    return rollout_data
 
 
 def _prepare_loss_masks(
@@ -271,14 +292,15 @@ def get_batch(
 
         if allgather_cp:
             assert batch.get("adapter_slots") is None, "allgather CP is currently not supported with multi-LoRA: "
-            assert max_seqlen % cp_size == 0, f"max_seqlen {max_seqlen} not divisible by cp_size {cp_size}"
-            local_len = max_seqlen // cp_size
-            start = parallel_state.cp.rank * local_len
-            tokens = [
-                F.pad(t, (0, max_seqlen - t.size(0)), value=pad_token_id)[start : start + local_len] for t in tokens
-            ]
-        else:
-            tokens = [slice_with_cp(t, pad_token_id, qkv_format, max_seqlen) for t in tokens]
+        layout = CPLayout.build(
+            qkv_format=qkv_format,
+            allgather_cp=allgather_cp,
+            cp_rank=parallel_state.cp.rank,
+            cp_size=cp_size,
+            max_seq_len=max_seqlen,
+        )
+        local_ranges = layout.local_ranges([t.size(0) for t in tokens])
+        tokens = [take_ranges(t, ranges, pad_token_id) for t, ranges in zip(tokens, local_ranges, strict=True)]
         sample_token_lengths = [t.size(0) for t in tokens]
         tokens = torch.stack(tokens)
 
@@ -317,7 +339,7 @@ def get_batch(
             tokens = torch.cat(tokens)
 
             # Always pad to reduce memory fragmentation and maybe make the computation faster
-            pad = (pad_size - tokens.size(0) % pad_size) % pad_size
+            pad = padded_token_count(tokens.size(0), pad_size) - tokens.size(0)
             if pad != 0:
                 tokens = F.pad(tokens, (0, pad), value=pad_token_id)
                 cu_seqlens.append(cu_seqlens[-1] + pad)
@@ -491,26 +513,36 @@ class DataIterator:
 
         Returns a dict mapping each key to a list subset (or None if absent).
         """
+        rows, next_offset = self._rows_at(self.offset)
         batch = {}
         for key in keys:
             vals = self.rollout_data.get(key, None)
             if vals is None:
                 batch[key] = None
+            elif isinstance(rows, slice):
+                assert rows.stop <= len(
+                    vals
+                ), f"offset: {self.offset}, micro_batch_size: {self.micro_batch_size}, len(vals): {len(vals)}"
+                batch[key] = vals[rows]
             else:
-                if self.micro_batch_indices is not None:
-                    indices = self.micro_batch_indices[self.offset]
-                    batch[key] = [vals[i] for i in indices]
-                else:
-                    assert self.offset + self.micro_batch_size <= len(
-                        vals
-                    ), f"offset: {self.offset}, micro_batch_size: {self.micro_batch_size}, len(vals): {len(vals)}"
-                    batch[key] = vals[self.offset : self.offset + self.micro_batch_size]
+                batch[key] = [vals[i] for i in rows]
 
-        if self.micro_batch_indices is not None:
-            self.offset += 1
-        else:
-            self.offset += self.micro_batch_size
+        self.offset = next_offset
         return batch
+
+    def microbatch_indices(self, count: int) -> list[list[int]]:
+        """Sample indices of the first `count` micro-batches, in the order `get_next` yields them."""
+        indices, offset = [], 0
+        for _ in range(count):
+            rows, offset = self._rows_at(offset)
+            indices.append(list(range(rows.start, rows.stop)) if isinstance(rows, slice) else rows)
+        return indices
+
+    def _rows_at(self, offset: int) -> tuple[slice | list[int], int]:
+        """Rows of the micro-batch that starts at `offset`, and the offset after it."""
+        if self.micro_batch_indices is not None:
+            return self.micro_batch_indices[offset], offset + 1
+        return slice(offset, offset + self.micro_batch_size), offset + self.micro_batch_size
 
     def reset(self) -> "DataIterator":
         """Reset internal offset to the start and return self."""

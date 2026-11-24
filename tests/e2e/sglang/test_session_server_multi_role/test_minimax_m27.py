@@ -29,14 +29,8 @@ register_ci_gate(metric_key="rollout/tito_session_mismatch_rate/v2/assistant_tex
 # context budget.
 #
 # M2.7's chat template gates reasoning_content on last_user_index, so a
-# scheduled USER_FOLLOWUP step strips prior <think> blocks; the fixed jinja
+# user follow-up strips prior <think> blocks; the fixed jinja
 # (clear_thinking=False) preserves history reasoning across user turns.
-#
-# tool_call_failure_mode="append_user": M2.7's strict template hard-asserts
-# that any ``tool`` role MUST follow an assistant with non-empty
-# ``tool_calls``, so APPEND_TOOL would be server-rejected.  Splicing a
-# user-role parse-failure message gives the model a clean retry hint without
-# breaking the tool-call invariant.
 #
 # ``reasoning_parser="minimax-append-think"`` matches the binding on
 # ``MinimaxM27TITOTokenizer``; ``resolve_reasoning_and_tool_call_parser``
@@ -49,7 +43,6 @@ CONFIG = ModelConfig(
     tp_size=4,
     cycles=2,
     assistant_text_threshold=0.1,
-    tool_call_failure_mode="append_user",
     # MiniMax does not reliably honor forced Anthropic tool_use responses.
     verify_anthropic=False,
 )

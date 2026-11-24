@@ -6,9 +6,11 @@ import torch
 from mbridge.core import register_model
 from mbridge.models import DeepseekV3Bridge
 
+from miles_plugins.mbridge.deepseek_mtp import DeepseekMtpBridgeMixin
+
 
 @register_model("deepseek_v32")
-class DeepseekV32Bridge(DeepseekV3Bridge):
+class DeepseekV32Bridge(DeepseekMtpBridgeMixin, DeepseekV3Bridge):
     _DSA_ATTENTION_MAPPING = {
         "self_attention.wq_b.weight": ["model.layers.{layer_number}.self_attn.indexer.wq_b.weight"],
         "self_attention.wk.weight": ["model.layers.{layer_number}.self_attn.indexer.wk.weight"],

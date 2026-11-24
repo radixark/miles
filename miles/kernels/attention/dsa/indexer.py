@@ -101,6 +101,14 @@ def _write_logits(q, k, weights, cu_seqlen_ks, cu_seqlen_ke, out, clean_logits, 
     )
 
 
+def score_rows(scores: torch.Tensor) -> torch.Tensor:
+    """indexer_logits_sbhd's [B, S, S_kv] scores as [B * S, S_kv] rows that keep their SCORE_ROW_ALIGN stride:
+    reshape gives a lone row the stride of its width, which the aligned top-k kernels refuse though they never
+    step it."""
+    assert scores.size(0) == 1 or scores.stride(0) == scores.size(1) * scores.stride(1)
+    return scores.as_strided((scores.size(0) * scores.size(1), scores.size(2)), (scores.stride(1), 1))
+
+
 def indexer_logits(
     q, k, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logits: bool = True, config: IndexerConfig | None = None
 ) -> torch.Tensor:

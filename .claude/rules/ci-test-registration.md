@@ -27,10 +27,11 @@ do when a check goes red is in `ci-failure-triage.md`.
 ## Host caches
 
 A runner host keeps `/data/miles_ci` across jobs and shares it among its
-runners; the rest of the job container is discarded with it. It holds the
-models, datasets and HF cache (mounted at `/root/models`, `/root/datasets`,
-`/root/.cache/huggingface`) and the compiled-kernel caches under
-`/data/miles_ci/jit`, configured by `_run-ci.yml`. Later jobs can reuse matching
+runners; the rest of the job container is discarded with it. A job container
+mounts only its models, datasets and HF cache (at `/root/models`,
+`/root/datasets`, `/root/.cache/huggingface`), the compiled-kernel caches under
+`/data/miles_ci/jit` and the dumps under `/data/miles_ci/dumps`, configured by
+`_run-ci.yml`; any other path under `/data/miles_ci` does not exist in a job. Later jobs can reuse matching
 cache entries; library-specific isolation and the TileLang exception are
 listed in `tests/ci/README.md`.
 
@@ -67,13 +68,14 @@ uses the 4-GPU suite to select small tests, but allocates the declared
 Every new CUDA test must declare `num_gpus` explicitly. Never lower it by
 introducing skips or reducing the parallel topology that the test covers.
 
-A new test needs no ROCm registration. A file that already has
-`register_rocm_ci(..., suite="nightly-stage-c-<N>-gpu-*")` keeps `<N>` equal to
-its CUDA stage's GPU count: a change that moves the CUDA registration to a
-stage with a different GPU count updates `<N>` in the same commit. The external
-nightly has only `stage-c` suites, so `stage-b-2-gpu-h200` pairs with
-`nightly-stage-c-2-gpu-*`. `tests/ci/test/test_ci_rocm_nightly_gpu_count.py`
-rejects a mismatch.
+A new test needs no ROCm registration. A file has at most one ROCm registration.
+A nightly-only one is
+`register_rocm_ci(..., suite="stage-c-<N>-gpu-mi350", labels=[...], nightly=True)`
+and keeps `<N>` equal to its CUDA stage's GPU count: a change that moves the CUDA
+registration to a stage with a different GPU count updates `<N>` in the same
+commit. ROCm has only `stage-c` suites, so `stage-b-2-gpu-h200` pairs with
+`stage-c-2-gpu-mi350`. `tests/ci/test/test_ci_rocm_nightly_gpu_count.py` rejects
+a mismatch.
 
 ## Declaration
 
@@ -89,7 +91,7 @@ register_cuda_ci(
 )
 ```
 
-- A GPU file has one top-level `register_cuda_ci(...)`, one `register_rocm_ci(...)` per ROCm suite it runs in, or both. The calls are parsed from the AST: top-level, literal arguments, no alias. `tests/fast/` files need none only when the implicit fast CPU registration fits; slower files declare `register_cpu_ci(...)` as specified above.
+- A GPU file has one top-level `register_cuda_ci(...)`, one `register_rocm_ci(...)`, or both. The calls are parsed from the AST: top-level, literal arguments, no alias. `tests/fast/` files need none only when the implicit fast CPU registration fits; slower files declare `register_cpu_ci(...)` as specified above.
 - `labels`: reuse a domain label from `tests/ci/labels.py`. A new label also
   needs a `run-ci-<key>` repository label, which only a maintainer can create,
   and an entry in `.github/workflows/policies/comment-command-access.json` to

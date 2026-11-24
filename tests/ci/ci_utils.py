@@ -31,6 +31,9 @@ from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENA
 # in sync with miles.utils.tracking_utils.ci_history.RECORD_DIR_ENV.
 CI_GATE_RECORD_DIR_ENV = "MILES_CI_GATE_RECORD_DIR"
 
+# ROCm uses a separately provisioned Neon credential; CUDA keeps its existing one.
+AMD_NEON_DATABASE_URL_ENV = "AMD_NEON_DATABASE_URL"
+
 # Accelerator memory is freed by the driver asynchronously after the holders are killed.
 _REAP_SETTLE_SECONDS = 10.0
 _REAP_POLL_SECONDS = 1.0
@@ -282,11 +285,13 @@ def gate_provenance_from_env() -> RunProvenance:
     )
 
 
-def build_store_from_env():
-    """Build the lazy hosted store, or explicitly skip history without a DSN."""
-    if os.environ.get(NEON_DATABASE_URL_ENV):
-        return NeonMetricHistoryStore()
-    message = "[CI Gate] skipped: NEON_DATABASE_URL is not set; no history enforcement."
+def build_store_from_env(*, backend: HWBackend = HWBackend.CUDA):
+    """Build the backend's lazy store, or explicitly skip without its own DSN."""
+    database_url_env = AMD_NEON_DATABASE_URL_ENV if backend == HWBackend.ROCM else NEON_DATABASE_URL_ENV
+    dsn = os.environ.get(database_url_env)
+    if dsn:
+        return NeonMetricHistoryStore(dsn=dsn, repository=os.environ["GITHUB_REPOSITORY"])
+    message = f"[CI Gate] skipped: {database_url_env} is not set; no history enforcement."
     logger.info(message)
     write_github_step_summary(message + "\n")
     return None
@@ -312,13 +317,15 @@ def run_gate_hook(
     write_baseline: bool,
     provenance: RunProvenance,
     now_iso: str | None = None,
+    enforce: bool = True,
 ) -> bool:
-    """Return whether the passed CUDA test also satisfies the enabled history gates.
+    """Return whether the passed test also satisfies the enabled history gates.
 
     Baseline writers retain the full trusted/untrusted verdict. Numerical
     enforcement needs ten trusted values per coordinate; missing metrics and
     gate/store errors fail tests with enforcement enabled. Other declarations
-    remain shadow.
+    remain shadow, and ``enforce=False`` (ROCm, until its history is in place)
+    keeps every declaration shadow while still writing baselines.
     """
     try:
         specs = parse_ci_gate_specs(filename)
@@ -327,7 +334,7 @@ def run_gate_hook(
         logger.warning(message)
         write_github_step_summary(message + "\n")
         return False
-    enforced_keys = {s.metric_key for s in specs if s.enforce}
+    enforced_keys = {s.metric_key for s in specs if s.enforce} if enforce else set()
     try:
         if merged_record_path is None:
             raise RuntimeError("passing-attempt metric record is unavailable")
@@ -624,7 +631,11 @@ def run_unittest_files(
                                 logger.warning(
                                     "[CI Gate] record merge failed for %s: %s: %s", filename, type(e).__name__, e
                                 )
-                        if gate_store is not None and isinstance(file, CIRegistry) and file.backend == HWBackend.CUDA:
+                        if (
+                            gate_store is not None
+                            and isinstance(file, CIRegistry)
+                            and file.backend in (HWBackend.CUDA, HWBackend.ROCM)
+                        ):
                             file_passed = run_gate_hook(
                                 filename,
                                 passing_record_path,
@@ -633,6 +644,7 @@ def run_unittest_files(
                                 executing_suite=gate_executing_suite,
                                 write_baseline=gate_write_baseline,
                                 provenance=gate_provenance or gate_provenance_from_env(),
+                                enforce=file.backend == HWBackend.CUDA,
                             )
                             if not file_passed:
                                 attempt_status = "FAIL"

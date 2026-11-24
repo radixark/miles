@@ -1,7 +1,8 @@
 """Qwen3-4B GRPO on one TPU v7x 2x2x1 host: torchtitan trainer + sglang-torchtpu rollout.
 
 sglang serves the policy on devices 4-7 and the trainer runs on devices 0-3 (scripts/tpu/torchtitan_launch.py).
-Run `sglang` in its own shell (it stays in the foreground), then `train`; scripts/tpu/README.md has the setup.
+Run `prepare` once, then `sglang` in its own shell (it stays in the foreground), then `train`; scripts/tpu/README.md
+has the setup.
 
 Args:
   --recipe: smoke (3 small rollouts of 32 samples), bench (4 full-size rollouts, no eval) or full.
@@ -11,9 +12,11 @@ Args:
   --sglang-env-script: sglang-torchtpu's environment script, sourced before the server starts.
   --slice-port-base: first of the 9 local ports the shared slice uses (8 slice builders, 1 store).
   --compile-cache-dir: keeps the trainer's compiled programs across runs; one directory per torch_tpu build.
+  --no-compile-warmup: compile the first step's programs in step 0 instead of while the engine starts.
   --extra-args: more train.py flags, appended last.
 
 Examples:
+  python scripts/tpu/run_qwen3_4b_torchtitan.py prepare
   python scripts/tpu/run_qwen3_4b_torchtitan.py sglang
   python scripts/tpu/run_qwen3_4b_torchtitan.py train --recipe full
 """
@@ -29,7 +32,10 @@ from scripts.tpu.torchtitan_launch import (
 
 from miles.utils.external_utils import command_utils
 
-MODEL = TitanTpuModel(name="Qwen3-4B", titan_model_name="qwen3", titan_model_flavor="4B")
+# a dense 4B fits its fully gathered params and grads
+MODEL = TitanTpuModel(
+    name="Qwen3-4B", titan_model_name="qwen3", titan_model_flavor="4B", train_args="--titan-fsdp-gather-once "
+)
 
 app = typer.Typer()
 
@@ -41,11 +47,22 @@ def sglang(args: ScriptArgs):
     serve_sglang(args, MODEL)
 
 
+def _prepare(args: ScriptArgs) -> None:
+    prepare_model_and_data(args, [f"hf download Qwen/{MODEL.name} --local-dir {args.model_dir}/{MODEL.name}"])
+
+
+@app.command()
+@command_utils.dataclass_cli
+def prepare(args: ScriptArgs):
+    """Download the model and datasets; sglang serves the downloaded checkpoint."""
+    _prepare(args)
+
+
 @app.command()
 @command_utils.dataclass_cli
 def train(args: ScriptArgs):
-    """Download the model and datasets, then train on devices 0-3 against the sglang server."""
-    prepare_model_and_data(args, [f"hf download Qwen/{MODEL.name} --local-dir {args.model_dir}/{MODEL.name}"])
+    """Prepare as `prepare` does, then train on devices 0-3 against the sglang server."""
+    _prepare(args)
     execute_train(args, MODEL, launcher_file=__file__)
 
 
