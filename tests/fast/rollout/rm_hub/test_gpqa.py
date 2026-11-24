@@ -56,6 +56,32 @@ class TestStripChainOfThought:
                 "<|start|>assistant<|channel|>final<|message|>The answer is A<|return|>",
                 "The answer is A",
             ),
+            # Closed framed turns quoting </think> keep the framed answer instead of re-splitting on </think>.
+            (
+                "to=user<|message|>Answer: A. The tag is </think>.<|eot|>",
+                "Answer: A. The tag is </think>.",
+            ),
+            (
+                "<|content_text|>Answer: A<|end_message|>"
+                "<|message_model|><|content_thinking|>A tag is </think>. Answer: B<|end_message|>",
+                "Answer: A",
+            ),
+            (
+                "<|content_text|>Answer: A<|end_message|>"
+                "<|message_model|><|content_thinking|>A tag is </think>. Answer: B",
+                "Answer: A",
+            ),
+            # Mid-prose end token does not truncate the answer; only the trailing turn-end token is stripped.
+            (
+                "to=user<|message|>The marker <|eot|> ends a turn. Answer: A.<|eot|>",
+                "The marker <|eot|> ends a turn. Answer: A.",
+            ),
+            # Consecutive Inkling assistant turns grade only the final turn.
+            (
+                "<|content_text|>Answer: B<|end_message|><|content_model_end_sampling|>"
+                "<|message_model|><|content_text|>Answer: A<|end_message|><|content_model_end_sampling|>",
+                "Answer: A",
+            ),
         ],
     )
     def test_rightmost_structural_delimiter_precedence(self, text, expected):
@@ -213,6 +239,11 @@ class TestComputeGpqaReward:
             "<|channel|>analysis<|message|>Answer: B<|end|><|start|>assistant<|channel|>final<|message|>A<|return|>",
             "<|open|>think<|sep|>Answer: B<|close|>think<|sep|><|open|>response<|sep|>A<|close|>response<|sep|><|close|>message<|sep|>",
             "<|channel>thought\nAnswer: B<channel|>A<turn|>",
+            "<think>\nAnswer: B\n</think>\n\nA<|im_end|>",
+            "<think>\nAnswer: B\n</think>\n\nA<｜end▁of▁sentence｜>",
+            "<think>\nAnswer: B\n</think>\n\nA[e~[",
+            "to=user<|message|>The marker <|eot|> ends a turn. Answer: A.<|eot|>",
+            "<|content_text|>A.<|end_message|><|message_model|><|content_text|> 42 eV<|end_message|><|content_model_end_sampling|>",
         ],
     )
     def test_framed_bare_letter_with_end_tokens_scores_one(self, response):

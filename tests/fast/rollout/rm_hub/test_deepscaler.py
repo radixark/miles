@@ -80,13 +80,35 @@ class TestGetDeepscalerRuleBasedReward:
         )
         assert get_deepscaler_rule_based_reward(text_then_think, "1") == 1
         assert get_deepscaler_rule_based_reward(text_then_think, "42") == 0
-        # Multiple text blocks in the final turn concatenate so earlier text is preserved.
+        # Multiple text blocks in the final turn concatenate with "" (matching InklingResponseParser).
         two_text_blocks = (
             r"<|content_thinking|>work<|end_message|>"
             r"<|message_model|><|content_text|>\boxed{42}<|end_message|>"
             r"<|message_model|><|content_text|> units<|end_message|><|content_model_end_sampling|>"
         )
         assert get_deepscaler_rule_based_reward(two_text_blocks, "42") == 1
+        split_boxed_blocks = (
+            r"<|content_text|>\box<|end_message|>"
+            r"<|message_model|><|content_text|>ed{42}<|end_message|><|content_model_end_sampling|>"
+        )
+        assert get_deepscaler_rule_based_reward(split_boxed_blocks, "42") == 1
+        # Consecutive assistant turns separated by <|content_model_end_sampling|> grade only the final turn.
+        two_turns_no_final_box = (
+            r"<|content_text|>\boxed{42}<|end_message|><|content_model_end_sampling|>"
+            r"<|message_model|><|content_text|>no final box<|end_message|><|content_model_end_sampling|>"
+        )
+        assert get_deepscaler_rule_based_reward(two_turns_no_final_box, "42") == 0
+        two_turns_unclosed_think = (
+            r"<|content_text|>\boxed{42}<|end_message|><|content_model_end_sampling|>"
+            r"<|message_model|><|content_thinking|>still thinking"
+        )
+        assert get_deepscaler_rule_based_reward(two_turns_unclosed_think, "42") == 0
+        # Mid-prose mention of <|message_tool|> inside model text is not a framed tool role.
+        prose_tool_token = (
+            r"<|content_text|>Inkling uses <|message_tool|> for tools. \boxed{42}"
+            r"<|end_message|><|content_model_end_sampling|>"
+        )
+        assert get_deepscaler_rule_based_reward(prose_tool_token, "42") == 1
         # Tool observation carrying <|content_text|> must not count as a model answer when final turn stops in thinking.
         tool_then_unclosed_think = (
             r"<|content_thinking|>call tool<|end_message|>"
@@ -110,7 +132,7 @@ class TestGetDeepscalerRuleBasedReward:
             r"<|channel|>analysis<|message|>work \boxed{42}<|end|>",
             r"<|content_thinking|>work \boxed{42}<|end_message|>",
             r" to=self<|message|>work \boxed{42}<|eom|>",
-            r"<|channel>thought\nwork \boxed{42}",
+            "<|channel>thought\n" + r"work \boxed{42}",
             r"◁think▷work \boxed{42}",
             r"<think>work \boxed{42}",
             "",
@@ -128,7 +150,17 @@ class TestGetDeepscalerRuleBasedReward:
             # Foreign markers quoted inside <think> must not shadow the real </think> closer.
             (r"<think>quote <|content_text|> \boxed{42}</think>no final box", 0),
             (r"<think>quote <|message_model|><|content_text|> \boxed{42}</think>no final box", 0),
+            (r"<think>quote <|message_model|><|content_text|> \boxed{42}<|end_message|></think>no final box", 0),
             (r"<think>quote <|channel|>final<|message|> \boxed{42}</think>no final box", 0),
+            (r"<think>quote to=user<|message|> \boxed{42}<|eot|></think>no final box", 0),
+            # Literal </think> or mid-prose <|eot|> inside a closed framed turn must not overwrite the real answer.
+            (r"to=user<|message|>\boxed{42}. The tag is </think>.<|eot|>", 1),
+            (r"to=user<|message|>The marker <|eot|> ends a turn. \boxed{42}<|eot|>", 1),
+            (
+                r"<|content_text|>\boxed{42}<|end_message|>"
+                r"<|message_model|><|content_thinking|>A tag is </think>. \boxed{wrong}<|end_message|>",
+                1,
+            ),
             (
                 r"<|content_thinking|>###Response </think>\boxed{42}<|end_message|>"
                 r"<|message_model|><|content_text|>\boxed{wrong}<|end_message|>",

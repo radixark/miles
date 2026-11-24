@@ -19,25 +19,38 @@ REASONING_DELIMITERS: dict[str, tuple[str | None, str]] = {
     "legacy_response": (None, "###Response"),
 }
 
-# Closing markers that terminate an answer block in framed formats.
+# Trailing end-of-answer / end-of-turn markers stripped when special tokens are kept.
 _ANSWER_END_TOKENS: dict[str, tuple[str, ...]] = {
-    "kimi_k3": ("<|close|>response<|sep|>",),
+    "kimi_k3": ("<|close|>message<|sep|>", "<|close|>response<|sep|>"),
     "harmony": ("<|return|>", "<|end|>"),
     "inkling": ("<|end_message|>",),
     "muse_spark": ("<|eot|>", "<|eom|>"),
     "gemma4": ("<turn|>",),
+    "think": ("<|im_end|>", "<｜end▁of▁sentence｜>", "[e~["),
 }
 
 _INKLING_MODEL_ROLE = "<|message_model|>"
 _INKLING_NON_MODEL_ROLES = ("<|message_tool|>", "<|message_user|>", "<|message_system|>")
+_INKLING_END_SAMPLING = "<|content_model_end_sampling|>"
 
 
-def _trim_answer_end(text: str, family: str) -> str:
+def _trim_answer_end(text: str, family: str) -> tuple[str, bool]:
+    """Strip trailing end-of-answer markers for *family*, returning ``(trimmed, was_closed)``."""
     end_tokens = _ANSWER_END_TOKENS.get(family)
     if not end_tokens:
-        return text
-    positions = [pos for token in end_tokens if (pos := text.find(token)) != -1]
-    return text[: min(positions)] if positions else text
+        return text, False
+    stripped = text.rstrip()
+    trimmed = False
+    changed = True
+    while changed:
+        changed = False
+        for token in end_tokens:
+            if stripped.endswith(token):
+                stripped = stripped[: -len(token)].rstrip()
+                trimmed = True
+                changed = True
+                break
+    return (stripped, True) if trimmed else (text, False)
 
 
 def _extract_inkling_answer(text: str) -> tuple[int, str] | None:
@@ -47,18 +60,32 @@ def _extract_inkling_answer(text: str) -> tuple[int, str] | None:
     response after the prompt's ``<|message_model|>``, or immediately after
     ``<|message_model|>``), so tool/user messages never match as a model answer
     and later thinking blocks cannot bleed into the extracted text.
-    """
-    _, content_text = REASONING_DELIMITERS["inkling"]
-    model_text = _INKLING_MODEL_ROLE + content_text
-    end_message = _ANSWER_END_TOKENS["inkling"][0]
 
-    # Restrict to the final model turn after any interleaved tool/user/system message.
-    turn_start = 0
+    Returns ``(extent, answer)`` where *extent* is the end of the turn's closed
+    Inkling frame (or the last text block start if unclosed).
+    """
+    content_thinking, content_text = REASONING_DELIMITERS["inkling"]
+    model_text = _INKLING_MODEL_ROLE + content_text
+    model_thinking = _INKLING_MODEL_ROLE + content_thinking
+    end_message = _ANSWER_END_TOKENS["inkling"][0]
+    turn_end_marker = end_message + _INKLING_END_SAMPLING
+
+    # Advance past any earlier assistant turn closed by <|end_message|><|content_model_end_sampling|>.
+    trimmed = text.rstrip()
+    search_end = len(trimmed) - len(_INKLING_END_SAMPLING) if trimmed.endswith(_INKLING_END_SAMPLING) else len(text)
+    prev_turn = text.rfind(turn_end_marker, 0, search_end)
+    turn_start = 0 if prev_turn == -1 else prev_turn + len(turn_end_marker)
+
+    # Also advance past any validly framed tool/user/system message (ignoring mid-prose mentions).
     for role in _INKLING_NON_MODEL_ROLES:
-        idx = text.rfind(role)
-        if idx != -1:
-            end = text.find(end_message, idx)
-            turn_start = max(turn_start, len(text) if end == -1 else end + len(end_message))
+        limit = len(text)
+        while (idx := text.rfind(role, 0, limit)) != -1:
+            prefix = text[:idx].rstrip()
+            if not prefix or prefix.endswith((end_message, _INKLING_END_SAMPLING)):
+                end = text.find(end_message, idx)
+                turn_start = max(turn_start, len(text) if end == -1 else end + len(end_message))
+                break
+            limit = idx
 
     turn = text[turn_start:]
     parts: list[str] = []
@@ -78,7 +105,21 @@ def _extract_inkling_answer(text: str) -> tuple[int, str] | None:
         parts.append(turn[body_start:] if body_end == -1 else turn[body_start:body_end])
         cursor = len(turn) if body_end == -1 else body_end + len(end_message)
 
-    return (last_pos, "\n".join(parts)) if parts else None
+    if not parts:
+        return None
+
+    close_end = max(
+        p + len(end_message) if (p := turn.rfind(end_message)) != -1 else -1,
+        p + len(_INKLING_END_SAMPLING) if (p := turn.rfind(_INKLING_END_SAMPLING)) != -1 else -1,
+    )
+    if close_end != -1 and turn[close_end:].lstrip().startswith(model_thinking):
+        extent = len(text)
+    elif close_end != -1:
+        extent = max(last_pos, turn_start + close_end)
+    else:
+        extent = last_pos
+    # Match InklingResponseParser (inkling_parser.py) which joins visible text blocks with "".
+    return (extent, "".join(parts))
 
 
 def extract_after_reasoning(text: str | None) -> str | None:
@@ -86,22 +127,24 @@ def extract_after_reasoning(text: str | None) -> str | None:
     if not text:
         return None
 
-    best_pos = -1
+    best_extent = -1
     best_answer: str | None = None
 
     inkling = _extract_inkling_answer(text)
     if inkling is not None:
-        best_pos, best_answer = inkling
+        best_extent, best_answer = inkling
 
-    # Pick the rightmost structural delimiter so a marker quoted inside reasoning
-    # never shadows the model's real closing delimiter that follows it.
+    # Compare against the rightmost structural boundary: a closed framed block extends to its
+    # closing marker so a literal </think> quoted inside it cannot overwrite the answer, while
+    # a foreign delimiter quoted inside <think>...</think> stays strictly left of </think>.
     for family, (_, delimiter) in REASONING_DELIMITERS.items():
         if family in ("inkling", "legacy_response"):
             continue
         pos = text.rfind(delimiter)
-        if pos > best_pos:
-            best_pos = pos
-            best_answer = _trim_answer_end(text[pos + len(delimiter) :], family)
+        if pos != -1 and pos >= best_extent:
+            answer, closed = _trim_answer_end(text[pos + len(delimiter) :], family)
+            best_extent = len(text) if closed else pos
+            best_answer = answer
 
     if best_answer is not None:
         return best_answer
