@@ -43,8 +43,6 @@ def get_pg_loss_reducer(
     Returns:
         A callable function that takes a tensor and returns a scalar tensor.
     """
-    # miles' own parallel state, set by every training backend (Megatron, FSDP, torchtitan);
-    # Megatron's mpu is only initialized on the Megatron backend.
     assert get_parallel_state().cp.size == 1, "This custom reducer only supports cp_size == 1"
 
     if calculate_per_token_loss:

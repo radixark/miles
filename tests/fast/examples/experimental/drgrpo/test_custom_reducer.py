@@ -13,7 +13,6 @@ REDUCER_PATH = "examples.experimental.DrGRPO.custom_reducer.get_pg_loss_reducer"
 
 
 def _parallel_state(*, cp_size: int) -> parallel.ParallelState:
-    """What the FSDP and torchtitan backends set: no Megatron mpu is initialized."""
     trivial = GroupInfo(rank=0, size=1, group=None)
     return parallel.ParallelState(
         intra_dp=trivial,
@@ -34,7 +33,7 @@ def reducer_factory(monkeypatch):
     return load_function(REDUCER_PATH)
 
 
-@pytest.mark.parametrize("calculate_per_token_loss", [False, True])
+@pytest.mark.parametrize("calculate_per_token_loss", [False, True], ids=["sample_mean", "per_token"])
 def test_reducer_runs_without_megatron_parallel_state(monkeypatch, reducer_factory, calculate_per_token_loss):
     monkeypatch.setattr(parallel, "_parallel_state", _parallel_state(cp_size=1))
     from examples.experimental.DrGRPO import custom_reducer

@@ -14,7 +14,7 @@ Use `--custom-pg-loss-reducer-function-path` to apply the custom reducer **only 
 --custom-pg-loss-reducer-function-path examples.experimental.DrGRPO.custom_reducer.get_pg_loss_reducer
 ```
 
-The reducer works with the Megatron, FSDP and torchtitan training backends, with `--context-parallel-size 1`.
+The reducer works with the Megatron, FSDP, and torchtitan (GPU / dynamic-shape platforms; unsupported under TPU padded rows) training backends, with `--context-parallel-size 1`.
 
 ## Customization
 
