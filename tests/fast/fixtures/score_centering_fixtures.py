@@ -57,6 +57,7 @@ def _args(**overrides: object) -> Namespace:
         length_penalty_min_tokens=1,
         use_dynamic_global_batch_size=False,
         balance_data=False,
+        trie_packing=False,
         qkv_format="thd",
         true_on_policy_mode=False,
         allgather_cp=False,

@@ -2084,6 +2084,9 @@ def miles_validate_args(args):
     if args.compile_warmup:
         validate_compile_warmup(args)
 
+    if args.trie_packing:
+        validate_trie_packing_args(args)
+
     validate_score_centering_args(args)
 
     _maybe_apply_dumper_overrides(args)
@@ -2153,6 +2156,39 @@ def validate_skip_actor_forward_only(args) -> None:
         assert args.global_batch_size == samples_per_rollout, (
             f"{option} requires exactly one optimizer step for {samples_per_rollout} rollout samples; "
             f"got --global-batch-size {args.global_batch_size}"
+        )
+
+
+def validate_trie_packing_args(args) -> None:
+    """Trie rows are FSDP thd micro-batches; the FSDP actor checks the model once its HF config is loaded."""
+    option = "--trie-packing"
+    if args.train_backend != "fsdp":
+        raise ValueError(f"{option} only supports --train-backend fsdp")
+    if args.qkv_format != "thd":
+        raise ValueError(f"{option} lays each micro-batch out as one row: it requires --qkv-format thd")
+    if not args.use_dynamic_batch_size or args.max_tokens_per_gpu is None:
+        raise ValueError(
+            f"{option} bounds each trie by --max-tokens-per-gpu: it requires --use-dynamic-batch-size and "
+            "--max-tokens-per-gpu"
+        )
+    incompatible_options = [
+        name
+        for name, enabled in (
+            ("--true-on-policy-mode", args.true_on_policy_mode),
+            ("--multi-lora-n-adapters", args.multi_lora),
+            ("--enable-witness", args.enable_witness),
+            # a user loss cannot be assumed to read the response-only logits through response_row_starts
+            ("--loss-type custom_loss", args.loss_type == "custom_loss"),
+        )
+        if enabled
+    ]
+    if incompatible_options:
+        raise ValueError(f"{option} is incompatible with: {', '.join(incompatible_options)}")
+    if args.use_rollout_routing_replay and args.use_output_store:
+        logger.warning(
+            f"{option} with --use-output-store packs samples on token ids alone: replay reads the routing per "
+            "micro-batch, after the schedule, so a token samples share replays one sample's routing, which is "
+            "the others' only where their rollouts routed it alike"
         )
 
 
