@@ -109,10 +109,19 @@ def encode_update_weights_from_tensor_body(
 class SGLangApiClient:
     server_url: str
     api_key: str | None = None
+    admin_api_key: str | None = None
+
+    @property
+    def _normal_headers(self) -> dict[str, str]:
+        # SGLang NORMAL routes require api_key even when admin_api_key is also configured, and allow any header when
+        # only admin_api_key is configured (sglang/srt/utils/auth.py:decide_request_auth).
+        return _compute_headers(self.api_key if self.api_key is not None else self.admin_api_key)
 
     @property
     def _headers(self) -> dict[str, str]:
-        return _compute_headers(self.api_key)
+        # SGLang ADMIN_FORCE / ADMIN_OPTIONAL routes require admin_api_key whenever configured, falling back to api_key
+        # on pre-#49896 servers or ADMIN_OPTIONAL routes with only api_key configured.
+        return _compute_headers(self.admin_api_key if self.admin_api_key is not None else self.api_key)
 
     async def _make_request(
         self,
@@ -168,7 +177,7 @@ class SGLangApiClient:
         """
         response = await GeneralHttpClientProvider.client().get(
             f"{self.server_url}/health_generate",
-            headers=self._headers,
+            headers=self._normal_headers,
             timeout=timeout,
         )
         response.raise_for_status()
@@ -214,7 +223,7 @@ class SGLangApiClient:
         response = await GeneralHttpClientProvider.client().get(
             f"{self.server_url}/parallelism_config",
             params={"rank": rank, "role": role},
-            headers=self._headers,
+            headers=self._normal_headers,
             timeout=5.0,
         )
         response.raise_for_status()
@@ -223,7 +232,7 @@ class SGLangApiClient:
     async def get_server_info(self):
         response = await GeneralHttpClientProvider.client().get(
             f"{self.server_url}/server_info",
-            headers=self._headers,
+            headers=self._normal_headers,
             timeout=5.0,
         )
         response.raise_for_status()
@@ -326,7 +335,7 @@ class SGLangApiClient:
         # new sglang change api from /get_weight_version to /model_info
         for endpoint in ("/model_info", "/get_weight_version"):
             response = await GeneralHttpClientProvider.client().get(
-                f"{self.server_url}{endpoint}", headers=self._headers
+                f"{self.server_url}{endpoint}", headers=self._normal_headers
             )
             if response.status_code == 200:
                 return response.json()["weight_version"]

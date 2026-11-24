@@ -55,6 +55,7 @@ class ServerCellMetadata(FrozenStrictBaseModel):
     num_gpus_per_engine: int
     gpu_offset: int
     sglang_api_key: str | None
+    sglang_admin_api_key: str | None = None
     worker_name: str
     needs_offload: bool
     update_weights: bool
@@ -176,7 +177,11 @@ class ServerCell:
 
     @property
     def api_client(self) -> SGLangApiClient:
-        return SGLangApiClient(server_url=self.server_url, api_key=self.meta.sglang_api_key)
+        return SGLangApiClient(
+            server_url=self.server_url,
+            api_key=self.meta.sglang_api_key,
+            admin_api_key=self.meta.sglang_admin_api_key,
+        )
 
     async def init(self) -> None:
         assert isinstance(self._state, StateUninitialized), f"{self._state=}"
@@ -216,7 +221,11 @@ class ServerCell:
             )
 
         if self.meta.needs_offload:
-            api_client = SGLangApiClient(server_url=addr_info.server_url)
+            api_client = SGLangApiClient(
+                server_url=addr_info.server_url,
+                api_key=self.meta.sglang_api_key,
+                admin_api_key=self.meta.sglang_admin_api_key,
+            )
             await api_client.release_memory_occupation()
             await api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 

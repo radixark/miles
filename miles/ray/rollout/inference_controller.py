@@ -509,6 +509,7 @@ def _compute_server_cell_meta_from_info(info: CellInfo) -> ServerCellMetadata:
         num_gpus_per_engine=info.meta["num_gpus_per_engine"],
         gpu_offset=info.meta["gpu_offset"],
         sglang_api_key=info.meta["sglang_api_key"],
+        sglang_admin_api_key=info.meta.get("sglang_admin_api_key"),
         worker_name=info.worker_names[0],
         needs_offload=info.meta["needs_offload"],
         update_weights=info.meta["update_weights"],
