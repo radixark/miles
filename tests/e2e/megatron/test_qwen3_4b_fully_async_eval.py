@@ -33,7 +33,7 @@ register_cuda_ci(
     hardware=["hopper", "blackwell"],
     num_gpus=8,
 )
-register_rocm_ci(est_time=1500, suite="nightly-stage-c-8-gpu-mi350", labels=["megatron", "eval", "fully-async"])
+register_rocm_ci(est_time=1500, suite="stage-c-8-gpu-mi350", labels=["megatron", "eval", "fully-async"])
 
 FEW_GPU = command_utils.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
 

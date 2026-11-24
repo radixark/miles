@@ -33,7 +33,7 @@ def _compute_headers(api_key: str | None) -> dict[str, str]:
     }
 
 
-async def probe_server_healthy(server_url: str, api_key: str | None, timeout: float = 5.0) -> bool:
+async def probe_server_healthy(server_url: str, api_key: str | None, timeout: float | httpx.Timeout = 5.0) -> bool:
     try:
         response = await GeneralHttpClientProvider.client().get(
             f"{server_url}/health_generate",

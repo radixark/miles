@@ -46,6 +46,7 @@ data and weights around.
 Not fully verified — for experimental and development use.
 
 - **[agentenv](https://github.com/radixark/miles/tree/main/examples/experimental/agentenv)**: Rollouts against AgentENV, a self-hosted platform running agent sandboxes on Firecracker microVMs.
+- **[bpo](https://github.com/radixark/miles/tree/main/examples/experimental/bpo)**: Custom loss plugin implementing Bellman Policy Optimization (BPO) via `--loss-type custom_loss`.
 - **[DrGRPO](https://github.com/radixark/miles/tree/main/examples/experimental/DrGRPO)**: Custom reducer for Dr.GRPO algorithm.
 - **[eval](https://github.com/radixark/miles/tree/main/examples/experimental/eval)**: Documentation and setup for evaluation environments using NeMo-Skills.
 - **[eval_multi_task](https://github.com/radixark/miles/tree/main/examples/experimental/eval_multi_task)**: Example for supporting OOD evaluation tasks, e.g., GPQA, IFBench.

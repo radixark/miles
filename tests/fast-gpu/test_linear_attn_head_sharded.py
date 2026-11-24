@@ -32,7 +32,7 @@ from linear_attn_reference import (  # noqa: E402
 register_cuda_ci(
     est_time=300, suite="stage-b-2-gpu-h200", labels=["precision"], hardware=["hopper", "blackwell"], num_gpus=2
 )
-register_rocm_ci(est_time=190, suite="nightly-stage-c-2-gpu-mi350", labels=["precision"])
+register_rocm_ci(est_time=190, suite="stage-c-2-gpu-mi350", labels=["precision"])
 
 HIDDEN = 256
 CASES = {

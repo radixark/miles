@@ -48,8 +48,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 # Attention + MLA only, EXCLUDING the DSA indexer (wq_b/wk/weights_proj) — on
 # tilelang the indexer adapter gets no gradient at all — and EXCLUDING the MLP/MoE
 # leaves (gate_proj/up_proj/down_proj): this is the MoE-LoRA-off ablation, so all
-# experts (routed + shared) and the dense MLP stay frozen.
-_DEFAULT_TARGET_MODULES = "o_proj,q_a_proj,kv_a_proj_with_mqa,q_b_proj,kv_b_proj"
+# experts (routed + shared) and the dense MLP stay frozen. kv_b_proj stays frozen too:
+# SGLang's DSA prefill rejects its adapter.
+_DEFAULT_TARGET_MODULES = "o_proj,q_a_proj,kv_a_proj_with_mqa,q_b_proj"
 
 
 @dataclass
@@ -353,7 +354,7 @@ def execute(args: ScriptArgs):
 
     traces_dir = args.save_traces_dir or f"{args.save_dir.rstrip('/')}/traces"
     if traces_dir != "disabled":
-        misc_args += f"--dump-details {traces_dir} --use-miles-dashboard "
+        misc_args += f"--dump-details {traces_dir} "
 
     # train/entropy_loss is a hardcoded 0.0 unless this is set, and a falling entropy is the
     # earliest warning of policy collapse on a long agentic run.
@@ -425,6 +426,8 @@ def execute(args: ScriptArgs):
     }
     if args.miles_host_ip:
         extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
+    if traces_dir != "disabled":
+        extra_env_vars["MILES_DASHBOARD"] = "1"
 
     U.execute_train(
         train_args=train_args,

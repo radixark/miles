@@ -10,6 +10,7 @@ GITHUB_TOKEN and LARK_WEBHOOK, or --dry-run to print the card JSON instead of po
 
 import argparse
 import base64
+import http.client
 import json
 import os
 import re
@@ -69,19 +70,24 @@ class GitHub:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     return json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
-                body = e.read().decode("utf-8", errors="replace")
+                try:
+                    body = e.read()
+                except http.client.IncompleteRead as exc:
+                    body = exc.partial
+                body = body.decode("utf-8", errors="replace")
                 transient = e.code in (429, 502, 503, 504) or (e.code == 403 and "rate limit" in body.lower())
                 if not transient or attempt == retries - 1:
                     raise RuntimeError(f"GET {url} -> {e.code}: {body[:300]}") from e
-            except urllib.error.URLError as e:
+            except (urllib.error.URLError, http.client.IncompleteRead, TimeoutError, ConnectionError) as e:
                 if attempt == retries - 1:
                     raise RuntimeError(f"GET {url} failed: {e}") from e
             time.sleep(2**attempt)
         raise RuntimeError("unreachable")
 
-    def paginate(self, path: str, key: str, params: dict | None = None, max_pages: int = 30) -> list:
+    def paginate(self, path: str, key: str, params: dict | None = None, max_pages: int = 100) -> list:
         params = dict(params or {})
-        params.setdefault("per_page", 100)
+        # Large jobs pages intermittently return truncated bodies or 502s on reruns.
+        params.setdefault("per_page", 30)
         items: list = []
         for page in range(1, max_pages + 1):
             params["page"] = page
@@ -480,8 +486,9 @@ def render_ci_status(
     ]
 
     sections = []
-    # None: first attempt, nothing to compare against
     if diff is None:
+        if attempt > 1:
+            sections.append(grey("Previous attempt unavailable. Flaky jobs could not be identified."))
         if failed:
             sections.append(
                 f"**Failed jobs ({len(failed)})**\n"
@@ -522,7 +529,23 @@ def cmd_ci_status(args: argparse.Namespace, gh: GitHub) -> None:
     if run.get("status") != "completed":
         print(f"run {args.run_id} status={run.get('status')} is not completed; skipping")
         return
-    jobs = gh.run_jobs(run["id"])
+    try:
+        jobs = gh.run_jobs(run["id"])
+    except RuntimeError:
+        conclusion = run.get("conclusion") or "unknown"
+        color = "grey"
+        if conclusion in FAILED_CONCLUSIONS:
+            color = "red"
+        elif conclusion == "success":
+            color = "green"
+        card = build_card(
+            f"{ci_display_name(run)}: {conclusion.upper()}",
+            color,
+            [md("Job details unavailable.")],
+            [("View run on GitHub", run["html_url"])],
+        )
+        post_card(card, args.webhook, args.dry_run)
+        raise
     attempt = run.get("run_attempt", 1)
     failed = failed_job_names(jobs)
     # failed nightly jobs get one automatic rerun; the card follows that attempt, so failed means failed twice
@@ -543,7 +566,10 @@ def cmd_ci_status(args: argparse.Namespace, gh: GitHub) -> None:
             return
     prev_failed = None
     if attempt > 1:
-        prev_failed = failed_job_names(gh.run_attempt_jobs(run["id"], attempt - 1))
+        try:
+            prev_failed = failed_job_names(gh.run_attempt_jobs(run["id"], attempt - 1))
+        except RuntimeError as exc:
+            print(f"Previous attempt unavailable: {exc}", file=sys.stderr)
     current_failed = list(failed.values())
     if prev_failed is not None:
         diff = diff_attempts(failed, prev_failed)

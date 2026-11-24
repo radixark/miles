@@ -10,7 +10,13 @@ from miles.utils.external_utils import command_utils
 register_cuda_ci(
     est_time=4000, suite="stage-c-4-gpu-h200", labels=["long"], hardware=["hopper", "blackwell"], num_gpus=4
 )
-register_rocm_ci(est_time=24000, suite="nightly-stage-c-4-gpu-mi350", labels=["long"])
+register_rocm_ci(
+    est_time=24000,
+    suite="stage-c-4-gpu-mi350",
+    labels=["long"],
+    nightly=True,
+    disabled="exceeds the 3-hour Spur job limit; re-enable once ROCm can run it within that budget (#4862)",
+)
 
 NUM_ROLLOUT = int(os.environ.get("MILES_TEST_NUM_ROLLOUT", "120"))
 

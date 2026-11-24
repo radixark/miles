@@ -8,7 +8,7 @@ from miles.utils.external_utils import command_utils
 register_cuda_ci(
     est_time=7000, suite="stage-c-2-gpu-h200", labels=["long"], hardware=["hopper", "blackwell"], num_gpus=2
 )
-register_rocm_ci(est_time=6800, suite="nightly-stage-c-2-gpu-mi350", labels=["long"])
+register_rocm_ci(est_time=6800, suite="stage-c-2-gpu-mi350", labels=["long"], nightly=True)
 
 MODEL_DIR = get_test_model_dir()
 DATA_DIR = get_test_data_dir()

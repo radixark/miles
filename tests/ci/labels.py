@@ -44,7 +44,8 @@ KNOWN_LABELS: dict[str, str] = {
     "mooncake": "Mooncake object-store rollout transfer tests",
     "miles-plugin": "miles_plugins extension tests (optimizers, model plugins)",
     "agentic": "Agentic sandbox e2e tests (need a sandbox-service route and key on the runner)",
-    "amd": "AMD MI350 ROCm tests (stage-c-4-gpu-mi350)",
+    "amd": "AMD MI350 ROCm tests (stage-c-{2,4,8}-gpu-mi350)",
+    "tpu": "TPU v7x launcher smoke runs (pr-test-tpu.yml)",
     "rpc-comm": "Ray cluster backend driving its workers over the rpc worker comm backend",
 }
 

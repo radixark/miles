@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euxo pipefail
 
-KUBECTL_VERSION="v1.36.3"
-HELM_VERSION="v4.2.3"
+KUBECTL_VERSION="v1.36.6"
+HELM_VERSION="v4.3.2"
 
 arch="${1:-}"
 [ -n "$arch" ] || arch="$(dpkg --print-architecture)"

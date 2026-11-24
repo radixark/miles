@@ -22,7 +22,7 @@ Miles trainer ── session server (records every chat-completions turn: token
 NeMo Gym responses-API agent server (mini_swe_agent_2)
    │  runs mini-swe-agent v2 against policy_base_url,
    │  per-task container via a nemo_gym.sandbox provider (docker here;
-   │  daytona / apptainer / ecs_fargate / opensandbox also exist)
+   │  daytona / e2b / apptainer / ecs_fargate / opensandbox also exist)
    ▼
 reward (official SWE-bench harness) ──► sample.metadata ──► reward hook
 ```
@@ -36,8 +36,8 @@ Run the NeMo Gym server from `main` (>= `fcca3a8`).
 
 ## Validation status
 
-Validated end-to-end (2026-07-28) — the commands in this README are the exact
-ones used:
+Validated end-to-end (2026-07-28) with the commands in this README at the
+time; the server setup has since been updated for current NeMo Gym `main`:
 
 - offline contract tests: 7/7 pass;
 - golden scan: gold patch through the official
@@ -51,6 +51,12 @@ ones used:
   container on the NeMo Gym host, the SWE-bench harness executed the task's
   full test suite (e.g. 175/175 PASS_TO_PASS on an unresolved attempt), and
   the grade flowed back into `rollout/raw_reward`.
+- **On E2B** (2026-11-02, no GPU, provider setup in
+  [Sandbox Providers](../../../docs/user-guide/sandbox-providers.md#e2b)):
+  golden scan 5/5 reward 1.0 on the five SWE-bench Verified rows of NeMo Gym's
+  `mini_swe_agent_2/data/example.jsonl`, run concurrently; API-policy scan with
+  `gemini-3.5-flash-lite` through Google's OpenAI-compatible endpoint finished
+  both episodes (one resolved, reward 1.0). The GPU smoke above ran on docker.
 
 Two known limitations from the smoke run:
 
@@ -78,8 +84,8 @@ cd Gym
 
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source $HOME/.local/bin/env
-uv venv --python 3.12 && source .venv/bin/activate
-uv sync --extra dev
+uv venv --python 3.13 && source .venv/bin/activate
+uv sync --extra dev --extra ray
 # Do NOT install the agent's requirements.txt into this venv. `gym env start`
 # builds a per-server venv from it automatically; installing it here bumps
 # shared pins (e.g. openai) past nemo-gym's caps, and the injected versions
@@ -88,10 +94,13 @@ uv sync --extra dev
 # Global config. The model-server entry must boot but receives no policy
 # traffic in this setup — every /run carries its own policy_base_url override
 # pointing at a Miles session URL. policy_model_name is the model name the
-# harness sends on each request (any string Miles' router accepts).
+# harness sends on each request (any string Miles' router accepts). Nothing
+# answers at that placeholder URL, so skip Gym's model-endpoint readiness
+# check; with it, gym env start shuts every server down after 600s.
 echo "policy_base_url: http://localhost:9/v1
 policy_api_key: dummy
 policy_model_name: model
+model_endpoint_readiness_timeout_seconds: 0
 default_host: 0.0.0.0" > env.yaml
 ```
 
@@ -106,6 +115,10 @@ gym env start \
     '++mini_swe_agent_2.responses_api_agents.mini_swe_agent_2.port=12000' \
     '++mini_swe_agent_2.responses_api_agents.mini_swe_agent_2.concurrency=16'
 ```
+
+To run the task containers on another provider, swap the docker config for
+that provider's; E2B needs a template per task image first, see
+[Sandbox Providers](../../../docs/user-guide/sandbox-providers.md#e2b).
 
 The first spin-up resolves each server's own venv, which takes a few minutes;
 the server is ready when the startup table lists `mini_swe_agent_2` on
@@ -230,7 +243,7 @@ on CPU-only machines, in three independent layers (all three pass as of
 
 1. `mini_swe_agent_2` dies at spin-up with an unresolvable-dependency error
    (`openai==X` vs `nemo-gym depends on openai<=Y`): the main venv has extra
-   packages installed. Recreate it with `uv sync --extra dev` only — see the
+   packages installed. Recreate it with `uv sync --extra dev --extra ray` only — see the
    setup note above.
 2. Slow episodes are usually docker pulls (each task has its own image,
    fetched on first use) or the in-container SWE-bench evaluation

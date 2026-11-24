@@ -836,6 +836,7 @@ def test_train_client_selects_only_the_generation_models_tokenizer(
                     ServerGroupConfig(
                         worker_type="regular",
                         num_gpus_per_engine=1,
+                        pp_size=1,
                         needs_offload=False,
                         overrides={"tokenizer_path": tokenizer},
                     )

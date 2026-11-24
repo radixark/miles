@@ -44,6 +44,7 @@ from miles.utils.arguments import (
     _resolve_run_uuid,
     _resolve_sample_ownership_check,
     _validate_deploy_component,
+    _validate_fused_lm_head_lora_targets,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
     hf_validate_args,
@@ -210,6 +211,24 @@ class TestRouterFlag:
         path = tmp_path / "config.yaml"
         path.write_text("router: unknown-router")
         with pytest.raises(ValueError, match="router"):
+            parse_megatron_test_config("--custom-config-path", str(path))
+
+
+class TestRemovedDashboardArgs:
+    @pytest.mark.parametrize(
+        ("config", "remedy"),
+        [
+            ("use_miles_dashboard: true", "MILES_DASHBOARD=1"),
+            ("dashboard_flush_interval: 5", "MILES_DASHBOARD_FLUSH_INTERVAL"),
+            ("dashboard_sglang_scrape_mode: router", "always scrapes each engine directly"),
+        ],
+        ids=["switch", "setting", "dropped"],
+    )
+    def test_a_config_file_that_sets_one_is_rejected(self, tmp_path: Path, config: str, remedy: str):
+        """Nothing reads these keys any more, so an old config must not silently run without its dashboard settings."""
+        path = tmp_path / "config.yaml"
+        path.write_text(config)
+        with pytest.raises(ValueError, match=remedy):
             parse_megatron_test_config("--custom-config-path", str(path))
 
 
@@ -1102,23 +1121,6 @@ class TestClusterBackend:
 
         assert args.object_store_backend == "ray"
 
-    def test_refuses_a_kubernetes_run_that_serves_the_miles_dashboard(self, tmp_path):
-        """The dashboard is a named Ray actor, and this backend brings up no Ray cluster to hold it."""
-        args = self._parse(
-            [
-                "--cluster-backend",
-                "kubernetes",
-                "--num-rollout",
-                "1",
-                "--use-miles-dashboard",
-                "--dump-details",
-                str(tmp_path),
-            ]
-        )
-
-        with pytest.raises(AssertionError, match="--use-miles-dashboard"):
-            miles_validate_args(args)
-
     def test_refuses_a_kubernetes_run_that_posts_through_the_ray_cluster(self):
         """Distributed POST reads ray.nodes(), which answers nothing where there is no cluster."""
         args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1", "--use-distributed-post"])
@@ -1179,24 +1181,6 @@ class TestClusterBackend:
         miles_validate_args(args)
 
         assert args.use_distributed_post is True
-
-    def test_a_ray_run_may_still_serve_the_miles_dashboard(self, tmp_path):
-        """The Ray cluster that holds the dashboard actor is exactly what this backend has."""
-        args = self._parse(
-            [
-                "--cluster-backend",
-                "ray",
-                "--num-rollout",
-                "1",
-                "--use-miles-dashboard",
-                "--dump-details",
-                str(tmp_path),
-            ]
-        )
-
-        miles_validate_args(args)
-
-        assert args.use_miles_dashboard is True
 
 
 def test_recompute_logprobs_via_prefill_flag_is_parsed():
@@ -1289,6 +1273,87 @@ def test_fused_log_probs_backend_rejects_what_it_does_not_cover(extra, vocab_siz
         validate_log_probs_backend_args(args)
 
 
+def _fused_lm_head_args(extra):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(["--log-probs-backend", "fused_lm_head", "--num-rollout", "1"] + extra + REQUIRED_ARGS)
+    args.vocab_size = 151_936  # a Megatron flag, absent from this parser
+    args.use_sampling_support_replay = False  # derived by miles_validate_args
+    args.overlap_moe_expert_parallel_comm = False  # Megatron flags
+    args.defer_embedding_wgrad_compute = False
+    return args
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (["--true-on-policy-mode"], "fused_lm_head does not support --true-on-policy-mode"),
+        (["--train-backend", "fsdp"], "needs --train-backend megatron"),
+        (["--loss-type", "custom_loss"], "supports --loss-type policy_loss and sft_loss"),
+        (["--loss-type", "score_centering"], "supports --loss-type policy_loss and sft_loss"),
+        (["--multi-lora-n-adapters", "2"], "does not support multi-LoRA"),
+    ],
+    ids=["true_on_policy", "fsdp", "custom_loss", "score_centering", "multi_lora"],
+)
+def test_fused_lm_head_backend_rejects_what_it_does_not_cover(extra, message):
+    with pytest.raises(ValueError, match=message):
+        validate_log_probs_backend_args(_fused_lm_head_args(extra))
+
+
+@pytest.mark.parametrize(
+    ("megatron_flag", "message"),
+    [
+        ("overlap_moe_expert_parallel_comm", "does not support --overlap-moe-expert-parallel-comm"),
+        ("defer_embedding_wgrad_compute", "does not support --defer-embedding-wgrad-compute"),
+    ],
+)
+def test_fused_lm_head_backend_rejects_megatron_schedules_it_breaks(megatron_flag, message):
+    args = _fused_lm_head_args(["--train-backend", "megatron"])
+    setattr(args, megatron_flag, True)
+    with pytest.raises(ValueError, match=message):
+        validate_log_probs_backend_args(args)
+
+
+@pytest.mark.parametrize(
+    ("backend", "lora_rank", "targets", "rejected"),
+    [
+        ("fused_lm_head", 8, ["model.layers.*.self_attn.q_proj", "lm_head"], True),
+        ("fused_lm_head", 8, ["model.layers.*.self_attn.q_proj"], False),
+        ("fused_lm_head", 0, ["lm_head"], False),
+        ("fused", 8, ["lm_head"], False),
+    ],
+    ids=["unembed_adapted", "no_unembed", "lora_off", "other_backend"],
+)
+def test_fused_lm_head_backend_rejects_lora_on_the_output_layer(backend, lora_rank, targets, rejected):
+    args = SimpleNamespace(
+        log_probs_backend=backend,
+        lora_rank=lora_rank,
+        lora_adapter_path=None,
+        hf_lora_targets=targets,
+        hf_checkpoint="unused",
+    )
+    hf_config = SimpleNamespace(to_dict=lambda: {"model_type": "qwen3"})
+    with patch("miles.utils.arguments.load_hf_config", return_value=hf_config):
+        if rejected:
+            with pytest.raises(ValueError, match="does not support LoRA on the output layer"):
+                _validate_fused_lm_head_lora_targets(args)
+        else:
+            _validate_fused_lm_head_lora_targets(args)
+
+
+@pytest.mark.parametrize("loss_type", ["policy_loss", "sft_loss"])
+def test_fused_lm_head_backend_accepts_policy_and_sft_losses_on_megatron(loss_type):
+    validate_log_probs_backend_args(_fused_lm_head_args(["--loss-type", loss_type, "--train-backend", "megatron"]))
+
+
+@pytest.mark.parametrize("mtp_training", [False, True])
+def test_fused_lm_head_backend_warns_once_that_mtp_heads_keep_their_logits(mtp_training, caplog):
+    extra = ["--train-backend", "megatron"] + (["--enable-mtp-training"] if mtp_training else [])
+    with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+        validate_log_probs_backend_args(_fused_lm_head_args(extra))
+    assert caplog.text.count("does not cover the MTP heads") == int(mtp_training)
+
+
 @pytest.mark.parametrize(
     ("sampling_args", "expected"),
     [
@@ -1326,7 +1391,7 @@ def test_sglang_parallel_sizes_keep_server_args_destinations():
             "5",
         ]
     )
-    args.rollout_num_gpus_per_engine = 8
+    args.rollout_num_gpus_per_engine = 8 * args.sglang_pp_size
     args.true_on_policy_mode = False
     args.sglang_enable_dp_attention = True
     args.loss_type = "policy_loss"
@@ -2063,20 +2128,6 @@ class TestCustomConfigAppliedBeforeDerivedArgs:
         miles_validate_args(args)
         assert args.rollout_sampling_logprobs_mode == ("support" if filtered else "selected")
 
-    def test_a_dashboard_switched_on_by_the_config_file_is_still_checked(self, tmp_path):
-        """Checking the dashboard before the file override let a file-only opt-in start without a dump directory."""
-        args = self._parse(tmp_path, [], "use_miles_dashboard: true\n")
-
-        with pytest.raises(AssertionError, match="--dump-details is required"):
-            miles_validate_args(args)
-
-    def test_a_dashboard_switched_off_by_the_config_file_drops_its_requirement(self, tmp_path):
-        """A run whose file turns the dashboard off must not be rejected for telemetry it will never write."""
-        args = self._parse(tmp_path, ["--use-miles-dashboard"], "use_miles_dashboard: false\n")
-        miles_validate_args(args)
-
-        assert args.use_miles_dashboard is False
-
     def test_eval_prompt_data_from_the_config_file_is_expanded_into_datasets(self, tmp_path):
         """Building the dataset list before the file override left the file's paths as an unparsed raw list."""
         args = self._parse(tmp_path, [], "eval_prompt_data: [/data/aime.jsonl]\n")
@@ -2553,6 +2604,63 @@ class TestPartitionRadixCacheByRolloutCallResolution:
             assert args.rollout_function_path == "miles.rollout.sglang_rollout.generate_rollout"
 
 
+class TestAllowTruncatedContinuationResolution:
+    def _parse(self, extra):
+        parser = get_megatron_arg_parser()
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def test_it_is_unset_before_validation(self):
+        """The flag is tri-state, so parsing alone must not decide it."""
+        assert self._parse(["--use-session-server"]).allow_truncated_continuation is None
+
+    @pytest.mark.parametrize(
+        ("tito_model", "expected"),
+        [("qwen3", True), ("deepseekv4", True), ("default", False), ("inkling", True), ("muse_spark", True)],
+    )
+    def test_an_omitted_flag_takes_the_family_default(self, caplog, tito_model, expected):
+        """A family continues truncated turns by default exactly when it declares a closer."""
+        args = self._parse(["--use-session-server", "--tito-model", tito_model])
+
+        with caplog.at_level(logging.INFO, logger="miles.utils.arguments"):
+            miles_validate_args(args)
+
+        assert args.allow_truncated_continuation is expected
+        verdict = "allowed" if expected else "rejected"
+        assert any(
+            record.getMessage()
+            == f"Session server truncated-turn continuation {verdict} (--tito-model={tito_model} default)"
+            for record in caplog.records
+        )
+
+    def test_an_explicit_no_wins_over_the_family_default(self):
+        args = self._parse(["--use-session-server", "--tito-model", "qwen3", "--no-allow-truncated-continuation"])
+
+        miles_validate_args(args)
+
+        assert args.allow_truncated_continuation is False
+
+    def test_a_family_without_a_closer_cannot_allow_it(self):
+        args = self._parse(["--use-session-server", "--tito-model", "default", "--allow-truncated-continuation"])
+        with pytest.raises(
+            ValueError, match="--allow-truncated-continuation is not supported with --tito-model=default"
+        ):
+            miles_validate_args(args)
+
+    @pytest.mark.parametrize("flag", ["--allow-truncated-continuation", "--no-allow-truncated-continuation"])
+    def test_an_explicit_flag_requires_the_session_server(self, flag):
+        """Without a session server nothing reads the flag, so setting it is refused instead of ignored."""
+        args = self._parse([flag])
+        with pytest.raises(ValueError, match="--allow-truncated-continuation requires --use-session-server"):
+            miles_validate_args(args)
+
+    def test_no_session_server_resolves_to_off(self):
+        args = self._parse([])
+
+        miles_validate_args(args)
+
+        assert args.allow_truncated_continuation is False
+
+
 class TestAllowStopTokenReplaceResolution:
     def _parse(self, extra):
         parser = get_megatron_arg_parser()
@@ -2627,6 +2735,7 @@ class TestAllowStopTokenReplaceResolution:
         group = ServerGroupConfig(
             worker_type=WorkerType.REGULAR,
             num_gpus_per_engine=1,
+            pp_size=1,
             overrides={"enable_streaming_session": True},
             needs_offload=False,
         )
@@ -3273,7 +3382,7 @@ def test_sglang_parallel_sizes_use_short_namespace_fields(parallel_args, expecte
     assert not hasattr(args, "sglang_pipeline_parallel_size")
     assert not hasattr(args, "sglang_expert_parallel_size")
 
-    args.rollout_num_gpus_per_engine = 8
+    args.rollout_num_gpus_per_engine = 8 * args.sglang_pp_size
     args.true_on_policy_mode = False
     args.recompute_logprobs_via_prefill = False
     args.sglang_router_policy = None
@@ -3904,6 +4013,19 @@ class TestWeightTransferModeSelection:
         with pytest.raises(ValueError, match=error):
             miles_validate_args(args)
 
+    @pytest.mark.parametrize("mode", ["broadcast", "p2p", "disk-delta"])
+    def test_mxfp4_routed_experts_cross_nccl_only_in_packed_buckets(self, mode):
+        """NCCL rejects float8_e8m0fnu, so the MXFP4 scales can only travel as bucket bytes."""
+        with pytest.raises(ValueError, match="use --update-weight-transfer-mode broadcast_packed"):
+            miles_validate_args(
+                self._parse(["--rollout-routed-expert-format", "mxfp4", "--update-weight-transfer-mode", mode])
+            )
+
+        for extra in (["--colocate"], ["--update-weight-transfer-mode", "broadcast_packed"]):
+            args = self._parse(["--rollout-routed-expert-format", "mxfp4", *extra])
+            _set_megatron_parallel_sizes(args)
+            miles_validate_args(args)
+
 
 def test_fully_async_warns_that_over_sampling_batch_size_is_ignored(caplog):
     """Fully-async never reads --over-sampling-batch-size; passing it silently does nothing."""
@@ -4291,6 +4413,16 @@ def test_dumper_retention_override_is_only_added_for_megatron(backend: str) -> N
         assert args.save_retain_interval is None
 
 
+def test_checkpoint_decay_rejects_megatron_save_retain_interval() -> None:
+    """Megatron's retention deletes on its own schedule, so the steps decay keeps or pins would not survive it."""
+    decay_args = ["--save", "/checkpoints/run", "--save-interval", "20"]
+    decay_args += ["--keep-recent-checkpoints", "2", "--keep-checkpoint-every", "40"]
+
+    miles_validate_args(_parse_megatron_args(decay_args))
+    with pytest.raises(AssertionError, match="cannot be combined with --save-retain-interval"):
+        miles_validate_args(_parse_megatron_args(decay_args + ["--save-retain-interval", "20"]))
+
+
 @pytest.mark.parametrize("backend", ["fsdp", "torchtitan"])
 @pytest.mark.parametrize("detach_heads", [True, False])
 def test_native_backends_own_the_mtp_detach_heads_argument(
@@ -4421,10 +4553,10 @@ class TestValidateCompileWarmup:
             ({"colocate": True}, "--colocate"),
             ({"pipeline_model_parallel_size": 2}, "--pipeline-model-parallel-size"),
             ({"multimodal_token_space_processing": True}, "--multimodal-token-space-processing"),
-            ({"use_rollout_routing_replay": True}, "--use-rollout-routing-replay"),
             ({"use_critic": True}, "--use-critic"),
             ({"custom_convert_samples_to_train_data_path": "x.py"}, "--custom-convert-samples-to-train-data-path"),
             ({"custom_reward_post_process_path": "x.py"}, "--custom-reward-post-process-path"),
+            ({"use_routing_replay": True}, "--use-routing-replay without --use-rollout-routing-replay"),
         ],
     )
     def test_a_run_the_synthetic_batch_cannot_mirror_is_refused(self, overrides: dict, flag: str) -> None:
@@ -4432,6 +4564,10 @@ class TestValidateCompileWarmup:
 
         with pytest.raises(ValueError, match=re.escape(flag)):
             validate_compile_warmup(_compile_warmup_args(**overrides))
+
+    def test_rollout_routing_replay_is_accepted(self) -> None:
+        """The warmup shard carries routing rows, so its steps compile the replay programs."""
+        validate_compile_warmup(_compile_warmup_args(use_rollout_routing_replay=True, use_routing_replay=True))
 
 
 class TestMultimodalTokenSpaceProcessingArgs:
@@ -4519,12 +4655,14 @@ class TestMultimodalTokenSpaceProcessingArgs:
         actor_group = ServerGroupConfig(
             worker_type=WorkerType.REGULAR,
             num_gpus_per_engine=1,
+            pp_size=1,
             needs_offload=False,
             overrides={"model_path": "/ckpt"},
         )
         reward_group = ServerGroupConfig(
             worker_type=WorkerType.REGULAR,
             num_gpus_per_engine=1,
+            pp_size=1,
             needs_offload=False,
             overrides={
                 "model_path": "/reward",
@@ -4561,6 +4699,7 @@ class TestMultimodalTokenSpaceProcessingArgs:
             ServerGroupConfig(
                 worker_type=WorkerType.REGULAR,
                 num_gpus_per_engine=1,
+                pp_size=1,
                 needs_offload=False,
                 overrides={"model_path": "/ckpt", "image_processor_backend": backend},
             )
