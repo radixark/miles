@@ -150,6 +150,7 @@ def _child_env(args: argparse.Namespace, api_key: str) -> dict[str, str]:
             "KIMI_MODEL_MAX_CONTEXT_SIZE": str(args.max_context_size),
             "KIMI_MODEL_THINKING_EFFORT": args.thinking_effort,
             "KIMI_EVAL_SYSTEM_DNS": "1" if args.system_dns else "0",
+            "KIMI_EVAL_STREAM_TRANSFERS": "1",
             "PYTHONPATH": os.pathsep.join([str(EXAMPLE_DIR), env.get("PYTHONPATH", "")]),
         }
     )

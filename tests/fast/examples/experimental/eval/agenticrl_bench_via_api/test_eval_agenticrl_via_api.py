@@ -1,9 +1,12 @@
+import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from examples.experimental.eval.agenticrl_bench_via_api import eval_agenticrl_via_api as eval
+from examples.experimental.eval.agenticrl_bench_via_api import sitecustomize
 
 
 def _args(monkeypatch: pytest.MonkeyPatch, *extra: str):
@@ -56,6 +59,7 @@ def test_child_env_passes_model_configuration_without_logging_secrets(monkeypatc
     assert env["OPENAI_API_KEY"] == "local-secret"
     assert env["KIMI_MODEL_BASE_URL"] == "https://api.example.com/v1"
     assert env["KIMI_EVAL_SYSTEM_DNS"] == "1"
+    assert env["KIMI_EVAL_STREAM_TRANSFERS"] == "1"
     assert env["PYTHONPATH"].startswith(str(eval.EXAMPLE_DIR))
 
 
@@ -138,3 +142,55 @@ def test_read_trial_result_reports_an_exception(tmp_path):
 
     assert result["reward"] is None
     assert result["exit_status"] == "NetworkConnectionError"
+
+
+class _FakeStream:
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return None
+
+    async def __aiter__(self):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _FakeFiles:
+    def __init__(self, chunks):
+        self._chunks = chunks
+        self.read_kwargs = None
+        self.writes = []
+
+    async def read(self, path, **kwargs):
+        self.read_kwargs = {"path": path, **kwargs}
+        return _FakeStream(self._chunks)
+
+    async def write(self, path, source, **kwargs):
+        self.writes.append({"path": path, "data": source.read(), **kwargs})
+
+
+def test_stream_transfers_use_file_streams_and_gzip(tmp_path):
+    files = _FakeFiles([b"streamed ", b"payload"])
+    environment = SimpleNamespace(_sandbox=SimpleNamespace(files=files))
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "nested").mkdir()
+    (source_dir / "nested" / "checkpoint.bin").write_bytes(b"checkpoint")
+
+    async def run():
+        await sitecustomize._stream_upload_dir(environment, source_dir, "/artifacts")
+        await sitecustomize._stream_upload_file(environment, source_dir / "nested" / "checkpoint.bin", "/single.bin")
+        await sitecustomize._stream_download_file(environment, "/remote.bin", tmp_path / "downloaded.bin")
+
+    asyncio.run(run())
+
+    assert (tmp_path / "downloaded.bin").read_bytes() == b"streamed payload"
+    assert files.read_kwargs == {"path": "/remote.bin", "format": "stream", "gzip": True}
+    assert files.writes == [
+        {"path": "/artifacts/nested/checkpoint.bin", "data": b"checkpoint", "gzip": True},
+        {"path": "/single.bin", "data": b"checkpoint", "gzip": True},
+    ]

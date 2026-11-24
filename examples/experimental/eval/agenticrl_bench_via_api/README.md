@@ -40,7 +40,11 @@ Use `--task` repeatedly to select several tasks. Without `--task`, the runner
 selects every directory containing `task.toml`. Use `--environment` and
 `--environment-kwarg KEY=VALUE` to configure the sandbox backend. For example,
 GPU allocation uses `--environment-kwarg allocate_gpus=true`. Add `--system-dns`
-when the Harbor client must use the operating system's DNS resolver.
+when the Harbor client must use the operating system's DNS resolver. Artifact
+uploads and downloads use streamed gzip transfers rather than buffering whole
+files or batches in memory, avoiding the buffered-request timeout on large
+checkpoints. For 16-hour open-ended tasks, set `--max-lifetime-secs 60000` so
+sandbox lifetime covers the full agent budget.
 
 The model endpoint must be reachable from the task environment. In particular,
 a GPU sandbox with public-internet-only access cannot call a model endpoint
