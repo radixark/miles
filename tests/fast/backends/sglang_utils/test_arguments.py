@@ -136,3 +136,56 @@ def test_rollout_kv_cache_dtype_defaults_to_the_platform_choice(
     validate_args(args)
 
     assert args.sglang_kv_cache_dtype == expected
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [
+        pytest.param(dict(dp=4, enable=True, attn=1), (1, 4), id="deprecated-spelling"),
+        pytest.param(dict(dp=4, enable=True, attn=2), (4, 2), id="explicit-attn-dp-size-wins"),
+        pytest.param(dict(dp=1, enable=False, attn=4), (1, 4), id="new-spelling"),
+        pytest.param(dict(dp=1, attn=4), (1, 4), id="engine-without-the-flag"),
+    ],
+)
+def test_deprecated_dp_attention_is_translated_to_attn_dp_size(flags: dict, expected: tuple[int, int]) -> None:
+    """Matches SGLang's _handle_deprecated_dp_attention; a namespace without the flag (SGLang main) is left alone."""
+    args = SimpleNamespace(sglang_dp_size=flags["dp"], sglang_attn_dp_size=flags["attn"])
+    if "enable" in flags:
+        args.sglang_enable_dp_attention = flags["enable"]
+
+    sglang_arguments.translate_deprecated_sglang_args(args)
+
+    assert (args.sglang_dp_size, args.sglang_attn_dp_size) == expected
+    assert not getattr(args, "sglang_enable_dp_attention", False)
+
+
+@pytest.mark.parametrize(("prefix", "inherit"), [("sglang", False), ("eval-sglang", True)])
+def test_deprecated_choice_to_flag_action_prefixes_targets_without_duplicate_default(
+    monkeypatch: pytest.MonkeyPatch, prefix: str, inherit: bool
+) -> None:
+    """SGLang's DeprecatedChoiceToFlagAction passes its own default and writes the dests named in `flags`."""
+
+    class DeprecatedChoiceToFlagAction(argparse.Action):
+        def __init__(self, option_strings, dest, flags, **kwargs):
+            self.flags = flags
+            super().__init__(
+                option_strings, dest, nargs=None, choices=list(flags), default=argparse.SUPPRESS, **kwargs
+            )
+
+        def __call__(self, parser, namespace, values, option_string=None):
+            setattr(namespace, self.flags[values][0], True)
+
+    def fake_add_cli_args(parser):
+        parser.add_argument("--enable-foo", action="store_true")
+        parser.add_argument(
+            "--legacy-mode", action=DeprecatedChoiceToFlagAction, flags={"foo": ("enable_foo", "--enable-foo")}
+        )
+
+    monkeypatch.setattr(ServerArgs, "add_cli_args", staticmethod(fake_add_cli_args))
+    parser = argparse.ArgumentParser()
+    dest_prefix = prefix.replace("-", "_") + "_"
+    sglang_arguments._add_prefixed_server_args(
+        parser, flag_prefix=prefix, dest_prefix=dest_prefix, skipped_args=[], inherit=inherit
+    )
+
+    assert vars(parser.parse_args([f"--{prefix}-legacy-mode", "foo"])) == {f"{dest_prefix}enable_foo": True}

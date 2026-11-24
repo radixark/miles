@@ -218,11 +218,7 @@ class WeightUpdater:
                 rollout_engines,
                 lora_name=lora_name,
                 lora_config=config,
-                pinned=sglang_attention_dp_enabled(
-                    attn_dp_size=self.args.sglang.base_args["attn_dp_size"],
-                    enable_dp_attention=self.args.sglang.base_args["enable_dp_attention"],
-                    dp_size=self.args.sglang.base_args["dp_size"],
-                ),
+                pinned=sglang_attention_dp_enabled(attn_dp_size=self.args.sglang.base_args["attn_dp_size"]),
             )
             self._registered_adapters.add(lora_name)
 

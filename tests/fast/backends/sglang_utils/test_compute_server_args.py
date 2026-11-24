@@ -222,10 +222,9 @@ class TestAdapterOwnership:
         assert server_args["lora_paths"] == ["miles_lora=/fake/adapter"]
 
 
+# the deprecated --sglang-enable-dp-attention spelling is rewritten to attn_dp_size at parse time
 _ATTENTION_DP_SPELLINGS = [
     pytest.param(dict(sglang_attn_dp_size=8), True, id="attn-dp-size"),
-    pytest.param(dict(sglang_enable_dp_attention=True, sglang_dp_size=8), True, id="deprecated-enable-dp-attention"),
-    pytest.param(dict(sglang_enable_dp_attention=True, sglang_dp_size=1), False, id="enable-dp-attention-at-dp-1"),
     pytest.param({}, False, id="no-attention-dp"),
 ]
 
