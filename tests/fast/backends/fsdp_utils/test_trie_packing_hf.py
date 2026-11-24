@@ -12,24 +12,27 @@ from types import SimpleNamespace
 import pytest
 import torch
 from tests.fast.backends.training_utils.reference_trie_attention import reference_trie_attention
-from transformers import Glm4MoeLiteConfig, Qwen3Config, Qwen3MoeConfig
+from transformers import Glm4MoeLiteConfig, Qwen3Config, Qwen3MoeConfig, Qwen3VLConfig
 from transformers.models.glm4_moe_lite.modeling_glm4_moe_lite import Glm4MoeLiteForCausalLM
 from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
 from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeForCausalLM
+from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLForConditionalGeneration
 
 from miles.backends.fsdp_utils import actor as fsdp_actor
 from miles.backends.fsdp_utils.actor import FSDPTrainRayActor
 from miles.backends.fsdp_utils.adaptations import routing_replay
+from miles.backends.fsdp_utils.adaptations.packing import keep_packing_kwargs_out_of_vision
 from miles.backends.fsdp_utils.adaptations.specs import resolve_arch_adapter
 from miles.backends.fsdp_utils.adaptations.trie_attention import (
     register_trie_attention,
     trie_attn_implementation,
+    trie_media,
     trie_model_spec,
 )
 from miles.backends.training_utils.data import context_parallel
 from miles.backends.training_utils.data import rollout as data_utils
 from miles.backends.training_utils.data import trie_batch
-from miles.backends.training_utils.data.trie_batch import TrieMicroBatches, trie_packing_keys
+from miles.backends.training_utils.data.trie_batch import TrieMicroBatches, trie_media_items, trie_packing_keys
 from miles.backends.training_utils.data.trie_packing import TrieKV, TrieModelSpec
 from miles.backends.training_utils.replay import data as replay_data
 from miles.utils.replay_base import routing_replay_manager
@@ -142,10 +145,12 @@ def _solo(model, samples) -> torch.Tensor:
     for index, total in enumerate(samples["total_lengths"]):
         tokens, response = samples["tokens"][index], samples["response_lengths"][index]
         positions = torch.arange(total)[None]
+        media = samples["multimodal_train_inputs"][index] if "multimodal_train_inputs" in samples else None
         logits = model(
             input_ids=tokens[None],
             position_ids=positions,
             use_cache=False,
+            **(media or {}),
         ).logits
         out.append(_log_probs(logits[0, total - response - 1 : total - 1], tokens[-response:]))
     return torch.cat(out)
@@ -153,8 +158,11 @@ def _solo(model, samples) -> torch.Tensor:
 
 def _trie_iterator(rollout, model_spec: TrieModelSpec, micro_batch_indices=None) -> data_utils.DataIterator:
     micro_batch_indices = micro_batch_indices or [list(range(len(rollout["tokens"])))]
-    packing_keys = trie_packing_keys(rollout)
-    trie_micro_batches = TrieMicroBatches(rollout, model_spec, micro_batch_indices, packing_keys=packing_keys)
+    media = trie_media_items(rollout, model_spec)
+    packing_keys = trie_packing_keys(rollout, media)
+    trie_micro_batches = TrieMicroBatches(
+        rollout, model_spec, micro_batch_indices, media=media, packing_keys=packing_keys
+    )
     return data_utils.DataIterator(
         rollout, micro_batch_indices=micro_batch_indices, trie_micro_batches=trie_micro_batches
     )
@@ -163,7 +171,9 @@ def _trie_iterator(rollout, model_spec: TrieModelSpec, micro_batch_indices=None)
 def _trie(model, samples, iterator=None) -> torch.Tensor:
     model.set_attn_implementation(trie_attn_implementation(model.config, "sdpa"))
     keys = ["tokens", "loss_masks", "total_lengths", "response_lengths"]
-    model_spec = trie_model_spec(model.config.get_text_config())
+    if "multimodal_train_inputs" in samples:
+        keys.append("multimodal_train_inputs")
+    model_spec = trie_model_spec(model.config.get_text_config(), media=trie_media(model.config))
     batch = data_utils.get_batch(
         iterator or _trie_iterator(samples, model_spec),
         keys,
@@ -307,3 +317,127 @@ def test_rollout_routing_replay_on_a_trie_row_matches_each_sample_alone(
     for name, p in model.named_parameters():
         if name in solo_grads:
             torch.testing.assert_close(p.grad, solo_grads[name], rtol=1e-4, atol=1e-6, msg=name)
+
+
+_IMAGE, _VISION_START, _VISION_END, _VIDEO = _VOCAB - 1, _VOCAB - 2, _VOCAB - 3, _VOCAB - 4
+_IMAGE_GRID = (1, 4, 4)  # 16 patch rows, 4 placeholder tokens after the 2x2 merge
+_VIDEO_GRID = (2, 4, 4)  # two frames of 4 placeholder tokens
+
+
+def _tiny_vl_model():
+    torch.manual_seed(0)
+    config = Qwen3VLConfig(
+        text_config=dict(
+            vocab_size=_VOCAB,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            rope_parameters={"rope_type": "default", "rope_theta": 10000.0, "mrope_section": [4, 2, 2]},
+        ),
+        vision_config=dict(
+            depth=2,
+            hidden_size=32,
+            intermediate_size=64,
+            num_heads=2,
+            patch_size=4,
+            temporal_patch_size=2,
+            spatial_merge_size=2,
+            out_hidden_size=64,
+            deepstack_visual_indexes=[0],
+        ),
+        image_token_id=_IMAGE,
+        video_token_id=_VIDEO,
+        vision_start_token_id=_VISION_START,
+        vision_end_token_id=_VISION_END,
+    )
+    model = Qwen3VLForConditionalGeneration._from_config(config, attn_implementation="sdpa")
+    keep_packing_kwargs_out_of_vision(model)
+    return model
+
+
+def _vl_samples() -> dict:
+    """Prompts that differ only in their image must not share it, even where their images straddle the end of
+    the prompt; one image is shared, and an image and a video, whose frames text separates, sit in responses."""
+    rng = random.Random(4)
+    text = lambda n: [rng.randrange(1, _VOCAB - 8) for _ in range(n)]  # noqa: E731
+    image = lambda: torch.randn(16, 3 * 2 * 4 * 4)  # noqa: E731
+    shown, other, answered = image(), image(), image()
+    placeholder = [_VISION_START] + [_IMAGE] * 4 + [_VISION_END]
+    system, question = text(12), text(3)
+    prompts = [
+        (system + placeholder + question, [shown]),
+        (system + placeholder + question, [shown]),
+        (system + placeholder + question, [other]),
+        (system + placeholder + question, [other]),
+        (system + placeholder[:-2], [shown]),  # the prompt ends inside its image
+        (system + placeholder[:-2], [other]),
+    ]
+    frame = [_VISION_START] + [_VIDEO] * 4 + [_VISION_END]
+    tokens, total_lengths, response_lengths, multimodal = [], [], [], []
+    for index, (prompt, images) in enumerate(prompts):
+        response = text(3) + (placeholder + text(2) if index == 1 else text(2))
+        if index == 3:
+            response = text(2) + frame + text(1) + frame + text(2)
+        if index >= 4:
+            response = [_IMAGE, _VISION_END] + text(4)
+        images = images + ([answered] if index == 1 else [])
+        tokens.append(torch.tensor(prompt + response))
+        total_lengths.append(len(prompt) + len(response))
+        response_lengths.append(len(response))
+        sample_media = {"pixel_values": torch.cat(images), "image_grid_thw": torch.tensor([_IMAGE_GRID] * len(images))}
+        if index == 3:
+            sample_media |= {"pixel_values_videos": torch.randn(32, 96), "video_grid_thw": torch.tensor([_VIDEO_GRID])}
+        multimodal.append(sample_media)
+    return {
+        "tokens": tokens,
+        "loss_masks": [torch.ones(r, dtype=torch.int) for r in response_lengths],
+        "total_lengths": total_lengths,
+        "response_lengths": response_lengths,
+        "multimodal_train_inputs": multimodal,
+    }
+
+
+def test_images_merge_on_content_and_each_is_fed_once(cpu_trie):
+    model = _tiny_vl_model()
+    samples = _vl_samples()
+
+    model.zero_grad()
+    solo = _solo(model, samples)
+    solo.sum().backward()
+    solo_grads = {name: p.grad.clone() for name, p in model.named_parameters() if p.grad is not None}
+    model.zero_grad()
+    trie = _trie(model, samples)
+    trie.sum().backward()
+
+    torch.testing.assert_close(trie, solo, rtol=0, atol=1e-5)
+    for name, p in model.named_parameters():
+        if name in solo_grads:
+            torch.testing.assert_close(p.grad, solo_grads[name], rtol=1e-4, atol=1e-5, msg=name)
+
+
+def test_routing_replay_lays_a_row_with_images_out_as_get_batch_does(cpu_trie, rollout_routing_replay):
+    """The replay fill builds the row ahead of get_batch, which then reuses it: both must see the same media."""
+    config = _tiny_vl_model().config
+    model_spec = trie_model_spec(config.get_text_config(), media=trie_media(config))
+    samples = _vl_samples()
+    routes = [torch.zeros(len(tokens) - 1, 1, 1, dtype=torch.long) for tokens in samples["tokens"]]
+    rollout_data = samples | {"rollout_routed_experts": routes}
+    iterator = _trie_iterator(rollout_data, model_spec)
+    args = SimpleNamespace(
+        use_rollout_routing_replay=True,
+        qkv_format="thd",
+        allgather_cp=False,
+        data_pad_size_multiplier=8,
+        train_backend="fsdp",
+        save_debug_train_data=None,
+    )
+    routing_replay.attach(args, [iterator], [1], rollout_data)
+    routing_replay_manager.wait_filled(0)
+    batch = data_utils.get_batch(
+        _trie_iterator(samples, model_spec), list(samples), pad_multiplier=8, qkv_format="thd"
+    )
+    replayed = iterator.trie_micro_batches.layout(0, pad_multiple=8)
+    torch.testing.assert_close(replayed.tokens, batch["trie_layout"].tokens)

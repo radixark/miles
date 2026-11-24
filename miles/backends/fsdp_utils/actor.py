@@ -13,6 +13,7 @@ from miles.backends.fsdp_utils.adaptations.trie_attention import (
     TrieAttentionArgs,
     register_trie_attention,
     trie_attn_implementation,
+    trie_media,
     trie_model_spec,
 )
 from miles.backends.fsdp_utils.config import FsdpArgsNamespace
@@ -201,7 +202,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
                 f"{args.backend.attn_implementation!r}, expected one of {sorted(FLASH_ATTN_MODULES)}"
             )
         register_trie_attention(args.backend.attn_implementation)
-        return trie_model_spec(self.hf_config.get_text_config())
+        return trie_model_spec(self.hf_config.get_text_config(), media=trie_media(self.hf_config))
 
     def _get_model_cls(self):
         if self._has_image_text_to_text_impl():
@@ -449,6 +450,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
                 "attention_mask": None,
                 "use_cache": False,
                 "miles_trie_attn_args": TrieAttentionArgs(batch["trie_layout"], batch["tokens"].device),
+                **(batch.get("multimodal_train_inputs") or {}),
             }
         model_args = {
             "input_ids": batch["tokens"],

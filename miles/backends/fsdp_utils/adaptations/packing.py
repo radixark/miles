@@ -86,6 +86,11 @@ def hf_packing_kwargs(
     }
 
 
+# The trie row the FSDP actor passes as ``miles_trie_attn_args`` (``trie_attention.py``) describes the language
+# model's tokens too.
+_LANGUAGE_MODEL_KWARG_NAMES = HF_PACKING_KWARG_NAMES | {"miles_trie_attn_args"}
+
+
 def keep_packing_kwargs_out_of_vision(model: nn.Module) -> None:
     """Drop the language model's packing kwargs at the vision tower's forward; idempotent, and a no-op
     without a tower. HF hands the tower its ``**kwargs`` too, so ``seq_idx`` would otherwise reach it."""
@@ -100,7 +105,7 @@ def keep_packing_kwargs_out_of_vision(model: nn.Module) -> None:
 
     @functools.wraps(vision_forward)
     def forward(*args, **kwargs):
-        return vision_forward(*args, **{k: v for k, v in kwargs.items() if k not in HF_PACKING_KWARG_NAMES})
+        return vision_forward(*args, **{k: v for k, v in kwargs.items() if k not in _LANGUAGE_MODEL_KWARG_NAMES})
 
     forward._drops_lm_packing_kwargs = True
     visual.forward = forward

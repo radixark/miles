@@ -12,6 +12,10 @@ agree on everything before them have the same hidden states. Each sample reads
 its rows back through its own token indices, a row several samples share once for each,
 so every per-sample, per-token value stays the sample's own.
 
+Every placeholder token of an image (or video) has the same id, so media tokens
+merge on their item's content instead, and each item a trie row holds is one
+run of tokens, fed to the model once.
+
 With rollout routing replay, a shared token also replays one routing, so samples
 share a token only where their rollouts routed it alike as well.
 """
@@ -31,25 +35,107 @@ from miles.utils.flat_token_trie import IndexedFlatTrie
 from miles.utils.token_trie_builder import TokenTrieBuilder
 
 
+# Above every vocabulary, so a media content id never equals a token id.
+_MEDIA_ID_BASE = 1 << 32
+
+
+@dataclass(frozen=True)
+class TrieModality:
+    """One media modality of a model's processor output (Qwen-VL style).
+
+    Items of the modality expand into ``token_id`` placeholders; their patch rows and per-item ``(t, h, w)``
+    grids sit under ``patches_key`` and ``grid_key``. An item has ``t * h * w`` patch rows and
+    ``t * h * w / merge**2`` placeholder tokens.
+    """
+
+    token_id: int
+    patches_key: str
+    grid_key: str
+    merge: int
+
+
+@dataclass(frozen=True)
+class MediaItem:
+    """One image or video of a sample: its placeholder positions (ascending), patch rows and grid."""
+
+    modality: int
+    positions: torch.Tensor
+    patches: torch.Tensor
+    grid: torch.Tensor
+
+    @functools.cached_property
+    def content_id(self) -> int:
+        """An id equal for two items exactly when their modality, grid and patches are, and unequal to every
+        token id; hashed once, as the scheduler and the layout both read it."""
+        digest = hashlib.blake2b(digest_size=8)
+        digest.update(bytes([self.modality]))
+        for tensor in (self.grid, self.patches):
+            digest.update(tensor.detach().cpu().contiguous().reshape(-1).view(torch.uint8).numpy().tobytes())
+        return _MEDIA_ID_BASE + int.from_bytes(digest.digest(), "little")
+
+
+def media_items(
+    tokens: torch.Tensor, multimodal: dict[str, torch.Tensor] | None, modalities: Sequence[TrieModality]
+) -> list[MediaItem]:
+    """A sample's media items, from its processor output: each item's placeholders, in order."""
+    if not multimodal:
+        return []
+    known = {key for modality in modalities for key in (modality.patches_key, modality.grid_key)}
+    if unknown := sorted(set(multimodal) - known):
+        raise ValueError(f"--trie-packing does not lay out multimodal inputs {unknown}")
+    items = []
+    for index, modality in enumerate(modalities):
+        if modality.grid_key not in multimodal:
+            continue
+        grids = multimodal[modality.grid_key]
+        sizes = grids.prod(dim=-1).tolist()
+        counts = [size // modality.merge**2 for size in sizes]
+        positions = (tokens == modality.token_id).nonzero().squeeze(1).cpu()
+        if positions.numel() != sum(counts):
+            raise ValueError(
+                f"{positions.numel()} placeholder tokens {modality.token_id}, but {modality.grid_key} expands to "
+                f"{sum(counts)}"
+            )
+        patches = multimodal[modality.patches_key].split(sizes)
+        for item_patches, grid, item_positions in zip(patches, grids, positions.split(counts), strict=True):
+            items.append(MediaItem(index, item_positions, item_patches, grid))
+    return items
+
+
+def _media_token_seq(tokens: Sequence[int], media: Sequence[MediaItem]) -> list[int]:
+    """A sample's token sequence for packing with media: each item's placeholders take its ``content_id``, so
+    items merge only on equal content."""
+    token_seq = list(tokens)
+    for item in media:
+        for position in item.positions.tolist():
+            token_seq[position] = item.content_id
+    return token_seq
+
+
 def routing_aware_packing_keys(
-    tokens: Sequence[torch.Tensor], routed_experts: Sequence[torch.Tensor]
+    tokens: Sequence[torch.Tensor],
+    routed_experts: Sequence[torch.Tensor],
+    media: Sequence[Sequence[MediaItem]] | None = None,
 ) -> list[list[int]]:
     """Each sample's packing key per token under rollout routing replay.
 
     A shared token replays one routing, but the rollout can route it differently for two samples (prefilled on
-    different engines, or decoded in different batches). A token's key is its id together with the routing the
-    rollout recorded for it, so samples share a token only where both agree.
+    different engines, or decoded in different batches). A token's key is its id (its item's content id for a
+    media placeholder) together with the routing the rollout recorded for it, so samples share a token only where
+    both agree.
 
     ``tokens[i]`` holds sample ``i``'s token ids (lengths vary by sample), ``routed_experts[i]`` the experts the
-    rollout routed each of them but the last to, ``[len(tokens[i]) - 1, layers, top_k]``.
+    rollout routed each of them but the last to, ``[len(tokens[i]) - 1, layers, top_k]``, and ``media[i]`` its
+    media items, if any.
     """
     packing_keys = []
-    for sample, experts in zip(tokens, routed_experts, strict=True):
+    for index, (sample, experts) in enumerate(zip(tokens, routed_experts, strict=True)):
+        ids = sample.tolist() if media is None else _media_token_seq(sample.tolist(), media[index])
         rows = [row.tobytes() for row in experts.flatten(1).numpy()] + [b""]
         packing_keys.append(
             [
                 int.from_bytes(hashlib.blake2b(token.to_bytes(16, "little") + row, digest_size=8).digest(), "little")
-                for token, row in zip(sample.tolist(), rows, strict=True)
+                for token, row in zip(ids, rows, strict=True)
             ]
         )
     return packing_keys
@@ -86,14 +172,17 @@ def _best_fit_trie_index(
 def pack_trie_bins(
     tokens: Sequence[Sequence[int]],
     max_bin_width: int,
+    media: Sequence[Sequence[MediaItem]] | None = None,
     packing_keys: Sequence[Sequence[int]] | None = None,
 ) -> list[IndexedFlatTrie]:
     """Best-fit samples into tries of at most ``max_bin_width`` tokens before padding.
 
     A sample longer than ``max_bin_width`` gets a trie of its own, as it trains alone under standard packing: no
     other sample fits beside it. Samples merge where their ``packing_keys`` agree (``routing_aware_packing_keys``),
-    else where their tokens do.
+    else where their tokens do, media placeholders on their items' content.
     """
+    if packing_keys is None and media is not None:
+        packing_keys = [_media_token_seq(sample, items) for sample, items in zip(tokens, media, strict=True)]
     if packing_keys is not None:
         return _pack_trie_bins_on_packing_keys(tokens, max_bin_width, packing_keys)
     if max_bin_width <= 0:
@@ -285,13 +374,14 @@ def micro_batch_trie_layout(
     *,
     window_start_multiple: int,
     pad_multiple: int,
+    media: Sequence[Sequence[MediaItem]] | None = None,
     packing_keys: Sequence[Sequence[int]] | None = None,
 ) -> TrieLayout:
     """The one trie row holding a scheduled micro-batch's samples, laid out for ``model_spec``'s layers."""
     # a response's first token is predicted from the last prompt token's row
     if any(total - response < 1 for total, response in zip(total_lengths, response_lengths, strict=True)):
         raise ValueError("trie packing needs at least one prompt token per sample")
-    bins = pack_trie_bins(tokens, sum(total_lengths), packing_keys)
+    bins = pack_trie_bins(tokens, sum(total_lengths), media, packing_keys)
     if len(bins) != 1:
         raise AssertionError(f"a micro-batch packed into {len(bins)} tries, expected 1")
     return build_trie_layout(
@@ -352,6 +442,39 @@ def trie_input_loss_mask(
     return mask
 
 
+def trie_media_inputs(
+    layout: TrieLayout, media: Sequence[Sequence[MediaItem]], modalities: Sequence[TrieModality]
+) -> dict[str, torch.Tensor] | None:
+    """The micro-batch's media as its trie row holds them: each item once, in token order.
+
+    A model places an item's features at its placeholders in row order, so the items' tokens must not
+    interleave, and every placeholder of the row must be one of theirs.
+    """
+    occurrences: dict[int, tuple[MediaItem, torch.Tensor]] = {}
+    for token_indices, items in zip(_sample_token_indices(layout), media, strict=True):
+        for item in items:
+            item_token_indices = token_indices[item.positions]
+            occurrences.setdefault(int(item_token_indices[0]), (item, item_token_indices))
+    if not occurrences:
+        return None
+    ordered = [occurrences[first] for first in sorted(occurrences)]
+    token_indices = torch.cat([item_token_indices for _, item_token_indices in ordered])
+    if not bool((token_indices.diff() > 0).all()):
+        raise AssertionError("media items' tokens interleave in the trie row")
+    inputs = {}
+    for index, modality in enumerate(modalities):
+        items = [item for item, _ in ordered if item.modality == index]
+        placeholders = int((layout.tokens == modality.token_id).sum())
+        if placeholders != sum(item.positions.numel() for item in items):
+            raise AssertionError(
+                f"the trie row holds {placeholders} {modality.patches_key} placeholders, its items fewer"
+            )
+        if items:
+            inputs[modality.patches_key] = torch.cat([item.patches for item in items])
+            inputs[modality.grid_key] = torch.stack([item.grid for item in items])
+    return inputs
+
+
 def trie_replay_rows(layout: TrieLayout, rows: Sequence[torch.Tensor]) -> torch.Tensor:
     """A trie row's per-token replay rows, from each sample's per-token rows in micro-batch (pool) order.
 
@@ -378,6 +501,8 @@ class TrieModelSpec:
     """What a model's trie rows depend on, read from its config.
 
     ``sliding_window_size`` is the number of tokens a sliding layer attends over, if any layer slides.
+    ``media`` are the media modalities of the model's processor output.
     """
 
     sliding_window_size: int | None = None
+    media: tuple[TrieModality, ...] = ()

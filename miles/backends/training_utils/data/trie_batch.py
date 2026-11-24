@@ -10,15 +10,19 @@ from collections.abc import Sequence
 import torch
 import torch.distributed as dist
 
+from miles.backends.training_utils.data.token_space_media_process import resolved_multimodal_train_inputs
 from miles.backends.training_utils.data.trie_packing import (
     WINDOW_START_MULTIPLE,
+    MediaItem,
     TrieLayout,
     TrieModelSpec,
+    media_items,
     micro_batch_trie_layout,
     pack_trie_bins,
     response_logit_rows,
     routing_aware_packing_keys,
     trie_input_loss_mask,
+    trie_media_inputs,
 )
 from miles.platforms import current_platform
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
@@ -32,7 +36,8 @@ logger = logging.getLogger(__name__)
 class TrieMicroBatches:
     """A rollout's trie micro-batches: the samples each holds, and its trie row, built on first use.
 
-    ``packing_keys`` are each sample's packing keys (``trie_packing_keys``), as the schedule packed them.
+    ``media`` and ``packing_keys`` are each sample's media items and packing keys (``trie_media_items``,
+    ``trie_packing_keys``), as the schedule packed them.
     """
 
     def __init__(
@@ -41,11 +46,13 @@ class TrieMicroBatches:
         model_spec: TrieModelSpec,
         micro_batch_indices: list[list[int]],
         *,
+        media: list[list[MediaItem]] | None,
         packing_keys: list[list[int]] | None,
     ) -> None:
         self.rollout_data = rollout_data
         self.model_spec = model_spec
         self.micro_batch_indices = micro_batch_indices
+        self._media = media
         self._packing_keys = packing_keys
         self._layouts: dict[int, TrieLayout] = {}
 
@@ -60,6 +67,7 @@ class TrieMicroBatches:
                 self.model_spec,
                 window_start_multiple=WINDOW_START_MULTIPLE,
                 pad_multiple=pad_multiple,
+                media=_take(self._media, rows),
                 packing_keys=_take(self._packing_keys, rows),
             )
         return self._layouts[index]
@@ -69,12 +77,17 @@ class TrieMicroBatches:
 
         The model scores only the rows that predict a response (``trie_logit_rows``), so the logits
         hold the responses back to back and ``response_row_starts`` tells the loss where each begins.
+        The row's media are each item once, in token order (``trie_media_inputs``).
         """
-        for key in ("adapter_slots", "multimodal_train_inputs", "witness_ids", "mrope_position_ids"):
+        for key in ("adapter_slots", "witness_ids", "mrope_position_ids"):
             assert batch.get(key) is None, f"trie packing does not support {key}"
         layout = self.layout(index, pad_multiple=pad_multiple)
         device = current_platform.current_device()
         total_lengths, response_lengths = batch["total_lengths"], batch["response_lengths"]
+        if batch.get("multimodal_train_inputs") is not None:
+            media = _take(self._media, self.micro_batch_indices[index])
+            assert media is not None, "trie packing lays out no media for this model"
+            batch["multimodal_train_inputs"] = trie_media_inputs(layout, media, self.model_spec.media)
         num_tokens = layout.num_tokens
         batch["unconcat_tokens"] = batch["tokens"]
         batch["tokens"] = layout.tokens.to(device).unsqueeze(0)
@@ -109,8 +122,9 @@ def schedule_trie_micro_batches(
 ) -> tuple[TrieMicroBatches, list[int]]:
     """Per step, this rank's samples as prefix tries of at most ``max_tokens_per_gpu`` distinct tokens, split until
     every DP rank runs the same number of micro-batches; and the number of micro-batches per step."""
-    # the schedule packs routing as the trie rows will, so their budget holds
-    packing_keys = trie_packing_keys(rollout_data)
+    # the schedule packs media and routing as the trie rows will, so their budget holds
+    media = trie_media_items(rollout_data, model_spec)
+    packing_keys = trie_packing_keys(rollout_data, media)
     tokens, total_lengths = rollout_data["tokens"], rollout_data["total_lengths"]
     steps, logical, physical = [], 0, 0
     for step in range(num_steps):
@@ -118,6 +132,7 @@ def schedule_trie_micro_batches(
         tries = pack_trie_bins(
             [tokens[i].tolist() for i in range(start, end)],
             max_tokens_per_gpu,
+            None if media is None else media[start:end],
             None if packing_keys is None else packing_keys[start:end],
         )
         steps.append([list(trie.tags) for trie in tries])
@@ -137,11 +152,25 @@ def schedule_trie_micro_batches(
         expand_bins_by_splitting(bins, target, total_lengths[start : start + num_local_gbs])
         assert len(bins) == target, f"step {step}: {num_local_gbs} samples cannot fill {target} trie micro-batches"
         micro_batch_indices.extend([[start + i for i in sorted(trie_bin)] for trie_bin in bins])
-    trie_micro_batches = TrieMicroBatches(rollout_data, model_spec, micro_batch_indices, packing_keys=packing_keys)
+    trie_micro_batches = TrieMicroBatches(
+        rollout_data, model_spec, micro_batch_indices, media=media, packing_keys=packing_keys
+    )
     return trie_micro_batches, num_microbatches
 
 
-def trie_packing_keys(rollout_data: RolloutBatch) -> list[list[int]] | None:
+def trie_media_items(rollout_data: RolloutBatch, model_spec: TrieModelSpec) -> list[list[MediaItem]] | None:
+    """Each sample's media items, for a model whose trie rows lay media out; None without media."""
+    multimodal = rollout_data.get("multimodal_train_inputs")
+    if multimodal is None or not model_spec.media:
+        return None
+    multimodal = resolved_multimodal_train_inputs(multimodal)
+    return [
+        media_items(tokens, sample, model_spec.media)
+        for tokens, sample in zip(rollout_data["tokens"], multimodal, strict=True)
+    ]
+
+
+def trie_packing_keys(rollout_data: RolloutBatch, media: list[list[MediaItem]] | None) -> list[list[int]] | None:
     """Each sample's packing keys under rollout routing replay (``routing_aware_packing_keys``), None without it.
 
     Rows held in the output store are read per micro-batch, after the schedule, so their samples pack on tokens.
@@ -149,4 +178,4 @@ def trie_packing_keys(rollout_data: RolloutBatch) -> list[list[int]] | None:
     routed_experts = rollout_data.get("rollout_routed_experts")
     if routed_experts is None or is_segments_column(routed_experts):
         return None
-    return routing_aware_packing_keys(rollout_data["tokens"], routed_experts)
+    return routing_aware_packing_keys(rollout_data["tokens"], routed_experts, media)

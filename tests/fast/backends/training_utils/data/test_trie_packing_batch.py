@@ -15,6 +15,7 @@ from miles.backends.training_utils.data.trie_batch import (
     trie_packing_keys,
 )
 from miles.backends.training_utils.data.trie_packing import (
+    TrieModality,
     TrieModelSpec,
     micro_batch_trie_layout,
     routing_aware_packing_keys,
@@ -58,8 +59,10 @@ def on_cpu(monkeypatch):
 
 def _trie_iterator(rollout: dict, micro_batch_indices: list[list[int]] | None = None) -> data_utils.DataIterator:
     micro_batch_indices = micro_batch_indices or [list(range(len(rollout["tokens"])))]
-    packing_keys = trie_packing_keys(rollout)
-    trie_micro_batches = TrieMicroBatches(rollout, TrieModelSpec(), micro_batch_indices, packing_keys=packing_keys)
+    packing_keys = trie_packing_keys(rollout, media=None)
+    trie_micro_batches = TrieMicroBatches(
+        rollout, TrieModelSpec(), micro_batch_indices, media=None, packing_keys=packing_keys
+    )
     return data_utils.DataIterator(
         rollout, micro_batch_indices=micro_batch_indices, trie_micro_batches=trie_micro_batches
     )
@@ -240,7 +243,6 @@ def _trie_args(**overrides):
         true_on_policy_mode=False,
         multi_lora=False,
         loss_type="policy_loss",
-        multimodal_token_space_processing=False,
         enable_witness=False,
         use_dynamic_batch_size=True,
         max_tokens_per_gpu=8192,
@@ -269,6 +271,32 @@ def test_trie_packing_refuses_what_it_does_not_implement(override, message):
         validate_trie_packing_args(_trie_args(**override))
 
 
+_IMAGE = 99
+
+
+def test_the_token_budget_holds_for_samples_whose_images_differ(monkeypatch):
+    """Placeholders of different images have one id; the schedule must not count them as shared."""
+    rng = random.Random(0)
+    system = [rng.randrange(1, 50) for _ in range(10)]
+    modality = TrieModality(token_id=_IMAGE, patches_key="pixel_values", grid_key="image_grid_thw", merge=1)
+    tokens, multimodal = [], []
+    for _ in range(8):
+        tokens.append(torch.tensor(system + [_IMAGE] * 8 + [rng.randrange(1, 50) for _ in range(6)]))
+        multimodal.append({"pixel_values": torch.randn(8, 4), "image_grid_thw": torch.tensor([[1, 2, 4]])})
+    rollout = {
+        "tokens": tokens,
+        "total_lengths": [len(t) for t in tokens],
+        "response_lengths": [3] * len(tokens),
+        "loss_masks": [torch.ones(3, dtype=torch.int)] * len(tokens),
+        "multimodal_train_inputs": multimodal,
+    }
+    budget = max(rollout["total_lengths"]) + 10
+    model_spec = TrieModelSpec(media=(modality,))
+    trie_micro_batches, _ = _schedule(monkeypatch, rollout, peer_counts=[0], max_tokens=budget, model_spec=model_spec)
+
+    assert max(_row_sizes(trie_micro_batches)) <= budget
+
+
 def test_the_token_budget_holds_for_samples_whose_routing_differs(monkeypatch):
     """Samples their rollouts routed apart share no token; the schedule must not count those tokens as shared."""
     rng = random.Random(0)
@@ -282,7 +310,7 @@ def test_the_token_budget_holds_for_samples_whose_routing_differs(monkeypatch):
         "loss_masks": [torch.ones(3, dtype=torch.int)] * len(tokens),
         "rollout_routed_experts": routed_experts,
     }
-    assert trie_packing_keys(rollout) == routing_aware_packing_keys(tokens, routed_experts)
+    assert trie_packing_keys(rollout, media=None) == routing_aware_packing_keys(tokens, routed_experts)
     budget = 3 * len(shared)
     trie_micro_batches, _ = _schedule(monkeypatch, rollout, peer_counts=[0], max_tokens=budget)
 
@@ -292,6 +320,6 @@ def test_the_token_budget_holds_for_samples_whose_routing_differs(monkeypatch):
 def test_routing_keys_need_the_rows_inline():
     """Without routing replay, or with its rows in the output store (read per micro-batch), samples pack on tokens."""
     rollout = _rollout(4, num_prompts=2)
-    assert trie_packing_keys(rollout) is None
+    assert trie_packing_keys(rollout, media=None) is None
     segments = [RoutedExpertsSegments() for _ in rollout["tokens"]]
-    assert trie_packing_keys(rollout | {"rollout_routed_experts": segments}) is None
+    assert trie_packing_keys(rollout | {"rollout_routed_experts": segments}, media=None) is None

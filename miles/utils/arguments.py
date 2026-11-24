@@ -2176,7 +2176,6 @@ def validate_trie_packing_args(args) -> None:
         for name, enabled in (
             ("--true-on-policy-mode", args.true_on_policy_mode),
             ("--multi-lora-n-adapters", args.multi_lora),
-            ("--multimodal-token-space-processing", args.multimodal_token_space_processing),
             ("--enable-witness", args.enable_witness),
             # a user loss cannot be assumed to read the response-only logits through response_row_starts
             ("--loss-type custom_loss", args.loss_type == "custom_loss"),

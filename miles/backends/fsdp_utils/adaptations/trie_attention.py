@@ -15,7 +15,7 @@ from transformers import AttentionInterface, PretrainedConfig
 from transformers.masking_utils import AttentionMaskInterface, flash_attention_mask
 
 from miles.backends.fsdp_utils.adaptations.trie_gather import gather_rows
-from miles.backends.training_utils.data.trie_packing import TrieLayout, TrieModelSpec
+from miles.backends.training_utils.data.trie_packing import TrieLayout, TrieModality, TrieModelSpec
 
 TRIE_ATTENTION = "miles_trie"
 
@@ -60,10 +60,11 @@ def _layer_types(text_config: PretrainedConfig) -> tuple[str, ...]:
     )  # config-access-exempt: architectures without per-layer attention types omit layer_types
 
 
-def trie_model_spec(text_config: PretrainedConfig) -> TrieModelSpec:
+def trie_model_spec(text_config: PretrainedConfig, media: tuple[TrieModality, ...] = ()) -> TrieModelSpec:
     """What this model's trie layouts need, read from its config:
 
     - a window gather, if any layer slides
+    - ``media``, the image and video modalities of its processor output (``trie_media``)
     """
     layer_types = _layer_types(text_config)
     if unsupported := sorted(set(layer_types) - TRIE_LAYER_TYPES):
@@ -76,6 +77,22 @@ def trie_model_spec(text_config: PretrainedConfig) -> TrieModelSpec:
         raise ValueError(f"--trie-packing: sliding_window={window} is set, but no layer type is sliding_attention")
     return TrieModelSpec(
         sliding_window_size=window,
+        media=media,
+    )
+
+
+def trie_media(config: PretrainedConfig) -> tuple[TrieModality, ...]:
+    """The image and video modalities of a Qwen-VL-style model (Qwen3-VL, Qwen3.5); none for any other."""
+    vision = getattr(config, "vision_config", None)  # config-access-exempt: text-only configs omit vision_config
+    names = ("image_token_id", "video_token_id")
+    if vision is None or not all(
+        hasattr(config, name) for name in names
+    ):  # config-access-exempt: only Qwen-VL-style configs name both placeholder tokens
+        return ()
+    merge = vision.spatial_merge_size
+    return (
+        TrieModality(config.image_token_id, "pixel_values", "image_grid_thw", merge),
+        TrieModality(config.video_token_id, "pixel_values_videos", "video_grid_thw", merge),
     )
 
 

@@ -7,6 +7,7 @@ import torch
 from tests.fast.backends.training_utils.reference_trie_attention import reference_trie_attention
 
 from miles.backends.training_utils.data.trie_packing import (
+    MediaItem,
     TrieKV,
     build_trie_layout,
     pack_trie_bins,
@@ -180,6 +181,20 @@ def test_routing_keyed_rows_replay_each_sample_its_own_routing():
         for sample, token_indices in _sample_token_indices(layout).items():
             assert layout.tokens[token_indices].tolist() == tokens[sample]
             assert torch.equal(replayed[token_indices[:-1]], rows[sample])
+
+
+def test_routing_keys_merge_media_placeholders_on_content():
+    """With routing keys, placeholders of different images still part, as they do without."""
+    tokens = [torch.tensor([3, 99, 99, 4])] * 2
+    routed_experts = [torch.zeros(3, 1, 2, dtype=torch.long)] * 2
+    media = [
+        [MediaItem(0, torch.tensor([1, 2]), torch.full((2, 3), float(sample)), torch.tensor([1, 1, 2]))]
+        for sample in range(2)
+    ]
+    packing_keys = routing_aware_packing_keys(tokens, routed_experts, media)
+    assert packing_keys[0][0] == packing_keys[1][0] and packing_keys[0][1] != packing_keys[1][1]
+    (trie,) = pack_trie_bins([t.tolist() for t in tokens], 100, packing_keys=packing_keys)
+    assert sorted(trie.token_ids) == sorted([3, 99, 99, 4, 99, 99, 4])
 
 
 def test_a_sample_ending_inside_a_segment_gives_its_rows_only_to_its_own_tokens():

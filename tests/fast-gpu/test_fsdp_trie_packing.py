@@ -5,6 +5,7 @@ The CPU tests check the layout against a plain-PyTorch reference; this runs the 
 builder and logits path on tiny models with the real kernels:
 
 - Qwen3 on flash-attn, with and without a sliding-window layer
+- Qwen3-VL with images and a video, its vision tower on flash-attn
 """
 
 from tests.ci.ci_register import register_cuda_ci
@@ -20,6 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from tests.fast.backends.fsdp_utils.test_trie_packing_hf import _tiny_vl_model, _vl_samples
 from tests.fast.backends.training_utils.reference_trie_attention import reference_trie_attention
 from transformers import Qwen3Config
 from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
@@ -33,12 +35,13 @@ from miles.backends.fsdp_utils.adaptations.trie_attention import (
     register_trie_attention,
     trie_attention_forward,
     trie_attn_implementation,
+    trie_media,
     trie_model_spec,
 )
 from miles.backends.fsdp_utils.adaptations.trie_gather import gather_rows
 from miles.backends.training_utils.data import context_parallel
 from miles.backends.training_utils.data import rollout as data_utils
-from miles.backends.training_utils.data.trie_batch import TrieMicroBatches, trie_packing_keys
+from miles.backends.training_utils.data.trie_batch import TrieMicroBatches, trie_media_items, trie_packing_keys
 from miles.backends.training_utils.data.trie_packing import WINDOW_START_MULTIPLE, build_trie_layout, pack_trie_bins
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
@@ -136,10 +139,14 @@ def _solo_log_probs(model, samples) -> list[torch.Tensor]:
     for index, total in enumerate(samples["total_lengths"]):
         tokens, response = samples["tokens"][index].cuda(), samples["response_lengths"][index]
         positions = torch.arange(total, device="cuda")[None]
+        # a VL model would otherwise derive positions of its own from the media
+        media = samples["multimodal_train_inputs"][index] if "multimodal_train_inputs" in samples else {}
+        inputs = {name: value.cuda() for name, value in media.items()}
         logits = model(
             input_ids=tokens[None],
             position_ids=positions,
             use_cache=False,
+            **inputs,
         ).logits
         out.append(_response_log_probs(logits[0, total - response - 1 : total - 1], tokens[-response:]))
     return out
@@ -150,9 +157,12 @@ def _trie_log_probs(model, samples) -> list[torch.Tensor]:
     register_trie_attention("flash_attention_2")
     model.set_attn_implementation(trie_attn_implementation(model.config, "flash_attention_2"))
     micro_batch_indices = [list(range(len(samples["tokens"])))]
-    model_spec = trie_model_spec(model.config.get_text_config())
-    packing_keys = trie_packing_keys(samples)
-    trie_micro_batches = TrieMicroBatches(samples, model_spec, micro_batch_indices, packing_keys=packing_keys)
+    model_spec = trie_model_spec(model.config.get_text_config(), media=trie_media(model.config))
+    media = trie_media_items(samples, model_spec)
+    packing_keys = trie_packing_keys(samples, media)
+    trie_micro_batches = TrieMicroBatches(
+        samples, model_spec, micro_batch_indices, media=media, packing_keys=packing_keys
+    )
     iterator = data_utils.DataIterator(
         samples, micro_batch_indices=micro_batch_indices, trie_micro_batches=trie_micro_batches
     )
@@ -317,6 +327,32 @@ def test_trie_row_gradients_are_as_accurate_as_standard_packing(nccl_world, sing
         ratios.append(errors[1] / errors[0])
 
     assert geometric_mean(ratios) <= _ACCURACY_RATIO, f"trie / standard packing error per batch: {ratios}"
+
+
+def test_images_merge_on_content_and_each_is_fed_once(single_rank):
+    """Prompts differing only in their image stay apart, a shared image is fed to the vision tower once, and
+    images and a video in responses land at their placeholders."""
+    model = _tiny_vl_model().to("cuda", torch.bfloat16)
+    samples = _vl_samples()
+    # on the GPU ahead of the micro-batches, as prepare_rollout_data moves them
+    samples["multimodal_train_inputs"] = [
+        {name: value.cuda() for name, value in media.items()} for media in samples["multimodal_train_inputs"]
+    ]
+
+    model.zero_grad()
+    solo = torch.cat(_solo_log_probs(model, samples))
+    solo.sum().backward()
+    solo_grads = {name: p.grad.float().clone() for name, p in model.named_parameters() if p.grad is not None}
+    model.zero_grad()
+    trie = torch.cat(_trie_log_probs(model, samples))
+    trie.sum().backward()
+
+    torch.testing.assert_close(trie, solo, rtol=0, atol=_LOG_PROB_ATOL)
+    assert {name for name, p in model.named_parameters() if p.grad is not None} == set(solo_grads)
+    for name, p in model.named_parameters():
+        if name in solo_grads:
+            error = (p.grad.float() - solo_grads[name]).norm() / solo_grads[name].norm().clamp(min=1e-12)
+            assert error <= _GRAD_RTOL, f"{name}: relative gradient error {error:.3g}"
 
 
 def test_gather_rows_sums_a_shared_rows_copies_in_fp32():
