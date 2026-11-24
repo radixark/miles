@@ -53,10 +53,20 @@ def _local_response_layout(
     total_lengths: list[int],
     response_lengths: list[int],
     max_seq_lens: list[int] | None,
+    response_row_starts: Sequence[int] | None,
     include_response_indices: bool,
 ) -> tuple[torch.Tensor, Iterator[LocalResponseRows]]:
     """This rank's logits as ``[rows, V]``, and per sample the rows of them that score its response."""
     flat_logits = _flatten_logits(logits, args.qkv_format, max_seq_lens)
+    if response_row_starts is not None:
+        # a trie row's logits hold only response rows, sample i's starting at response_row_starts[i]
+        return flat_logits, _response_rows_at(
+            flat_logits.size(0),
+            unconcat_tokens=unconcat_tokens,
+            response_lengths=response_lengths,
+            response_row_starts=response_row_starts,
+            include_response_indices=include_response_indices,
+        )
     layout = iter_local_response_rows(
         flat_logits.size(0),
         qkv_format=args.qkv_format,
@@ -70,6 +80,24 @@ def _local_response_layout(
     return flat_logits, layout
 
 
+def _response_rows_at(
+    num_rows: int,
+    *,
+    unconcat_tokens: list[torch.Tensor],
+    response_lengths: list[int],
+    response_row_starts: Sequence[int],
+    include_response_indices: bool,
+) -> Iterator[LocalResponseRows]:
+    """One run per sample: its response's rows start at ``response_row_starts[i]``."""
+    for tokens, response_length, start in zip(unconcat_tokens, response_lengths, response_row_starts, strict=True):
+        assert 0 <= start and start + response_length <= num_rows, f"rows {start}+{response_length} vs {num_rows}"
+        yield LocalResponseRows(
+            ((start, start + response_length),),
+            tokens[-response_length:] if response_length else tokens[0:0],
+            range(response_length) if include_response_indices else (),
+        )
+
+
 def _iter_response_chunks(
     logits: torch.Tensor,
     *,
@@ -78,6 +106,7 @@ def _iter_response_chunks(
     total_lengths: list[int],
     response_lengths: list[int],
     max_seq_lens: list[int] | None = None,
+    response_row_starts: Sequence[int] | None = None,
     include_response_indices: bool,
 ) -> Iterator[tuple[torch.Tensor, torch.Tensor, Sequence[int]]]:
     """Yield response logits, tokens, and original response indices per sample.
@@ -111,6 +140,7 @@ def _iter_response_chunks(
         total_lengths=total_lengths,
         response_lengths=response_lengths,
         max_seq_lens=max_seq_lens,
+        response_row_starts=response_row_starts,
         include_response_indices=include_response_indices,
     )
 
@@ -150,6 +180,7 @@ def get_responses(
     total_lengths: list[int],
     response_lengths: list[int],
     max_seq_lens: list[int] | None = None,
+    response_row_starts: Sequence[int] | None = None,
 ) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
     """Yield response-aligned `(logits_chunk, tokens_chunk)` pairs per sample."""
     for logits_chunk, tokens_chunk, _ in _iter_response_chunks(
@@ -159,6 +190,7 @@ def get_responses(
         total_lengths=total_lengths,
         response_lengths=response_lengths,
         max_seq_lens=max_seq_lens,
+        response_row_starts=response_row_starts,
         include_response_indices=False,
     ):
         yield logits_chunk, tokens_chunk
@@ -175,6 +207,7 @@ def get_log_probs_and_entropy(
     entropy_requires_grad: bool = True,
     non_loss_data: bool = True,
     max_seq_lens: list[int] | None = None,
+    response_row_starts: Sequence[int] | None = None,
     rollout_sampling_mask: Sequence[RolloutSamplingMask] | None = None,
     lm_head: LMHead | None = None,
 ) -> dict[str, list[torch.Tensor]]:
@@ -232,6 +265,7 @@ def get_log_probs_and_entropy(
             with_entropy=with_entropy,
             entropy_requires_grad=entropy_requires_grad,
             max_seq_lens=max_seq_lens,
+            response_row_starts=response_row_starts,
             lm_head=lm_head,
         )
     else:
@@ -244,6 +278,7 @@ def get_log_probs_and_entropy(
             with_entropy=with_entropy,
             entropy_requires_grad=entropy_requires_grad,
             max_seq_lens=max_seq_lens,
+            response_row_starts=response_row_starts,
             rollout_sampling_mask=rollout_sampling_mask,
         )
 
@@ -286,6 +321,7 @@ def get_rollout_topk_mismatch(
         total_lengths=batch["total_lengths"],
         response_lengths=batch["response_lengths"],
         max_seq_lens=batch.get("max_seq_lens"),
+        response_row_starts=batch.get("response_row_starts"),
         include_response_indices=True,
     )
     for i, (chunk, _, indices) in enumerate(chunks):
@@ -360,6 +396,7 @@ def _torch_log_probs_and_entropy(
     with_entropy: bool,
     entropy_requires_grad: bool,
     max_seq_lens: list[int] | None,
+    response_row_starts: Sequence[int] | None,
     rollout_sampling_mask: Sequence[RolloutSamplingMask] | None,
 ) -> dict[str, list[torch.Tensor]]:
     """Each sample's response chunk through ``calculate_log_probs_and_entropy``."""
@@ -373,6 +410,7 @@ def _torch_log_probs_and_entropy(
         total_lengths=total_lengths,
         response_lengths=response_lengths,
         max_seq_lens=max_seq_lens,
+        response_row_starts=response_row_starts,
         include_response_indices=rollout_sampling_mask is not None,
     )
     for sample_index, (logits_chunk, tokens_chunk, response_indices) in enumerate(response_chunks):
@@ -435,6 +473,7 @@ def _fused_log_probs_and_entropy(
     with_entropy: bool,
     entropy_requires_grad: bool,
     max_seq_lens: list[int] | None,
+    response_row_starts: Sequence[int] | None,
     lm_head: LMHead | None,
 ) -> dict[str, list[torch.Tensor]]:
     """All samples' response rows through one ``fused_log_probs_and_entropy`` call. With ``lm_head``,
@@ -453,6 +492,7 @@ def _fused_log_probs_and_entropy(
         total_lengths=total_lengths,
         response_lengths=response_lengths,
         max_seq_lens=max_seq_lens,
+        response_row_starts=response_row_starts,
         include_response_indices=False,
     )
     row_ranges, targets, lengths = [], [], []
@@ -509,6 +549,7 @@ def get_values(
     with_entropy: bool = False,
     non_loss_data: bool = True,
     max_seq_lens: list[int] | None = None,
+    response_row_starts: Sequence[int] | None = None,
 ) -> dict[str, list[torch.Tensor]]:
     """Extract per-token value predictions over response tokens.
 
@@ -537,6 +578,7 @@ def get_values(
         total_lengths=total_lengths,
         response_lengths=response_lengths,
         max_seq_lens=max_seq_lens,
+        response_row_starts=response_row_starts,
     ):
         assert logits_chunk.size(-1) == 1, f"{logits_chunk.shape}"
         # upcast (no-op for fp32) so value-head outputs stay fp32 even when logits arrive bf16

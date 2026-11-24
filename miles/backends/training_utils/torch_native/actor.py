@@ -17,6 +17,7 @@ from miles.backends.training_utils.data.rollout import (
     get_rollout_data,
     prepare_rollout_data,
 )
+from miles.backends.training_utils.data.trie_packing import TrieModelSpec
 from miles.backends.training_utils.loss.hub.logit_processors import get_rollout_topk_mismatch
 from miles.backends.training_utils.loss.hub.response_layout import response_layout_type
 from miles.backends.training_utils.loss.objective import (
@@ -84,6 +85,8 @@ class TorchNativeTrainRayActor(TrainRayActor):
     align_token_side_channel: Callable[[torch.Tensor, int], torch.Tensor] | None = None
     # every rank holds its own slice of the rollout; a backend whose CP peers share one sets this on one of them
     dumps_train_data: bool = True
+    # set by a backend that runs --trie-packing: what its model's trie rows depend on
+    model_spec: TrieModelSpec | None = None
 
     def _step_runner(self) -> StepRunner:
         raise NotImplementedError
@@ -233,7 +236,9 @@ class TorchNativeTrainRayActor(TrainRayActor):
 
     def _score_rollout(self, runner: StepRunner, rollout_data: dict) -> tuple[DataIterator, list[int]]:
         """The passes before the optimizer steps: ref and actor log-probs, then advantages."""
-        data_iterators, num_microbatches = get_data_iterator(self.args, self.model_parts, rollout_data)
+        data_iterators, num_microbatches = get_data_iterator(
+            self.args, self.model_parts, rollout_data, model_spec=self.model_spec
+        )
         assert num_microbatches, f"empty microbatch schedule for micro_batch_size={self.args.micro_batch_size}"
         routing_replay.attach(
             self.args,

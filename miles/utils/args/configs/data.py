@@ -233,3 +233,15 @@ class DataConfig(BaseConfig):
             )
         ),
     ] = None
+    trie_packing: A[
+        bool,
+        Arg(
+            help=(
+                "Pack each micro-batch's samples into one prefix trie, so tokens that samples share (a GRPO "
+                "group's prompt, a common system prompt) are stored and trained once. Micro-batches hold at most "
+                "--max-tokens-per-gpu distinct tokens. FSDP backend with --attn-implementation flash_attention_2, "
+                "flash_attention_3 or flash_attention_4; a model with a layer it cannot pack is refused at startup. "
+                "Requires --use-dynamic-batch-size."
+            )
+        ),
+    ] = False

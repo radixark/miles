@@ -249,6 +249,7 @@ class PackedSlices:
             with_entropy=with_entropy,
             entropy_requires_grad=entropy_requires_grad,
             max_seq_lens=self.batch.get("max_seq_lens"),
+            response_row_starts=self.batch.get("response_row_starts"),
             rollout_sampling_mask=self._sampling_masks(),
             lm_head=self.batch.get("lm_head"),
         )
@@ -265,6 +266,7 @@ class PackedSlices:
             total_lengths=batch["total_lengths"],
             response_lengths=batch["response_lengths"],
             max_seq_lens=batch.get("max_seq_lens"),
+            response_row_starts=batch.get("response_row_starts"),
             include_response_indices=side is not None,
         )
         for i, (chunk, tokens, positions) in enumerate(chunks):
@@ -324,6 +326,7 @@ class PackedSlices:
             response_lengths=self.batch["response_lengths"],
             with_entropy=with_entropy,
             max_seq_lens=self.batch.get("max_seq_lens"),
+            response_row_starts=self.batch.get("response_row_starts"),
             rollout_sampling_mask=get_rollout_sampling_masks(self.batch) if use_sampling_mask else None,
         )
 
