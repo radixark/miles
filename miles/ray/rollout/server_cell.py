@@ -175,13 +175,18 @@ class ServerCell:
     def server_url(self) -> str:
         return self.addr_info.server_url
 
+    def _build_api_client(self, server_url: str) -> SGLangApiClient:
+        if self.meta.sglang_admin_api_key is not None:
+            return SGLangApiClient(
+                server_url=server_url,
+                api_key=self.meta.sglang_api_key,
+                admin_api_key=self.meta.sglang_admin_api_key,
+            )
+        return SGLangApiClient(server_url=server_url, api_key=self.meta.sglang_api_key)
+
     @property
     def api_client(self) -> SGLangApiClient:
-        return SGLangApiClient(
-            server_url=self.server_url,
-            api_key=self.meta.sglang_api_key,
-            admin_api_key=self.meta.sglang_admin_api_key,
-        )
+        return self._build_api_client(self.server_url)
 
     async def init(self) -> None:
         assert isinstance(self._state, StateUninitialized), f"{self._state=}"
@@ -221,11 +226,7 @@ class ServerCell:
             )
 
         if self.meta.needs_offload:
-            api_client = SGLangApiClient(
-                server_url=addr_info.server_url,
-                api_key=self.meta.sglang_api_key,
-                admin_api_key=self.meta.sglang_admin_api_key,
-            )
+            api_client = self._build_api_client(addr_info.server_url)
             await api_client.release_memory_occupation()
             await api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
