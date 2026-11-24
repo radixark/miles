@@ -639,7 +639,7 @@ class _WaitingServer:
     def __init__(self) -> None:
         self.timeouts: list[float] = []
 
-    async def wait_init_expected_num_cells(self, timeout: float) -> None:
+    async def wait_init_expected_num_cells(self, timeout: float, *, check_abort=None) -> None:
         self.timeouts.append(timeout)
 
 

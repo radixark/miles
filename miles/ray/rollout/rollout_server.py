@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
@@ -63,6 +64,10 @@ def _compute_init_expected_num_cells(args, engine_provider: BaseWorkerProvider, 
     if (answered := engine_provider.expected_num_cells(group_id=model_cfg.name)) is not None:
         return answered
     return _DEFAULT_INIT_EXPECTED_NUM_CELLS
+
+
+class _CellsNotReadyError(Exception):
+    pass
 
 
 @dataclasses.dataclass
@@ -210,16 +215,22 @@ class RolloutServer:
         return [cell for cell in self.all_server_cells.values() if cell.is_pending_weights_or_serving]
 
     @lock_exempt
-    async def wait_init_expected_num_cells(self, timeout: float = 3600):
+    async def wait_init_expected_num_cells(
+        self, timeout: float = 3600, *, check_abort: Callable[[], None] | None = None
+    ):
         async def _check(remaining_seconds: float) -> None:
+            if check_abort is not None:
+                check_abort()
             count = self._count_startable_cells()
             if count < self.init_expected_num_cells:
-                raise Exception(f"Only {count}/{self.init_expected_num_cells} cells of {self.model_name} are ready")
+                raise _CellsNotReadyError(
+                    f"Only {count}/{self.init_expected_num_cells} cells of {self.model_name} are ready"
+                )
 
         await retry_until_deadline(
             _check,
             total_seconds=timeout,
-            retry_on=Exception,
+            retry_on=_CellsNotReadyError,
             initial_delay=WAIT_CELLS_INITIAL_DELAY_SECONDS,
             max_delay=WAIT_CELLS_MAX_DELAY_SECONDS,
             log_fields=dict(op="wait_init_expected_num_cells", model_name=self.model_name),
