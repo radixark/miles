@@ -7,7 +7,7 @@ from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 
-from miles.kernels.attention.dsa import indexer_logits_sbhd
+from miles.kernels.attention.dsa import indexer_logits_sbhd, score_rows
 from miles.kernels.attention.dsa.topk import get_dsa_topk_fn
 from miles.utils.replay_base import indexer_replay_manager
 from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
@@ -235,7 +235,7 @@ def indexer_topk(q, k, weights, positions, thd_layout, *, compress_ratio, index_
     bsz, rows, n_kv = index_scores.shape
     topk_count = min(index_topk, n_kv)
     # flattened to [n_tokens, n_kv], the record/replay convention shared with the MoE seam
-    topk_indices = topk_fn(index_scores.reshape(bsz * rows, n_kv), topk_count, cu_ks.repeat(bsz), cu_ke.repeat(bsz))
+    topk_indices = topk_fn(score_rows(index_scores), topk_count, cu_ks.repeat(bsz), cu_ke.repeat(bsz))
     return topk_indices.reshape(bsz, rows, topk_count)
 
 
