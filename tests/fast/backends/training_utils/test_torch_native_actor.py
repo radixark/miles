@@ -66,6 +66,10 @@ class _Provider(TorchNativeTrainRayActor):
             ci_test=False,
             use_sampling_support_replay=False,
             save_debug_train_data=None,
+            use_rollout_logprobs=False,
+            get_mismatch_metrics=False,
+            use_tis=False,
+            log_correct_samples=False,
         )
         self.model_parts = [MagicMock()]
         self.optimizers = [object()]
@@ -85,6 +89,7 @@ def step(monkeypatch):
     calls = {"log_probs": [], "steps": [], "stages": stages}
     replay = SimpleNamespace(
         FALLTHROUGH="fallthrough",
+        RECORD="record",
         REPLAY_BACKWARD="replay_backward",
         stage=lambda name: _recording(stages, name),
         attach=MagicMock(side_effect=lambda *a, **k: stages.append("attach")),
@@ -139,6 +144,49 @@ def test_the_rollout_step_runs_ref_then_actor_then_optimizer_under_the_right_sta
     assert step["steps"] == [actor.runner]
     assert rollout_data == {"ref_log_probs": [1], "log_probs": [1], "adv": True}
     assert step["replay"].attach.call_args.kwargs["align"] is actor.align_token_side_channel
+
+
+def test_rollout_log_probs_as_the_baseline_skip_the_actor_forward_only_pass(step):
+    """With --use-rollout-logprobs the loss never reads the actor's own scoring, so the pass is not run (the
+    Megatron backend skips it the same way); the ref pass and the advantages are unaffected."""
+    actor = _Provider()
+    actor.args.use_rollout_logprobs = True
+    actor.ref_runner = object()
+    actor._ref_context = lambda: _recording(step["stages"], "ref")
+    rollout_data = {}
+
+    actor._train_core(rollout_id=3, rollout_data=rollout_data)
+
+    assert step["log_probs"] == [(actor.ref_runner, "ref_")]
+    assert "enter:replay_forward" not in step["stages"] and "rewind" in step["stages"]
+    assert rollout_data == {"ref_log_probs": [1], "adv": True}
+
+
+@pytest.mark.parametrize(
+    "needs_it",
+    [
+        dict(get_mismatch_metrics=True),
+        dict(use_tis=True),
+        dict(ci_test=True),
+        dict(log_correct_samples=True),
+        dict(log_prob_stage="record"),
+    ],
+    ids=lambda needs_it: next(iter(needs_it)),
+)
+def test_a_reader_of_the_actor_log_probs_keeps_the_forward_only_pass(step, needs_it):
+    """The mismatch metrics, built-in TIS, the CI checks, the correct-sample entropy and a routing replay that
+    records in this pass all read the actor's scoring, so --use-rollout-logprobs alone does not skip it."""
+    actor = _Provider()
+    actor.args.use_rollout_logprobs = True
+    actor.ref_runner = None
+    if (stage := needs_it.get("log_prob_stage")) is not None:
+        step["replay"].log_prob_stage = lambda args: stage
+    else:
+        vars(actor.args).update(needs_it)
+
+    actor._train_core(rollout_id=3, rollout_data={})
+
+    assert step["log_probs"] == [(actor.runner, "")]
 
 
 @pytest.mark.parametrize("dumps_train_data", [True, False])

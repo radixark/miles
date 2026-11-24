@@ -207,7 +207,10 @@ class AlgoConfig(BaseConfig):
         Arg(
             help=(
                 "Whether to use the rollout logprobs when calculating the importance sampling ratios. "
-                "If not set, we will use the logprobs from the actor model."
+                "If not set, we will use the logprobs from the actor model. When set, the actor's forward-only "
+                "log-prob pass runs only for what still reads it (--get-mismatch-metrics, --use-tis, --ci-test, "
+                "--log-correct-samples, a routing replay recorded in that pass); otherwise it is skipped and the "
+                "rollout/log_probs and rollout/entropy metrics are not emitted."
             )
         ),
     ] = False
