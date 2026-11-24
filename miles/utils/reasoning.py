@@ -19,11 +19,24 @@ REASONING_DELIMITERS: dict[str, tuple[str | None, str]] = {
     "legacy_response": (None, "###Response"),
 }
 
+# Turn separators that start a new turn in multi-turn framed traces.
+_TURN_BOUNDARY_TOKENS: dict[str, str] = {
+    "harmony": "<|return|><|start|>",
+    "muse_spark": "<|eot|><|start|>",
+}
+
+# Message transitions that end an answer block before a subsequent block in the same turn.
+_ANSWER_NEXT_BLOCK_TOKENS: dict[str, tuple[str, ...]] = {
+    "kimi_k3": ("<|close|>response<|sep|><|open|>", "<|close|>response<|sep|><|close|>message<|sep|><|open|>"),
+    "harmony": ("<|end|><|start|>", "<|return|><|start|>"),
+    "muse_spark": ("<|eom|><|start|>", "<|eot|><|start|>"),
+}
+
 # Trailing end-of-answer / end-of-turn markers stripped when special tokens are kept.
 _ANSWER_END_TOKENS: dict[str, tuple[str, ...]] = {
     "kimi_k3": ("<|close|>message<|sep|>", "<|close|>response<|sep|>"),
     "harmony": ("<|return|>", "<|end|>"),
-    "inkling": ("<|end_message|>",),
+    "inkling": ("<|content_model_end_sampling|>", "<|end_message|>"),
     "muse_spark": ("<|eot|>", "<|eom|>"),
     "gemma4": ("<turn|>",),
     "think": ("<|im_end|>", "<｜end▁of▁sentence｜>", "[e~["),
@@ -31,14 +44,54 @@ _ANSWER_END_TOKENS: dict[str, tuple[str, ...]] = {
 
 _INKLING_MODEL_ROLE = "<|message_model|>"
 _INKLING_NON_MODEL_ROLES = ("<|message_tool|>", "<|message_user|>", "<|message_system|>")
+_INKLING_END_MESSAGE = "<|end_message|>"
 _INKLING_END_SAMPLING = "<|content_model_end_sampling|>"
+_INKLING_TOOL_INVOKE = "<|content_invoke_tool_json|>"
+_INKLING_FRAME_PREFIXES = (
+    REASONING_DELIMITERS["inkling"][0],
+    REASONING_DELIMITERS["inkling"][1],
+    _INKLING_MODEL_ROLE,
+    *_INKLING_NON_MODEL_ROLES,
+)
+
+# Disjoint leading wire prefixes that unambiguously identify a response's own format.
+_FRAMED_PREFIXES: dict[str, tuple[str, ...]] = {
+    "kimi_k3": ("<|open|>",),
+    "harmony": ("<|channel|>", "<|start|>assistant<|channel|>", "<|start|>functions."),
+    "inkling": _INKLING_FRAME_PREFIXES,
+    "muse_spark": ("<|start|>assistant to=", "<|start|>tool "),
+    "gemma4": ("<|channel>", "<channel|>"),
+    "kimi_vl": ("◁think▷",),
+    "think": ("<think>",),
+}
 
 
-def _trim_answer_end(text: str, family: str) -> tuple[str, bool]:
-    """Strip trailing end-of-answer markers for *family*, returning ``(trimmed, was_closed)``."""
+def _detect_framed_family(text: str) -> str | None:
+    stripped = text.lstrip()
+    if not stripped:
+        return None
+    for family, prefixes in _FRAMED_PREFIXES.items():
+        if stripped.startswith(prefixes):
+            return family
+    first_token = stripped.split(None, 1)[0]
+    if _INKLING_TOOL_INVOKE in first_token:
+        return "inkling"
+    if stripped.startswith("to=") and "<|message|>" in first_token:
+        return "muse_spark"
+    return None
+
+
+def _trim_answer_end(text: str, family: str) -> str:
+    """Truncate before any subsequent framed block, then strip trailing end-of-answer markers."""
+    next_tokens = _ANSWER_NEXT_BLOCK_TOKENS.get(family)
+    if next_tokens:
+        positions = [pos for token in next_tokens if (pos := text.find(token)) != -1]
+        if positions:
+            text = text[: min(positions)]
+
     end_tokens = _ANSWER_END_TOKENS.get(family)
     if not end_tokens:
-        return text, False
+        return text
     stripped = text.rstrip()
     trimmed = False
     changed = True
@@ -50,25 +103,20 @@ def _trim_answer_end(text: str, family: str) -> tuple[str, bool]:
                 trimmed = True
                 changed = True
                 break
-    return (stripped, True) if trimmed else (text, False)
+    return stripped if trimmed else text
 
 
-def _extract_inkling_answer(text: str) -> tuple[int, str] | None:
+def _extract_inkling_answer(text: str) -> str | None:
     """Extract visible model text blocks from the final Inkling turn.
 
     Only ``<|content_text|>`` opening a model message counts (at the start of a
     response after the prompt's ``<|message_model|>``, or immediately after
     ``<|message_model|>``), so tool/user messages never match as a model answer
     and later thinking blocks cannot bleed into the extracted text.
-
-    Returns ``(extent, answer)`` where *extent* is the end of the turn's closed
-    Inkling frame (or the last text block start if unclosed).
     """
-    content_thinking, content_text = REASONING_DELIMITERS["inkling"]
+    _, content_text = REASONING_DELIMITERS["inkling"]
     model_text = _INKLING_MODEL_ROLE + content_text
-    model_thinking = _INKLING_MODEL_ROLE + content_thinking
-    end_message = _ANSWER_END_TOKENS["inkling"][0]
-    turn_end_marker = end_message + _INKLING_END_SAMPLING
+    turn_end_marker = _INKLING_END_MESSAGE + _INKLING_END_SAMPLING
 
     # Advance past any earlier assistant turn closed by <|end_message|><|content_model_end_sampling|>.
     trimmed = text.rstrip()
@@ -81,45 +129,30 @@ def _extract_inkling_answer(text: str) -> tuple[int, str] | None:
         limit = len(text)
         while (idx := text.rfind(role, 0, limit)) != -1:
             prefix = text[:idx].rstrip()
-            if not prefix or prefix.endswith((end_message, _INKLING_END_SAMPLING)):
-                end = text.find(end_message, idx)
-                turn_start = max(turn_start, len(text) if end == -1 else end + len(end_message))
+            if not prefix or prefix.endswith((_INKLING_END_MESSAGE, _INKLING_END_SAMPLING)):
+                end = text.find(_INKLING_END_MESSAGE, idx)
+                turn_start = max(turn_start, len(text) if end == -1 else end + len(_INKLING_END_MESSAGE))
                 break
             limit = idx
 
     turn = text[turn_start:]
     parts: list[str] = []
-    last_pos = -1
     cursor = 0
-    if turn_start == 0 and turn.startswith(content_text):
-        last_pos = 0
-        body_start = len(content_text)
-        body_end = turn.find(end_message, body_start)
+    leading = turn.lstrip() if turn_start == 0 else ""
+    if turn_start == 0 and leading.startswith(content_text):
+        body_start = len(turn) - len(leading) + len(content_text)
+        body_end = turn.find(_INKLING_END_MESSAGE, body_start)
         parts.append(turn[body_start:] if body_end == -1 else turn[body_start:body_end])
-        cursor = len(turn) if body_end == -1 else body_end + len(end_message)
+        cursor = len(turn) if body_end == -1 else body_end + len(_INKLING_END_MESSAGE)
 
     while (pos := turn.find(model_text, cursor)) != -1:
-        last_pos = turn_start + pos
         body_start = pos + len(model_text)
-        body_end = turn.find(end_message, body_start)
+        body_end = turn.find(_INKLING_END_MESSAGE, body_start)
         parts.append(turn[body_start:] if body_end == -1 else turn[body_start:body_end])
-        cursor = len(turn) if body_end == -1 else body_end + len(end_message)
+        cursor = len(turn) if body_end == -1 else body_end + len(_INKLING_END_MESSAGE)
 
-    if not parts:
-        return None
-
-    close_end = max(
-        p + len(end_message) if (p := turn.rfind(end_message)) != -1 else -1,
-        p + len(_INKLING_END_SAMPLING) if (p := turn.rfind(_INKLING_END_SAMPLING)) != -1 else -1,
-    )
-    if close_end != -1 and turn[close_end:].lstrip().startswith(model_thinking):
-        extent = len(text)
-    elif close_end != -1:
-        extent = max(last_pos, turn_start + close_end)
-    else:
-        extent = last_pos
     # Match InklingResponseParser (inkling_parser.py) which joins visible text blocks with "".
-    return (extent, "".join(parts))
+    return "".join(parts) if parts else None
 
 
 def extract_after_reasoning(text: str | None) -> str | None:
@@ -127,24 +160,35 @@ def extract_after_reasoning(text: str | None) -> str | None:
     if not text:
         return None
 
-    best_extent = -1
+    # When the response opens with a known wire format, parse only with that family's rules
+    # so foreign markers quoted in reasoning/answers never hijack extraction and an unclosed
+    # final turn returns None instead of matching an earlier turn or foreign token.
+    framed_family = _detect_framed_family(text)
+    if framed_family == "inkling":
+        return _extract_inkling_answer(text)
+    if framed_family is not None:
+        turn = text
+        turn_boundary = _TURN_BOUNDARY_TOKENS.get(framed_family)
+        if turn_boundary and (boundary_pos := text.rfind(turn_boundary)) != -1:
+            turn = text[boundary_pos + len(turn_boundary) :]
+        _, delimiter = REASONING_DELIMITERS[framed_family]
+        pos = turn.rfind(delimiter)
+        if pos == -1:
+            return None
+        return _trim_answer_end(turn[pos + len(delimiter) :], framed_family)
+
+    # Unframed / prompt-opened completions (e.g. `<think>` emitted in the prompt): pick the
+    # rightmost structural delimiter, falling back to `###Response` only when none matches.
+    best_pos = -1
     best_answer: str | None = None
-
-    inkling = _extract_inkling_answer(text)
-    if inkling is not None:
-        best_extent, best_answer = inkling
-
-    # Compare against the rightmost structural boundary: a closed framed block extends to its
-    # closing marker so a literal </think> quoted inside it cannot overwrite the answer, while
-    # a foreign delimiter quoted inside <think>...</think> stays strictly left of </think>.
     for family, (_, delimiter) in REASONING_DELIMITERS.items():
-        if family in ("inkling", "legacy_response"):
+        if family == "legacy_response":
             continue
-        pos = text.rfind(delimiter)
-        if pos != -1 and pos >= best_extent:
-            answer, closed = _trim_answer_end(text[pos + len(delimiter) :], family)
-            best_extent = len(text) if closed else pos
-            best_answer = answer
+        marker = _INKLING_MODEL_ROLE + delimiter if family == "inkling" else delimiter
+        pos = text.rfind(marker)
+        if pos > best_pos:
+            best_pos = pos
+            best_answer = _trim_answer_end(text[pos + len(marker) :], family)
 
     if best_answer is not None:
         return best_answer

@@ -82,6 +82,25 @@ class TestStripChainOfThought:
                 "<|message_model|><|content_text|>Answer: A<|end_message|><|content_model_end_sampling|>",
                 "Answer: A",
             ),
+            # Muse Spark subsequent thinking block after to=user<|eom|> stops at <|eom|><|start|>.
+            (
+                " to=user<|message|>A<|eom|><|start|>assistant to=self<|message|>Answer: B<|eom|>",
+                "A",
+            ),
+            # Quoted Inkling / Muse Spark frames inside <think> never override the real </think>.
+            (
+                "<think>Example: <|message_model|><|content_text|>Answer: B<|end_message|>"
+                "<|message_model|><|content_thinking|>work</think>Answer: A<|im_end|>",
+                "Answer: A",
+            ),
+            (
+                "<think>Example: to=user<|message|>Answer: B<|eot|></think>Answer: A. The marker is <|eot|>",
+                "Answer: A. The marker is <|eot|>",
+            ),
+            (
+                "Example: to=user<|message|>Answer: B<|eot|></think>Answer: A. The marker is <|eot|>",
+                "Answer: A. The marker is <|eot|>",
+            ),
         ],
     )
     def test_rightmost_structural_delimiter_precedence(self, text, expected):

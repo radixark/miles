@@ -103,6 +103,13 @@ class TestGetDeepscalerRuleBasedReward:
             r"<|message_model|><|content_thinking|>still thinking"
         )
         assert get_deepscaler_rule_based_reward(two_turns_unclosed_think, "42") == 0
+        # Thinking-only final Inkling turn must not fall through to foreign markers in an earlier turn.
+        two_turns_foreign_in_turn1 = (
+            r"<|content_thinking|><channel|>\boxed{42}<|end_message|>"
+            r"<|message_model|><|content_text|>pass<|end_message|><|content_model_end_sampling|>"
+            r"<|message_model|><|content_thinking|>work<|end_message|><|content_model_end_sampling|>"
+        )
+        assert get_deepscaler_rule_based_reward(two_turns_foreign_in_turn1, "42") == 0
         # Mid-prose mention of <|message_tool|> inside model text is not a framed tool role.
         prose_tool_token = (
             r"<|content_text|>Inkling uses <|message_tool|> for tools. \boxed{42}"
@@ -153,6 +160,17 @@ class TestGetDeepscalerRuleBasedReward:
             (r"<think>quote <|message_model|><|content_text|> \boxed{42}<|end_message|></think>no final box", 0),
             (r"<think>quote <|channel|>final<|message|> \boxed{42}</think>no final box", 0),
             (r"<think>quote to=user<|message|> \boxed{42}<|eot|></think>no final box", 0),
+            (
+                r"<think>Example: <|message_model|><|content_text|>\boxed{wrong}<|end_message|>"
+                r"<|message_model|><|content_thinking|>work</think>\boxed{42}<|im_end|>",
+                1,
+            ),
+            (r"<think>Example: to=user<|message|>\boxed{wrong}<|eot|></think>\boxed{42}. The marker is <|eot|>", 1),
+            (r"Example: to=user<|message|>\boxed{wrong}<|eot|></think>\boxed{42}. The marker is <|eot|>", 1),
+            # Framed thinking-only turn quoting </think> must stay unclosed (score 0).
+            (r"<|open|>think<|sep|>In Qwen </think> ends thinking \boxed{42}<|close|>think<|sep|>", 0),
+            # Muse Spark subsequent thinking block after to=user<|eom|> must not leak into answer.
+            (r" to=user<|message|>\boxed{1}<|eom|><|start|>assistant to=self<|message|>\boxed{42}<|eom|>", 0),
             # Literal </think> or mid-prose <|eot|> inside a closed framed turn must not overwrite the real answer.
             (r"to=user<|message|>\boxed{42}. The tag is </think>.<|eot|>", 1),
             (r"to=user<|message|>The marker <|eot|> ends a turn. \boxed{42}<|eot|>", 1),
