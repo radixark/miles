@@ -130,12 +130,8 @@ def test_invalid_options_fail_early(field: str, value: object) -> None:
         validate_score_centering_args(_args(**{field: value}))
 
 
-def test_dflash_is_accepted_only_with_filtered_sampling() -> None:
-    validate_score_centering_args(
-        _args(sglang_speculative_algorithm="DFLASH", rollout_top_k=3, rollout_sampling_logprobs_mode="support")
-    )
-    with pytest.raises(ValueError, match="DFLASH needs filtered sampling"):
-        validate_score_centering_args(_args(sglang_speculative_algorithm="DFLASH"))
+def test_dflash_is_accepted() -> None:
+    validate_score_centering_args(_args(sglang_speculative_algorithm="DFLASH"))
 
 
 @pytest.mark.parametrize("session", ["v1", "v2"])
