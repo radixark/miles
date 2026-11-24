@@ -29,6 +29,8 @@ def _args(**overrides: object) -> Namespace:
         use_opsm=False,
         recompute_logprobs_via_prefill=False,
         sglang_speculative_algorithm=None,
+        sglang_speculative_accept_threshold_single=1.0,
+        sglang_speculative_accept_threshold_acc=1.0,
         custom_pg_loss_reducer_function_path=None,
         multi_lora=False,
         lora_rank=0,

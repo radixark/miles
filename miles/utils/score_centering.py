@@ -46,5 +46,12 @@ def validate_score_centering_args(args: Namespace) -> None:
             f"Score centering is incompatible with --sglang-speculative-algorithm {speculative}: "
             "only DFLASH's candidate log-probs are verified"
         )
+    if speculative and (
+        args.sglang_speculative_accept_threshold_single != 1.0 or args.sglang_speculative_accept_threshold_acc != 1.0
+    ):
+        raise ValueError(
+            "Score centering with DFLASH requires --sglang-speculative-accept-threshold-single and "
+            "--sglang-speculative-accept-threshold-acc of 1.0: lower thresholds accept draft tokens the target would not sample"
+        )
     if os.environ.get("SGLANG_RETURN_ORIGINAL_LOGPROB", "").lower() in ("1", "true"):
         raise ValueError("Score centering requires SGLANG_RETURN_ORIGINAL_LOGPROB=0 on rollout servers")

@@ -130,8 +130,12 @@ def test_invalid_options_fail_early(field: str, value: object) -> None:
         validate_score_centering_args(_args(**{field: value}))
 
 
-def test_dflash_is_accepted() -> None:
+def test_dflash_is_accepted_with_exact_acceptance() -> None:
     validate_score_centering_args(_args(sglang_speculative_algorithm="DFLASH"))
+    with pytest.raises(ValueError, match="accept-threshold"):
+        validate_score_centering_args(
+            _args(sglang_speculative_algorithm="DFLASH", sglang_speculative_accept_threshold_acc=0.5)
+        )
 
 
 @pytest.mark.parametrize("session", ["v1", "v2"])
