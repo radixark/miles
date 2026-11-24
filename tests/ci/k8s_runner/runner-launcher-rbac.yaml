@@ -1,0 +1,85 @@
+# Least-privilege RBAC for Option 3B in-cluster thin GitHub Actions runners
+# and the namespace-scoped orphan reaper CronJob.
+#
+# Security boundary:
+# - runner-launcher can ONLY manage batch/v1 Jobs and read Pods/logs/Events.
+#   It has NO access to Secrets, ConfigMaps, Services, StatefulSets,
+#   LeaderWorkerSets, RBAC, or pods/exec.
+# - The Driver Job itself runs under the pre-existing `miles-workbench` SA.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: runner-launcher
+  namespace: miles-ci-k8s
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: runner-launcher
+  namespace: miles-ci-k8s
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: runner-launcher
+  namespace: miles-ci-k8s
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: runner-launcher
+subjects:
+  - kind: ServiceAccount
+    name: runner-launcher
+    namespace: miles-ci-k8s
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: miles-ci-reaper
+  namespace: miles-ci-k8s
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: miles-ci-reaper
+  namespace: miles-ci-k8s
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "services", "serviceaccounts", "configmaps"]
+    verbs: ["get", "list", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "delete"]
+  - apiGroups: ["leaderworkerset.x-k8s.io"]
+    resources: ["leaderworkersets"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: miles-ci-reaper
+  namespace: miles-ci-k8s
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: miles-ci-reaper
+subjects:
+  - kind: ServiceAccount
+    name: miles-ci-reaper
+    namespace: miles-ci-k8s

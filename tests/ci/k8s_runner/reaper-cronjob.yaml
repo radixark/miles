@@ -1,0 +1,67 @@
+# Layer-3 orphan reaper CronJob: sweeps leaked Helm releases, command-jobs,
+# and expired GPFS staging/run directories for terminated or missing Driver Jobs.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: miles-ci-orphan-reaper
+  namespace: miles-ci-k8s
+  labels:
+    app.kubernetes.io/name: miles-ci-orphan-reaper
+    app.kubernetes.io/component: reaper
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 1800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: miles-ci-orphan-reaper
+            app.kubernetes.io/component: reaper
+        spec:
+          serviceAccountName: miles-ci-reaper
+          restartPolicy: Never
+          enableServiceLinks: false
+          tolerations:
+            - key: radixark.io/pool
+              operator: Equal
+              value: cicd
+              effect: NoSchedule
+          containers:
+            - name: reaper
+              image: radixark/miles:dev
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              command:
+                - python3
+                - /root/miles/tests/ci/k8s_run_driver_job.py
+                - reap
+                - --namespace
+                - miles-ci-k8s
+                - --gpfs-root
+                - /storage/shared/miles-ci-k8s/ext
+                - --max-age-seconds
+                - "10800"
+              volumeMounts:
+                - name: gpfs-ci-root
+                  mountPath: /storage/shared/miles-ci-k8s/ext
+              resources:
+                requests:
+                  cpu: "250m"
+                  memory: 512Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+          volumes:
+            - name: gpfs-ci-root
+              hostPath:
+                path: /storage/shared/miles-ci-k8s/ext
+                type: DirectoryOrCreate

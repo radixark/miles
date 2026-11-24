@@ -1,0 +1,150 @@
+# Thin in-cluster ephemeral GitHub Actions runner Deployment (0 GPU, non-root, no docker.sock).
+#
+# Credential isolation:
+# - Only the short-lived `mint-registration-token` initContainer mounts the
+#   `github-runner-app-creds` Secret (scoped strictly to Self-hosted runners: write).
+# - It exchanges the credential for a single-use 1-hour runner registration token
+#   in an in-memory emptyDir, then exits before any workflow code executes.
+# - The `runner` container consumes and deletes the token, registers with
+#   `--ephemeral`, runs exactly one GitHub job (which submits a 0-GPU Driver Job
+#   under `miles-workbench`), and exits so Kubernetes replaces the pod cleanly.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: miles-k8s-gh-runner
+  namespace: miles-ci-k8s
+  labels:
+    app.kubernetes.io/name: miles-k8s-gh-runner
+    app.kubernetes.io/component: runner-launcher
+spec:
+  # Bounded concurrency budget: keep total active shards <= physical H200 pool (16 GPUs).
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: miles-k8s-gh-runner
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: miles-k8s-gh-runner
+        app.kubernetes.io/component: runner-launcher
+    spec:
+      serviceAccountName: runner-launcher
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      tolerations:
+        - key: radixark.io/pool
+          operator: Equal
+          value: cicd
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      initContainers:
+        - name: mint-registration-token
+          image: curlimages/curl:8.10.1
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: GITHUB_REPOSITORY
+              valueFrom:
+                secretKeyRef:
+                  name: github-runner-app-creds
+                  key: repository
+            - name: GITHUB_RUNNER_TOKEN_CREDENTIAL
+              valueFrom:
+                secretKeyRef:
+                  name: github-runner-app-creds
+                  key: token
+          command:
+            - sh
+            - -eu
+            - -c
+            - |
+              TOKEN=$(curl -sfX POST \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer ${GITHUB_RUNNER_TOKEN_CREDENTIAL}" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners/registration-token" \
+                | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+              test -n "${TOKEN}"
+              printf '%s' "${TOKEN}" > /run/gh-runner-token/registration-token
+              chmod 0600 /run/gh-runner-token/registration-token
+          volumeMounts:
+            - name: runner-token
+              mountPath: /run/gh-runner-token
+          resources:
+            requests:
+              cpu: "100m"
+              memory: 128Mi
+            limits:
+              cpu: "250m"
+              memory: 256Mi
+      containers:
+        - name: runner
+          image: ghcr.io/actions/actions-runner:2.321.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: RUNNER_REPO_URL
+              value: "https://github.com/radixark/miles"
+            - name: RUNNER_LABELS
+              value: "self-hosted,linux,k8s-h200-driver"
+            - name: K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: K8S_GPFS_ROOT
+              value: "/storage/shared/miles-ci-k8s/ext"
+          command:
+            - bash
+            - -euo
+            - pipefail
+            - -c
+            - |
+              REG_TOKEN=$(cat /run/gh-runner-token/registration-token)
+              rm -f /run/gh-runner-token/registration-token
+              ./config.sh \
+                --url "${RUNNER_REPO_URL}" \
+                --token "${REG_TOKEN}" \
+                --name "${HOSTNAME}" \
+                --labels "${RUNNER_LABELS}" \
+                --work /tmp/runner-work \
+                --unattended \
+                --replace \
+                --ephemeral
+              unset REG_TOKEN
+              exec ./run.sh
+          volumeMounts:
+            - name: runner-token
+              mountPath: /run/gh-runner-token
+            - name: gpfs-ci-root
+              mountPath: /storage/shared/miles-ci-k8s/ext
+            - name: runner-work
+              mountPath: /tmp/runner-work
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+      volumes:
+        - name: runner-token
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: runner-work
+          emptyDir:
+            sizeLimit: 16Gi
+        - name: gpfs-ci-root
+          hostPath:
+            path: /storage/shared/miles-ci-k8s/ext
+            type: DirectoryOrCreate

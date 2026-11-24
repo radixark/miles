@@ -1,0 +1,74 @@
+# Namespace-scoped ValidatingAdmissionPolicy for Miles Kubernetes CI.
+#
+# Enforces:
+# 1. No privileged containers, no allowPrivilegeEscalation: true, no hostPID, no hostNetwork.
+# 2. Container capabilities.add restricted strictly to {SYS_PTRACE, SYS_NICE, IPC_LOCK}.
+# 3. hostPath mounts restricted strictly to the namespace GPFS root, read-only models root,
+#    node-local JIT cache, and per-release /dev/shm/miles-<release> directories.
+# 4. Zero-GPU pods cannot set literal NVIDIA_VISIBLE_DEVICES="all" (downward-API fieldRef
+#    for paired sub-node colocate inference pods is explicitly allowed).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: miles-ci-k8s-pod-guard
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  variables:
+    - name: allContainers
+      expression: "object.spec.containers + (has(object.spec.initContainers) ? object.spec.initContainers : [])"
+  validations:
+    - expression: "!has(object.spec.hostPID) || !object.spec.hostPID"
+      message: "hostPID is forbidden in miles-ci-k8s"
+    - expression: "!has(object.spec.hostNetwork) || !object.spec.hostNetwork"
+      message: "hostNetwork is forbidden in miles-ci-k8s"
+    - expression: "variables.allContainers.all(c, !has(c.securityContext) || !has(c.securityContext.privileged) || !c.securityContext.privileged)"
+      message: "privileged containers are forbidden in miles-ci-k8s"
+    - expression: "variables.allContainers.all(c, !has(c.securityContext) || !has(c.securityContext.allowPrivilegeEscalation) || !c.securityContext.allowPrivilegeEscalation)"
+      message: "allowPrivilegeEscalation must be false in miles-ci-k8s"
+    - expression: >-
+        variables.allContainers.all(c,
+          !has(c.securityContext) ||
+          !has(c.securityContext.capabilities) ||
+          !has(c.securityContext.capabilities.add) ||
+          c.securityContext.capabilities.add.all(cap, cap in ['SYS_PTRACE', 'SYS_NICE', 'IPC_LOCK'])
+        )
+      message: "Only SYS_PTRACE, SYS_NICE, and IPC_LOCK capabilities may be added in miles-ci-k8s"
+    - expression: >-
+        !has(object.spec.volumes) || object.spec.volumes.all(v,
+          !has(v.hostPath) ||
+          v.hostPath.path == '/storage/shared/miles-ci-k8s/ext' ||
+          v.hostPath.path.startsWith('/storage/shared/miles-ci-k8s/ext/') ||
+          v.hostPath.path == '/storage/models' ||
+          v.hostPath.path.startsWith('/storage/models/') ||
+          v.hostPath.path == '/data/miles_ci/jit' ||
+          v.hostPath.path.startsWith('/data/miles_ci/jit/') ||
+          v.hostPath.path.matches('^/dev/shm/miles-[a-z0-9-]+$')
+        )
+      message: "hostPath volume outside miles-ci-k8s allowlist is forbidden"
+    - expression: >-
+        variables.allContainers.all(c,
+          !has(c.env) || c.env.all(e,
+            e.name != 'NVIDIA_VISIBLE_DEVICES' ||
+            has(e.valueFrom) ||
+            (has(e.value) && e.value != 'all')
+          )
+        )
+      message: "Literal NVIDIA_VISIBLE_DEVICES=all is forbidden; paired inference pods must receive physical GPU UUIDs via fieldRef"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: miles-ci-k8s-pod-guard-binding
+spec:
+  policyName: miles-ci-k8s-pod-guard
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: miles-ci-k8s
