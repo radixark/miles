@@ -153,6 +153,12 @@ class TestAssertSamplesWeightVersionSane:
 
         assert_samples_weight_version_sane(args, samples=[_make_prefilled_sample(["1", "2"])])
 
+    def test_an_engine_that_does_not_know_the_flag_is_not_held_to_it(self):
+        """An sglang build without --enable-prefill-weight-versions (Inkling's bundled engine) cannot report them."""
+        args = _make_args()
+        del args.sglang.base_args["enable_prefill_weight_versions"]
+        assert_samples_weight_version_sane(args, samples=[_make_unstamped_prompt_sample(num_prompt_tokens=3)])
+
     def test_missing_prompt_versions_are_fine_without_the_opt_in_flag(self):
         """Engines that never report prompt KV versions stay usable while the flag is off."""
         assert_samples_weight_version_sane(_make_args(), samples=[_make_unstamped_prompt_sample(num_prompt_tokens=3)])

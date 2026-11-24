@@ -1,0 +1,16 @@
+### 0
+mkdir -p /root/models /root/datasets
+
+### 1
+hf download thinkingmachines/Inkling-2-Mini
+  --local-dir /root/models/Inkling-2-Mini
+
+### 2
+python tools/convert_inkling2_to_bf16.py
+  --model-dir /root/models/Inkling-2-Mini
+  --save-dir /root/models/Inkling-2-Mini-bf16
+
+### 3
+hf download
+  --repo-type dataset zhuzilin/dapo-math-17k
+  --local-dir /root/datasets/dapo-math-17k

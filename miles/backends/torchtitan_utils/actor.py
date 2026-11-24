@@ -10,6 +10,7 @@ from miles.backends.torchtitan_utils import compat
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
 from miles.backends.torchtitan_utils.compile_warmup import warmup_shard
 from miles.backends.torchtitan_utils.config import build_trainer_config
+from miles.backends.torchtitan_utils.hf_export import save_hf_checkpoint
 from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
 from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanLoraCheckpoint
 from miles.backends.torchtitan_utils.optimizer_state_on_disk import setup_adam_state_on_disk
@@ -191,5 +192,12 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
     def _save_checkpoint(self, rollout_id: int) -> None:
         if is_lora_enabled(self.args):
             self._lora_checkpoint.save(rollout_id)
+        elif self.args.save_hf is not None:
+            # --save-hf exports the servable weights only; the DCP checkpoint (params + optimizer state) is skipped
+            save_hf_checkpoint(
+                self.trainer,
+                hf_checkpoint=self.args.hf_checkpoint,
+                path=self.args.save_hf.format(rollout_id=rollout_id),
+            )
         else:
             self.trainer.engine.save_checkpoint(last_step=True)

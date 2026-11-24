@@ -21,6 +21,8 @@ class TestGetDeepscalerRuleBasedReward:
             (r"</think>\boxed{1/2}", "0.5", 1),
             (r"</think>\boxed{\frac{1}{2}}", "0.5", 1),
             (r"First thought</think>Second thought</think>\boxed{42}", "42", 1),
+            (r"draft \boxed{7}<|content_text|>The answer is \boxed{42}", "42", 1),
+            (r"draft \boxed{42}<|content_text|>The answer is \boxed{7}", "42", 0),
         ],
     )
     def test_get_deepscaler_rule_based_reward(self, response, label, expected):
