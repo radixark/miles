@@ -385,12 +385,21 @@ def split_tuple(expr: str):
     return elems
 
 
+BOXED_TOKENS = ("\\boxed", "\\fbox")
+
+
+def has_boxed(text: str) -> bool:
+    return any(token in text for token in BOXED_TOKENS)
+
+
 def last_boxed_only_string(string):
-    idx = string.rfind("\\boxed")
+    idx = -1
+    for token in BOXED_TOKENS:
+        idx = string.rfind(token)
+        if idx >= 0:
+            break
     if idx < 0:
-        idx = string.rfind("\\fbox")
-        if idx < 0:
-            return None
+        return None
 
     i = idx
     right_brace_idx = None
@@ -411,13 +420,6 @@ def last_boxed_only_string(string):
         retval = string[idx : right_brace_idx + 1]
 
     return retval
-
-
-BOXED_TOKENS = ("\\boxed", "\\fbox")
-
-
-def has_boxed(text: str) -> bool:
-    return any(token in text for token in BOXED_TOKENS)
 
 
 def remove_boxed(s):
