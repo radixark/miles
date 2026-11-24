@@ -35,6 +35,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     target_modules: str = "attn,mlp,unembed"
 
     tinker_port: int = 10613
+    use_prometheus: bool = False
+    prometheus_port: int = 9090
     rollout_num_gpus_per_engine: int = 2
     sglang_mem_fraction_static: float = 0.7
 
@@ -80,6 +82,10 @@ def serve(args: ScriptArgs):
 
     tinker_args = f"--tinker-server-port {args.tinker_port} " f"--tinker-checkpoint-root {args.save_dir}/{args.run_id}"
 
+    prometheus_args = ""
+    if args.use_prometheus:
+        prometheus_args = f"--use-prometheus --prometheus-port {args.prometheus_port} --prometheus-run-name {args.run_id} "
+
     # initial config only; AdamParams come per optim_step request
     optimizer_args = "--optimizer adam --lr 1e-4 "
 
@@ -109,7 +115,7 @@ def serve(args: ScriptArgs):
     )
 
     train_args = (
-        f"{ckpt_args} {lora_args} {tinker_args} {optimizer_args} "
+        f"{ckpt_args} {lora_args} {tinker_args} {prometheus_args} {optimizer_args} "
         f"{perf_args} {sglang_args} {topology_args} {misc_args} {args.extra_args} "
     )
 

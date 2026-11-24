@@ -38,6 +38,10 @@ python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve     # Tinker API 
 
 Checkpoints default to `<output_dir>/checkpoints/<run_id>`; use `--save-dir` to choose another root.
 
+Enable the existing Miles Prometheus collector with `serve --use-prometheus --prometheus-port 9090`.
+Scrape `/metrics` on that port; the collector labels metrics with the launcher run ID.
+Only metrics emitted by the Tinker serving path are reported.
+
 Adapters run on Megatron-Bridge by default. `--megatron-to-hf-mode raw` runs them as miles-native LoRA
 instead, which serves dense models only: download one, pass it as `--hf-checkpoint` with its `--model-type` (a `scripts/models` entry) and `--ep 1`
 (`prepare` fetches only Qwen3-30B-A3B).
