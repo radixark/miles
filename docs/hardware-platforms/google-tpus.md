@@ -12,6 +12,15 @@ One v7x 2x2x1 host has 4 chips with 2 TensorCores each, so 8 devices. The traine
 on devices 0-3 and the engine serves on devices 4-7. Both jobs share the host's slice, so weights
 move from trainer to engine over ICI (`--update-weight-transfer-mode ici`) without touching disk.
 
+## Several hosts
+
+A slice that spans hosts holds the trainer's ranks on its first hosts and the engines on the rest, 8 devices
+per host (`TORCH_TPU_DEVICES_PER_HOST`) in `TORCH_TPU_SLICEBUILDER_ADDRESSES` order. The trainer's ranks must
+follow that host order, which is not the nodes' IP order Ray would give them: export
+`MILES_RAY_NODE_RANK=<this host's position in the slice>` on every Ray node before `ray start`, and Miles
+orders the trainer's placement-group bundles by it. A rank that still lands on the wrong device fails at the
+slice join with a message instead of hanging in the slice builder.
+
 ## Image
 
 The engine and the trainer share one Python environment, built by `docker/Dockerfile.tpu` on

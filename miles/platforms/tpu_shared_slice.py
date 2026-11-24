@@ -4,6 +4,10 @@ Enabled by MILES_TPU_SHARED_SLICE="<slice rank offset>,<slice size>,<store host>
 given the matching SGLANG_TPU_SHARED_SLICE. libtpu builds the slice from the slice-wide RANK / WORLD_SIZE, while
 the trainer's own world keeps its job ranks. Needs a torch_tpu build with job-local worlds
 (TORCH_TPU_JOB_DEVICE_IDS), so neither job waits on the other's programs.
+
+The slice may span hosts: slice ranks are host-contiguous blocks of TORCH_TPU_DEVICES_PER_HOST devices in
+TORCH_TPU_SLICEBUILDER_ADDRESSES order, so the trainer's ranks must follow that host order (see
+MILES_RAY_NODE_RANK in miles.ray.placement_group) and each rank drives device ``slice rank % devices per host``.
 """
 
 import json
@@ -16,6 +20,10 @@ import torch.distributed as dist
 from torch._C._distributed_c10d import PrefixStore
 
 ENV_VAR = "MILES_TPU_SHARED_SLICE"
+# torch_tpu's slice-builder layout: one host's devices are consecutive slice ranks (TORCH_TPU_SLICEBUILDER_ADDRESSES
+# lists host 0's devices, then host 1's, ...), so a slice rank's device index on its host is the rank modulo this
+DEVICES_PER_HOST_ENV_VAR = "TORCH_TPU_DEVICES_PER_HOST"
+DEFAULT_DEVICES_PER_HOST = 8
 # joining waits for the other job to start
 _JOIN_TIMEOUT = timedelta(minutes=30)
 # a send waits until the engine posts its receive, which never comes once the engine has refused the bucket
@@ -68,7 +76,19 @@ def join(shared: SharedSlice, *, job_rank: int, job_size: int) -> None:
     from torch_tpu._internal.distributed import tpu_distributed
 
     slice_rank = shared.rank_offset + job_rank
-    os.environ["RANK"] = os.environ["LOCAL_RANK"] = str(slice_rank)
+    # LOCAL_RANK is this process's device on its host (the actor's Ray device id); torch_tpu pins the device to it.
+    # On one host it equals the slice rank; on a further host of the slice the rank carries that host's offset.
+    devices_per_host = int(os.environ.get(DEVICES_PER_HOST_ENV_VAR) or DEFAULT_DEVICES_PER_HOST)
+    local_rank = os.environ.get("LOCAL_RANK") or str(slice_rank % devices_per_host)
+    assert int(local_rank) == slice_rank % devices_per_host, (
+        f"trainer rank {job_rank} (slice rank {slice_rank}) sits on device {local_rank} of its host, but the slice "
+        f"builders put slice rank {slice_rank} on device {slice_rank % devices_per_host} of host "
+        f"{slice_rank // devices_per_host}: the trainer's ranks must follow the slice's host order (blocks of "
+        f"{devices_per_host} devices per host in TORCH_TPU_SLICEBUILDER_ADDRESSES order); set MILES_RAY_NODE_RANK on "
+        "each Ray node to its host's position in that order"
+    )
+    os.environ["RANK"] = str(slice_rank)
+    os.environ["LOCAL_RANK"] = local_rank
     os.environ["WORLD_SIZE"] = os.environ["LOCAL_WORLD_SIZE"] = str(shared.size)
     # libtpu only checks these exist; the trainer sets its world's real ones before init_process_group
     os.environ.setdefault("MASTER_ADDR", shared.store_host)
@@ -84,7 +104,8 @@ def join(shared: SharedSlice, *, job_rank: int, job_size: int) -> None:
         PrefixStore(receiver_contract().BACKEND_NAME, store), slice_rank, shared.size, _SEND_TIMEOUT
     )
     _membership = _Membership(backend=backend, store=store, slice_rank=slice_rank)
-    os.environ["RANK"] = os.environ["LOCAL_RANK"] = str(job_rank)
+    os.environ["RANK"] = str(job_rank)
+    os.environ["LOCAL_RANK"] = local_rank
     os.environ["WORLD_SIZE"] = os.environ["LOCAL_WORLD_SIZE"] = str(job_size)
 
 
