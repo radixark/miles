@@ -147,6 +147,7 @@ def test_a_distributed_optimizer_import_scatters_only_in_finish(monkeypatch):
         "_build_cast_main_to_params_fn",
         lambda optimizer, precision_aware: lambda: calls.append("cast"),
     )
+    monkeypatch.setattr(lora_checkpoint, "clear_memory", lambda: calls.append("clear"))
     model = [SimpleNamespace(start_param_sync=lambda force_sync: calls.append("sync"))]
     members = DistributedOptimizerMembers(slots, None, model, precision_aware=False)
 
@@ -155,7 +156,8 @@ def test_a_distributed_optimizer_import_scatters_only_in_finish(monkeypatch):
     )
     assert calls == [], "the import assembles this rank's pieces without any collective"
     members.finish_import_adapter_state(0)
-    assert calls == ["gather", "scatter", ("step", 5), "cast", "sync"]
+    # the cache is returned before the parameter all-gather, whose NCCL buffers need free memory on first use
+    assert calls == ["gather", "scatter", ("step", 5), "cast", "clear", "sync"]
     assert torch.equal(world["param"], torch.tensor([1.0, 2.0]))
     assert torch.equal(world["exp_avg_sq"], torch.tensor([5.0, 6.0]))
 

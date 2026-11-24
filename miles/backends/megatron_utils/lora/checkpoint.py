@@ -57,6 +57,8 @@ from miles.backends.training_utils.checkpoint.adapter.source_error import Adapte
 from miles.backends.training_utils.model_companion import ModelCompanionWeightVersionUtils
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.hf_utils.config import load_hf_config
+from miles.utils.memory_utils import clear_memory
+
 
 _WEIGHTS_KEY = "adapter_weights"
 _OPTIM_KEY = "adapter_optimizer"
@@ -291,6 +293,13 @@ class DistributedOptimizerMembers:
             sub.load_parameter_state_from_dp_zero(gathered)
             _set_distributed_optimizer_step(sub, step)
         _build_cast_main_to_params_fn(self._optimizer, precision_aware=self._precision_aware)()
+        # Return PyTorch's cached blocks (left by the base load and the scatter above) before the first parameter
+        # all-gather: NCCL sets up that collective's buffers on first use with its own CUDA allocation, which fails
+        # when the cache holds the free memory (resuming Inkling 2 Small LoRA on 16 H200 GPUs: "NCCL WARN Cuda failure
+        # 'out of memory'" here on all 16 ranks). A fresh run reaches its first all-gather after load_model_state's
+        # clear_memory().
+        del pieces_by_param
+        clear_memory()
         for chunk in self._model:
             chunk.start_param_sync(force_sync=True)
 
