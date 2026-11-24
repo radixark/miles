@@ -169,11 +169,32 @@ def load_processor(name_or_path: str, **kwargs):
     return proc
 
 
+_VISION_CONTENT_TYPES = ("image", "image_url", "video")
+
+
+def _has_vision_content(prompt) -> bool:
+    """Whether chat messages carry an image or video item, as qwen_vl_utils detects them."""
+    conversations = [prompt] if prompt and isinstance(prompt[0], dict) else prompt
+    return any(
+        isinstance(item, dict)
+        and (any(key in item for key in _VISION_CONTENT_TYPES) or item.get("type") in _VISION_CONTENT_TYPES)
+        for conversation in conversations
+        for message in conversation
+        if isinstance(message.get("content"), list)
+        for item in message["content"]
+    )
+
+
 def process_vision_info(prompt, processor):
     if hasattr(
         processor, "extract_media"
     ):  # config-access-exempt: processor capabilities vary across tokenizer and modality implementations
         return processor.extract_media(prompt)
+
+    # AutoProcessor returns a processor for any checkpoint with a preprocessor config, so text-only
+    # prompts reach here too; they need neither qwen_vl_utils nor an image processor.
+    if not _has_vision_content(prompt):
+        return {"images": None, "videos": None}
 
     # TODO: temporary solution, will write image utils for miles later
     from qwen_vl_utils import process_vision_info as qwen_process_vision_info
