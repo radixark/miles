@@ -191,6 +191,12 @@ def _validate_platform_args(args) -> None:
             f"--context-parallel-size {args.context_parallel_size} does not divide --seq-length {args.seq_length}: "
             "every microbatch pads to --seq-length and shards evenly across the CP ranks"
         )
+    if args.titan_fp8_recipe is not None and (args.seq_length // args.context_parallel_size) % 16 != 0:
+        raise ValueError(
+            f"--titan-fp8-recipe requires --seq-length / --context-parallel-size "
+            f"({args.seq_length} / {args.context_parallel_size} = "
+            f"{args.seq_length // args.context_parallel_size}) to be a multiple of 16 for torch._scaled_mm"
+        )
     if args.expert_model_parallel_size != 1:
         raise ValueError(
             f"--expert-model-parallel-size {args.expert_model_parallel_size} is not supported on "

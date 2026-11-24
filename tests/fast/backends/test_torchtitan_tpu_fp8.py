@@ -1,13 +1,15 @@
 """Unit tests for TorchTitan TPU channelwise/rowwise W8A8 FP8 training and launcher wiring."""
 
+from typing import get_args
 from unittest.mock import MagicMock
 
 import pytest
 import torch
-from scripts.tpu.torchtitan_launch import ScriptArgs, TitanTpuModel, execute_train, serve_sglang
+from scripts.tpu.run_qwen3_5_torchtitan import Qwen35ScriptArgs
+from scripts.tpu.torchtitan_launch import ScriptArgs, TitanFp8Recipe, TitanTpuModel, execute_train, serve_sglang
 from tests.fast.backends.test_torchtitan import _checkpoint_dir, _config_args, on_tpu, single_gpu_dims  # noqa: F401
 
-from miles.backends.torchtitan_utils.arguments import build_torchtitan_parser
+from miles.backends.torchtitan_utils.arguments import TITAN_FP8_RECIPES, build_torchtitan_parser
 
 
 def test_torchtitan_parser_exposes_fp8_recipe_and_filter_fqns():
@@ -36,11 +38,32 @@ def test_tpu_launcher_fp8_flags_wire_engine_and_trainer_and_reject_mismatched_tr
 
     model = TitanTpuModel(name="Qwen3-4B", titan_model_name="qwen3", titan_model_flavor="4B")
 
+    assert get_args(TitanFp8Recipe) == TITAN_FP8_RECIPES
+
     with pytest.raises(ValueError, match="requires --rollout-fp8"):
         ScriptArgs(train_fp8=True, rollout_fp8=False)
+    with pytest.raises(ValueError, match="requires --train-fp8"):
+        ScriptArgs(rollout_fp8=True, train_fp8=False, titan_fp8_recipe="rowwise")
+    with pytest.raises(ValueError, match="expected one of"):
+        ScriptArgs(rollout_fp8=True, train_fp8=True, titan_fp8_recipe="blockwise")  # type: ignore[arg-type]
 
     serve_sglang(ScriptArgs(rollout_fp8=True, train_fp8=True), model)
     assert "--quantization fp8 --tpu-fp8-runtime channelwise" in captured_cpu_cmds[-1]
+
+    qwen35_27b = Qwen35ScriptArgs(model_name="Qwen3.5-27B", rollout_fp8=False)
+    serve_sglang(qwen35_27b, qwen35_27b.model)
+    assert "SGLANG_FP8_IGNORED_LAYERS" not in captured_cpu_cmds[-1]
+
+    qwen35_27b_fp8 = Qwen35ScriptArgs(model_name="Qwen3.5-27B", rollout_fp8=True)
+    serve_sglang(qwen35_27b_fp8, qwen35_27b_fp8.model)
+    assert "SGLANG_FP8_IGNORED_LAYERS=in_proj_ba,in_proj_b,in_proj_a" in captured_cpu_cmds[-1]
+
+    execute_train(
+        ScriptArgs(rollout_fp8=True, train_fp8=True),
+        model,
+        launcher_file="run_qwen3_4b_torchtitan.py",
+    )
+    assert "--titan-fp8-recipe rowwise_with_gw_hp " in captured_train_args[-1]
 
     execute_train(
         ScriptArgs(rollout_fp8=True, train_fp8=True, titan_fp8_recipe="rowwise"),
@@ -330,6 +353,9 @@ def test_float8_linear_forward_and_backward_match_fp32_reference(monkeypatch, fp
     wgrad_tol = 0.08 if fp8_wgrad else 0.02
     assert (fp8_linear.weight.grad.float() - ref_linear.weight.grad).norm() / ref_linear.weight.grad.norm() < wgrad_tol
     assert (fp8_linear.bias.grad.float() - ref_linear.bias.grad).norm() / ref_linear.bias.grad.norm() < 0.02
+
+    with pytest.raises(ValueError, match="multiple of 16"):
+        fp8_linear(torch.randn(1, 7, 64, dtype=torch.bfloat16))
 
 
 def test_float8_grouped_linear_forward_and_backward_match_fp32_reference(monkeypatch):

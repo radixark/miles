@@ -9,9 +9,11 @@ scripts/tpu/README.md describes the environment both expect.
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, get_args
 
 from miles.utils.external_utils import command_utils
+
+TitanFp8Recipe = Literal["rowwise", "rowwise_with_gw_hp"]
 
 SEQ_LEN = 8192
 NUM_TRAINER_DEVICES = 4
@@ -34,6 +36,8 @@ class TitanTpuModel:
     sglang_args: str = ""
     # environment assignments for the sglang server, e.g. "NAME=value "
     sglang_env: str = ""
+    # environment assignments added when --rollout-fp8 is set, e.g. "SGLANG_FP8_IGNORED_LAYERS=... "
+    sglang_fp8_env: str = ""
     # how rollouts are prompted and scored; math grades the last \boxed{}, deepscaler only after </think>, which a
     # thinking-off response lacks
     rollout_args: str = "--rm-type math "
@@ -83,9 +87,15 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     rollout_fp8: bool = False
     # matching dynamic rowwise W8A8 FP8 GEMMs on the torchtitan trainer (--titan-fp8-recipe)
     train_fp8: bool = False
-    titan_fp8_recipe: str = "rowwise_with_gw_hp"
+    titan_fp8_recipe: TitanFp8Recipe | None = None
 
     def __post_init__(self) -> None:
+        if self.titan_fp8_recipe is not None and not self.train_fp8:
+            raise ValueError("--titan-fp8-recipe requires --train-fp8")
+        if self.titan_fp8_recipe is not None and self.titan_fp8_recipe not in get_args(TitanFp8Recipe):
+            raise ValueError(
+                f"--titan-fp8-recipe {self.titan_fp8_recipe!r}: expected one of {get_args(TitanFp8Recipe)}"
+            )
         if self.train_fp8 and not self.rollout_fp8:
             raise ValueError(
                 "--train-fp8 requires --rollout-fp8 (on both the sglang and train commands) so rollout and training "
@@ -156,6 +166,7 @@ def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
         # the batched ragged paged attention reads this KV layout fastest; the cache stays bf16
         "SGLANG_TPU_USE_SEQ_ALONG_LANE_KV=1 "
         f"{model.sglang_env}"
+        f"{model.sglang_fp8_env if args.rollout_fp8 else ''}"
         "python3 -m sglang.launch_server "
         f"--model-path {args.model_dir}/{model.name} "
         "--device tpu "
@@ -284,6 +295,7 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
         f"--update-weight-transfer-mode {WEIGHT_TRANSFER_MODE} "
     )
 
+    fp8_recipe = args.titan_fp8_recipe or "rowwise_with_gw_hp"
     train_backend_args = (
         "--train-backend torchtitan "
         f"--titan-model-name {model.titan_model_name} "
@@ -296,7 +308,7 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
         f"{'--use-rollout-routing-replay ' if model.routing_replay else ''}"
         "--use-dynamic-batch-size "
         f"--max-tokens-per-gpu {SEQ_LEN} "
-        f"{f'--titan-fp8-recipe {args.titan_fp8_recipe} ' if args.train_fp8 else ''}"
+        f"{f'--titan-fp8-recipe {fp8_recipe} ' if args.train_fp8 else ''}"
         f"{model.train_args}"
     )
 

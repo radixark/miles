@@ -1174,3 +1174,7 @@ def test_titan_fp8_recipe_validates_choices_and_platform(monkeypatch, request):
     request.getfixturevalue("on_tpu")
     validate_torchtitan_args(_tpu_args(titan_fp8_recipe="rowwise"))
     validate_torchtitan_args(_tpu_args(titan_fp8_recipe="rowwise_with_gw_hp", titan_fp8_filter_fqns=["attention.wo"]))
+    with pytest.raises(ValueError, match="multiple of 16"):
+        validate_torchtitan_args(
+            _tpu_args(seq_length=1024, max_seq_len=1024, context_parallel_size=128, titan_fp8_recipe="rowwise")
+        )

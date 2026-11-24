@@ -44,6 +44,8 @@ from miles.utils.external_utils import command_utils
 _ENGINE_ARGS = "--tpu-compile-tokens 128 256 512 1024 2048 "
 # an empty ladder skips the vision tower's precompile (~14 of ~17 startup minutes); rollouts are text only
 _ENGINE_ENV = "SGLANG_TPU_VIT_PRECOMPILE_SIZES='' "
+# 27B has 48 linear-attention value heads, so GDN in_proj_ba has 2 * 48 / 4 = 24 rows per TP4 rank (% 16 != 0)
+_27B_FP8_ENGINE_ENV = "SGLANG_FP8_IGNORED_LAYERS=in_proj_ba,in_proj_b,in_proj_a "
 # dapo grades the "Answer:" line the dapo-math prompts ask for
 _ROLLOUT_ARGS = "--rm-type dapo --reward-key score --eval-reward-key acc "
 # AIME with the dapo-math prompts' "Answer:" instruction (tools/add_dapo_answer_instruction.py): thinking-off
@@ -70,6 +72,7 @@ _MODELS: dict[str, TitanTpuModel] = {
         titan_model_flavor="27B",
         sglang_args=_ENGINE_ARGS,
         sglang_env=_ENGINE_ENV,
+        sglang_fp8_env=_27B_FP8_ENGINE_ENV,
         rollout_args=_ROLLOUT_ARGS,
         eval_data=_EVAL_DATA,
         train_args=_HOST_OPTIMIZER,
@@ -93,6 +96,7 @@ _MODELS: dict[str, TitanTpuModel] = {
         titan_model_flavor="27B",
         sglang_args=_ENGINE_ARGS,
         sglang_env=_ENGINE_ENV,
+        sglang_fp8_env=_27B_FP8_ENGINE_ENV,
         rollout_args=_ROLLOUT_ARGS,
         eval_data=_EVAL_DATA,
         train_args=_HOST_OPTIMIZER,

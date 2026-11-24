@@ -127,9 +127,10 @@ python3 scripts/tpu/run_qwen3_4b_torchtitan.py train --rollout-fp8 --train-fp8 -
   output channel via `torch._scaled_mm` (dense) and `torch._scaled_grouped_mm` (MoE routed experts), matching the
   rollout engine's forward quantization contract. Embeddings, `lm_head`, and MoE `router.gate` (`HiMidLoLinear`) stay
   in high precision; `--titan-fp8-filter-fqns <substr> ...` excludes additional module FQNs.
-- On one v7x 2x2x1 host (`Qwen3-4B`, `--rollout-fp8 --train-fp8 --recipe smoke`, sequence length 8192), `sglang`
-  serves batch-32 rollouts at ~5,500 decode tokens/s, GRPO steps 1-2 run in 3.9-4.0 s with 0.5 s inter-step ICI weight
-  syncs (zero `direct_compile` recompiles), and `train/train_rollout_kl` stays at 0.003-0.004 (`abs_diff` 0.023-0.032).
+- On one v7x 2x2x1 host (`Qwen3-4B`, `--rollout-fp8 --train-fp8`, sequence length 8192, 10 GRPO steps), `sglang`
+  serves rollouts at ~5,500 decode tokens/s, steady-state actor updates run in 3.32 s/step (21,485 tok/s vs 3.60 s/step
+  in BF16) with 0.163 s ICI engine weight reloads (zero `direct_compile` recompiles), and `train/train_rollout_kl`
+  stays at 0.0027-0.0042 (`abs_diff` 0.025-0.036).
 
 ## Notes
 

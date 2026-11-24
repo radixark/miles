@@ -73,6 +73,11 @@ def _float8_linear_forward(
 ) -> torch.Tensor:
     weight_NK, bias_N = Linear._flatten_weight_and_bias(weight, bias)
     input_MK = input.reshape(-1, input.shape[-1])
+    if input_MK.shape[0] % _MIN_SCALED_MM_DIM != 0:
+        raise ValueError(
+            f"Float8Linear requires token rows M to be a multiple of {_MIN_SCALED_MM_DIM} for torch._scaled_mm, "
+            f"got M={input_MK.shape[0]} from input shape {tuple(input.shape)}"
+        )
     input_q_MK, input_scale_M1 = _quantize_rowwise_2d(input_MK, torch.float8_e4m3fn, _FMAX_E4M3)
     weight_q_NK, weight_scale_N1 = _quantize_rowwise_2d(weight_NK, torch.float8_e4m3fn, _FMAX_E4M3)
     output_MN = torch._scaled_mm(
