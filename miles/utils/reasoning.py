@@ -92,18 +92,21 @@ def _detect_framed_family(text: str) -> str | None:
     # Both Harmony and Muse Spark use `<|start|>assistant to=...` / `to=...`; Harmony attaches
     # `<|channel|>` directly to the recipient before `<|message|>`, while Muse Spark never does.
     if stripped.startswith("<|start|>assistant to="):
-        rest_first = stripped[len("<|start|>assistant ") :].split(None, 1)[0]
-        return "harmony" if "<|channel|>" in rest_first else "muse_spark"
+        header = stripped[len("<|start|>assistant ") :].split(None, 1)[0].split("<|message|>", 1)[0]
+        return "harmony" if "<|channel|>" in header else "muse_spark"
 
     if stripped.startswith(("<|start|>user", "<|start|>developer", "<|start|>system")):
-        if "<|start|>assistant<|channel|>" in text or "<|end|><|start|>assistant" in text:
+        harmony_end = text.find("<|end|><|start|>")
+        muse_end = text.find("<|eot|><|start|>")
+        if harmony_end != -1 and (muse_end == -1 or harmony_end < muse_end):
             return "harmony"
-        if "<|eot|><|start|>" in text:
+        if muse_end != -1:
             return "muse_spark"
 
     first_token = stripped.split(None, 1)[0]
     if stripped.startswith("to="):
-        if "<|channel|>" in first_token:
+        header = first_token.split("<|message|>", 1)[0]
+        if "<|channel|>" in header:
             return "harmony"
         if "<|message|>" in first_token:
             return "muse_spark"

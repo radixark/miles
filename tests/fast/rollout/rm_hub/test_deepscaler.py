@@ -228,8 +228,15 @@ class TestGetDeepscalerRuleBasedReward:
             (r"Example:<|content_invoke_tool_json|> means a tool call. \boxed{wrong}</think>\boxed{42}", 1),
             # Muse Spark subsequent thinking block after to=user<|eom|> must not leak into answer.
             (r" to=user<|message|>\boxed{1}<|eom|><|start|>assistant to=self<|message|>\boxed{42}<|eom|>", 0),
-            # Literal </think> or mid-prose <|eot|> inside a closed framed turn must not overwrite the real answer.
+            # Literal </think> or mid-prose <|eot|> / <|channel|> inside a closed framed turn must not overwrite the answer.
             (r"to=user<|message|>\boxed{42}. The tag is </think>.<|eot|>", 1),
+            (r"to=user<|message|><|channel|> and </think> are delimiters. \boxed{42}<|eot|>", 1),
+            (r"<|start|>assistant to=user<|message|><|channel|> and </think> are delimiters. \boxed{42}<|eot|>", 1),
+            (
+                r"<|start|>user<|message|>Explain the tags.<|eot|>"
+                r"<|start|>assistant to=user<|message|>Examples are <|start|>assistant<|channel|> and </think>. \boxed{42}<|eot|>",
+                1,
+            ),
             (r"to=user<|message|>The marker <|eot|> ends a turn. \boxed{42}<|eot|>", 1),
             (
                 r"<|content_text|>\boxed{42}<|end_message|>"
