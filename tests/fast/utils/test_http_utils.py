@@ -190,6 +190,17 @@ class TestResolveIp:
 # ---------------------------------------------------------------------------
 
 
+# What a probe of an unbound ephemeral port can get: Linux completes a TCP simultaneous open with itself.
+_LINUX_ONLY_SELF_CONNECT = pytest.mark.skipif(sys.platform != "linux", reason="only Linux allows a TCP self-connect")
+
+
+def _self_connected_socket() -> socket.socket:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    sock.connect(sock.getsockname())
+    return sock
+
+
 class TestWaitForServerReady:
     def test_returns_when_port_is_already_open(self):
         """Server is already listening → should return immediately."""
@@ -223,6 +234,13 @@ class TestWaitForServerReady:
         port = _find_free_port()
         with pytest.raises(RuntimeError, match="not ready after"):
             wait_for_server_ready("127.0.0.1", port, timeout=1)
+
+    @_LINUX_ONLY_SELF_CONNECT
+    def test_a_socket_connected_to_itself_is_not_ready(self, monkeypatch):
+        monkeypatch.setattr(http_utils.socket, "create_connection", lambda address, timeout: _self_connected_socket())
+
+        with pytest.raises(RuntimeError, match="not ready after"):
+            wait_for_server_ready("127.0.0.1", 23456, timeout=1)
 
     def test_raises_when_process_dies(self):
         """Process exits before port is ready → should raise immediately."""
@@ -303,6 +321,12 @@ class _FakeSocket:
     def __exit__(self, *args):
         pass
 
+    def getsockname(self):
+        return ("127.0.0.1", 40000)
+
+    def getpeername(self):
+        return ("127.0.0.1", 9999)
+
 
 class TestWaitForServerReadySimulatedDelays:
     @pytest.mark.parametrize("simulated_delay_s", [5, 10, 20])
@@ -382,6 +406,9 @@ class _FakeWriter:
 
     async def wait_closed(self) -> None:
         self.wait_closed_awaited = True
+
+    def get_extra_info(self, name: str) -> tuple[str, int]:
+        return {"sockname": ("127.0.0.1", 40000), "peername": ("127.0.0.1", 23456)}[name]
 
 
 class TestWaitTcpReadyAsync:
@@ -472,6 +499,19 @@ class TestWaitTcpReadyAsync:
             await wait_tcp_ready_async("127.0.0.1", 23456, timeout=0.05)
 
         assert len(attempts) > 1
+
+    @_LINUX_ONLY_SELF_CONNECT
+    async def test_a_socket_connected_to_itself_is_not_ready(self, monkeypatch):
+        open_connection = asyncio.open_connection
+
+        async def fake_open_connection(host, port):
+            return await open_connection(sock=_self_connected_socket())
+
+        monkeypatch.setattr(http_utils, "_CONNECT_RETRY_INTERVAL_SECONDS", 0.01)
+        monkeypatch.setattr(http_utils.asyncio, "open_connection", fake_open_connection)
+
+        with pytest.raises(RuntimeError, match="not ready after"):
+            await wait_tcp_ready_async("127.0.0.1", 23456, timeout=0.2)
 
     async def test_it_returns_once_the_port_accepts(self):
         """The async probe must still answer the question the blocking one answered."""
