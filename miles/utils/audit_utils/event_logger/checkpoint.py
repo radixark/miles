@@ -7,7 +7,7 @@ import uuid
 from argparse import Namespace
 from pathlib import Path
 
-from miles.backends.megatron_utils.megatron_config import compute_trainer_checkpoint_dir, resolve_megatron_config
+from miles.backends.megatron_utils.megatron_config import compute_trainer_checkpoint_dir
 from miles.backends.training_utils.checkpoint.tracker import read_checkpoint_tracker_iteration
 
 logger = logging.getLogger(__name__)
@@ -59,8 +59,10 @@ def discard(args: Namespace) -> None:
 
 
 def _restorable_snapshot_dir(args: Namespace) -> Path | None:
-    if args.train_backend == "megatron" and args.finetune:
-        return None
+    if args.train_backend == "megatron":
+        backend_args = args.raw_megatron.base_args | args.raw_megatron.trainers[0].overrides
+        if backend_args["finetune"]:
+            return None
 
     if args.requested_load is None:
         return None
@@ -74,7 +76,7 @@ def _restorable_snapshot_dir(args: Namespace) -> Path | None:
 
 
 def _read_checkpoint_iteration(args: Namespace) -> int | None:
-    leader = resolve_megatron_config(args).trainers[0]
+    leader = args.raw_megatron.trainers[0]
     load_dir = (
         compute_trainer_checkpoint_dir(base_dir=args.requested_load, trainer_id=leader.trainer_id)
         if leader.model_id is not None

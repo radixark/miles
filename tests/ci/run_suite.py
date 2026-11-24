@@ -22,6 +22,9 @@ from tests.ci.ci_utils import (
 )
 from tests.ci.hardware import CUDA_STAGES, dispatch_targets
 from tests.ci.labels import KNOWN_LABELS, PERF_LABEL
+from tests.ci.rocm import LEGACY_NIGHTLY_SUITES, ROCM_STAGES
+
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 
 HW_MAPPING = {
     "cpu": HWBackend.CPU,
@@ -41,15 +44,18 @@ CI_SUITES = {
         "stage-b-cpu",
     ],
     HWBackend.CUDA: list(CUDA_STAGES),
-    HWBackend.ROCM: [
-        # Consumed by pr-test-rocm.yml.
-        "stage-c-4-gpu-mi350",
-        # Consumed by the external sgl-project/sglang MI350 nightly.
-        "nightly-stage-c-8-gpu-mi350",
-        "nightly-stage-c-4-gpu-mi350",
-        "nightly-stage-c-2-gpu-mi350",
-    ],
+    HWBackend.ROCM: list(ROCM_STAGES),
 }
+
+
+def snapshot_hardware(suite: str) -> str:
+    if suite in CI_SUITES[HWBackend.CPU]:
+        return "cpu"
+    if suite in CUDA_STAGES:
+        return CUDA_STAGES[suite].runs_on[0]
+    if suite in CI_SUITES[HWBackend.ROCM]:
+        return suite.rsplit("-", maxsplit=1)[-1]
+    raise ValueError(f"Unknown snapshot execution suite: {suite!r}")
 
 
 def runs_in_stage(
@@ -62,10 +68,14 @@ def runs_in_stage(
     """Whether `registration` executes in `suite`, ignoring label selection.
 
     CPU and ROCm registrations have no arch, so their home suite is the only
-    answer. A CUDA registration's home stage is where AUTO sends it; an explicit
-    `run-on-*` can send it to another arch's stage instead. Shared with
-    `stage_selection` so runner allocation and test collection cannot disagree.
+    answer, except that `run-ci-blackwell-only` (an arch restriction without
+    `run-on-*`) selects no ROCm test. A CUDA registration's home stage is where
+    AUTO sends it; an explicit `run-on-*` can send it to another arch's stage
+    instead. Shared with `stage_selection` so runner allocation and test
+    collection cannot disagree.
     """
+    if registration.backend is HWBackend.ROCM:
+        return registration.suite == suite and (absorb or not dispatch_arches)
     if registration.backend is not HWBackend.CUDA:
         return registration.suite == suite
     return suite in dispatch_targets(
@@ -287,17 +297,21 @@ def run_a_suite(args):
     if args.enable_retry:
         timeout += args.retry_timeout_increase
 
-    # Regression-gate wiring: the store exists only when NEON_DATABASE_URL is
-    # set (CI), so the gate hook is a no-op locally. The resolved cadence is
-    # also supplies the baseline-writing signal. Provenance comes from the GitHub env.
-    gate_store = build_store_from_env()
+    # Each backend uses its own optional Neon URL. Missing/empty URLs skip the
+    # history gate. The resolved cadence supplies the baseline-writing signal;
+    # provenance comes from the GitHub environment.
+    gate_store = build_store_from_env(backend=hw)
     gate_provenance = gate_provenance_from_env()
 
     # The gate collects only when a record directory exists. CI does not set
     # MILES_CI_GATE_RECORD_DIR, so allocate a job-local one whenever a store is
-    # configured (CUDA suites only -- the gate is CUDA-only). The training
+    # configured (CUDA and ROCm suites; ROCm only records, see run_gate_hook). The training
     # subprocesses' CiHistoryBackend and the merge/gate steps read it from env.
-    if gate_store is not None and hw == HWBackend.CUDA and not os.environ.get(CI_GATE_RECORD_DIR_ENV):
+    if (
+        gate_store is not None
+        and hw in (HWBackend.CUDA, HWBackend.ROCM)
+        and not os.environ.get(CI_GATE_RECORD_DIR_ENV)
+    ):
         os.environ[CI_GATE_RECORD_DIR_ENV] = tempfile.mkdtemp(prefix="miles-ci-gate-")
 
     return run_unittest_files(
@@ -309,6 +323,7 @@ def run_a_suite(args):
         retry_wait_seconds=args.retry_wait_seconds,
         gate_store=gate_store,
         gate_executing_suite=suite,
+        snapshot_hardware=snapshot_hardware(suite) if SNAPSHOT_TESTING_ENABLED else None,
         gate_write_baseline=policy.write_baseline,
         gate_provenance=gate_provenance,
         reap_leftovers=reaping_is_isolated(),
@@ -423,6 +438,8 @@ def main():
 
     if args.github_output and not args.list_only:
         parser.error("--github-output requires --list-only.")
+    if args.hw == "rocm":
+        args.suite = LEGACY_NIGHTLY_SUITES.get(args.suite, args.suite)
 
     # Validate auto-partition arguments
     if (args.auto_partition_id is not None) != (args.auto_partition_size is not None):

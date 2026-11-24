@@ -88,7 +88,9 @@ async def _close_quietly(closing: Any) -> None:
 
 
 def exception_rejects_cursor(exception: BaseException) -> bool:
-    return getattr(exception, "status", None) in _CURSOR_REJECTED_CODES
+    return (
+        getattr(exception, "status", None) in _CURSOR_REJECTED_CODES
+    )  # config-access-exempt: only Kubernetes API errors carry HTTP status
 
 
 def _frame_rejects_cursor(frame: WatchFrame) -> bool:

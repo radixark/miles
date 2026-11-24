@@ -11,16 +11,18 @@ logger = logging.getLogger(__name__)
 
 
 def create_multi_lora_instance(args: Namespace, *, target_modules):
-    from megatron.bridge.peft.multi_lora import MultiLoRA
+    from megatron.bridge.peft.multi_lora import CanonicalMultiLoRA, MultiLoRA
 
-    return MultiLoRA(
+    adapter_cls = CanonicalMultiLoRA if args.lora_type == "canonical_lora" else MultiLoRA
+    return adapter_cls(
         target_modules=target_modules,
         n_adapters=args.multi_lora_n_adapters,
+        experts_shared_outer_loras=args.experts_shared_outer_loras,
         dim=args.lora_rank,
         alpha=args.lora_alpha,
-        dropout=getattr(args, "lora_dropout", 0.0),
+        dropout=args.lora_dropout,
         lora_A_init_method=args.lora_A_init_method,
-        lora_B_init_method=getattr(args, "lora_B_init_method", "zero"),
+        lora_B_init_method=args.lora_B_init_method,
     )
 
 

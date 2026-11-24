@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -12,6 +13,7 @@ from miles.backends.megatron_utils.lora.native.modules.linear import (
     LoRALinear,
     NativeLoRAAdapter,
     attach_adapter_forward,
+    build_adapter,
 )
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, AttentionFamily, ProjectionSpec
 
@@ -26,7 +28,9 @@ def config_dim(field: str) -> DimFn:
     """A transformer-config field used verbatim (e.g. ``q_lora_rank``)."""
 
     def resolve(_module: nn.Module, context: AttachContext) -> int:
-        value = getattr(context.transformer_config, field)
+        value = getattr(
+            context.transformer_config, field
+        )  # config-access-exempt: the architecture layout names the transformer dimension field
         assert value, f"transformer config field {field!r} must be a positive dimension, got {value!r}"
         return int(value)
 
@@ -37,7 +41,9 @@ def host_in_local(host_attr: str) -> DimFn:
     """This rank's input width of the host linear ``host_attr``, read from its weight."""
 
     def resolve(module: nn.Module, _context: AttachContext) -> int:
-        return getattr(module, host_attr).weight.shape[1]
+        return getattr(module, host_attr).weight.shape[
+            1
+        ]  # config-access-exempt: the architecture layout names the projection host attribute
 
     return resolve
 
@@ -46,7 +52,9 @@ def host_out_local(host_attr: str) -> DimFn:
     """This rank's output width of the host linear ``host_attr``, read from its weight."""
 
     def resolve(module: nn.Module, _context: AttachContext) -> int:
-        return getattr(module, host_attr).weight.shape[0]
+        return getattr(module, host_attr).weight.shape[
+            0
+        ]  # config-access-exempt: the architecture layout names the projection host attribute
 
     return resolve
 
@@ -156,8 +164,18 @@ class ModuleLayout:
         return frozenset(projection.hf_leaf for group in self.fused for projection in group.projections)
 
 
+def assert_no_slots_under_cp_relayout(context: AttachContext) -> None:
+    """Linear attention moves its CP shard to packed order before its input projections; routing counts this
+    rank's zigzag tokens."""
+    assert (
+        context.lora.num_slots is None or context.transformer_config.context_parallel_size == 1
+    ), "multi-LoRA slots on linear-attention projections need context parallel size 1"
+
+
 def layout_applies_to(block: nn.Module, layout: ModuleLayout) -> bool:
-    return layout.present_when_attr is None or hasattr(block, layout.present_when_attr)
+    return layout.present_when_attr is None or hasattr(
+        block, layout.present_when_attr
+    )  # config-access-exempt: the architecture layout names an optional block marker
 
 
 def attach_layout(block: nn.Module, layout: ModuleLayout, layer: nn.Module, context: AttachContext) -> int:
@@ -169,7 +187,9 @@ def attach_layout(block: nn.Module, layout: ModuleLayout, layer: nn.Module, cont
 
     count = 0
     for group in layout.fused:
-        host = getattr(block, group.module_attr)
+        host = getattr(
+            block, group.module_attr
+        )  # config-access-exempt: the architecture group names its host module attribute
         hf_prefix = context.naming.block_prefix(
             layer, host.weight, [projection.hf_leaf for projection in group.projections]
         )
@@ -178,29 +198,35 @@ def attach_layout(block: nn.Module, layout: ModuleLayout, layer: nn.Module, cont
         )
         if not active:
             continue
-        adapter = group.build(block, hf_prefix, context, active)
+        adapter = build_adapter(functools.partial(group.build, block, hf_prefix, context, active), context)
         setattr(block, group.adapter_attr, adapter)
-        attach_adapter_forward(host, adapter, context.lora.scale)
+        attach_adapter_forward(host, adapter)
         count += 1
 
     for binding in layout.singles:
-        host = getattr(block, binding.module_attr)
+        host = getattr(
+            block, binding.module_attr
+        )  # config-access-exempt: the architecture binding names its host module attribute
         hf_prefix = context.naming.block_prefix(layer, host.weight, [binding.projection.hf_leaf])
         if not context.lora.selects(f"{hf_prefix}{binding.projection.hf_leaf}"):
             continue
         out_features = binding.out_dim(block, context)
         if binding.guard is not None:
             binding.guard(host, context, binding.projection, out_features)
-        adapter = binding.adapter_class(
-            hf_prefix=hf_prefix,
-            projection=binding.projection,
-            reference=host.weight,
-            context=context,
-            in_features=binding.in_dim(block, context),
-            out_features=out_features,
+        adapter = build_adapter(
+            functools.partial(
+                binding.adapter_class,
+                hf_prefix=hf_prefix,
+                projection=binding.projection,
+                reference=host.weight,
+                context=context,
+                in_features=binding.in_dim(block, context),
+                out_features=out_features,
+            ),
+            context,
         )
         setattr(block, binding.adapter_attr, adapter)
-        attach_adapter_forward(host, adapter, context.lora.scale)
+        attach_adapter_forward(host, adapter)
         count += 1
     return count
 

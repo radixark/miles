@@ -163,7 +163,10 @@ def get_debug_dump_args(*, dump_dir: str, enable_dumper: bool) -> str:
             f"--dumper-source-patcher-config-train {shlex.quote(str(_source_patcher_path()))} "
         )
 
-    return f"--save-debug-event-data {shlex.quote(str(Path(dump_dir) / EVENTS_DIRNAME))} {dumper_args}"
+    return (
+        f"--save-debug-event-data {shlex.quote(str(Path(dump_dir) / EVENTS_DIRNAME))} "
+        f"--log-inference-engine-weight-checksums {dumper_args}"
+    )
 
 
 def get_ft_args(
@@ -204,6 +207,7 @@ def get_deterministic_p2p_train_args(
     args = get_common_train_args(mode, dump_dir=dump_dir, num_steps=num_steps, enable_dumper=enable_dumper)
     args += get_ft_args(mode, api_server_args=API_SERVER_ARGS, extra_ft_components=extra_ft_components)
     args += "--mini-ft-controller-enable "
+    args += "--enable-witness "
     args += "--debug-deterministic-collective "
     args += "--sglang-disable-radix-cache "
     args += "--update-weight-transfer-mode p2p --sglang-router-policy round_robin "

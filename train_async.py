@@ -2,40 +2,47 @@ import asyncio
 import logging
 import os
 
-from miles.ray.placement_group import (
-    create_rollout_components,
-    create_training_models,
-    maybe_start_api_server,
-    update_weights,
-)
+from miles.ray.placement_group import create_components, create_trainer_handles, maybe_start_api_server, update_weights
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
-from miles.utils.arguments import parse_args, validate_async_off_policy_correction
+from miles.ray.specs.train import compute_trainer_configs
+from miles.utils import checkpoint_decay
+from miles.utils.arguments import validate_async_off_policy_correction
 from miles.utils.async_utils import Disposer, eager_create_task, with_disposer
 from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
 from miles.utils.misc import should_run_periodic_action
-from miles.utils.orchestration_utils import init_orchestration_script
+from miles.utils.orchestration_utils import (
+    OrchestratorStartupInfo,
+    init_orchestration_script,
+    parse_orchestrator_startup_info,
+)
 
 logger = logging.getLogger(__name__)
 
 
 # The framework supports other asynchronous approaches such as fully async (see miles/rollout/fully_async_rollout.py).
-async def train(args, *, disposer: Disposer):
+async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
+    args = startup_info.args
     assert not args.colocate or args.fully_async, "Colocation is only supported for async training with --fully-async."
     validate_async_off_policy_correction(args)
-    _worker_manager = init_orchestration_script(args, disposer=disposer)
+    capability = init_orchestration_script(startup_info, disposer=disposer)
+    trainer_handles = create_trainer_handles(
+        args, trainer_configs=compute_trainer_configs(args), capability=capability
+    )
 
-    # create the rollout manager, with sglang engines inside.
-    # need to initialize rollout manager first to calculate num_rollout
-    inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(args)
-    disposer.add(inference_controller, rollout_executor)
-
-    # create the actor and critic models
-    actor_model, critic_model = await create_training_models(args, rollout_executor)
-    disposer.add(critic_model, actor_model)
+    # the rollout manager, with sglang engines inside, and the actor and critic models
+    components, actor_model, critic_model = await create_components(
+        args, capability=capability, trainer_handles=trainer_handles, disposer=disposer
+    )
+    inference_controller, rollout_executor, num_rollout_per_epoch = components
 
     disposer.add(
-        maybe_start_api_server(args, trainer_models={"actor": actor_model}, inference_controller=inference_controller)
+        maybe_start_api_server(
+            args,
+            trainer_models={"actor": actor_model},
+            inference_controller=inference_controller,
+            capability=capability,
+        )
     )
     disposer.add(rollout_executor)
     maybe_start_mini_ft_controller(args)
@@ -116,6 +123,7 @@ async def train(args, *, disposer: Disposer):
         else:
             await actor_model.train(rollout_id, rollout_data_curr_ref)
         remove_rollout_data_refs(args, rollout_data_curr_ref)
+        await rollout_executor.release(rollout_id)
 
         external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
         if external_save or should_run_periodic_action(
@@ -126,6 +134,15 @@ async def train(args, *, disposer: Disposer):
             if args.use_critic:
                 await save_training_model(critic_model, rollout_id, force_sync)
             await rollout_executor.save(rollout_id)
+            if args.keep_recent_checkpoints is not None:
+                await asyncio.to_thread(
+                    checkpoint_decay.prune_checkpoints,
+                    args.save,
+                    saved_step=rollout_id,
+                    keep_recent=args.keep_recent_checkpoints,
+                    keep_every=args.keep_checkpoint_every,
+                    pin_saved=external_save,
+                )
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 
@@ -165,5 +182,4 @@ async def train(args, *, disposer: Disposer):
 
 
 if __name__ == "__main__":
-    args = parse_args()
-    asyncio.run(with_disposer(train, args))
+    asyncio.run(with_disposer(train, parse_orchestrator_startup_info()))

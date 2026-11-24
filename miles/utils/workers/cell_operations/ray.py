@@ -16,8 +16,8 @@ class RayCellOperations(BaseCellOperations):
     def __init__(self, *, worker_manager_handle: ray.actor.ActorHandle) -> None:
         self._worker_manager_handle = worker_manager_handle
 
-    async def cell_infos(self, *, pool_ids: list[str]) -> dict[str, CellInfo]:
-        return await self._worker_manager_handle.get_cell_infos.remote(pool_ids=pool_ids)
+    async def cell_infos(self, *, pool_ids: list[str] | None, category: str | None) -> dict[str, CellInfo]:
+        return await self._worker_manager_handle.get_cell_infos.remote(pool_ids=pool_ids, category=category)
 
     async def suspend(self, *, cell_id: str) -> None:
         await self._worker_manager_handle.stop_cells.remote([cell_id])

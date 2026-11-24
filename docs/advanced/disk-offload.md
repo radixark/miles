@@ -74,7 +74,25 @@ each fp32 main shard's storage after creating its tensor handle, then Miles fill
 runtime bucket at a time directly in the final files. There is no temporary state file. Peak
 initialization HBM is the largest individual shard during construction and one main-only bucket
 afterward (normally at most about 200M fp32 elements, except for an oversized entry). Each
-initialized range is synchronized and evicted from page cache before continuing.
+initialized bucket is evicted from the page cache once its writeback completes.
+
+The step's writes are buffered, so by default the host page cache keeps whatever of the state
+it has room for. That is the fastest setting when host RAM can hold the whole state: the next
+step reads it from memory, and the kernel finishes the writeback during rollout. A colocated
+run pays for it elsewhere, since that cache is reclaimed lazily and races every pinned
+allocation at the rollout/train handoff. Cap it per rank:
+
+```bash
+--stream-optimizer-state-page-cache-mb 8192
+```
+
+A writer thread then writes back and drops each flushed bucket in order, so a bucket's
+writeback overlaps the buckets after it instead of stalling its own flush. A flush waits only
+while more than the cap is still waiting to be written back; the bucket being read comes on top
+of it. The step finishes its writeback before it returns, so none of the store's files stay
+cached past a step and each step reads its state back from disk. Checkpoint save and resume
+put both ends of each bucket's copy, the store's file and the checkpoint's, through the same
+cap, so one bucket's writeback overlaps the next copy, and likewise finish it before returning.
 
 With `fp32` storage the state round-trips bit for bit and only the grad norm's summation
 order differs from keeping it on GPU, so turning this on changes results by rounding at

@@ -29,6 +29,7 @@ from tests.utils.soak.core.event_log import EventLog
 from tests.utils.soak.core.runner import SoakRunner
 from tests.utils.soak.core.utils import (
     API_SERVER_ARGS,
+    DATA_DIR,
     assert_fresh_dump_dir,
     create_soak_config,
     evidence_directory,
@@ -40,9 +41,10 @@ from tests.utils.soak.ft.actions.base import CellFaultForms
 from tests.utils.soak.ft.actions.factory import compute_mean_interval_seconds_of_kind, create_cell_fault_forms
 from tests.utils.soak.ft.checkers.healing import assert_healing
 from tests.utils.soak.ft.entrypoint import run_cell_soak
-from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE, FaultTrigger
+from tests.utils.soak.ft.types import FaultTrigger
 
 from miles.utils.external_utils import command_utils
+from miles.utils.workers.types import ClusterBackend
 
 app: typer.Typer = typer.Typer()
 
@@ -143,6 +145,14 @@ def _build_train_args(
         + get_fully_async_args(fully_async=fully_async)
         + "--mini-ft-controller-enable "
     )
+    if "train" in ft_mode.ft_components and config.cluster_backend is ClusterBackend.RAY:
+        train_args += "--trainer-heartbeat-checker-first-wait 0 "
+    if ft_mode.has_real_rollout and config.cluster_backend is ClusterBackend.RAY:
+        train_args += (
+            f"--eval-interval {num_steps} --skip-eval-before-train "
+            f"--eval-prompt-data gsm8k {DATA_DIR}/gsm8k/test.parquet "
+            "--n-samples-per-eval-prompt 1 --eval-max-response-len 200 --eval-top-k 1 "
+        )
     if ft_mode.has_real_rollout:
         train_args += "--update-weight-transfer-mode p2p "
         train_args += "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine "
@@ -166,10 +176,6 @@ def _run_soak(
     fully_async: bool,
     cell_fault_forms: CellFaultForms,
 ) -> SoakRunner:
-    expected_counts: dict[str, int] = {
-        ACTOR_CELL_TYPE: ft_mode.num_cells,
-        ROLLOUT_CELL_TYPE: ft_mode.rollout_num_engines,
-    }
     evidence_dir = evidence_directory(Path(dump_dir))
     event_log = EventLog(evidence_dir / "events.jsonl")
     return asyncio.run(
@@ -191,14 +197,16 @@ def _run_soak(
             runner_config=SoakRunnerConfig(
                 seed=seed,
                 target_configs={
-                    kind: SoakTargetConfig(expected_count=expected_counts[kind], mean_interval_seconds=interval)
+                    kind: SoakTargetConfig(
+                        expected_count=ft_mode.cell_counts_of_type[kind], mean_interval_seconds=interval
+                    )
                     for kind, interval in mean_interval_seconds_of_cell_type.items()
                 },
                 tail=SoakTailConfig.create(num_rollout=num_steps),
             ),
             event_log=event_log,
             evidence_dir=evidence_dir,
-            cell_fault_forms=cell_fault_forms,
+            forms=cell_fault_forms,
         )
     )
 

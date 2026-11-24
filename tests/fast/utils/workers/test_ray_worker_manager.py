@@ -6,10 +6,13 @@ from dataclasses import dataclass, field
 from unittest.mock import patch
 
 import pytest
+import ray
 from tests.fast.utils.workers.conftest import worker_manager_args
-from tests.fast.utils.workers.fake_ray import EVENT_CREATE, EVENT_KILL, FakeRayCluster
+from tests.fast.utils.workers.fake_ray import EVENT_CREATE, EVENT_KILL, READINESS_METHOD, FakeRayCluster
+from tests.fast.utils.workers.fake_specs import FakeCommandSpec
 
 from miles.ray.placement_group import PlacementGroupInfo
+from miles.utils import observers
 from miles.utils.test_utils.fault_injector.actions.process import KillProcessAction
 from miles.utils.test_utils.fault_injector.controller import FaultHookCommand, FaultHookOperation
 from miles.utils.test_utils.fault_injector.models import FaultHookRequest, ObservedFaultHookTarget
@@ -19,7 +22,7 @@ from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.ray_worker_manager import RayWorkerManager, _BaseActorManager, _CommandActorManager
 from miles.utils.workers.types import WorkerCommBackend
-from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandContext, PortInfo, SchedulingSpec
+from miles.utils.workers.worker_spec import BaseCommandSpec, LaunchCommandContext, PortInfo, SchedulingSpec, StaticMeta
 
 
 @dataclass
@@ -53,14 +56,14 @@ def _make_spec(
     pg_name: str | None = None,
     pg_slot_offset: int = 0,
     pin_to_head: bool = False,
-) -> CommandWorkerSpec:
-    return CommandWorkerSpec(
+) -> BaseCommandSpec:
+    return FakeCommandSpec(
         name=name,
         port_infos=(
             port_infos if port_infos is not None else [PortInfo(name="primary", static_port=8000, allow_dynamic=True)]
         ),
-        env_var=lambda _ctx: dict(env_var or {}),
-        scheduling=SchedulingSpec(
+        env_vars=lambda _ctx: dict(env_var or {}),
+        fixed_scheduling=SchedulingSpec(
             num_cells=num_cells,
             num_workers_per_cell=num_workers_per_cell,
             num_gpus_per_worker=num_gpus_per_worker,
@@ -69,7 +72,7 @@ def _make_spec(
             pg_slot_offset=pg_slot_offset,
             pin_to_head=pin_to_head,
         ),
-        launch_command=launch_command if launch_command is not None else (lambda ctx: "sleep 600"),
+        command=launch_command if launch_command is not None else (lambda ctx: "sleep 600"),
     )
 
 
@@ -84,11 +87,18 @@ def _make_pgs(*, num_slots: int = 8, first_gpu_id: int = 0) -> dict[str, Placeme
 
 
 async def _launch(
-    specs: list[CommandWorkerSpec], pgs: dict[str, PlacementGroupInfo] | None = None
+    specs: list[BaseCommandSpec],
+    pgs: dict[str, PlacementGroupInfo] | None = None,
+    *,
+    report_process_ends: bool = False,
 ) -> RayWorkerManager:
     manager = RayWorkerManager()
     await manager.init(
-        worker_manager_args(), specs, pgs if pgs is not None else {}, comm_backend=WorkerCommBackend.RAY
+        worker_manager_args(),
+        specs,
+        pgs if pgs is not None else {},
+        comm_backend=WorkerCommBackend.RAY,
+        report_process_ends=report_process_ends,
     )
     return manager
 
@@ -533,12 +543,12 @@ class TestSpecEnvVars:
             calls.append(len(calls))
             return {"CALL_INDEX": str(len(calls))}
 
-        spec = CommandWorkerSpec(
+        spec = FakeCommandSpec(
             name="engine",
             port_infos=[PortInfo(name="primary", static_port=8000, allow_dynamic=True)],
-            env_var=_env,
-            scheduling=SchedulingSpec(num_cells=2, num_workers_per_cell=1, num_gpus_per_worker=0),
-            launch_command=lambda ctx: "sleep 600",
+            env_vars=_env,
+            fixed_scheduling=SchedulingSpec(num_cells=2, num_workers_per_cell=1, num_gpus_per_worker=0),
+            command=lambda ctx: "sleep 600",
         )
         await _launch([spec])
 
@@ -1184,6 +1194,20 @@ class TestGpuPlacement:
         asked = {call.handle.index: call.kwargs["gpu_ids"] for call in fake_ray_cluster.calls_of("_to_local_gpu_ids")}
         assert asked == {0: [4, 5], 1: [6, 7]}
 
+    async def test_each_command_is_told_the_physical_gpus_it_runs_on(self, fake_ray_cluster: FakeRayCluster):
+        """Engines do not see their GPUs through CUDA_VISIBLE_DEVICES, so only the manager can say which they hold."""
+        spec = _make_spec(
+            "engine",
+            num_workers_per_cell=2,
+            num_gpus_per_worker=0.2,
+            num_gpu_slots_per_worker=2,
+            pg_name="rollout",
+        )
+        await _launch([spec], _make_pgs(num_slots=8, first_gpu_id=4))
+
+        told = {call.handle.index: call.kwargs["gpu_ids"] for call in fake_ray_cluster.calls_of("run")}
+        assert told == {0: [4, 5], 1: [6, 7]}
+
     async def test_a_worker_that_owns_no_gpu_is_launched_with_an_empty_local_gpu_id_list(
         self, fake_ray_cluster: FakeRayCluster
     ):
@@ -1386,6 +1410,64 @@ class TestStopDetails:
 
         assert fake_ray_cluster.events.count(EVENT_KILL) == 2
 
+    async def test_at_the_run_end_a_worker_ends_its_run_observers_before_it_is_killed(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """A worker killed first loses what its observers still buffer, such as the run's last eval."""
+        manager = await _launch([_make_spec("engine")], report_process_ends=True)
+
+        await manager.shutdown()
+
+        assert fake_ray_cluster.events[-3:] == ["shutdown", "report_process_end", EVENT_KILL]
+        assert callable(getattr(fake_ray_cluster.handles[0].actor_class, "report_process_end", None))
+
+    async def test_a_worker_whose_observers_do_not_end_is_killed_after_the_timeout(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """A hung observer must not keep the worker, and the GPUs it holds, from being released."""
+        manager = await _launch([_make_spec("engine")], report_process_ends=True)
+        fake_ray_cluster.handles[0].hanging_methods["report_process_end"] = 3600
+
+        with patch.object(observers, "END_PROCESS_TIMEOUT_S", 0.01):
+            await manager.shutdown()
+
+        assert fake_ray_cluster.events.count(EVENT_KILL) == 1
+
+    async def test_a_run_whose_observers_ignore_process_ends_kills_its_workers_without_asking_them(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """Asking a worker stuck in a collective can cost its stop the whole timeout, wasted when no observer takes process ends."""
+        manager = await _launch([_make_spec("engine")])
+
+        await manager.shutdown()
+
+        assert fake_ray_cluster.calls_of("report_process_end") == []
+        assert fake_ray_cluster.events.count(EVENT_KILL) == 1
+
+    async def test_fault_tolerance_kills_workers_without_asking_them(self, fake_ray_cluster: FakeRayCluster):
+        """Its stops hold the membership lock, so asking a worker stuck beside a dead peer would block recovery for the whole timeout."""
+        manager = await _launch([_make_spec("engine", num_cells=2, num_workers_per_cell=2)], report_process_ends=True)
+        lost = manager._pools["engine"].cells[1].actors[1].actor_handle
+        lost.failing_methods[READINESS_METHOD] = ray.exceptions.RayActorError()
+
+        await manager.stop_cells(["engine-00000"])
+        await manager._pools["engine"].cells[1]._scan_liveness_once()
+
+        assert fake_ray_cluster.calls_of("report_process_end") == []
+        assert fake_ray_cluster.events.count(EVENT_KILL) == 4
+
+    async def test_a_cell_that_fails_to_start_is_killed_without_asking_its_workers(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """Its rollback holds the membership lock like any mid-run stop, so it must not wait on a worker either."""
+        fake_ray_cluster.method_errors["_get_node_ip"] = RuntimeError("node gone")
+
+        with pytest.raises(RuntimeError, match="node gone"):
+            await _launch([_make_spec("engine")], report_process_ends=True)
+
+        assert fake_ray_cluster.calls_of("report_process_end") == []
+        assert fake_ray_cluster.events.count(EVENT_KILL) == 1
+
     async def test_all_workers_are_killed_even_when_one_shutdown_hangs(self, fake_ray_cluster: FakeRayCluster):
         """One broken worker must not save its peers from teardown."""
         manager = await _launch([_make_spec("engine", num_workers_per_cell=3)])
@@ -1513,7 +1595,7 @@ class TestGetCellInfos:
     async def test_each_cell_meta_is_computed_from_its_own_cell_index(self, fake_ray_cluster: FakeRayCluster):
         """Meta carries per-cell placement facts, so a shared index would mislabel every cell but one."""
         spec = _make_spec("engine", num_cells=3).model_copy(
-            update={"meta": lambda ctx: {"gpu_offset": ctx.cell_index * 2}}
+            update={"partial_static_meta": StaticMeta(gpu_offset_base=0, gpu_offset_stride_per_cell=2)}
         )
         manager = await _launch([spec])
 
@@ -1860,7 +1942,9 @@ class TestSuspendedCellInfos:
 
     async def test_the_meta_of_a_suspended_cell_is_still_known(self, fake_ray_cluster: FakeRayCluster):
         """Meta comes from the spec, so suspending a cell must not make it unidentifiable."""
-        spec = _make_spec("engine").model_copy(update={"meta": lambda ctx: {"model_id": "default"}})
+        spec = _make_spec("engine").model_copy(
+            update={"partial_static_meta": StaticMeta(values={"model_id": "default"})}
+        )
         manager = await _launch([spec])
         await manager.stop_cells(["engine-00000"])
 

@@ -23,6 +23,14 @@ class ParsedAssistantCompletion:
     stored_message: dict[str, Any]
     parser_name: str
     parse_error: str | None = None
+    # What the completion leaves open, or None when the turn ended: "header" (a message
+    # with nothing after its start), "recipient" (a tool recipient with no content token),
+    # the kind of an unfinished content block ("thinking", "text", "tool_json",
+    # "tool_text"), or "between" (every message ended, the turn did not).
+    open_part: str | None = None
+    # The error that stopped the scan of the turn's messages, as opposed to one in
+    # a message's content (a malformed tool call); ``open_part`` is then where it stopped.
+    frame_error: str | None = None
 
 
 class InklingResponseParser:
@@ -44,11 +52,15 @@ class InklingResponseParser:
         # Treat every tokenizer-native special ID as framing.  This rejects a
         # real control token in payload while preserving marker-looking text
         # that the model spelled with ordinary BPE tokens.
-        self._control_ids = frozenset({*self.ids.values(), *getattr(tokenizer, "all_special_ids", [])})
+        self._control_ids = frozenset(
+            {*self.ids.values(), *getattr(tokenizer, "all_special_ids", [])}
+        )  # config-access-exempt: custom tokenizers may omit special-token metadata
 
     def _single_token_id(self, literal: str) -> int:
         token_id = self.tokenizer.convert_tokens_to_ids(literal)
-        if token_id is None or token_id == getattr(self.tokenizer, "unk_token_id", None):
+        if token_id is None or token_id == getattr(
+            self.tokenizer, "unk_token_id", None
+        ):  # config-access-exempt: custom tokenizers may omit special-token metadata
             encoded = self.tokenizer.encode(literal, add_special_tokens=False)
             if len(encoded) != 1:
                 raise ValueError(f"Inkling control token {literal!r} did not encode to one ID: {encoded}")
@@ -72,12 +84,20 @@ class InklingResponseParser:
         *,
         finish_reason: str | None,
     ) -> ParsedAssistantCompletion:
-        del finish_reason
+        """Parse one completion.
+
+        A completion cut by ``finish_reason='length'`` is not malformed: its
+        unfinished message stays in ``content_blocks`` as sampled, so the
+        stored message renders the cut turn followed by its closer
+        (``InklingTruncation``).  An unfinished tool call is stored with its
+        recipient and partial JSON and is not a call.
+        """
         blocks: list[dict[str, Any]] = []
         visible_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_calls: list[dict[str, Any]] = []
         error: str | None = None
+        frame_error: str | None = None
         ended = False
 
         # The generation prompt already supplied the first MESSAGE_MODEL token.
@@ -91,7 +111,12 @@ class InklingResponseParser:
             if error is None:
                 error = reason
 
-        def close_block() -> None:
+        def fail_frame(reason: str) -> None:
+            nonlocal frame_error
+            frame_error = reason
+            fail(reason)
+
+        def close_block(*, cut: bool = False) -> None:
             nonlocal block_kind, header_ids, payload_ids
             if block_kind is None:
                 fail("end_message_without_content")
@@ -108,6 +133,8 @@ class InklingResponseParser:
                     fail("unexpected_text_recipient")
                 blocks.append({"type": "text", "text": text})
                 visible_parts.append(text)
+            elif block_kind == "tool_json" and cut:
+                blocks.append({"type": "tool_call", "recipient": recipient, "raw_json": text})
             elif block_kind == "tool_json":
                 try:
                     payload = json.loads(text)
@@ -151,7 +178,7 @@ class InklingResponseParser:
         for token_id in completion_token_ids:
             token_id = int(token_id)
             if ended:
-                fail("tokens_after_end_sampling")
+                fail_frame("tokens_after_end_sampling")
                 break
 
             if state == "payload":
@@ -159,7 +186,7 @@ class InklingResponseParser:
                     close_block()
                     state = "between"
                 elif token_id in self._control_ids:
-                    fail("control_token_inside_open_block")
+                    fail_frame("control_token_inside_open_block")
                     break
                 else:
                     payload_ids.append(token_id)
@@ -171,7 +198,7 @@ class InklingResponseParser:
                 elif token_id == self.ids["end_sampling"]:
                     ended = True
                 else:
-                    fail("missing_message_model_boundary")
+                    fail_frame("missing_message_model_boundary")
                     break
                 continue
 
@@ -191,7 +218,7 @@ class InklingResponseParser:
                 state = "between"
                 continue
             elif token_id in self._control_ids:
-                fail("unexpected_control_token_in_header")
+                fail_frame("unexpected_control_token_in_header")
                 break
             else:
                 header_ids.append(token_id)
@@ -199,7 +226,22 @@ class InklingResponseParser:
             payload_ids = []
             state = "payload"
 
+        open_part: str | None = None
         if state == "payload":
+            open_part = block_kind
+        elif state == "header":
+            open_part = "recipient" if header_ids else "header"
+        elif not ended:
+            open_part = "between"
+
+        # An earlier message's content error does not stop the scan, so the cut message is still kept.
+        if open_part is not None and frame_error is None and finish_reason == "length":
+            # The closer ends a bare header as an empty text message and a recipient as an empty tool call.
+            if state == "header":
+                block_kind = "tool_json" if header_ids else "text"
+            if open_part != "between":
+                close_block(cut=True)
+        elif state == "payload":
             fail("unterminated_content_block")
         elif state == "header" and header_ids:
             fail("unterminated_message_header")
@@ -224,4 +266,6 @@ class InklingResponseParser:
             stored_message=stored_message,
             parser_name="inkling",
             parse_error=parse_error,
+            open_part=open_part,
+            frame_error=frame_error,
         )

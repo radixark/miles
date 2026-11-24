@@ -4,6 +4,7 @@ import shlex
 from dataclasses import dataclass
 
 import typer
+from tests.utils.soak.ft.types import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE
 
 MODEL_NAME: str = "Qwen3-30B-A3B-5layer"
 MODEL_HF_REPO: str = f"fzyzcjy/{MODEL_NAME}"
@@ -52,6 +53,10 @@ class FTTestMode:
     @property
     def total_node_gpus(self) -> int:
         return self.train_gpus_per_node + self.total_rollout_gpus
+
+    @property
+    def cell_counts_of_type(self) -> dict[str, int]:
+        return {ACTOR_CELL_TYPE: self.num_cells, ROLLOUT_CELL_TYPE: self.rollout_num_engines}
 
 
 KILL_SEGMENT_OF_FT_COMPONENTS: dict[tuple[str, ...], str] = {
@@ -171,7 +176,7 @@ MODES: dict[str, FTTestMode] = {
         rollout_num_engines=4,
         rollout_gpus_per_engine=1,
         parallel_args="--context-parallel-size 2",
-        max_tokens_per_gpu=16384,
+        max_tokens_per_gpu=8192,
     ),
     # Same topology as kill_train__dp2_cp2__moe_5layer but a small real dense model (see README).
     "kill_train__dp2_cp2": FTTestMode(

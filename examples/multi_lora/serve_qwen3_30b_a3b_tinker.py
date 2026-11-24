@@ -1,6 +1,7 @@
 """Prepare Qwen3-30B-A3B and serve the Tinker gateway on separate training and sampling GPUs."""
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 import typer
 
@@ -18,6 +19,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_dir: str = "/root/models"
     save_dir: str | None = None
     megatron_path: str = "/root/Megatron-LM"
+    # bridge: Megatron-Bridge LoRA; raw: miles-native LoRA, dense models only (not this default MoE)
+    megatron_to_hf_mode: Literal["bridge", "raw"] = "bridge"
 
     num_gpus_per_node: int = 8
     actor_num_gpus: int = 4
@@ -62,7 +65,11 @@ def serve(args: ScriptArgs):
         f"{args.n_adapters} adapter slots, port {args.tinker_port}"
     )
 
-    ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} --megatron-to-hf-mode bridge "
+    # raw mode starts fresh runs from --ref-load
+    ckpt_args = (
+        f"--hf-checkpoint {args.hf_checkpoint} --ref-load {args.hf_checkpoint} "
+        f"--megatron-to-hf-mode {args.megatron_to_hf_mode} "
+    )
 
     lora_args = (
         f"--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout 0.0 "
@@ -81,6 +88,8 @@ def serve(args: ScriptArgs):
         "--pipeline-model-parallel-size 1 --context-parallel-size 1 "
         f"--expert-model-parallel-size {args.ep} --expert-tensor-parallel-size 1 "
         "--use-dynamic-batch-size --max-tokens-per-gpu 8192 "
+        # Tinker targets cover full sequences; bound the FP32 cross-entropy temporaries
+        "--log-probs-chunk-size 1024 "
     )
 
     sglang_args = (

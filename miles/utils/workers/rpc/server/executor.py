@@ -87,7 +87,7 @@ class RpcCallExecutor:
         finish(outcome=outcome)
 
     async def _call_worker(self, *, spec: RpcMethodSpec, kwargs: dict[str, Any]) -> Any:
-        method = getattr(self._worker, spec.name)
+        method = getattr(self._worker, spec.name)  # config-access-exempt: attribute selected at runtime from spec.name
         if self._worker_loop is not None:
             return await self._worker_loop.call(method=method, kwargs=kwargs, is_async=spec.is_async)
         if spec.is_async:

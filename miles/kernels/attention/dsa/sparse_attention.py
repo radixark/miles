@@ -9,7 +9,7 @@ zero-padded up to 64 or 128) or the TileLang kernel. The backward runs cuDNN's D
 group, d_v = 512) or the TileLang kernel. Both forwards emit the log-sum-exp in log2 space with the sink
 folded in (FlashMLA's is converted); the TileLang backward takes it as is, cuDNN takes it back in natural log
 without the sink, with the indices compacted valid-first. Which kernels run and how the TileLang ones are tiled
-is a SparseAttentionConfig: measured rows live in _TUNED, keyed by (arch major, RoPE tail, TP-local heads);
+is a SparseAttentionConfig: measured rows live in _TUNED, keyed by (CUDA major or ROCm gfx name, RoPE tail, TP-local heads);
 callers may pass their own.
 """
 
@@ -76,6 +76,15 @@ _TUNED = {
     ),
     (9, False, 32): SparseAttentionConfig(backward_backend="cudnn", backward_stages=1, backward_split_store=4),
     (9, False, 64): SparseAttentionConfig(backward_backend="cudnn", backward_split_store=4),
+    # gfx950: carry the measured 256-thread forward and safe 2-way backward store.
+    ("gfx950", True, 8): SparseAttentionConfig(forward_backend="tilelang", backward_stages=1),
+    ("gfx950", True, 16): SparseAttentionConfig(forward_backend="tilelang", backward_stages=1),
+    ("gfx950", True, 32): SparseAttentionConfig(forward_backend="tilelang", backward_stages=1),
+    ("gfx950", True, 64): SparseAttentionConfig(forward_backend="tilelang", backward_stages=1),
+    ("gfx950", False, 8): SparseAttentionConfig(forward_backend="tilelang", backward_stages=1),
+    ("gfx950", False, 16): SparseAttentionConfig(forward_backend="tilelang", backward_stages=1),
+    ("gfx950", False, 32): SparseAttentionConfig(forward_backend="tilelang", backward_stages=1),
+    ("gfx950", False, 64): SparseAttentionConfig(forward_backend="tilelang", backward_stages=1),
 }
 
 # (arch major, heads bucket) where the TileLang backward beat cuDNN at topk <= _SHORT_TOPK (sliding-window layers)
@@ -91,13 +100,17 @@ def _pad_topk_block(indices, multiple: int):
 
 
 def _default_config(q, kv, topk: int, d_v: int) -> SparseAttentionConfig:
-    arch_major = torch.cuda.get_device_capability(q.device)[0]
+    arch_key = (
+        torch.cuda.get_device_properties(q.device).gcnArchName.split(":")[0]
+        if torch.version.hip is not None
+        else torch.cuda.get_device_capability(q.device)[0]
+    )
     heads_per_group = q.shape[2] // kv.shape[2]
     heads_bucket = min(max(8, 1 << (heads_per_group - 1).bit_length()), 64)
-    config = _TUNED.get((arch_major, q.shape[-1] > d_v, heads_bucket), SparseAttentionConfig())
+    config = _TUNED.get((arch_key, q.shape[-1] > d_v, heads_bucket), SparseAttentionConfig())
     flash_mla_supported = (
         flash_mla_sparse_fwd is not None
-        and arch_major in _FLASH_MLA_ARCH_MAJORS
+        and arch_key in _FLASH_MLA_ARCH_MAJORS
         and d_v == 512
         and q.shape[-1] in _FLASH_MLA_HEAD_DIMS
         and kv.shape[2] == 1
@@ -107,13 +120,13 @@ def _default_config(q, kv, topk: int, d_v: int) -> SparseAttentionConfig:
         config = replace(config, forward_backend="tilelang", forward_threads=128 if heads_bucket < 64 else 256)
     cudnn_supported = (
         cudnn_dsa is not None
-        and arch_major in _CUDNN_ARCH_MAJORS
+        and arch_key in _CUDNN_ARCH_MAJORS
         and d_v == 512
         and q.shape[-1] in _CUDNN_HEAD_DIMS
         and kv.shape[2] == 1
         and q.shape[2] > 1
     )
-    is_short_topk = topk <= _SHORT_TOPK and (arch_major, heads_bucket) in _TILELANG_BACKWARD_SHORT_TOPK
+    is_short_topk = topk <= _SHORT_TOPK and (arch_key, heads_bucket) in _TILELANG_BACKWARD_SHORT_TOPK
     if config.backward_backend == "cudnn" and (is_short_topk or not cudnn_supported):
         config = replace(config, backward_backend="tilelang")
     return config

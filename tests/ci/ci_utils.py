@@ -12,6 +12,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from tests.ci.ci_register import CIRegistry, HWBackend, file_timeout
 from tests.ci.metric_history import (
@@ -24,9 +25,14 @@ from tests.ci.metric_history import (
 from tests.ci.metric_history.gate import MIN_ENFORCED_BASELINES, GateStatus, evaluate_gate
 from tests.ci.metric_history.register import parse_ci_gate_specs
 
+from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
+
 # Env var the training process reads to find the per-attempt record directory; kept
 # in sync with miles.utils.tracking_utils.ci_history.RECORD_DIR_ENV.
 CI_GATE_RECORD_DIR_ENV = "MILES_CI_GATE_RECORD_DIR"
+
+# ROCm uses a separately provisioned Neon credential; CUDA keeps its existing one.
+AMD_NEON_DATABASE_URL_ENV = "AMD_NEON_DATABASE_URL"
 
 # Accelerator memory is freed by the driver asynchronously after the holders are killed.
 _REAP_SETTLE_SECONDS = 10.0
@@ -279,11 +285,13 @@ def gate_provenance_from_env() -> RunProvenance:
     )
 
 
-def build_store_from_env():
-    """Build the lazy hosted store, or explicitly skip history without a DSN."""
-    if os.environ.get(NEON_DATABASE_URL_ENV):
-        return NeonMetricHistoryStore()
-    message = "[CI Gate] skipped: NEON_DATABASE_URL is not set; no history enforcement."
+def build_store_from_env(*, backend: HWBackend = HWBackend.CUDA):
+    """Build the backend's lazy store, or explicitly skip without its own DSN."""
+    database_url_env = AMD_NEON_DATABASE_URL_ENV if backend == HWBackend.ROCM else NEON_DATABASE_URL_ENV
+    dsn = os.environ.get(database_url_env)
+    if dsn:
+        return NeonMetricHistoryStore(dsn=dsn, repository=os.environ["GITHUB_REPOSITORY"])
+    message = f"[CI Gate] skipped: {database_url_env} is not set; no history enforcement."
     logger.info(message)
     write_github_step_summary(message + "\n")
     return None
@@ -309,13 +317,15 @@ def run_gate_hook(
     write_baseline: bool,
     provenance: RunProvenance,
     now_iso: str | None = None,
+    enforce: bool = True,
 ) -> bool:
-    """Return whether the passed CUDA test also satisfies the enabled history gates.
+    """Return whether the passed test also satisfies the enabled history gates.
 
     Baseline writers retain the full trusted/untrusted verdict. Numerical
     enforcement needs ten trusted values per coordinate; missing metrics and
     gate/store errors fail tests with enforcement enabled. Other declarations
-    remain shadow.
+    remain shadow, and ``enforce=False`` (ROCm, until its history is in place)
+    keeps every declaration shadow while still writing baselines.
     """
     try:
         specs = parse_ci_gate_specs(filename)
@@ -324,7 +334,7 @@ def run_gate_hook(
         logger.warning(message)
         write_github_step_summary(message + "\n")
         return False
-    enforced_keys = {s.metric_key for s in specs if s.enforce}
+    enforced_keys = {s.metric_key for s in specs if s.enforce} if enforce else set()
     try:
         if merged_record_path is None:
             raise RuntimeError("passing-attempt metric record is unavailable")
@@ -437,6 +447,7 @@ def run_unittest_files(
     retry_wait_seconds: int = 60,
     gate_store=None,
     gate_executing_suite: str = "",
+    snapshot_hardware: str | None = None,
     gate_write_baseline: bool = False,
     gate_provenance: RunProvenance | None = None,
     reap_leftovers: bool = False,
@@ -463,6 +474,10 @@ def run_unittest_files(
                     attempt. Off by default because reaping is process-wide: it would
                     also reach the caller when this function runs inside a test.
     """
+    from miles.utils.audit_utils.config_snapshot.models import ConfigSnapshotVariant
+    from miles.utils.audit_utils.config_snapshot.runner import ConfigSnapshotMismatch, ConfigSnapshotTestRunner
+    from miles.utils.test_utils.snapshot import SNAPSHOT_RECORD_DIR_ENV_VAR
+
     tic = time.perf_counter()
     success = True
     passed_tests = []
@@ -481,7 +496,14 @@ def run_unittest_files(
         output_lines = []
         output_tail: deque = deque(maxlen=FAILURE_TAIL_LINES * 8)
 
-        def run_one_file(filename, capture_output=False, record_dir=None, _i=i, _estimated_time=estimated_time):
+        def run_one_file(
+            filename: str,
+            capture_output: bool = False,
+            record_dir: str | None = None,
+            _i: int = i,
+            _estimated_time: float = estimated_time,
+            env: dict[str, str] | None = None,
+        ) -> int:
             nonlocal process, output_lines, output_tail
             output_tail = deque(maxlen=FAILURE_TAIL_LINES * 8)
 
@@ -489,11 +511,10 @@ def run_unittest_files(
             logger.info(f".\n.\nBegin ({_i}/{len(files) - 1}):\npython3 {full_path}\n.\n.\n")
             file_tic = time.perf_counter()
 
-            child_env = None
+            child_env = (os.environ if env is None else env).copy()
             if record_dir is not None:
                 # Point the training process at this attempt's own record dir.
                 os.makedirs(record_dir, exist_ok=True)
-                child_env = os.environ.copy()
                 child_env[CI_GATE_RECORD_DIR_ENV] = record_dir
 
             if capture_output:
@@ -563,12 +584,37 @@ def run_unittest_files(
 
             try:
                 try:
+                    if SNAPSHOT_TESTING_ENABLED:
+                        child_env = None
+                        snapshot_runner = (
+                            ConfigSnapshotTestRunner.create(
+                                test=filename,
+                                repo_root=Path(__file__).resolve().parents[2],
+                                variant=ConfigSnapshotVariant(
+                                    hardware=snapshot_hardware,
+                                    wandb_available=bool(os.environ.get("WANDB_API_KEY")),
+                                ),
+                            )
+                            if os.environ.get(SNAPSHOT_RECORD_DIR_ENV_VAR)
+                            else None
+                        )
+                        if snapshot_runner is not None:
+                            child_env = {
+                                **os.environ,
+                                SNAPSHOT_RECORD_DIR_ENV_VAR: str(snapshot_runner.record_directory),
+                            }
                     ret_code = run_with_timeout(
                         run_one_file,
                         args=(filename,),
-                        kwargs={"capture_output": enable_retry, "record_dir": attempt_record_dir},
+                        kwargs={
+                            "capture_output": enable_retry,
+                            "record_dir": attempt_record_dir,
+                            "env": child_env if SNAPSHOT_TESTING_ENABLED else None,
+                        },
                         timeout=effective_timeout,
                     )
+                    if SNAPSHOT_TESTING_ENABLED and snapshot_runner is not None:
+                        snapshot_runner.finish(returncode=ret_code)
                     attempt_elapsed = time.perf_counter() - attempt_tic
 
                     if ret_code == 0:
@@ -585,7 +631,11 @@ def run_unittest_files(
                                 logger.warning(
                                     "[CI Gate] record merge failed for %s: %s: %s", filename, type(e).__name__, e
                                 )
-                        if gate_store is not None and isinstance(file, CIRegistry) and file.backend == HWBackend.CUDA:
+                        if (
+                            gate_store is not None
+                            and isinstance(file, CIRegistry)
+                            and file.backend in (HWBackend.CUDA, HWBackend.ROCM)
+                        ):
                             file_passed = run_gate_hook(
                                 filename,
                                 passing_record_path,
@@ -594,6 +644,7 @@ def run_unittest_files(
                                 executing_suite=gate_executing_suite,
                                 write_baseline=gate_write_baseline,
                                 provenance=gate_provenance or gate_provenance_from_env(),
+                                enforce=file.backend == HWBackend.CUDA,
                             )
                             if not file_passed:
                                 attempt_status = "FAIL"
@@ -627,6 +678,14 @@ def run_unittest_files(
                         failed_tests.append((filename, f"exit code {ret_code}", _failure_tail(output_tail)))
                         break
 
+                except ConfigSnapshotMismatch as error:
+                    attempt_elapsed = time.perf_counter() - attempt_tic
+                    attempt_status = "FAIL"
+                    attempt_exit_code = 1
+                    failed_tests.append((filename, "snapshot mismatch", str(error)))
+                    if was_retried:
+                        retried_tests.append((filename, attempt, "failed"))
+                    break
                 except TimeoutError:
                     attempt_elapsed = time.perf_counter() - attempt_tic
                     attempt_status = "TIMEOUT"

@@ -16,9 +16,20 @@ from miles.utils.lora.utils import (
     lora_base_cpu_backup_enabled,
     lora_rollout_enabled,
 )
+from miles.utils.output_store.config import sglang_output_store_server_args
 from miles.utils.workers.argv_utils import _record_field_names
 
 logger = logging.getLogger(__name__)
+
+# SGLang's default SGLANG_HEALTH_CHECK_TIMEOUT.
+SGLANG_DEFAULT_HEALTH_CHECK_TIMEOUT_SECONDS = 20
+
+
+def compute_health_check_timeout_seconds(*, pp_size: int) -> int:
+    # A cold health request crosses every pipeline stage, so the launcher's budget is taken per stage
+    # and the engine gets the product instead of the launcher's value.
+    per_stage_seconds = int(os.environ.get("SGLANG_HEALTH_CHECK_TIMEOUT", SGLANG_DEFAULT_HEALTH_CHECK_TIMEOUT_SECONDS))
+    return per_stage_seconds * pp_size
 
 
 def format_v6_uri(addr: str | None) -> str | None:
@@ -45,6 +56,8 @@ def compute_engine_launch_cmd(
     base_gpu_id: int,
     sglang_overrides: dict,
     num_gpus_per_engine: int,
+    tp_size: int,
+    pp_size: int,
     dist_init_addr: str,
     nccl_port: int,
     host: str,
@@ -69,6 +82,8 @@ def compute_engine_launch_cmd(
         engine_info_bootstrap_port=engine_info_bootstrap_port,
         sglang_overrides=sglang_overrides,
         num_gpus_per_engine=num_gpus_per_engine,
+        tp_size=tp_size,
+        pp_size=pp_size,
         gated_launch_port=gated_launch_port,
         random_seed=random_seed,
     )
@@ -91,9 +106,12 @@ def _compute_server_args(
     engine_info_bootstrap_port: int | None,
     sglang_overrides: dict | None,
     num_gpus_per_engine: int | None,
+    tp_size: int,
+    pp_size: int,
     gated_launch_port: int,
     random_seed: int,
 ):
+    base_args = args.sglang.base_args
     _gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
     nnodes = max(1, _gpus_per_engine // args.num_gpus_per_node)
     kwargs = {
@@ -113,10 +131,10 @@ def _compute_server_args(
         "base_gpu_id": base_gpu_id,
         "gated_launch_port": gated_launch_port,
         # parallel
-        "tp_size": _gpus_per_engine,
-        "dp_size": args.sglang_dp_size,
-        "pp_size": args.sglang_pp_size,
-        "ep_size": args.sglang_ep_size,
+        "tp_size": tp_size,
+        "dp_size": base_args["dp_size"],
+        "pp_size": pp_size,
+        "ep_size": base_args["ep_size"],
         # always skip warmup to prevent warmup timeout.
         "skip_server_warmup": True,
         # always enable draft weights cpu backup so that we run training without mtp weights.
@@ -143,29 +161,40 @@ def _compute_server_args(
         kwargs["enable_return_routed_experts"] = True
     if args.use_rollout_indexer_replay:
         kwargs["enable_return_indexer_topk"] = True
-    if args.fp16:
-        kwargs["dtype"] = "float16"
+    # SGLang v0.5.23 turns DeepSeek-V4.1 decoder SWA bounded replay on when this is unset; it is not
+    # numerically equivalent to full prefill, so rollout logprobs and replayed routing would drift
+    # from the trainer. Keep full prefill unless --sglang-enable-decoder-swa-bounded-replay is set.
+    if base_args.get("enable_decoder_swa_bounded_replay") is None:
+        kwargs["enable_decoder_swa_bounded_replay"] = False
+    if args.use_output_store:
+        # Every engine, eval included: an eval request never asks for the store.
+        kwargs.update(sglang_output_store_server_args(args, local_hostname=host.strip("[]")))
     if engine_info_bootstrap_port is not None:
         kwargs["engine_info_bootstrap_port"] = engine_info_bootstrap_port
 
     if is_multi_lora_enabled(args):
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = args.multi_lora_n_adapters
-        kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
+        kwargs["max_lora_rank"] = max(args.lora_rank, 1)
         kwargs["lora_target_modules"] = (
             ["all"] if args.lora_adapter_targets == "all-linear" else args.lora_adapter_targets
         )
     elif lora_rollout_enabled(args):
+        attention_dp = sglang_attention_dp_enabled(
+            attn_dp_size=base_args["attn_dp_size"],
+            enable_dp_attention=base_args["enable_dp_attention"],
+            dp_size=base_args["dp_size"],
+        )
         kwargs["enable_lora"] = True
         # attention DP serves only pinned adapters (sgl-project/sglang#36389), and SGLang never pins the last slot
-        kwargs["max_loras_per_batch"] = 2 if sglang_attention_dp_enabled(args) else 1
-        kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
+        kwargs["max_loras_per_batch"] = 2 if attention_dp else 1
+        kwargs["max_lora_rank"] = max(args.lora_rank, 1)
         kwargs["lora_target_modules"] = (
             ["all"] if args.lora_adapter_targets == "all-linear" else args.lora_adapter_targets
         )
 
         if engine_loads_adapter_from_disk(args):
-            if sglang_attention_dp_enabled(args):
+            if attention_dp:
                 kwargs["lora_paths"] = [
                     {"lora_name": LORA_ADAPTER_NAME, "lora_path": args.lora_adapter_path, "pinned": True}
                 ]
@@ -196,8 +225,8 @@ def _compute_server_args(
     for name in _record_field_names(ServerArgs):
         if worker_type == WorkerType.DECODE and name == "enable_hierarchical_cache":
             continue
-        if hasattr(args, f"sglang_{name}") and name not in kwargs:
-            kwargs[name] = getattr(args, f"sglang_{name}")
+        if name in base_args and name not in kwargs:
+            kwargs[name] = base_args[name]
         unused_keys.discard(name)
 
     # for compatibility with old args

@@ -10,7 +10,7 @@ miles calls ``run`` once per sample via
 Each call POSTs the task to the NeMo Gym agent server's ``/run`` endpoint,
 handing over the session's OpenAI-compatible URL as ``policy_base_url``.
 NeMo Gym runs mini-swe-agent v2 in a ``nemo_gym.sandbox`` container (docker /
-daytona / apptainer / ecs_fargate / opensandbox providers) against that URL,
+daytona / e2b / apptainer / ecs_fargate / opensandbox providers) against that URL,
 so every model call goes through miles' session server and is recorded
 losslessly (token ids + logprobs + loss masks) — no re-tokenization.
 

@@ -1,14 +1,36 @@
 """Translate gateway datums to trainer batches and sampling requests to SGLang."""
 
 import asyncio
+from dataclasses import asdict
+from pathlib import Path
+from typing import TextIO
 
 import httpx
 
+from miles.backends.training_utils.checkpoint.adapter.commit import TENANT_FILENAME
+from miles.backends.training_utils.checkpoint.adapter.commit import OwnershipError as AdapterOwnershipError
+from miles.backends.training_utils.checkpoint.adapter.commit import (
+    UncommittedAdapterDir,
+    commit_adapter_dir,
+    delete_adapter_dir,
+    delete_retired_adapter_dirs,
+    delete_unreferenced_adapter_dirs,
+    format_sglang_lora_name,
+    lock_checkpoint_root,
+    resolve_adapter_dir,
+)
+from miles.backends.training_utils.checkpoint.adapter.parametrization import (
+    PARAMETRIZATION_FILENAME,
+    read_parametrization,
+)
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
-from miles.tinker.core.types import UserInputError
+from miles.tinker.core.types import OwnershipError, UserInputError
+from miles.tinker.core.utils import PRE_COMMIT_META_FILENAME
 from miles.utils import object_store
 from miles.utils.http_utils import post
-from tinker.types.sample_response import MASK_LOGPROB
+from miles.utils.lora.hf_lora_targets import GDN_IN_PROJ_COMPONENTS_BY_MODULE, HfLoraTargets
+from miles.utils.lora.utils import matches_lora_target
+from tinker.types.topk_logprobs import MASK_LOGPROB
 
 # internal datum key -> trainer batch key
 DATUM_TO_BATCH_KEYS = {"weights": "loss_weights", "advantages": "advantages", "sampling_logprobs": "rollout_log_probs"}
@@ -43,21 +65,122 @@ def _build_train_data(slot_datums: list) -> dict:
     return train_data
 
 
+def commit_adapter(root: str, name: str, written: UncommittedAdapterDir, overwrite: bool) -> None:
+    """The gateway is the committer of every adapter dir under its checkpoint root."""
+    commit_adapter_dir(Path(root), name, written, overwrite=overwrite)
+
+
+def delete_retired_adapters(root: str) -> None:
+    delete_retired_adapter_dirs(Path(root))
+
+
+def take_checkpoint_root(checkpoint_root: str) -> TextIO:
+    """Lock the root for this gateway, then recover every adapter root under it (``<model_id>/<kind>``)."""
+    lock = lock_checkpoint_root(Path(checkpoint_root))
+    for adapter_root in Path(checkpoint_root).glob("*/*"):
+        if adapter_root.is_dir():
+            delete_unreferenced_adapter_dirs(adapter_root)
+    return lock
+
+
+def _is_pre_commit_dir(root: str, name: str) -> bool:
+    checkpoint_dir = Path(root) / name
+    # by content, not by link: an overwrite interrupted after adopting a pre-commit dir leaves <name> linked to it
+    return (checkpoint_dir / PRE_COMMIT_META_FILENAME).is_file() and not (
+        checkpoint_dir / PARAMETRIZATION_FILENAME
+    ).is_file()
+
+
+def resolve_adapter(root: str, name: str, tenant: str, model_id: str) -> dict | None:
+    """A committed adapter's physical dir, sglang name and parametrization; None for a dir written before commits."""
+    if _is_pre_commit_dir(root, name):
+        return None
+    try:
+        committed = resolve_adapter_dir(Path(root), name, tenant=tenant)
+        if committed is None:
+            return None
+        parametrization = read_parametrization(committed.path)
+    except AdapterOwnershipError as error:
+        raise OwnershipError(f"adapter {name!r} does not belong to this tenant") from error
+    # ValueError covers undecodable and unparseable files; KeyError and TypeError a parsed file of the wrong schema
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise UserInputError(f"cannot read adapter {name!r}: {error}") from error
+    return {
+        "path": str(committed.path),
+        "lora_name": format_sglang_lora_name(model_id, name, committed.commit_id),
+        "parametrization": asdict(parametrization),
+    }
+
+
+def resolve_checkpoint_files(root: str, name: str, tenant: str | None) -> dict | None:
+    """A committed checkpoint's physical dir, commit id and the files a client may download (not the
+    gateway-private tenant.json); None when it does not exist or was written before commits. ``tenant`` None skips
+    the ownership check."""
+    if _is_pre_commit_dir(root, name):
+        return None
+    try:
+        committed = resolve_adapter_dir(Path(root), name, tenant=tenant)
+    except AdapterOwnershipError as error:
+        raise OwnershipError(f"checkpoint {name!r} does not belong to this tenant") from error
+    if committed is None:
+        return None
+    files = sorted(p.name for p in committed.path.iterdir() if p.is_file() and p.name != TENANT_FILENAME)
+    return {"path": str(committed.path), "commit_id": committed.commit_id, "files": files}
+
+
+def delete_adapter(root: str, name: str, tenant: str | None) -> None:
+    try:
+        delete_adapter_dir(Path(root), name, tenant=tenant)
+    except AdapterOwnershipError as error:
+        raise OwnershipError(f"checkpoint {name!r} does not belong to this tenant") from error
+
+
+# a fused HF module's adapter is recorded under its components' leaves
+_FUSED_LEAF_BY_COMPONENT = {
+    component: leaf for leaf, components in GDN_IN_PROJ_COMPONENTS_BY_MODULE.items() for component in components
+} | {"gate_proj": "gate_up_proj", "up_proj": "gate_up_proj"}
+
+
+def classify_lora_groups(target_modules, layout: HfLoraTargets) -> dict[str, bool]:
+    """The train_* flags of an adapter from the HF targets it records."""
+    groups = {
+        "train_attn": layout.attention + layout.whole_fused_attention,
+        "train_mlp": layout.mlp,
+        "train_unembed": layout.unembed,
+    }
+    # a checkpoint records routed experts stacked (experts.down_proj) where the layout names them per expert
+    groups = {
+        flag: (*globs, *(g.replace(".experts.*.", ".experts.") for g in globs)) for flag, globs in groups.items()
+    }
+    flags = dict.fromkeys(groups, False)
+    for module in target_modules:
+        parent, _, leaf = module.rpartition(".")
+        names = (
+            (module, f"{parent}.{_FUSED_LEAF_BY_COMPONENT[leaf]}") if leaf in _FUSED_LEAF_BY_COMPONENT else (module,)
+        )
+        hits = [flag for flag, globs in groups.items() if any(matches_lora_target(n, g) for n in names for g in globs)]
+        if not hits:
+            # a checkpoint another gateway wrote may come from another model
+            raise UserInputError(f"adapter target {module!r} is in no LoRA group of this model")
+        flags.update(dict.fromkeys(hits, True))
+    return flags
+
+
 class MilesBackend:
-    def __init__(self, trainer, router_url: str, dp_size: int = 1) -> None:
+    def __init__(self, trainer, router_url: str, lora_layout: HfLoraTargets, dp_size: int = 1) -> None:
         self.trainer = trainer
         self.router_url = router_url
+        self.lora_layout = lora_layout
         self.dp_size = dp_size
+
+    def lora_groups(self, target_modules) -> dict[str, bool]:
+        return classify_lora_groups(target_modules, self.lora_layout)
 
     async def trainer_dead(self) -> bool:
         return await self.trainer.has_errored_cell()
 
-    async def load_slot(
-        self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
-    ) -> dict | None:
-        return _slot_failure(
-            await self.trainer.load_slot(slot, rank, alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer)
-        )
+    async def load_slot(self, slot: int, rank: int, alpha: float, source: dict | None = None) -> dict | None:
+        return _slot_failure(await self.trainer.load_slot(slot, rank, alpha, source=source))
 
     async def unload_slot(self, slot: int) -> dict | None:
         return _slot_failure(await self.trainer.unload_slot(slot))
@@ -96,7 +219,9 @@ class MilesBackend:
         store = object_store.get_instance()
         data_ref = store.put(value=train_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
         try:
-            return await getattr(self.trainer, method)(batch_id=batch_id, data_ref=data_ref)
+            return await getattr(self.trainer, method)(
+                batch_id=batch_id, data_ref=data_ref
+            )  # config-access-exempt: attribute selected at runtime from method
         finally:
             store.remove(data_ref)
 
@@ -104,15 +229,56 @@ class MilesBackend:
         worker_results = await self.trainer.optim_step(adam_params_by_slot=adam_params_by_slot)
         return worker_results[0]
 
-    async def save_slot(self, slot: int, path: str, metadata: dict | None = None) -> dict | None:
-        return _slot_failure(await self.trainer.save_slot(slot=slot, path=path, metadata=metadata))
+    async def save_slot(
+        self, slot: int, root: str, name: str, tenant_digest: str, parametrization_fields: dict
+    ) -> UncommittedAdapterDir:
+        """The uncommitted state every rank agreed on; a failed save raises."""
+        worker_results = await self.trainer.save_slot(
+            slot=slot,
+            root=root,
+            name=name,
+            tenant_digest=tenant_digest,
+            parametrization_fields=parametrization_fields,
+        )
+        return worker_results[0]
 
     async def export_slot(
-        self, slot: int, rank: int, alpha: float, path: str, metadata: dict | None = None
-    ) -> dict | None:
-        return _slot_failure(
-            await self.trainer.export_slot(slot=slot, rank=rank, alpha=alpha, path=path, metadata=metadata)
+        self, slot: int, root: str, name: str, tenant_digest: str, parametrization_fields: dict
+    ) -> UncommittedAdapterDir:
+        """The uncommitted export every rank agreed on; a worker failure raises out of the trainer call."""
+        results = await self.trainer.export_slot(
+            slot=slot,
+            root=root,
+            name=name,
+            tenant_digest=tenant_digest,
+            parametrization_fields=parametrization_fields,
         )
+        return results[0]
+
+    async def export_external(
+        self,
+        slot: int,
+        root: str,
+        name: str,
+        tenant_digest: str,
+        parametrization_fields: dict,
+        age_encryption_recipients: list[str],
+    ) -> UncommittedAdapterDir:
+        worker_results = await self.trainer.export_external_slot(
+            slot=slot,
+            root=root,
+            name=name,
+            tenant_digest=tenant_digest,
+            parametrization_fields=parametrization_fields,
+            age_encryption_recipients=age_encryption_recipients,
+        )
+        return worker_results[0]
+
+    commit_adapter = staticmethod(commit_adapter)
+    delete_retired_adapters = staticmethod(delete_retired_adapters)
+    resolve_adapter = staticmethod(resolve_adapter)
+    resolve_checkpoint_files = staticmethod(resolve_checkpoint_files)
+    delete_adapter = staticmethod(delete_adapter)
 
     # -------- sampling --------
 
@@ -125,6 +291,10 @@ class MilesBackend:
                     for index in range(payload["num_samples"])
                 ]
             )
+        except httpx.HTTPStatusError as error:
+            if 400 <= error.response.status_code < 500 and error.response.status_code not in (408, 429):
+                raise UserInputError(error.response.text) from error
+            return {"error": f"{error}: {error.response.text}"}
         except httpx.HTTPError as error:
             return {"error": str(error)}
         sequences = [_to_sequence(response) for response in responses]
@@ -139,19 +309,17 @@ class MilesBackend:
         return result
 
     def _generate_request(self, payload: dict, lora_name: str | None, lora_path: str | None = None) -> dict:
+        # every SDK SamplingParams field, which core has already validated
         params = payload["sampling_params"]
-        max_tokens = params.get("max_tokens")
-        if max_tokens is None:
-            raise UserInputError("sampling_params.max_tokens is required")
         sampling_params = {
-            "max_new_tokens": max_tokens,
-            "temperature": params.get("temperature", 1.0),
-            "top_p": params.get("top_p", 1.0),
-            "top_k": params.get("top_k", -1),
+            "max_new_tokens": params["max_tokens"],
+            "temperature": params["temperature"],
+            "top_p": params["top_p"],
+            "top_k": params["top_k"],
         }
-        if params.get("seed") is not None:
+        if params["seed"] is not None:
             sampling_params["sampling_seed"] = params["seed"]
-        stop = params.get("stop")
+        stop = params["stop"]
         if stop is not None:
             if stop == []:
                 # tinker defines stop=[] as disabling every stop token, EOS included

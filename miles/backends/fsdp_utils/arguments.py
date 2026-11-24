@@ -1,9 +1,13 @@
 import argparse
 import dataclasses
 import difflib
+import logging
+import typing
 from dataclasses import dataclass
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -49,9 +53,10 @@ class FSDPArgs:
 
     # FSDP configuration
     fsdp_state_dict_cpu_offload: bool = True  # If True, offload full state dict to CPU during collection.
-    fsdp_cpu_offload: bool = (
-        False  # If True, offload parameters, gradients, and optimizer states to CPU (optimizer runs on CPU)
-    )
+    # Megatron's name for the same switch: the fp32 master params (FSDP's sharded params), their grads and the
+    # optimizer state live on the host, and the optimizer steps on the CPU
+    optimizer_cpu_offload: bool = False
+    fsdp_cpu_offload: bool = False  # deprecated spelling of --optimizer-cpu-offload
     fsdp_cpu_backend: str | None = (
         "gloo"  # CPU backend for FSDP CPU offload (e.g., "gloo"). Set to None to disable hybrid backend.
     )
@@ -69,6 +74,10 @@ class FSDPArgs:
     use_pytorch_profiler: bool = False
     profile_step_start: int = 10
     profile_step_end: int = 12
+    # Names and defaults match Megatron's profiling flags, which miles/utils/profile_utils.py reads.
+    pytorch_profiler_collect_shapes: bool = False
+    pytorch_profiler_collect_callstack: bool = False
+    profile_ranks: list[int] = dataclasses.field(default_factory=list)
     tensorboard_dir: str | None = None
 
     # YAML bookkeeping
@@ -86,8 +95,17 @@ def build_dataclass_parser(
         if f.name == "config":
             continue
 
+        if typing.get_origin(f.type) is list:
+            (item_type,) = typing.get_args(f.type)
+            parser.add_argument(
+                f"--{f.name.replace('_', '-')}", type=item_type, nargs="+", default=f.default_factory()
+            )
+            continue
+
         # Handle union types like int | None, str | None, etc.
-        if hasattr(f.type, "__args__"):  # Check if it's a Union type
+        if hasattr(
+            f.type, "__args__"
+        ):  # Check if it's a Union type  # config-access-exempt: inspect union type arguments when deriving dataclass CLI types
             # For T | None, use T as the type
             non_none_types = [t for t in f.type.__args__ if t is not type(None)]
             arg_type = non_none_types[0] if non_none_types else str
@@ -141,6 +159,10 @@ def load_args_from_parser(parser: argparse.ArgumentParser):
                 f"--recompute-granularity {args.recompute_granularity!r}: this backend recomputes whole layers only; use full"
             )
         args.gradient_checkpointing = True
+    if args.fsdp_cpu_offload:
+        logger.warning("--fsdp-cpu-offload is deprecated; use --optimizer-cpu-offload, its name on every backend")
+        args.optimizer_cpu_offload = True
+    del args.fsdp_cpu_offload
     return args
 
 

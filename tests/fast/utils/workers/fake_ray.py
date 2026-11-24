@@ -14,6 +14,8 @@ _ASYNC_METHOD_TO_LOCAL_GPU_IDS = "_to_local_gpu_ids"
 
 READINESS_METHOD = "__ray_ready__"
 
+_SERVICE_PORT_START = 20000
+
 EVENT_CREATE = "create"
 EVENT_KILL = "kill"
 
@@ -215,11 +217,11 @@ class FakeRayCluster:
             )
         return None
 
-    def _alloc_port_block(self, *, node_ip: str, start_port: int, count: int) -> int:
+    def _alloc_port_block(self, *, node_ip: str, start_port: int | None, count: int) -> int:
         used = self._used_ports.setdefault(node_ip, set())
-        # Exactly start_port when it is free, like the real get_free_port: the floor lives in
-        # PortAllocator, and clamping here would make a pinned port look occupied.
-        port = start_port
+        # Exactly the cursor when it is free, like the real probe; a node without a cursor
+        # starts where the service port range starts on a host with the default ephemeral range.
+        port = _SERVICE_PORT_START if start_port is None else start_port
         while any(port + offset in used for offset in range(count)):
             port += 1
         used.update(range(port, port + count))

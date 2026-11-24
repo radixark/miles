@@ -204,7 +204,7 @@ class TestAsyncInit:
         cell = make_cell(actor_count=2)
         info = make_indep_dp_info()
 
-        results = await cell.init(indep_dp_info=info, indep_dp_store_addr="10.0.0.9:1234")
+        results = await cell.init(ckpt_load_config=None, indep_dp_info=info, indep_dp_store_addr="10.0.0.9:1234")
 
         assert len(results) == 2
         assert cell.is_alive
@@ -225,7 +225,7 @@ class TestAsyncInit:
         cell = make_cell(actor_count=1, health_checker=checker)
         checker.observe_alive = lambda: cell.is_alive
 
-        await cell.init(indep_dp_info=make_indep_dp_info(), indep_dp_store_addr=None)
+        await cell.init(ckpt_load_config=None, indep_dp_info=make_indep_dp_info(), indep_dp_store_addr=None)
 
         assert checker.start_count == 1
         assert checker.alive_when_started is True
@@ -304,7 +304,7 @@ class TestAsyncInitFailure:
             ray.get(handle.set_fail_methods.remote(["init"]))
 
         with pytest.raises(RuntimeError, match="Injected failure"):
-            await cell.init(indep_dp_info=make_indep_dp_info(), indep_dp_store_addr=None)
+            await cell.init(ckpt_load_config=None, indep_dp_info=make_indep_dp_info(), indep_dp_store_addr=None)
 
         assert not cell.is_alive
         for handle in get_raw_actor_handles(cell):

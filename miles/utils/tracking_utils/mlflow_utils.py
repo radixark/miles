@@ -15,6 +15,8 @@ import re
 from copy import deepcopy
 from typing import Any
 
+from miles.utils.args.utils import config_values
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,7 +27,7 @@ def _sanitize_key(key: str) -> str:
 
 def _compute_config_for_logging(args) -> dict[str, str]:
     # Build a flat param dict from *args*, mirroring ``wandb_utils._compute_config_for_logging``.
-    raw = deepcopy(args.__dict__)
+    raw = deepcopy(config_values(args))
 
     whitelist_env_vars = ["SLURM_JOB_ID"]
     raw["env_vars"] = {k: v for k, v in os.environ.items() if k in whitelist_env_vars}
@@ -75,7 +77,7 @@ def _init_mlflow_primary(args, experiment_name: str) -> None:
     slurm_job_id = os.environ.get("SLURM_JOB_ID")
     if slurm_job_id:
         tags["slurm_job_id"] = slurm_job_id
-    tags["rank"] = str(args.rank)
+    tags["rank"] = "0"
 
     run = mlflow.start_run(run_name=run_name, tags=tags)
     mlflow.log_params(_compute_config_for_logging(args))

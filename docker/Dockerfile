@@ -10,7 +10,7 @@
 # release for the current arch picked from TARGETARCH — WHEELS_TAG_X86 on amd64,
 # WHEELS_TAG_ARM64 on arm64.
 
-ARG SGLANG_IMAGE_TAG=v0.5.22
+ARG SGLANG_IMAGE_TAG=v0.5.23
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
@@ -23,7 +23,7 @@ ARG MEGATRON_BRANCH=miles-main
 # Empty means the branch HEAD at build time; release builds set it to freeze one commit.
 ARG MEGATRON_COMMIT=""
 ARG TORCHTITAN_REPO=pytorch/torchtitan
-ARG TORCHTITAN_COMMIT=086bf6c166ec85c1298eb5596fa9bf95f6a2d840
+ARG TORCHTITAN_COMMIT=45e33cd413b64cb37a7840cfd3c9765d3c639ae1
 
 ARG WHEELS_REPO=radixark/miles-wheels
 # Two complete wheels release tags (the wheels repo's own names). The build picks
@@ -55,14 +55,18 @@ RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
 # `wheel[s]/` is a glob — silently no-ops when wheels/ is absent (CI's path).
 COPY wheel[s]/ /tmp/wheels/
 
-RUN case "${TARGETARCH}" in \
+# github_token (docker/build.py's BUILD_GITHUB_TOKEN) authenticates the API lookup; builds without it go anonymous
+RUN --mount=type=secret,id=github_token \
+    case "${TARGETARCH}" in \
       amd64) WHEELS_TAG="${WHEELS_TAG_X86}" ;; \
       arm64) WHEELS_TAG="${WHEELS_TAG_ARM64}" ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac && \
     echo "Fetching wheels release ${WHEELS_TAG}" && \
     mkdir -p /tmp/wheels && \
-    curl -sL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
+    if [ -s /run/secrets/github_token ]; then set -- -H "Authorization: Bearer $(cat /run/secrets/github_token)"; \
+    else set --; fi && \
+    curl -fsSL "$@" "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
     | python3 -c "import sys,json,subprocess,os; w='/tmp/wheels'; \
 [subprocess.run(['curl','-fSL','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) \
  for a in json.load(sys.stdin).get('assets',[]) \
@@ -136,8 +140,21 @@ RUN if ls /tmp/wheels/fast_hadamard_transform-*.whl 2>/dev/null | grep -q .; the
 # Megatron #5992 requires on SM100; 1.26.0 has no compact wrapper and fails
 # TransformerConfig validation once that change is in miles-main. A floor, not a
 # pin: the base image may already ship a newer one.
-RUN pip install /tmp/wheels/flash_mla-*.whl && \
-    pip install --no-deps "nvidia-cudnn-frontend>=1.28"
+RUN pip install --no-deps "nvidia-cudnn-frontend>=1.28"
+
+# Two FlashMLA builds, both packaged as `flash_mla`. SGLang pins sgl-flash-mla for decode
+# APIs the nv_dev build lacks; Megatron's CSA forward and miles' DSA kernel need nv_dev
+# (`indexer_topk`, SM90 and 576-dim sparse prefill). sglang-miles imports `sgl_flash_mla`
+# first, so move the base image's package there and install nv_dev as `flash_mla`.
+RUN FLASH_MLA_DIR=$(python3 -c 'import importlib.util; print(importlib.util.find_spec("flash_mla").submodule_search_locations[0])') && \
+    SGL_FLASH_MLA_DIR="$(dirname "$FLASH_MLA_DIR")/sgl_flash_mla" && \
+    mv "$FLASH_MLA_DIR" "$SGL_FLASH_MLA_DIR" && \
+    rm -rf "$SGL_FLASH_MLA_DIR/__pycache__" && \
+    sed -i 's/\bfrom flash_mla\b/from sgl_flash_mla/' "$SGL_FLASH_MLA_DIR"/*.py && \
+    if grep -nE '^\s*(from|import) flash_mla\b' "$SGL_FLASH_MLA_DIR"/*.py; then \
+      echo "sgl_flash_mla still imports flash_mla; extend the rename above" >&2; exit 1; \
+    fi && \
+    pip install /tmp/wheels/flash_mla-*.whl
 
 # Mamba kernels for nemotron_h hybrid (mamba+attention) models.
 RUN if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
@@ -184,18 +201,19 @@ RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.3
 RUN TMS_CUDA_MAJOR=$(python3 -c "import torch; print(torch.version.cuda.split('.')[0])") \
     pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@118b09b3bc7b0cf386745db1eac2601d4aa7e681 --no-cache-dir --force-reinstall
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
-RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@8cd3466d14d2337c8492827b3712482c2b3e4866 --no-deps --no-build-isolation
+RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@a0c6d6e09b0bd4d208c2d936608319d5ab456d87 --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
 
-# torchtitan backend: pinned to the v0.3.0 release commit because torchtitan tracks
+# torchtitan backend: pinned to the v0.4.0 release commit because torchtitan tracks
 # torch nightly and its model/adapter layouts move; --no-deps keeps its torch and
 # datasets pins from touching the versions sglang links against. Its own python
-# deps are pinned explicitly (spmd_types is a hard import in parallel_dims).
+# deps are pinned explicitly to the versions its requirements.txt names.
 RUN git clone https://github.com/${TORCHTITAN_REPO}.git torchtitan && \
     cd torchtitan && git checkout -f ${TORCHTITAN_COMMIT} && \
     pip install --no-deps -e .
-RUN pip install "spmd_types==0.2.3" "tyro>=1.0.5" && pip install --no-deps "torchdata>=0.8.0"
+RUN pip install "spmd_types==0.3.1" "torch_remat==0.2.2" "torch_checkpointing==0.1.1" "grain==0.2.18" && \
+    pip install --no-deps "attn-gym==0.0.17"
 
 COPY requirements.txt /tmp/requirements.txt
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && pip install -r /tmp/requirements.txt
@@ -216,6 +234,9 @@ RUN rm -rf /root/.cache/pip /root/flash-attention
 # The base image ships the Rust extension modules prebuilt (SGLANG_RUST_BUILD_MODE=never);
 # re-installing must not rebuild them, which needs the torch link path only the upstream
 # build stage has.
+# radix_transfer_plugins, the output store package SGLang imports, sits beside python/ in the
+# same checkout; editable installs keep both at that checkout's commit. The build host has no
+# libcuda.so.1, which mooncake.store loads, so the check imports all of it but the Mooncake backend.
 RUN cd /sgl-workspace/sglang && \
     git fetch origin ${SGLANG_BRANCH} && \
     if [ -n "${SGLANG_COMMIT}" ]; then \
@@ -223,7 +244,9 @@ RUN cd /sgl-workspace/sglang && \
     else \
       git checkout -f FETCH_HEAD; \
     fi && \
-    SGLANG_BUILD_RUST_EXTS=none pip install -e "python[all]" --no-deps
+    SGLANG_BUILD_RUST_EXTS=none pip install -e "python[all]" --no-deps && \
+    pip install -e radix_transfer_plugins --no-deps && \
+    python3 -c "import radix_transfer_plugins.stashes.token_output"
 
 COPY docker/install-kube-tools.sh /tmp/install-kube-tools.sh
 RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-tools.sh
@@ -231,10 +254,12 @@ RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-t
 # ====================================== Install main package ============================================
 
 ARG MILES_COMMIT=main
+# the dashboard plugin is installed only when MILES_COMMIT already has it
 RUN git clone https://github.com/radixark/miles.git /root/miles && \
     cd /root/miles && \
     git checkout ${MILES_COMMIT} && \
-    pip install -e . --no-deps
+    pip install -e . --no-deps && \
+    if [ -d packages/miles-dashboard ]; then pip install -e packages/miles-dashboard --no-deps; fi
 
 # int4 fake-quant extension (source: miles/kernels/quant/int4_fake)
 RUN pip install /tmp/wheels/fake_int4_quant_cuda-*.whl
@@ -270,6 +295,19 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       pip install --force-reinstall /build/gateway_wheels/sglang_router-*.whl && \
       rm -rf /root/.cargo /root/.rustup /build/sgl-model-gateway /build/gateway_wheels; \
     fi
+
+# ==================== Patch what image scanners flag ====================
+# Third-party image reviews (Trivy, JFrog Xray) block HIGH/CRITICAL findings. This step fixes the
+# ones it can without moving a pinned dependency; findings in SGLang's pins or Ray's vendored files
+# are left to those projects.
+#   - linux-libc-dev, apt: the base image predates Ubuntu's security updates for them.
+#   - /root/.cargo/registry and /root/.cargo/git: crate sources cached by the base image's Rust
+#     builds. Nothing in the image reads them, and their Cargo.lock files pin the flagged crates.
+#   - nltk, oauthlib: unpinned transitive dependencies of the SGLang base.
+RUN apt-get update && \
+    apt-get install -y --only-upgrade linux-libc-dev apt libapt-pkg6.0t64 && \
+    rm -rf /var/lib/apt/lists/* /root/.cargo/registry /root/.cargo/git && \
+    pip install --no-cache-dir "nltk>=3.10.4" "oauthlib>=4.0.1"
 
 # ==================== Reconcile apache-tvm-ffi with sglang's pin ====================
 # sglang v0.5.16 bumped nvidia-cutlass-dsl 4.5.2 -> 4.6.0 while leaving its

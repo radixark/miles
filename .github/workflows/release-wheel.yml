@@ -1,0 +1,92 @@
+# doc-dev: docs/developer/ci/04-release.md
+name: Release Wheel
+# Runs on a release tag: release-tag.yml dispatches it there (--ref v<version>), so the workflow, the code
+# it builds and the lock it reads are all the tag's. Builds the miles wheel with the tag's exact version
+# and a pin on the sglang-miles wheel the release was tested with, runs the wheel smoke on it, and
+# uploads the sdist and wheel to the v<version> GitHub release (a draft when the tag had none). Once
+# that release is public, the pip index on radixark/miles-wheels lists them within the hour.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# one run per tag: two would each create a draft release
+concurrency:
+  group: release-wheel-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # what the release build stamps: the tag's version, and the published wheel of the sglang-miles commit
+  # the release was tested with (release-lock.json)
+  pins:
+    if: github.repository == 'radixark/miles'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.pins.outputs.version }}
+      sglang_wheel: ${{ steps.pins.outputs.sglang_wheel }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: pins
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ "$GITHUB_REF_TYPE" = tag ] && [[ "$GITHUB_REF_NAME" == v* ]] \
+            || { echo "::error::dispatch this on a release tag (--ref v<version>), not on $GITHUB_REF_NAME"; exit 1; }
+          SGLANG_COMMIT=$(python3 -c 'import json; print(json.load(open("release-lock.json"))["sglang_commit"])')
+          SGLANG_WHEEL=$(python3 .github/scripts/release/sglang_wheel_version.py "$SGLANG_COMMIT")
+          echo "sglang-miles ${SGLANG_COMMIT} -> sglang==${SGLANG_WHEEL}"
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "sglang_wheel=${SGLANG_WHEEL}" >> "$GITHUB_OUTPUT"
+
+  smoke:
+    needs: pins
+    uses: ./.github/workflows/wheel-smoke.yml
+    with:
+      version: ${{ needs.pins.outputs.version }}
+      sglang_wheel: ${{ needs.pins.outputs.sglang_wheel }}
+
+  publish:
+    needs: [pins, smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.pins.outputs.version }}
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: miles-dist
+          path: dist
+
+      - name: The dist carries the exact version
+        shell: bash
+        run: |
+          ls dist
+          [ -f "dist/miles-${VERSION}-py3-none-any.whl" ] \
+            || { echo "::error::no miles-${VERSION} wheel in the smoke's dist"; exit 1; }
+
+      # a draft: the release owner writes the notes and publishes it, which is what makes the wheel public
+      - name: Create a draft release if the tag has none
+        shell: bash
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && exit 0
+          FLAGS=()
+          case "$VERSION" in *rc*) FLAGS=(--prerelease) ;; esac
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --title "$TAG" --notes "" "${FLAGS[@]}"
+
+      # a published file is never replaced: pinned hashes must keep matching
+      - name: Upload the sdist and wheel
+        shell: bash
+        run: |
+          PUBLISHED=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          for f in dist/*; do
+            if grep -qxF "$(basename "$f")" <<<"$PUBLISHED"; then echo "keeping published $(basename "$f")"; continue; fi
+            gh release upload "$TAG" "$f" --repo "$GITHUB_REPOSITORY"
+          done

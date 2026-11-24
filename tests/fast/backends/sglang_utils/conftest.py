@@ -7,6 +7,8 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Any
 
+from tests.fast.fixtures.sglang_config_fixtures import with_parser_defaults_and_sglang_config
+
 _TINY_MODEL_CONFIG: dict[str, Any] = {
     "architectures": ["LlamaForCausalLM"],
     "model_type": "llama",
@@ -49,8 +51,10 @@ def make_engine_args(**overrides: Any) -> Namespace:
         sglang_ep_size=1,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
+        use_output_store=False,
         fp16=False,
         lora_rank=0,
+        experts_shared_outer_loras=False,
         lora_adapter_targets=[f"model.layers.*.self_attn.{projection}_proj" for projection in ("q", "k", "v")],
         sglang_api_key=None,
         lora_adapter_path=None,
@@ -60,4 +64,4 @@ def make_engine_args(**overrides: Any) -> Namespace:
         colocate=False,
     )
     defaults.update(overrides)
-    return Namespace(**defaults)
+    return Namespace(**with_parser_defaults_and_sglang_config(defaults))

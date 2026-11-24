@@ -18,7 +18,7 @@ from miles.backends.megatron_utils.lora.native.modules.linear import (
     new_lora_parameter,
 )
 from miles.backends.megatron_utils.lora.native.spec.base import AttachContext, ProjectionSpec, ShardLayout
-from miles.utils.lora.arguments import add_lora_arguments
+from miles.utils.args.configs.lora import LoraConfig
 
 
 class TestBuildQkvPerm:
@@ -94,9 +94,10 @@ class TestFirstActivationGrad:
 
 
 class TestLoRAInitMethod:
-    def test_cli_accepts_only_implemented_methods(self, capsys):
+    def test_cli_accepts_only_implemented_methods(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """The production CLI preserves supported initialization methods and rejects others."""
         parser = argparse.ArgumentParser()
-        add_lora_arguments(parser)
+        LoraConfig.add_arguments(parser)
         assert parser.parse_args([]).lora_A_init_method == "xavier"
         assert parser.parse_args(["--lora-A-init-method", "kaiming"]).lora_A_init_method == "kaiming"
         with pytest.raises(SystemExit):
@@ -163,7 +164,7 @@ def test_a_column_adapter_reads_its_fused_norm_hosts_own_norm_output():
     with torch.no_grad():
         adapter.up_A.normal_()
         adapter.up_B.normal_()
-    attach_adapter_forward(host, adapter, context.lora.scale)
+    attach_adapter_forward(host, adapter)
     x = torch.randn(3, 6)
 
     out, bias = host(x)

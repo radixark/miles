@@ -7,6 +7,7 @@ from miles.utils.lora.hf_lora_targets import (
     expand_packed_hf_lora_targets,
     parse_lora_targets,
     resolve_hf_lora_targets,
+    unembed_lora_targets,
 )
 
 
@@ -41,6 +42,22 @@ def test_missing_targets_and_all_linear_use_model_defaults(selection):
 )
 def test_explicit_targets_preserve_user_choices(config, value, expected):
     assert resolve_hf_lora_targets(config, target_modules=parse_lora_targets(value)) == expected
+
+
+@pytest.mark.parametrize(
+    "moe_layer_freq,dense",
+    [([0, 1, 1, 1], True), ([1, 1, 1, 1], False)],
+    ids=["dense-layer-0", "all-moe"],
+)
+def test_mimo_v2_groups_follow_the_per_layer_mlp_types(moe_layer_freq, dense):
+    config = {"model_type": "mimo_v2", "moe_layer_freq": moe_layer_freq}
+    attention = [f"model.layers.*.self_attn.{name}_proj" for name in ("q", "k", "v", "o")]
+    dense_mlp = [f"model.layers.*.mlp.{name}_proj" for name in ("gate", "up", "down")]
+    experts = [f"model.layers.*.mlp.experts.*.{name}_proj" for name in ("gate", "up", "down")]
+
+    targets = resolve_hf_lora_targets(config, target_modules=["attn", "mlp", "unembed"])
+
+    assert targets == attention + (dense_mlp if dense else []) + experts + ["lm_head"]
 
 
 def test_exclude_leaf_applies_to_scoped_model_defaults():
@@ -78,3 +95,23 @@ def test_paired_targets_include_packed_experts(dense, scoped, caplog):
     assert "Expanding paired gate_proj/up_proj" in caplog.text
     assert expand_packed_hf_lora_targets(targets[:1], modules) == targets[:1]
     assert expand_packed_hf_lora_targets(targets, ["model.layers.0.mlp.gate_proj"]) == targets
+
+
+@pytest.mark.parametrize(
+    "config,targets,adapted",
+    [
+        ({"model_type": "qwen3"}, ["model.layers.*.self_attn.q_proj", "lm_head"], ["lm_head"]),
+        ({"model_type": "qwen3"}, ["model.layers.*.self_attn.q_proj"], []),
+        ({"model_type": "deepseek_v41"}, ["layers.*.attn.wq_a", "head"], ["head"]),
+        ({"model_type": "kimi_k25"}, ["language_model.lm_head"], ["language_model.lm_head"]),
+        ({"model_type": "custom"}, ["q_proj", "lm_head"], ["lm_head"]),
+    ],
+    ids=["lm_head", "no_unembed", "deepseek_head", "scoped_unembed", "unregistered_model"],
+)
+def test_unembed_lora_targets_finds_the_output_layer_targets(config, targets, adapted):
+    assert unembed_lora_targets(targets, config) == adapted
+
+
+def test_inkling_default_targets_adapt_the_output_layer():
+    config = {"model_type": "inkling_text", "num_hidden_layers": 2, "dense_mlp_idx": 1, "n_shared_experts": 0}
+    assert unembed_lora_targets(resolve_hf_lora_targets(config), config) == ["lm_head"]

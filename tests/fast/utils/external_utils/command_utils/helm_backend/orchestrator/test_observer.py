@@ -1,6 +1,7 @@
 import logging
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 
 
 from miles.utils.external_utils.command_utils.helm_backend.naming import _orchestrator_state_path
@@ -240,7 +241,7 @@ class TestWaitForRun:
         def sleep(seconds: float) -> None:
             _write(new_path, OrchestratorStatus.EXITED, exit_code=0)
 
-        monkeypatch.setattr(observer.time, "sleep", sleep)
+        monkeypatch.setattr(observer, "time", SimpleNamespace(sleep=sleep))
         outcome = observer.wait_for_run(
             state_file=old_path,
             read_pod=lambda: _observed("Running"),
@@ -256,7 +257,7 @@ class TestWaitForRun:
         _write(old_path, OrchestratorStatus.STARTED)
         _write(new_path, OrchestratorStatus.EXITED, exit_code=0)
 
-        monkeypatch.setattr(observer.time, "sleep", lambda seconds: None)
+        monkeypatch.setattr(observer, "time", SimpleNamespace(sleep=lambda seconds: None))
         outcome = observer.wait_for_run(
             state_file=old_path,
             read_pod=lambda: _observed("Failed"),
@@ -271,7 +272,7 @@ class TestWaitForRun:
         _write(path, OrchestratorStatus.STARTED)
         phase_reads = []
 
-        monkeypatch.setattr(observer.time, "sleep", lambda seconds: None)
+        monkeypatch.setattr(observer, "time", SimpleNamespace(sleep=lambda seconds: None))
         outcome = observer.wait_for_run(
             state_file=path,
             read_pod=lambda: phase_reads.append(True) or _observed("Failed"),
@@ -303,7 +304,7 @@ class TestWaitForRun:
         _write(old_path, OrchestratorStatus.EXITED, exit_code=143)
         _write(new_path, OrchestratorStatus.EXITED, exit_code=0)
 
-        monkeypatch.setattr(observer.time, "sleep", lambda seconds: None)
+        monkeypatch.setattr(observer, "time", SimpleNamespace(sleep=lambda seconds: None))
         outcome = observer.wait_for_run(
             state_file=old_path,
             read_pod=lambda: _observed("Running"),
@@ -319,7 +320,7 @@ class TestWaitForRun:
         _write(old_path, OrchestratorStatus.EXITED, exit_code=143)
         _write(new_path, OrchestratorStatus.EXITED, exit_code=0)
 
-        monkeypatch.setattr(observer.time, "sleep", lambda seconds: None)
+        monkeypatch.setattr(observer, "time", SimpleNamespace(sleep=lambda seconds: None))
         outcome = observer.wait_for_run(
             state_file=old_path,
             read_pod=lambda: _observed("Running"),
@@ -339,7 +340,7 @@ class TestWaitForRun:
             if len(sleeps) == 3:
                 _write(path, OrchestratorStatus.EXITED, exit_code=0)
 
-        monkeypatch.setattr(observer.time, "sleep", sleep)
+        monkeypatch.setattr(observer, "time", SimpleNamespace(sleep=sleep))
         outcome = observer.wait_for_run(
             state_file=path,
             read_pod=lambda: _observed("Running"),
@@ -361,7 +362,7 @@ class TestWaitForRun:
                 _write(path, OrchestratorStatus.EXITED, exit_code=0)
             raise RuntimeError("the api server is unreachable")
 
-        monkeypatch.setattr(observer.time, "sleep", lambda seconds: None)
+        monkeypatch.setattr(observer, "time", SimpleNamespace(sleep=lambda seconds: None))
         outcome = observer.wait_for_run(
             state_file=path,
             read_pod=unreachable_until_run_finishes,
@@ -375,7 +376,7 @@ class TestWaitForRun:
         path = _state_file(tmp_path)
         _write(path, OrchestratorStatus.STARTED)
 
-        monkeypatch.setattr(observer.time, "sleep", lambda seconds: None)
+        monkeypatch.setattr(observer, "time", SimpleNamespace(sleep=lambda seconds: None))
         with caplog.at_level(logging.INFO, logger=observer.__name__):
             observer.wait_for_run(
                 state_file=path,

@@ -13,11 +13,16 @@ hyper_connection/  hc: hc_mix_inject · hc_combine    mhc: mhc_mix · mhc_aggreg
 moe/               fused_experts
 norm/              grouped_rmsnorm (device helpers shared by hc and ple)
 position/          rope: apply_rotary_emb
-quant/             fp8_blockwise_cast · act_quant · fake_quant_{fp8,fp4,compressed_kv} · fused_nvfp4_qdq · int4_fake/ (CUDA)
+quant/             fp8_blockwise_cast · act_quant · fake_quant_{fp8,fp4,compressed_kv} · fused_nvfp4_qdq · int4_fake/ (CUDA) ·
+                   stochastic_round_to_bf16
 softmax/           token_log_softmax
+tpu/               flash_attention (causal within each segment; JAX's Pallas splash kernel through torch_tpu) · gated_delta_rule (Qwen3.5's gated delta-net per segment; plain torch)
 ```
 
 - Only kernels we write (Triton, TileLang, CuTe, CUDA). A third-party kernel we merely call stays with its caller.
+- Kernels for torch_tpu (Pallas, through torch_tpu's JAX bridge) live under `tpu/`, named by op inside it; they need
+  jax and torch_tpu, so only TPU code paths import them. Their tests are in `tests/manual/tpu/` (on a TPU host) and
+  `tests/fast/kernels/` (CPU, Pallas interpret mode).
 - One directory per op. Names say what is computed, never the backend; a backend gets a subdirectory only when two coexist.
 - Callers import the entry from the op's module or package, never an implementation file.
 - No Megatron, no process groups, no env policy. Parallelism lives in `miles_plugins/models`.

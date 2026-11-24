@@ -17,6 +17,7 @@ import miles.utils.test_utils.fault_injector.controller as fault_hook_module
 from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.train.group import TrainerController, compute_trainer_health_checker_config
+from miles.ray.train.init_request import TrainerControllerInitRequest
 from miles.ray.train_actor import WeightUpdateOutput
 from miles.utils import object_store
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
@@ -55,6 +56,9 @@ def _make_mock_args(
     ci_fault_hooks_path: str | None = None,
     colocate: bool = True,
     update_weight_transfer_mode: str = "broadcast",
+    trainer_id: str = "actor",
+    use_kl_loss: bool = False,
+    use_opd: bool = False,
 ) -> SimpleNamespace:
     # Use SimpleNamespace (not MagicMock) so the args object is picklable. TrainerCell.init
     # passes self.args through Ray to the remote actor; pickling a MagicMock blows the
@@ -81,12 +85,24 @@ def _make_mock_args(
         context_parallel_size=gpus_per_cell,
         actor_num_nodes=1,
         actor_num_gpus_per_node=num_cells * gpus_per_cell,
+        trainer_init_expected_num_cells=num_cells,
+        ci_test=False,
+        ci_disable_config_snapshot=False,
+        save_debug_event_data=None,
+        enable_event_analyzer=False,
+        enable_sample_ownership_checker=False,
         object_store_backend="ray",
         worker_comm_backend="ray",
         trainer_model_id=None,
         colocate=colocate,
         update_weight_transfer_mode=update_weight_transfer_mode,
         update_weights_timeout=None,
+        trainer_id=trainer_id,
+        trainer_role="actor",
+        kl_coef=0,
+        use_kl_loss=use_kl_loss,
+        use_opd=use_opd,
+        opd_type="megatron",
     )
 
 
@@ -102,25 +118,21 @@ def _make_controller(
     train_conftest.fake_worker_manager.num_cells = num_cells
     train_conftest.fake_worker_manager.actor_count_per_cell = actor_count_per_cell
     group = TrainerController(
+        args=_make_mock_args(
+            indep_dp=True,
+            gpus_per_cell=actor_count_per_cell,
+            num_cells=num_cells,
+            ci_fault_hooks=ci_fault_hooks,
+            ci_fault_hooks_path=None,
+            use_kl_loss=with_ref,
+            use_opd=with_opd_teacher,
+        ),
         deployment_identity=make_deployment_identity(),
-        trainer_id="actor",
-        role="actor",
-        with_ref=with_ref,
-        with_opd_teacher=with_opd_teacher,
         cell_provider=make_provider(),
         cell_operations=AsyncMock(),
     )
-    group.args = _make_mock_args(
-        indep_dp=True,
-        gpus_per_cell=actor_count_per_cell,
-        num_cells=num_cells,
-        ci_fault_hooks=ci_fault_hooks,
-        ci_fault_hooks_path=None,
-    )
-    group._health_checker_config = compute_trainer_health_checker_config(
-        group.args, expected_num_cells=group._expected_num_cells
-    )
-    if group._expected_num_cells > 1:
+    group._health_checker_config = compute_trainer_health_checker_config(group.args)
+    if group.args.indep_dp:
         group._indep_dp_store, group._indep_dp_store_addr = group_module.create_tcp_store()
     for cell_index in range(num_cells):
         cell = group._create_cell(
@@ -167,7 +179,7 @@ def _was_killed(group: TrainerController, cell_index: int) -> bool:
 
 async def _init_controller(group: TrainerController) -> None:
     """Call init and wait for all cells to become alive."""
-    await group.init(group.args)
+    await group.init(TrainerControllerInitRequest(num_rollout=None, wandb_run_id=None, mlflow_run_id=None))
 
 
 async def _make_alive_controller(*, num_cells: int = 3, **kwargs) -> TrainerController:
@@ -203,22 +215,19 @@ class TestIndepDPStore:
 
         assert group._indep_dp_store_addr == train_conftest.FAKE_STORE_ADDR
 
-    def test_a_single_cell_pool_needs_no_quorum_store(self):
-        """One cell never renegotiates a quorum, so binding a port for it would be pure waste."""
+    def test_a_single_cell_independent_dp_pool_gets_a_quorum_store(self):
+        """An independent DP pool needs its store even when only one cell starts."""
         group = _make_controller(num_cells=1)
 
-        assert group._indep_dp_store_addr is None
+        assert group._indep_dp_store_addr == train_conftest.FAKE_STORE_ADDR
 
 
 class TestInit:
     def test_the_controller_watches_the_pool_of_its_trainer_id(self):
         """A policy's controller owns the pool named after its trainer id, which the role no longer determines."""
         group = TrainerController(
+            args=_make_mock_args(trainer_id="alpha-actor"),
             deployment_identity=make_deployment_identity(),
-            trainer_id="alpha-actor",
-            role="actor",
-            with_ref=False,
-            with_opd_teacher=False,
             cell_provider=make_provider(),
             cell_operations=AsyncMock(),
         )
@@ -1505,7 +1514,7 @@ class TestUpdateWeightsReachesTheWorker:
             ray.get(handle.set_update_weights_return_value.remote(_output(1)))
         assert _outcome_of(await group.update_weights(info=info)) == _outcome_of(_output(1))
 
-        await group.load_state()
+        await group.load_state(TrainerControllerInitRequest(num_rollout=None, wandb_run_id=None, mlflow_run_id=None))
         for handle in handles:
             ray.get(handle.set_update_weights_return_value.remote(_output(2)))
 
@@ -2050,7 +2059,7 @@ class TestWeightUpdateResultEvent:
             ray.get(handle.set_update_weights_return_value.remote(_output(1)))
         before = await group.update_weights(info=info)
 
-        await group.load_state()
+        await group.load_state(TrainerControllerInitRequest(num_rollout=None, wandb_run_id=None, mlflow_run_id=None))
         after = await group.update_weights(info=info)
 
         first, second = self._results(_event_log_dir)
@@ -2077,3 +2086,73 @@ class TestStepEndRecordsCellIncarnations:
         [event] = [e for e in read_events(tmp_path) if isinstance(e, TrainGroupStepEndEvent)]
         assert event.cell_incarnations == {"trainer-0": "hash-0", "trainer-2": "hash-2b"}
         assert event.cell_outcomes == {0: [TrainStepOutcome.NORMAL], 2: "error"}
+
+
+class TestRuntimeCheckpointRequests:
+    async def test_each_reload_forwards_its_request_without_retaining_checkpoint_state(self) -> None:
+        """Consecutive reloads deliver their own checkpoint options through every cell to each actor."""
+        from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
+
+        group = await _make_alive_controller(num_cells=2)
+        cells = list(group._cells)
+        original_args = dict(vars(group.args))
+        configs = [
+            MegatronCkptLoadConfig(
+                load=path,
+                resume_from_ckpt=True,
+                no_load_optim=False,
+                no_load_rng=False,
+                finetune=False,
+                ckpt_step=step,
+            )
+            for path, step in [("/checkpoint/first", 3), ("/checkpoint/second", 9)]
+        ]
+
+        for config in configs:
+            await group.load_state(
+                TrainerControllerInitRequest(
+                    num_rollout=None, wandb_run_id=None, mlflow_run_id=None, ckpt_load_config=config
+                )
+            )
+
+        for cell in cells:
+            for handle in get_raw_actor_handles(cell):
+                calls = [call for call in ray.get(handle.get_calls.remote()) if call[0] == "load_state"]
+                assert [call[2]["ckpt_load_config"] for call in calls] == configs
+            assert not {"ckpt_load_config", "_ckpt_load_config"} & vars(cell).keys()
+            assert "ckpt_load_config" not in vars(cell.args)
+        assert vars(group.args) == original_args
+        assert not {"ckpt_load_config", "_ckpt_load_config"} & vars(group).keys()
+
+
+class TestIndependentDpInitialization:
+    @pytest.mark.parametrize("indep_dp,num_cells", [(True, 1), (True, 3), (False, 1)])
+    async def test_real_initialization_owns_the_store_independently_of_startup_quorum(
+        self, monkeypatch: pytest.MonkeyPatch, indep_dp: bool, num_cells: int
+    ) -> None:
+        """Real controller initialization creates independent-DP resources even with a single starting cell."""
+        train_conftest.fake_worker_manager.num_cells = num_cells
+        train_conftest.fake_worker_manager.actor_count_per_cell = 1
+        store = object()
+        create_store = MagicMock(return_value=(store, train_conftest.FAKE_STORE_ADDR))
+        monkeypatch.setattr(group_module, "create_tcp_store", create_store)
+        group = TrainerController(
+            args=_make_mock_args(indep_dp=indep_dp, num_cells=num_cells),
+            deployment_identity=make_deployment_identity(),
+            cell_provider=make_provider(),
+            cell_operations=AsyncMock(),
+        )
+        assert group._indep_dp_store is None
+        assert group._indep_dp_store_addr is None
+
+        try:
+            await group.init(TrainerControllerInitRequest(num_rollout=None, wandb_run_id=None, mlflow_run_id=None))
+
+            assert create_store.call_count == int(indep_dp)
+            assert group._indep_dp_store is (store if indep_dp else None)
+            assert group._indep_dp_store_addr == (train_conftest.FAKE_STORE_ADDR if indep_dp else None)
+            assert (group._health_checker_config is not None) is indep_dp
+            assert len(group._cells) == num_cells
+            assert all(cell.is_alive for cell in group._cells)
+        finally:
+            await group.dispose()

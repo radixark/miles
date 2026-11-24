@@ -92,6 +92,10 @@ class MetricHistoryStore(abc.ABC):
     baseline query. The query and write surface are deliberately narrow: the
     gate logic depends only on this interface, so swapping the SQLite test
     backend for a hosted Postgres backend changes no caller.
+
+    A store is bound to one `repository` at construction: it writes that
+    repository into every run and reads and revokes only that repository's
+    runs, so repositories sharing one database never share a baseline.
     """
 
     @abc.abstractmethod

@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, WorkerType
+from miles.backends.sglang_utils.sglang_engine import SGLANG_DEFAULT_HEALTH_CHECK_TIMEOUT_SECONDS
 from miles.utils.http_utils import wrap_ipv6
 from miles.utils.retry_utils import retry_until_deadline
 from miles.utils.workers.backend_capability.base import BackendCapability
@@ -47,7 +48,7 @@ class StaticInferenceEngineWorkerProvider(BaseWorkerProvider):
 
     async def init(self) -> None:
         urls = _compute_external_engine_urls(self._args)
-        engines = await _discover_external_engines(urls, api_key=self._args.sglang_api_key)
+        engines = await _discover_external_engines(urls, api_key=self._args.sglang.base_args["api_key"])
         _assert_engines_match_args(self._args, engines=engines)
 
         self._cells = _compute_cells(args=self._args, engines=engines)
@@ -113,6 +114,7 @@ class _ExternalEngineInfo:
     port: int
     worker_type: WorkerType
     num_gpus: int
+    pp_size: int
     disaggregation_bootstrap_port: int | None
 
 
@@ -134,9 +136,12 @@ def _compute_cells(*, args: Any, engines: list[_ExternalEngineInfo]) -> dict[str
                     worker_type=engine.worker_type.value,
                     num_gpus_per_engine=engine.num_gpus,
                     gpu_offset=gpu_offset,
-                    sglang_api_key=args.sglang_api_key,
+                    sglang_api_key=args.sglang.base_args["api_key"],
                     needs_offload=False,
                     update_weights=True,
+                    # The engine's own SGLANG_HEALTH_CHECK_TIMEOUT is not reported, so assume SGLang's default
+                    # per pipeline stage.
+                    health_check_timeout_seconds=SGLANG_DEFAULT_HEALTH_CHECK_TIMEOUT_SECONDS * engine.pp_size,
                 ),
             ),
             addrs=_compute_engine_addrs(engine),
@@ -221,6 +226,7 @@ async def _discover_external_engine(url: str, *, api_key: str | None) -> _Extern
         port=addr.port,
         worker_type=WorkerType.from_server_info(server_info),
         num_gpus=int(server_info["internal_states"][0]["world_size"]),
+        pp_size=int(server_info["pp_size"]),
         disaggregation_bootstrap_port=(
             int(x) if (x := server_info.get("disaggregation_bootstrap_port")) is not None else None
         ),
@@ -248,20 +254,6 @@ async def _fetch_server_info_with_retry(
 
 
 def _assert_engines_match_args(args: Any, *, engines: list[_ExternalEngineInfo]) -> None:
-    discovered_total = sum(engine.num_gpus for engine in engines)
-    assert discovered_total == args.rollout_num_gpus, (
-        f"the external engines report {discovered_total} gpus in total "
-        f"({[(engine.url, engine.num_gpus) for engine in engines]}), but --rollout-num-gpus is "
-        f"{args.rollout_num_gpus}. That argument sizes the placement group and the router, so let it "
-        f"describe the fleet that is actually running"
-    )
-
-    reported_gpus = {engine.num_gpus for engine in engines}
-    assert reported_gpus == {args.rollout_num_gpus_per_engine}, (
-        f"external engines report {sorted(reported_gpus)} gpus each, expected "
-        f"{args.rollout_num_gpus_per_engine} (--rollout-num-gpus-per-engine)"
-    )
-
     pd_engine_urls = [engine.url for engine in engines if engine.worker_type != WorkerType.REGULAR]
     assert bool(pd_engine_urls) == args.rollout_external_router_pd, (
         f"the router is launched in PD mode iff --rollout-external-router-pd is set "

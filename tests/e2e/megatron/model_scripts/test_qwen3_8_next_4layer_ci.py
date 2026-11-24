@@ -15,7 +15,7 @@ register_cuda_ci(
 )
 register_rocm_ci(
     est_time=600,
-    suite="nightly-stage-c-8-gpu-mi350",
+    suite="stage-c-8-gpu-mi350",
     labels=["megatron", "model-scripts"],
 )
 
@@ -24,6 +24,7 @@ register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="perf/actor_train_mfu")
 
 _MODEL_ORG = "CharyZeng"
 

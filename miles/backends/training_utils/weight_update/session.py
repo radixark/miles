@@ -33,10 +33,10 @@ def maybe_resume_engines(args: Namespace, cell_updaters: Sequence[_RolloutCellUp
     async_utils.wait_futures([updater.submit_client_call("continue_generation") for updater in cell_updaters])
 
 
-def weight_update_selector(args: Namespace) -> str:
+def weight_update_selector(*, speculative_algorithm: str | None, enable_mtp_training: bool) -> str:
     """Engine runners a weight sync covers. A speculative draft is synced only when the
     trainer trains its MTP layers (--enable-mtp-training); any other draft keeps its startup weights."""
-    if args.sglang_speculative_algorithm and not args.enable_mtp_training:
+    if speculative_algorithm and not enable_mtp_training:
         return "target"
     return "all"
 
@@ -102,9 +102,13 @@ def check_weight_sync_results(results: list, *, is_lora: bool) -> None:
         if isinstance(result, Mapping):
             success = result.get("success")
             error_msg = result.get("error_message") or result.get("error") or "unknown error"
-        elif hasattr(result, "success"):
+        elif hasattr(
+            result, "success"
+        ):  # config-access-exempt: weight-update transports return different result schemas
             success = result.success
-            error_msg = getattr(result, "error_message", "unknown error")
+            error_msg = getattr(
+                result, "error_message", "unknown error"
+            )  # config-access-exempt: weight-update transports return different result schemas
         else:
             continue
 

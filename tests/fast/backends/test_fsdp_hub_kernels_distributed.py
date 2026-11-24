@@ -85,7 +85,7 @@ def _worker(rank: int, rendezvous: str, strict: bool) -> None:
                         )
                         patch.setattr(loader, "load_mapping", lambda args, altered=altered: altered)
                     elif scenario == "different_strict":
-                        args.kernel_strict = not strict
+                        args.backend.kernel_strict = not strict
 
                 hub = None
                 try:

@@ -92,7 +92,9 @@ _state = threading.local()
 
 
 def current_ple_batch():
-    batch = getattr(_state, "batch", None)
+    batch = getattr(
+        _state, "batch", None
+    )  # config-access-exempt: thread-local batch state exists only inside the forward context
     if batch is None:
         raise RuntimeError(
             "PLE ran with no n-gram ids published; publish_ple_batch(ngram_ids, "
@@ -146,7 +148,9 @@ class Qwen38NextFrozenNGramEmbedding(MegatronModule):
         self.num_shards = config.qwen3_8_next_split_ngram_parts
         self.ngram_size = config.qwen3_8_next_ngram_size
         self._heads_per_ngram = config.qwen3_8_next_heads_per_ngram
-        self.eos_token_id = getattr(config, "qwen3_8_next_eos_token_id", 0)
+        self.eos_token_id = getattr(
+            config, "qwen3_8_next_eos_token_id", 0
+        )  # config-access-exempt: the Qwen3.8-Next bridge sets qwen3_8_next_eos_token_id only for that model family
         self.tp_group = tp_group
 
         tp_size = tp_group.size() if tp_group is not None else 1
@@ -160,9 +164,13 @@ class Qwen38NextFrozenNGramEmbedding(MegatronModule):
         self.shards_per_rank = self.num_shards // tp_size
         self.shard_ids = list(range(tp_rank * self.shards_per_rank, (tp_rank + 1) * self.shards_per_rank))
 
-        self.rows_per_shard = getattr(config, "qwen3_8_next_ngram_rows_per_shard", None)
+        self.rows_per_shard = getattr(
+            config, "qwen3_8_next_ngram_rows_per_shard", None
+        )  # config-access-exempt: the Qwen3.8-Next bridge sets qwen3_8_next_ngram_rows_per_shard only for that model family
         if self.rows_per_shard is None:
-            hf = getattr(config, "qwen3_8_next_hf_checkpoint", None)
+            hf = getattr(
+                config, "qwen3_8_next_hf_checkpoint", None
+            )  # config-access-exempt: the Qwen3.8-Next bridge sets qwen3_8_next_hf_checkpoint only for that model family
             if hf is None:
                 raise ValueError(
                     "PLE shard height unknown: neither qwen3_8_next_ngram_rows_per_shard "
@@ -183,7 +191,9 @@ class Qwen38NextFrozenNGramEmbedding(MegatronModule):
             pin_memory=True,
         )
         self._loaded = False
-        self._hf_checkpoint = getattr(config, "qwen3_8_next_hf_checkpoint", None)
+        self._hf_checkpoint = getattr(
+            config, "qwen3_8_next_hf_checkpoint", None
+        )  # config-access-exempt: the Qwen3.8-Next bridge sets qwen3_8_next_hf_checkpoint only for that model family
 
         self.register_buffer("layer_multipliers", torch.zeros(self.ngram_size, dtype=torch.long), persistent=False)
         self.register_buffer("ngram_heads_vocab_sizes", torch.zeros(heads, dtype=torch.long), persistent=False)
@@ -205,7 +215,9 @@ class Qwen38NextFrozenNGramEmbedding(MegatronModule):
                 f.seek(start)
                 raw = f.read(end - start)
             vals = torch.frombuffer(bytearray(raw), dtype=torch.int64).clone()
-            getattr(self, buf_name).copy_(vals.reshape(shape))
+            getattr(self, buf_name).copy_(
+                vals.reshape(shape)
+            )  # config-access-exempt: attribute selected at runtime from buf_name
 
     def load_from_hf(self, hf_checkpoint: str) -> None:
         """Fill the table from the HF safetensors."""

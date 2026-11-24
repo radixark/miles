@@ -208,7 +208,7 @@ See [Dtype Control](/diffusion/advanced/dtype-control).
 | `--update-weight-target-module` | str | `transformer` | Modules to train and sync. Wan2.2: `transformer,transformer_2`. |
 | `--update-weight-buffer-size` | int | 512 MiB | Weight-sync chunk size in bytes. |
 | `--rollout-seed` | int | `42` | |
-| `--rollout-shuffle` | flag | off | Shuffle the prompt order once per epoch (seeded by `--rollout-seed`). Off reads the jsonl in file order; the SFT rollout (`miles.rollout.sft_rollout`) shuffles every epoch regardless. |
+| `--rollout-shuffle` | flag | on | Shuffle the prompt order once per epoch (seeded by `--rollout-seed`). `--no-rollout-shuffle` reads the jsonl in file order; the SFT rollout (`miles.rollout.sft_rollout`) shuffles every epoch regardless. |
 | `--over-sampling-batch-size` | int | – | Must equal `--rollout-batch-size` today. |
 | `--sglang-server-concurrency` | int | `512` | In-flight generate requests are capped at this × the number of engines — one global limit, with each request routed to the least-loaded engine. |
 | `--use-distributed-post` | flag | off | Rollout HTTP POSTs go through per-node Ray actors instead of the local client (`--num-gpus-per-node` actors per node). |
@@ -374,8 +374,6 @@ Every one takes a dotted path.
 | `--wandb-log-num-images` | int | `0` | Images/videos per rollout; `0` disables. |
 | `--wandb-log-image-interval` | int | `1` | Send media every N rollouts. |
 | `--log-loss-sigma-bucket` | int | `10` | Sigma buckets for the per-bucket loss curves (emitted by the SFT loss): `loss_<stream>_sigma_*` for each supervised stream, bucketed by its own sigma; the total `loss` is never bucketed, since each stream reads the shared grid index through its own shift. `0` disables. |
-| `--use-miles-dashboard` | flag | off | Async phase/trajectory telemetry. |
-| `--miles-dashboard-workspace` | str | `./miles_dashboard` | |
 
 ### Fault tolerance
 

@@ -36,6 +36,7 @@ try:
 except ValueError as e:
     sys.exit(str(e))
 
+# an E2B sandbox's max lifetime follows OPENENV_MAX_ROLLOUT_TIME_SECONDS, not this cap; keep this within it
 CAP_S = float(os.getenv("GOLDEN_TASK_CAP_S", "1800"))
 
 # base64 is shell-safe (A-Za-z0-9+/=), so each chunk rides an unquoted printf.
@@ -110,7 +111,9 @@ async def golden_one(task_id: str, capture_logs: bool = False) -> tuple[str, flo
                 # server-side scoring failure or a non-canonical harness is
                 # reported as ERR, not as a fake 0.0 that would misattribute
                 # an infra problem to the task.
-                raw_reward = getattr(res, "reward", None)
+                raw_reward = getattr(
+                    res, "reward", None
+                )  # config-access-exempt: OpenEnv grading responses may omit reward when evaluation fails
                 eval_error = oaf._obs_field(res, "error")
                 harness = str(oaf._obs_info(res).get("harness", ""))
                 if raw_reward is None or eval_error or harness != "tests/test.sh":

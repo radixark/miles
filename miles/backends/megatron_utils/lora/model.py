@@ -2,14 +2,12 @@
 
 from argparse import Namespace
 from collections.abc import Sequence
+from contextlib import nullcontext
 
 from megatron.core.distributed import DistributedDataParallel as DDP
 
-from miles.backends.megatron_utils.lora.optimizer import (
-    SlotOptimizer,
-    reset_grad_metadata_keep_grads,
-    step_slot_optimizers,
-)
+from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots
+from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer, accumulate_gradients, step_slot_optimizers
 from miles.backends.megatron_utils.model import run_forward_backward_pass, setup_train_iteration_config
 from miles.backends.training_utils.data.rollout import get_data_iterator
 from miles.backends.training_utils.metrics.log_utils import aggregate_train_losses
@@ -22,6 +20,7 @@ def run_forward_backward(
     args: Namespace,
     batch_id: int,
     model: Sequence[DDP],
+    adapter_slots: BridgeAdapterSlots,
     rollout_data: RolloutBatch,
     *,
     forward_only: bool = False,
@@ -35,19 +34,19 @@ def run_forward_backward(
         model_chunk.train()
     # disable_optimizer: bf16 loss scaling is the identity, so the pass needs no optimizer
     setup_train_iteration_config(args, model, None, disable_optimizer=True)
-    if not forward_only:
-        reset_grad_metadata_keep_grads(model)
 
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=batch_id)
-    losses_reduced = run_forward_backward_pass(
-        args,
-        dumper_phase_util,
-        data_iterator,
-        model,
-        num_microbatches[0],
-        num_rollouts=None,
-        forward_only=forward_only,
-    )
+    with nullcontext() if forward_only else accumulate_gradients(model):
+        losses_reduced = run_forward_backward_pass(
+            args,
+            dumper_phase_util,
+            data_iterator,
+            model,
+            num_microbatches[0],
+            num_rollouts=None,
+            forward_only=forward_only,
+            adapter_slots=adapter_slots,
+        )
     per_datum_outputs = [output for microbatch in losses_reduced for output in microbatch["per_datum"]]
     dumper_phase_util.finalize(model)
 
@@ -64,18 +63,17 @@ def optim_step(
     return step_slot_optimizers(stepped, adam_params_by_slot)
 
 
-def load_slot(args: Namespace, model: Sequence[DDP], slot: int, rank: int, alpha: float) -> SlotOptimizer:
-    from megatron.bridge.peft.multi_lora_layers import init_adapter_slot
-
-    init_adapter_slot(model, slot, rank=rank, alpha=alpha)
-    slot_optimizer = SlotOptimizer(args, model, slot)
+def load_slot(
+    args: Namespace, model: Sequence[DDP], adapter_slots: BridgeAdapterSlots, slot: int, rank: int, alpha: float
+) -> SlotOptimizer:
+    # the gateway takes no per-adapter seed
+    adapter_slots.init(slot, rank, alpha, seed=None)
+    slot_optimizer = SlotOptimizer(args, model, slot, adapter_slots.slot_parameters(slot))
     slot_optimizer.zero_grads()
     return slot_optimizer
 
 
-def unload_slot(model: Sequence[DDP], slot_optimizer: SlotOptimizer) -> None:
+def unload_slot(adapter_slots: BridgeAdapterSlots, slot_optimizer: SlotOptimizer) -> None:
     """The caller drops the instance afterwards; its state dies with it."""
-    from megatron.bridge.peft.multi_lora_layers import clear_adapter_slot
-
-    clear_adapter_slot(model, slot_optimizer.slot)
+    adapter_slots.clear(slot_optimizer.slot)
     slot_optimizer.zero_grads()

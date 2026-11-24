@@ -7,6 +7,9 @@ is exact: block-granular membership is a superset of the row, and ``lo``/``hi`` 
 inclusive key range, sequence start .. query position) removes the extra tokens.
 """
 
+import math
+from dataclasses import dataclass
+
 import torch
 import triton
 import triton.language as tl
@@ -246,10 +249,12 @@ def _qsa_bs_dkdv_kernel(
     stride_ql,
     stride_ot,
     stride_oh,
+    stride_split,
     T,
     NB,
     scale,
     GROUP: tl.constexpr,
+    HEADS_PER_SPLIT: tl.constexpr,
     D: tl.constexpr,
     BQ: tl.constexpr,
     BK: tl.constexpr,
@@ -257,11 +262,13 @@ def _qsa_bs_dkdv_kernel(
 ):
     """dK/dV keyed on the key tile, so nothing needs atomics.
 
-    Launched per KV head: the ``GROUP`` query heads sharing a KV head are summed here,
-    since separate programs would overwrite each other's dK/dV.
+    Each program sums ``HEADS_PER_SPLIT`` of the ``GROUP`` query heads sharing a KV head into
+    its own slice of ``DK``/``DV``; the caller adds the slices.
     """
     pid_k = tl.program_id(0)
-    kv_head = tl.program_id(1)
+    num_splits: tl.constexpr = GROUP // HEADS_PER_SPLIT
+    kv_head = tl.program_id(1) // num_splits
+    split = tl.program_id(1) % num_splits
 
     offs_k = pid_k * BK + tl.arange(0, BK)
     offs_d = tl.arange(0, D)
@@ -300,8 +307,8 @@ def _qsa_bs_dkdv_kernel(
             & q_mask[:, None]
         )
 
-        for gh in range(0, GROUP):
-            qh = kv_head * GROUP + gh
+        for gh in range(0, HEADS_PER_SPLIT):
+            qh = kv_head * GROUP + split * HEADS_PER_SPLIT + gh
             q = tl.load(
                 Q + offs_q[:, None] * stride_qt + qh * stride_qh + offs_d[None, :],
                 mask=q_mask[:, None],
@@ -327,8 +334,10 @@ def _qsa_bs_dkdv_kernel(
             dk += tl.dot(tl.trans(ds), q)
             dv += tl.dot(tl.trans(p.to(do.dtype)), do)
 
-    tl.store(DK + offs_k[:, None] * stride_kt + kv_head * stride_kh + offs_d[None, :], dk, mask=k_in[:, None])
-    tl.store(DV + offs_k[:, None] * stride_vt + kv_head * stride_vh + offs_d[None, :], dv, mask=k_in[:, None])
+    dk_offs = split * stride_split + offs_k[:, None] * stride_kt + kv_head * stride_kh + offs_d[None, :]
+    dv_offs = split * stride_split + offs_k[:, None] * stride_vt + kv_head * stride_vh + offs_d[None, :]
+    tl.store(DK + dk_offs, dk, mask=k_in[:, None])
+    tl.store(DV + dv_offs, dv, mask=k_in[:, None])
 
 
 def selection_to_block_bitmap(indices: Tensor, num_tokens: int, block_size: int) -> Tensor:
@@ -347,7 +356,7 @@ def selection_to_block_bitmap(indices: Tensor, num_tokens: int, block_size: int)
     return flags
 
 
-def _tile_mask(sel: Tensor, block_first: Tensor, block_last: Tensor, bq: int, bk: int) -> Tensor:
+def _tile_mask(sel: Tensor, block_first: Tensor, block_last: Tensor, bq: int, bk: int, block_size: int) -> Tensor:
     """``[NQT, NKT]`` bool: some query in query tile ``i`` selected a block with a token in key tile ``j``.
 
     Key tiles are absolute token ranges ``[j * bk, (j + 1) * bk)``, as the kernels walk them.
@@ -362,9 +371,11 @@ def _tile_mask(sel: Tensor, block_first: Tensor, block_last: Tensor, bq: int, bk
         sel = torch.nn.functional.pad(sel, (0, 0, 0, pad_q))
     picked = sel.view(nqt, bq, nb).amax(dim=1).to(torch.int32)
     tile = torch.zeros(nqt, nkt, dtype=torch.int32, device=sel.device)
-    # block_size <= bk, so a block touches at most the tiles of its first and last token
-    tile.index_add_(1, block_first.long() // bk, picked)
-    tile.index_add_(1, block_last.long() // bk, picked)
+    # a block wider than a tile, or off the tile grid, touches every tile between its first and last token
+    first_tile = block_first.long() // bk
+    last_tile = block_last.long() // bk
+    for off in range(-(-block_size // bk) + 1):
+        tile.index_add_(1, torch.minimum(first_tile + off, last_tile), picked)
     return tile > 0
 
 
@@ -376,25 +387,46 @@ def _compact_tile_mask(mat: Tensor) -> tuple[Tensor, Tensor]:
     return order[:, :maxc].contiguous().to(torch.int32), cnt
 
 
-def build_tile_index(sel: Tensor, block_first: Tensor, block_last: Tensor, bq: int, bk: int) -> tuple[Tensor, Tensor]:
+def build_tile_index(
+    sel: Tensor, block_first: Tensor, block_last: Tensor, bq: int, bk: int, block_size: int
+) -> tuple[Tensor, Tensor]:
     """``[T, NB]`` block flags -> (``klist`` [NQT, maxc] int32, ``kcnt`` [NQT] int32).
 
     ``klist[i]`` lists, ascending, the key tiles that at least one query in query-tile
     ``i`` selected. Per-query exactness still comes from the in-kernel mask; this only
     decides which tiles are worth visiting.
     """
-    return _compact_tile_mask(_tile_mask(sel, block_first, block_last, bq, bk))
+    return _compact_tile_mask(_tile_mask(sel, block_first, block_last, bq, bk, block_size))
 
 
-def build_tile_index_pair(sel: Tensor, block_first: Tensor, block_last: Tensor, bq: int, bk: int):
+def build_tile_index_pair(sel: Tensor, block_first: Tensor, block_last: Tensor, bq: int, bk: int, block_size: int):
     """Both directions of the tile map: (klist, kcnt) per query tile, (qlist, qcnt) per key tile.
 
     The transposed half is what lets dK/dV be keyed on the key tile and so avoid atomics.
     """
-    tile = _tile_mask(sel, block_first, block_last, bq, bk)
+    tile = _tile_mask(sel, block_first, block_last, bq, bk, block_size)
     klist, kcnt = _compact_tile_mask(tile)
     qlist, qcnt = _compact_tile_mask(tile.t().contiguous())
     return klist, kcnt, qlist, qcnt
+
+
+@dataclass(frozen=True)
+class _LaunchConfig:
+    bq: int
+    bk: int
+    num_warps: int
+    num_stages: int
+    # programs sharing one KV head's query heads in the dK/dV kernel
+    dkdv_splits: int = 1
+
+
+# (forward, backward), measured on GB300 with qwen3.8-next's 4-token QSA blocks and MiniMax-M3's 128-token MSA blocks
+_NARROW_BLOCK = (_LaunchConfig(64, 64, 8, 2), _LaunchConfig(128, 64, 8, 1, dkdv_splits=2))
+_WIDE_BLOCK = (_LaunchConfig(64, 128, 4, 1), _LaunchConfig(64, 128, 8, 2, dkdv_splits=4))
+
+
+def _launch_configs(block_size: int) -> tuple[_LaunchConfig, _LaunchConfig]:
+    return _WIDE_BLOCK if block_size >= 64 else _NARROW_BLOCK
 
 
 class _QSABlockSparseAttn(torch.autograd.Function):
@@ -406,11 +438,11 @@ class _QSABlockSparseAttn(torch.autograd.Function):
         group = Hq // Hkv
         qc, kc, vc = q.contiguous(), k.contiguous(), v.contiguous()
         selc = sel.contiguous()
-        BQ, BK = 64, 64
-        klist, kcnt = build_tile_index(selc, block_first, block_last, BQ, BK)
+        cfg, _ = _launch_configs(block_size)
+        klist, kcnt = build_tile_index(selc, block_first, block_last, cfg.bq, cfg.bk, block_size)
         o = torch.empty(T, Hq, D, device=q.device, dtype=torch.float32)
         lse = torch.empty(Hq, T, device=q.device, dtype=torch.float32)
-        grid = (triton.cdiv(T, BQ), Hq)
+        grid = (triton.cdiv(T, cfg.bq), Hq)
         _qsa_bs_fwd_kernel[grid](
             qc,
             kc,
@@ -439,11 +471,11 @@ class _QSABlockSparseAttn(torch.autograd.Function):
             scale,
             GROUP=group,
             D=D,
-            BQ=BQ,
-            BK=BK,
+            BQ=cfg.bq,
+            BK=cfg.bk,
             BLK=block_size,
-            num_warps=8,
-            num_stages=2,
+            num_warps=cfg.num_warps,
+            num_stages=cfg.num_stages,
         )
         ctx.save_for_backward(qc, kc, vc, selc, lo, hi, blk_base, tok_base, block_first, block_last, o, lse)
         ctx.scale = scale
@@ -458,12 +490,14 @@ class _QSABlockSparseAttn(torch.autograd.Function):
         do = grad_out.contiguous().to(qc.dtype)
         # delta once, in torch: both backward kernels need it and neither should redo it
         delta = (do.float() * o.float()).sum(-1).transpose(0, 1).contiguous()
+        _, cfg = _launch_configs(ctx.block_size)
+        num_kv_tiles = triton.cdiv(T, cfg.bk)
+        splits = math.gcd(cfg.dkdv_splits, ctx.group)
         dq = torch.empty(T, Hq, D, device=qc.device, dtype=torch.float32)
-        dk = torch.zeros(kc.shape, device=kc.device, dtype=torch.float32)
-        dv = torch.zeros(vc.shape, device=vc.device, dtype=torch.float32)
+        dk = torch.empty(splits, *kc.shape, device=kc.device, dtype=torch.float32)
+        dv = torch.empty(splits, *vc.shape, device=vc.device, dtype=torch.float32)
 
-        BQ, BK = 64, 32
-        klist, kcnt, qlist, qcnt = build_tile_index_pair(selc, block_first, block_last, BQ, BK)
+        klist, kcnt, qlist, qcnt = build_tile_index_pair(selc, block_first, block_last, cfg.bq, cfg.bk, ctx.block_size)
         common = (
             qc.stride(0),
             qc.stride(1),
@@ -473,7 +507,7 @@ class _QSABlockSparseAttn(torch.autograd.Function):
             vc.stride(1),
             selc.stride(0),
         )
-        _qsa_bs_dq_kernel[(triton.cdiv(T, BQ), Hq)](
+        _qsa_bs_dq_kernel[(triton.cdiv(T, cfg.bq), Hq)](
             qc,
             kc,
             vc,
@@ -498,13 +532,13 @@ class _QSABlockSparseAttn(torch.autograd.Function):
             ctx.scale,
             GROUP=ctx.group,
             D=D,
-            BQ=BQ,
-            BK=BK,
+            BQ=cfg.bq,
+            BK=cfg.bk,
             BLK=ctx.block_size,
-            num_warps=8,
-            num_stages=1,
+            num_warps=cfg.num_warps,
+            num_stages=cfg.num_stages,
         )
-        _qsa_bs_dkdv_kernel[(triton.cdiv(T, BK), kc.shape[1])](
+        _qsa_bs_dkdv_kernel[(num_kv_tiles, kc.shape[1] * splits)](
             qc,
             kc,
             vc,
@@ -524,17 +558,20 @@ class _QSABlockSparseAttn(torch.autograd.Function):
             qlist.stride(0),
             do.stride(0),
             do.stride(1),
+            dk.stride(0),
             T,
             selc.shape[1],
             ctx.scale,
             GROUP=ctx.group,
+            HEADS_PER_SPLIT=ctx.group // splits,
             D=D,
-            BQ=BQ,
-            BK=BK,
+            BQ=cfg.bq,
+            BK=cfg.bk,
             BLK=ctx.block_size,
-            num_warps=8,
-            num_stages=1,
+            num_warps=cfg.num_warps,
+            num_stages=cfg.num_stages,
         )
+        dk, dv = dk.sum(dim=0), dv.sum(dim=0)
         return dq.to(qc.dtype), dk.to(kc.dtype), dv.to(vc.dtype), None, None, None, None, None, None, None, None, None
 
 

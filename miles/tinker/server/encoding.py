@@ -7,13 +7,14 @@ import math
 
 import pydantic
 
-from miles.tinker.core.input_validation import validate_save_options
+import tinker
+from miles.tinker.core.input_validation import validate_save_options, validate_ttl_seconds
 from miles.tinker.core.types import LOSS_INPUT_KEYS, UserInputError
 from tinker import types as tinker_types
-from tinker.types.sample_response import MASK_LOGPROB
+from tinker.types.topk_logprobs import MASK_LOGPROB
 
-# materialized at the boundary so core and the executor can require every key
-ADAM_PARAM_DEFAULTS = tinker_types.AdamParams().model_dump()
+# the SDK release whose request models and semantics this gateway is written and tested against
+TINKER_SDK_VERSION = "0.36.0"
 
 # JSON-wire request models; forward_backward travels as protobuf and its datums
 # are checked in build_datum instead
@@ -22,21 +23,85 @@ REQUEST_TYPES = {
     "save_state": tinker_types.SaveWeightsRequest,
     "load_state": tinker_types.LoadWeightsRequest,
     "save_weights_for_sampler": tinker_types.SaveWeightsForSamplerRequest,
+    "save_weights_external": tinker_types.SaveWeightsExternalRequest,
 }
 
 
-def validate_against_sdk(request_type, payload: dict) -> None:
+def validate_against_sdk(request_type, payload: dict):
     """The pinned SDK's request models are the wire contract; reject what they reject."""
     try:
-        request_type.model_validate(payload)
+        return request_type.model_validate(payload)
     except pydantic.ValidationError as error:
         first = error.errors()[0]
         location = ".".join(str(part) for part in first["loc"])
         raise UserInputError(f"{location or 'request'}: {first['msg']}") from None
 
 
+def assert_installed_sdk_version() -> None:
+    if tinker.__version__ != TINKER_SDK_VERSION:
+        raise RuntimeError(
+            f"the gateway validates requests with tinker=={TINKER_SDK_VERSION}, found {tinker.__version__}; "
+            f"pip install tinker=={TINKER_SDK_VERSION}"
+        )
+
+
+def validate_sdk_version(payload) -> None:
+    """Other SDK versions send fields and semantics this gateway was not written for."""
+    # compared before the strict model, which would reject a newer SDK's added fields with a less useful error
+    client_version = payload.get("sdk_version") if isinstance(payload, dict) else None
+    if client_version != TINKER_SDK_VERSION:
+        raise UserInputError(
+            f"Tinker SDK version mismatch: client is {client_version}, this gateway serves the "
+            f"tinker=={TINKER_SDK_VERSION} wire schema; install that exact version"
+        )
+    validate_against_sdk(tinker_types.ClientConfigRequest, payload)
+
+
+def validate_plain_adam(field: str, value, adam_type) -> None:
+    if not isinstance(value, adam_type):
+        raise UserInputError(
+            f"{field} {value.model_dump()} is not supported: this gateway serves only plain Adam ({adam_type.__name__})"
+        )
+
+
+# the SDK's documented limit for age_encryption_recipients
+MAX_AGE_RECIPIENTS = 10
+
+
+def validate_age_recipients(recipients: list[str]) -> None:
+    """Refuse a bad recipient before the export, not after the trainer wrote it."""
+    if len(recipients) > MAX_AGE_RECIPIENTS:
+        raise UserInputError(f"at most {MAX_AGE_RECIPIENTS} age recipients, got {len(recipients)}")
+    if not recipients:
+        return
+    # imported here: only encrypted saves need it, and a gateway image installed with --no-deps may lack it
+    import pyrage
+
+    for recipient in recipients:
+        try:
+            # the trainer's export parses it the same way (adapter_exports.write_external_adapter)
+            (pyrage.ssh if recipient.startswith("ssh-") else pyrage.x25519).Recipient.from_str(recipient)
+        except pyrage.RecipientError as error:
+            raise UserInputError(f"{recipient!r} is not an age recipient (age1... or ssh-...): {error}") from None
+
+
 def validate_create_model(payload: dict) -> None:
-    validate_against_sdk(tinker_types.CreateModelRequest, payload)
+    request = validate_against_sdk(tinker_types.CreateModelRequest, payload)
+    validate_plain_adam("optimizer_config", request.optimizer_config, tinker_types.AdamOptimizerConfig)
+
+
+def validate_sample_options(request) -> None:
+    """Reject sampling options the gateway does not serve instead of sampling without them."""
+    unsupported = {
+        "topk_sample_logprobs": request.topk_sample_logprobs,
+        "target_prompt_logprobs": request.target_prompt_logprobs is not None,
+        "prompt_alt_tokens_k": request.prompt_alt_tokens_k,
+        "prompt_logprobs_last_n": request.prompt_logprobs_last_n is not None,
+        "record_stability_info": request.record_stability_info,
+    }
+    for field, requested in unsupported.items():
+        if requested:
+            raise UserInputError(f"{field} is not supported by this gateway")
 
 
 def validate_create_sampling_session(payload: dict) -> None:
@@ -45,6 +110,7 @@ def validate_create_sampling_session(payload: dict) -> None:
 
 def decode_command(op: str, payload: dict) -> tuple[str, dict]:
     """Decode content errors into ordered failures when the envelope is identifiable."""
+    assert op == "forward_backward" or op in REQUEST_TYPES, f"unhandled command op {op!r}"
     try:
         envelope = {"model_id": payload["model_id"], "seq_id": payload["seq_id"]}
     except KeyError as error:
@@ -58,8 +124,6 @@ def decode_command(op: str, payload: dict) -> tuple[str, dict]:
 
 
 def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
-    if (request_type := REQUEST_TYPES.get(op)) is not None:
-        validate_against_sdk(request_type, payload)
     if op == "forward_backward":
         fb_input = payload["forward_backward_input"]
         datums = [
@@ -72,21 +136,37 @@ def _decode_command(op: str, payload: dict, decoded: dict) -> tuple[str, dict]:
             "loss_fn_config": fb_input.get("loss_fn_config") or {},
         }
         return ("forward_only" if payload.get("forward_only") else op), decoded
+    request = validate_against_sdk(REQUEST_TYPES[op], payload)
     if op == "optim_step":
-        return op, decoded | {"adam_params": {**ADAM_PARAM_DEFAULTS, **payload["adam_params"]}}
+        validate_plain_adam("optim_params", request.optim_params, tinker_types.AdamParams)
+        # model_dump fills every default so core and the executor can require every key
+        return op, decoded | {"adam_params": request.optim_params.model_dump()}
     if op == "save_state":
-        validate_save_options(payload)
-        return op, decoded | {"name": payload.get("path"), "overwrite": bool(payload.get("overwrite", False))}
+        validate_save_options(request.ttl_seconds, request.user_metadata)
+        return op, decoded | {"name": request.path, "overwrite": request.overwrite, "ttl_seconds": request.ttl_seconds}
     if op == "load_state":
+        if request.optimizer_config is not None:
+            raise UserInputError(
+                "optimizer_config is not supported: this gateway does not create models via load_weights"
+            )
         return op, decoded | {
-            "path": payload["path"],
-            "optimizer": payload["optimizer"],
-            "weights_access_token": payload.get("weights_access_token"),
+            "path": request.path,
+            "optimizer": request.optimizer,
+            "weights_access_token": request.weights_access_token,
         }
     if op == "save_weights_for_sampler":
-        validate_save_options(payload)
-        return op, decoded | {"sampler_path": payload.get("path")}
-    raise UserInputError(f"unknown command op {op!r}")
+        validate_save_options(request.ttl_seconds, request.user_metadata)
+        return op, decoded | {"sampler_path": request.path, "ttl_seconds": request.ttl_seconds}
+    if op == "save_weights_external":
+        validate_ttl_seconds(request.ttl_seconds)
+        recipients = request.age_encryption_recipients or []
+        validate_age_recipients(recipients)
+        return op, decoded | {
+            "name": request.path,
+            "ttl_seconds": request.ttl_seconds,
+            "age_encryption_recipients": recipients,
+        }
+    raise AssertionError(f"unhandled command op {op!r}")
 
 
 def model_input_tokens(model_input: dict) -> list[int]:
@@ -150,17 +230,18 @@ def _dense_from_csr(tensor_data: dict) -> list:
 
 
 def decode_sample_request(payload: dict) -> dict:
-    validate_against_sdk(tinker_types.SampleRequest, payload)
+    request = validate_against_sdk(tinker_types.SampleRequest, payload)
+    validate_sample_options(request)
     return {
-        "model_path": payload.get("model_path"),
-        "base_model": payload.get("base_model"),
-        "sampling_session_id": payload.get("sampling_session_id"),
-        "seq_id": payload.get("seq_id"),
-        "num_samples": payload.get("num_samples", 1),
+        "model_path": request.model_path,
+        "base_model": request.base_model,
+        "sampling_session_id": request.sampling_session_id,
+        "seq_id": request.seq_id,
+        "num_samples": request.num_samples,
         "prompt_tokens": model_input_tokens(payload["prompt"]),
-        "sampling_params": payload.get("sampling_params") or {},
-        "prompt_logprobs": bool(payload.get("prompt_logprobs")),
-        "topk_prompt_logprobs": payload.get("topk_prompt_logprobs", 0) or 0,
+        "sampling_params": request.sampling_params.model_dump(),
+        "prompt_logprobs": bool(request.prompt_logprobs),
+        "topk_prompt_logprobs": request.topk_prompt_logprobs,
     }
 
 
@@ -207,6 +288,8 @@ def render_result(result: dict) -> dict:
         if "sampling_session_id" in result:
             rendered["sampling_session_id"] = result["sampling_session_id"]
         return rendered
+    if op == "save_weights_external":
+        return {"type": "save_weights_external", "path": result["path"], "size_bytes": result["size_bytes"]}
     if op == "load_state":
         return {"type": "load_weights"}
     if op == "optim_step":

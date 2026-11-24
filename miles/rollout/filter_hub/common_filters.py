@@ -3,7 +3,8 @@ from dataclasses import dataclass
 
 import torch
 
-from miles.rollout.filter_hub.base_types import FilterOutput, call_dynamic_filter, iter_samples
+from miles.rollout.filter_hub.base_types import FilterOutput, MetricGatherer, call_dynamic_filter, iter_samples
+from miles.rollout.reward_shaping import apply_length_penalty, is_correct_reward
 from miles.utils.types import Sample
 
 Group = list[Sample | list[Sample]]
@@ -67,7 +68,9 @@ def group_weight_version_stats(group: Group) -> GroupWeightVersionStats:
     )
 
 
-def apply_preput_filters(args: Namespace, dynamic_filter, samples: Group, **kwargs) -> FilterOutput:
+def apply_preput_filters(
+    args: Namespace, dynamic_filter, samples: Group, *, metric_gatherer: MetricGatherer | None = None, **kwargs
+) -> FilterOutput:
     output = apply_aborted_filter(args, samples, **kwargs)
     if not output.keep:
         return output
@@ -76,6 +79,10 @@ def apply_preput_filters(args: Namespace, dynamic_filter, samples: Group, **kwar
     if not output.keep:
         return output
 
+    # raw_reward covers the groups the dynamic filter decides on, kept or dropped; an aborted or unscored
+    # group is an infrastructure loss, not a generation result.
+    if metric_gatherer is not None:
+        metric_gatherer.on_group_before_dynamic_filter(args, samples)
     return call_dynamic_filter(dynamic_filter, args, samples, **kwargs)
 
 
@@ -93,8 +100,15 @@ def apply_missing_reward_filter(args: Namespace, samples: Group, **kwargs) -> Fi
 
 
 def apply_reward_nonzero_std_filter(args, samples: list[Sample | list[Sample]], **kwargs):
-    rewards = [sample.get_reward_value(args) for sample in iter_samples(samples)]
+    flat_samples = list(iter_samples(samples))
+    rewards = [sample.get_reward_value(args) for sample in flat_samples]
+    length_only = args.length_penalty_coeff > 0 and all(is_correct_reward(reward) for reward in rewards)
+    # Filtering happens on a complete prompt group, before train-data conversion.
+    rewards = apply_length_penalty(args, flat_samples, rewards, [list(range(len(flat_samples)))])
     keep = torch.tensor(rewards, dtype=torch.float64).std() > 1e-8
+    if length_only:
+        # Ignore negligible length-only signals; mixed correctness keeps the existing filter.
+        keep = keep and max(rewards) - min(rewards) > 1e-6
     return FilterOutput(
         keep=keep,
         reason=None if keep else f"zero_std_{round(rewards[0], 1)}",

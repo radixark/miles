@@ -95,6 +95,27 @@ async def retry_until_deadline(
             delay = min(delay * backoff_factor, max_delay)
 
 
+def retry_until_deadline_sync(
+    fn: Callable[[], _T],
+    *,
+    total_seconds: float,
+    retry_if: Callable[[Exception], bool],
+    interval_seconds: float = _DEFAULT_INITIAL_DELAY,
+) -> _T:
+    deadline = time.monotonic() + total_seconds
+    while True:
+        try:
+            return fn()
+        except Exception as error:
+            if not retry_if(error):
+                raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+            logger.warning("Operation failed; retrying within %.1fs", remaining, exc_info=True)
+            time.sleep(min(interval_seconds, remaining))
+
+
 async def _run_attempt(fn: Callable[[float], Awaitable[_T]], *, remaining: float, attempt_seconds: float | None) -> _T:
     if attempt_seconds is None:
         return await fn(remaining)

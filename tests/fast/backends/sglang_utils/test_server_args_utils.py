@@ -51,6 +51,10 @@ _FIELDS_WITHOUT_A_RENDERABLE_CLI: dict[str, str] = {
     "enable_cp_tp_group_sharing": (
         "Resolved from the model architecture and declared Arg(no_cli=True); sglang registers no CLI option for it."
     ),
+    "aux_hidden_state_capture": (
+        "Resolved from --enable-return-aux-hidden-states and --speculative-algorithm and declared Arg(no_cli=True); "
+        "sglang registers no CLI option for it."
+    ),
     "grpc_worker_threads": (
         "Env-only (SGLANG_GRPC_WORKER_THREADS) and declared Arg(no_cli=True); sglang registers no CLI option for it."
     ),
@@ -101,6 +105,8 @@ def _server_args(
         engine_info_bootstrap_port=20033,
         sglang_overrides=overrides,
         num_gpus_per_engine=num_gpus_per_engine,
+        tp_size=num_gpus_per_engine,
+        pp_size=1,
         random_seed=random_seed,
     )
     return server_args_dict
@@ -223,7 +229,7 @@ class TestServerArgsToArgv:
     def test_lora_adapter_paths_roundtrip(self, pinned, monkeypatch):
         """The startup adapter reaches SGLang in the form miles chose, pinned flag included."""
         # attention DP itself needs a multi-GPU engine shape; only the rendering of its pinned adapter is under test
-        monkeypatch.setattr(sglang_engine_module, "sglang_attention_dp_enabled", lambda args: pinned)
+        monkeypatch.setattr(sglang_engine_module, "sglang_attention_dp_enabled", lambda **kwargs: pinned)
         server_args = _server_args(
             args=_args(
                 lora_rank=8, target_modules=["linear_qkv"], lora_adapter_path="/fake/adapter", debug_rollout_only=True

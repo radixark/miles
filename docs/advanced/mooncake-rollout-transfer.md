@@ -31,9 +31,11 @@ Before starting a Miles job:
 
 This backend imports the structured-object API from `mooncake.structured_object_store`
 (`FieldSchema`, `MooncakeBundleTransfer`, `export_ref`, `import_ref`), which Mooncake
-provides from 0.3.12.post1 on; earlier releases ship the module without these names. The
-Miles CUDA images use the Mooncake package that ships in the SGLang base image, and the
-ROCm images add Mooncake's Python files from `mooncake-transfer-engine-non-cuda` (see
+provides from 0.3.12.post1 on; earlier releases ship the module without these names. Use
+0.3.13 or newer for cleanup of already-removed bundle manifests
+([Mooncake#3374](https://github.com/kvcache-ai/Mooncake/pull/3374)). The Miles CUDA images
+use the Mooncake package that ships in the SGLang base image, and the ROCm images add
+Mooncake's Python files from `mooncake-transfer-engine-non-cuda` (see
 `docker/Dockerfile.rocm`). For a custom environment, install a Mooncake package that
 matches the CUDA runtime and is compatible with the Miles revision. Follow the
 [Mooncake installation guide](https://kvcache-ai.github.io/Mooncake/getting_started/build.html)
@@ -249,3 +251,69 @@ Mooncake stores one replica by default. Request additional replicas with:
 ```
 
 Additional replicas require additional Store capacity.
+
+## Replay data through the output store
+
+With `--use-output-store`, SGLang writes the replay arrays of each training response to
+this Mooncake and returns a ref instead: routed experts (`--use-rollout-routing-replay`),
+indexer top-k (`--use-rollout-indexer-replay`) and the sampling mask (a positive
+`--rollout-top-k`). The trainer reads them back and receives the same columns as without
+the option. Miles deletes the objects once nothing can read them, at the latest after the
+rollout's `train` step. Each trainer rank reads only its own rows: with Megatron pipeline
+parallelism, Miles sends the layers where its stages meet with each request
+(`replay_layer_splits`), SGLang stores routed experts and indexer top-k in parts split at
+them, and each stage reads only the parts of its layers. The split points follow the pipeline
+sizes and `--decoder-first/last-pipeline-num-layers`; a stage placed otherwise
+(`--pipeline-model-parallel-layout`, `--account-for-embedding-in-pipeline-split`,
+`--account-for-loss-in-pipeline-split`, or a `--megatron-config` trainer that overrides the
+pipeline) reads every part that holds one of its layers, so more than its own.
+
+```bash
+--object-store-backend mooncake \
+--use-output-store \
+--output-store-local-buffer-size 16gb
+```
+
+Requirements:
+
+- SGLang with the output store, including
+  [sgl-project/sglang#46288](https://github.com/sgl-project/sglang/pull/46288) and
+  [sgl-project/sglang#48123](https://github.com/sgl-project/sglang/pull/48123), which stores
+  the forward fields in layer parts (`replay_layer_splits`), on every engine, trainer and the
+  session server. Miles configures each engine's store; do not
+  set `output_store_backend` through `--sglang-*` flags or `sglang_overrides`.
+- `--use-miles-router`, or an `sgl-router` from `radixark/sgl-router-for-miles` that
+  forwards `return_outputs_via_store` and `replay_layer_splits`; a router that drops either
+  fails the run.
+- An engine buffer (`--output-store-local-buffer-size`, default 16gb) that holds one
+  response's arrays. Indexer top-k dominates, about 0.5 MB per token on DeepSeek-V3.2, so
+  16gb fits a 32k-token response. A buffer too small for the longest sequence known at
+  launch is rejected: `--max-seq-len` on `/generate`, one `--rollout-max-response-len`
+  response more under the session server, where an agent that stops at `--max-seq-len`
+  can still get a full response past it, or else `--rollout-max-response-len`. An agent
+  that ignores `--max-seq-len` can still send more than the check assumes. Under RDMA, each engine pins its whole buffer in
+  host memory when it starts.
+- For RDMA engines, `device_name` in `--mooncake-store-init-kwargs`: SGLang reads no
+  `MOONCAKE_*` variable.
+- Store capacity for max staleness + 1 batches of these arrays, times
+  `--mooncake-replica-num`, next to Miles' own rollout data. Mooncake never evicts them,
+  so puts fail once only they are left.
+
+Known defect: an object stored by a request attempt that was then retried, or whose delete
+failed (Miles logs it), leaks and stays until the run ends. When the run ends, Miles removes
+every object left under the run's key prefix and logs how many keys it removed, or that the
+removal failed. Under `--ci-test`, a run that trained every rollout it generated fails if the
+removal failed or found any object, unless it is fully async or uses `--partial-rollout`: those
+end with groups still buffered. A fully-async run ends with requests in flight, and an engine
+can still store an object for one after that. A periodic sweep during the run is planned (TODO).
+
+Rejected at launch: no replay array enabled, `--cluster-backend kubernetes`, PD
+disaggregation, external rollout engines, the legacy rollout, a custom convert function,
+a custom `DataBuffer` (`--custom-async-data-buffer-path`), multi-policy training, split
+deployments, `--debug-rollout-only`, `--multimodal-keys`, and saving (including
+`--dump-details`), loading or injecting debug rollout data.
+
+Stored objects may not survive a restart, so on resume Miles does not replay untrained
+rollout batches that carry refs, or inline replay arrays saved without the option. It
+drops such a batch without returning its prompts to the data source, and hands such a
+fully-async buffer group to `--async-unused-samples-handler`.

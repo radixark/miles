@@ -57,7 +57,9 @@ def _decode_forward_backward(message) -> dict:
             kind = value.WhichOneof("value")
             if kind is None:
                 raise UserInputError(f"loss_fn_config[{name!r}]: missing number or text value")
-            loss_fn_config[name] = getattr(value, kind)
+            loss_fn_config[name] = getattr(
+                value, kind
+            )  # config-access-exempt: attribute selected at runtime from kind
 
     decoded = {
         "model_id": message.model_id,
@@ -125,7 +127,7 @@ def encode_sample_response(result: dict) -> bytes:
     if result.get("topk_prompt_logprobs") is not None:
         topk = result["topk_prompt_logprobs"]
         token_ids = np.asarray(topk["token_ids"], dtype=np.int32)
-        message.topk_prompt_logprobs.prompt_length, message.topk_prompt_logprobs.k = token_ids.shape
+        message.topk_prompt_logprobs.length, message.topk_prompt_logprobs.k = token_ids.shape
         message.topk_prompt_logprobs.token_ids = token_ids.tobytes()
         message.topk_prompt_logprobs.logprobs = np.asarray(topk["logprobs"], dtype=np.float32).tobytes()
     return message.SerializeToString()

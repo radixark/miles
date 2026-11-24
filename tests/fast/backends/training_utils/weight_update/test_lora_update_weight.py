@@ -10,6 +10,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
+from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
+
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.utils.lora.utils import is_lora_weight_name
 
@@ -99,7 +101,7 @@ class TestWeightUpdaterLoraConfig:
             is_lora=True,
             lora_sync_config={"peft_type": "LORA", "r": 8},
             args=Namespace(
-                sglang_attn_dp_size=8 if attention_dp else 1, sglang_enable_dp_attention=False, sglang_dp_size=1
+                sglang=make_sglang_config(attn_dp_size=8 if attention_dp else 1, enable_dp_attention=False, dp_size=1)
             ),
         )
         engines = [MagicMock()]

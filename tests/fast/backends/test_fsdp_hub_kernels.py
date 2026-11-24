@@ -19,6 +19,7 @@ from argparse import Namespace
 import pytest
 import torch
 import torch.nn as nn
+from tests.fast.fixtures.args_fixtures import make_trainer_config
 
 from miles.backends.fsdp_utils.arguments import validate_kernel_backend_args
 from miles.backends.fsdp_utils.plugins.hf_kernels import HubKernels, HubKernelSpec
@@ -32,7 +33,7 @@ from miles.backends.fsdp_utils.plugins.hf_kernels.presets import (
 )
 
 
-def _make_args(**overrides) -> Namespace:
+def _make_raw_args(**overrides) -> Namespace:
     base = dict(
         kernel_backend="hub",
         kernel_mapping_path="",
@@ -42,6 +43,11 @@ def _make_args(**overrides) -> Namespace:
     )
     base.update(overrides)
     return Namespace(**base)
+
+
+def _make_args(**overrides: object) -> Namespace:
+    values = vars(_make_raw_args(**overrides))
+    return Namespace(true_on_policy_mode=values.pop("true_on_policy_mode"), backend=Namespace(**values))
 
 
 def _stub_kernels(monkeypatch, *, module=None, modules=None, raises=None, calls=None):
@@ -118,7 +124,8 @@ def _all_hub_modules(**overrides):
 
 
 def test_native_is_the_default_and_stays_inert(monkeypatch):
-    args = _make_args(kernel_backend="native")
+    """A typed FSDP trainer config keeps native kernels independent of Hub dependencies."""
+    args = make_trainer_config(train_backend="fsdp", kernel_backend="native")
     monkeypatch.delitem(sys.modules, "kernels", raising=False)
 
     hub = HubKernels.prepare(args)
@@ -132,7 +139,7 @@ def test_native_is_the_default_and_stays_inert(monkeypatch):
 @pytest.mark.parametrize("mode", ["true_on_policy_mode", "deterministic_mode"])
 def test_hub_backend_is_rejected_in_the_bit_exact_modes(mode):
     with pytest.raises(ValueError, match="incompatible with --true-on-policy-mode"):
-        validate_kernel_backend_args(_make_args(**{mode: True}))
+        validate_kernel_backend_args(_make_raw_args(**{mode: True}))
 
 
 @pytest.mark.parametrize("mode", ["true_on_policy_mode", "deterministic_mode"])
@@ -143,7 +150,7 @@ def test_default_mapping_is_empty_in_the_bit_exact_modes(mode):
 
 def test_unknown_backend_is_rejected():
     with pytest.raises(ValueError, match="--kernel-backend must be one of"):
-        validate_kernel_backend_args(_make_args(kernel_backend="hubb"))
+        validate_kernel_backend_args(_make_raw_args(kernel_backend="hubb"))
 
 
 @pytest.mark.parametrize(
@@ -155,12 +162,12 @@ def test_unknown_backend_is_rejected():
 )
 def test_hub_only_flags_are_rejected_under_native(overrides, message):
     with pytest.raises(ValueError, match=message):
-        validate_kernel_backend_args(_make_args(kernel_backend="native", **overrides))
+        validate_kernel_backend_args(_make_raw_args(kernel_backend="native", **overrides))
 
 
 def test_native_and_hub_both_validate_clean():
-    validate_kernel_backend_args(_make_args(kernel_backend="native"))
-    validate_kernel_backend_args(_make_args(kernel_backend="hub", kernel_strict=True))
+    validate_kernel_backend_args(_make_raw_args(kernel_backend="native"))
+    validate_kernel_backend_args(_make_raw_args(kernel_backend="hub", kernel_strict=True))
 
 
 # ------------------------------------------------------------------------------------ presets
@@ -664,7 +671,7 @@ def test_nemotron_attention_falls_back_to_dense_when_no_varlen_kernel_exists(mon
 
 
 def _incomplete_mapping(args):
-    return {args.test_slot: HubKernelSpec(repo_id="me/custom", version=1, functions=("causal_conv1d_fn",))}
+    return {args.backend.test_slot: HubKernelSpec(repo_id="me/custom", version=1, functions=("causal_conv1d_fn",))}
 
 
 @pytest.mark.parametrize("strict", [False, True])

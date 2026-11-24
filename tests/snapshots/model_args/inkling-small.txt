@@ -4,7 +4,7 @@
 "--hidden-size"
 "4096"
 "--ffn-hidden-size"
-"2048"
+"16384"
 "--num-attention-heads"
 "32"
 "--group-query-attention"

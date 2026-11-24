@@ -1,6 +1,7 @@
 import argparse
 import ast
 import importlib.util
+import os
 import sys
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
@@ -8,8 +9,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from miles.utils.arguments import get_miles_extra_args_provider
 from miles.utils.debug_utils.run_megatron.worker.script_args import WORKER_SCRIPT_ARGS_BRIDGE
-from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
+from miles.utils.workers.argv_utils import with_relax_parser_required_args
+from miles.utils.workers.serving.utils import override_argv
 from miles_plugins.models.glm5.arguments import (
     MEGATRON_DSA_SPEC,
     MILES_DSA_SPEC,
@@ -29,6 +32,11 @@ def _args(**overrides):
         dsa_indexer_loss_coeff=None,
         miles_dsa_topk_backend="canonical",
         cp_comm_type=None,
+        true_on_policy_mode=False,
+        debug_disable_optimizer=False,
+        multi_lora_n_adapters=0,
+        rope_type=None,
+        multi_latent_attention=True,
     )
     return Namespace(**(values | overrides))
 
@@ -194,35 +202,55 @@ def test_shared_parser_normalizes_omitted_cp_without_overriding_explicit_setting
 
 
 @pytest.mark.parametrize("argv,implementation", [([], "miles"), (["--dsa-impl", "megatron"], "megatron")])
-def test_worker_parser_registers_dsa_arguments(argv, implementation):
+def test_worker_parser_registers_dsa_arguments(
+    argv: list[str], implementation: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The worker forwards DSA arguments into its shared production parser."""
     # Exercise the real registrar without importing the worker's GPU startup stack.
     path = Path(__file__).resolve().parents[4] / "miles/utils/debug_utils/run_megatron/worker/main.py"
     tree = ast.parse(path.read_text())
-    registrar = next(
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_register_worker_arguments"
+    parser_function = next(
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_parse_args"
     )
+    parsed = []
+
+    def parse_model_args() -> None:
+        parser = ArgumentParser()
+        parser.add_argument("--cp-comm-type", nargs="+", default=["p2p"])
+        get_miles_extra_args_provider()(parser)
+        with with_relax_parser_required_args(parser):
+            parsed.append(parser.parse_args())
+        raise RuntimeError("parser inspected")
+
     namespace = {
         "argparse": argparse,
+        "os": os,
         "WORKER_SCRIPT_ARGS_BRIDGE": WORKER_SCRIPT_ARGS_BRIDGE,
-        "add_dsv4_arguments": add_dsv4_arguments,
-        "add_dsa_arguments": add_dsa_arguments,
+        "_WorkerInputs": SimpleNamespace,
+        "override_argv": override_argv,
+        "parse_args": parse_model_args,
     }
-    exec(compile(ast.Module(body=[registrar], type_ignores=[]), str(path), "exec"), namespace)
-    parser = ArgumentParser()
-    parser.add_argument("--cp-comm-type", nargs="+", default=["p2p"])
-    namespace["_register_worker_arguments"](parser)
-    args = parser.parse_args(
+    exec(compile(ast.Module(body=[parser_function], type_ignores=[]), str(path), "exec"), namespace)
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    monkeypatch.setenv("LOCAL_WORLD_SIZE", "1")
+    monkeypatch.setattr(
+        sys,
+        "argv",
         [
+            "worker",
             "--script-hf-checkpoint",
             "/hf",
             "--script-token-ids-file",
             "/tokens.json",
             "--miles-dsa-topk-backend",
             "flashinfer",
-        ]
-        + argv
+            *argv,
+        ],
     )
+    with pytest.raises(RuntimeError, match="parser inspected"):
+        namespace["_parse_args"]()
+    [args] = parsed
     assert args.dsa_impl == implementation
     assert args.miles_dsa_topk_backend == "flashinfer"
     assert args.cp_comm_type is None
-    assert WORKER_SCRIPT_ARGS_BRIDGE.from_namespace(args).hf_checkpoint == Path("/hf")
+    assert args.hf_checkpoint == "/hf"

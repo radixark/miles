@@ -200,7 +200,9 @@ class Qwen38NextBridge(Qwen3_5Bridge):
         if not torch.cuda.is_available():
             return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
 
-        cache = getattr(self, "_gpu_weight_cache", None)
+        cache = getattr(
+            self, "_gpu_weight_cache", None
+        )  # config-access-exempt: the GPU weight cache is created lazily
         if cache is None:
             cache = self._gpu_weight_cache = {}
 
