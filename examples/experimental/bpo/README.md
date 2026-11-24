@@ -16,7 +16,7 @@ Add these flags to a GRPO training command:
 --bpo-weight-cap 3.0
 ```
 
-`--bpo-smoothing` and `--bpo-weight-cap` are registered automatically from `BpoConfig` when `--custom-loss-function-path` points to `bpo_loss_function`. Core miles defaults `--eps-clip-high` to `--eps-clip` (`0.2`), so pass `--eps-clip-high 0.28` explicitly to match the paper's ClipHigher setting.
+`--bpo-smoothing` and `--bpo-weight-cap` are registered automatically from `BpoConfig` when `--custom-loss-function-path` points to `bpo_loss_function`. Core miles defaults `--eps-clip-high` to `--eps-clip`, so pass `--eps-clip-high 0.28` explicitly to match the paper's ClipHigher setting.
 
 Pass `--use-rollout-logprobs` to use rollout-engine probabilities as $\pi_{\text{old}}$; omit it to use trainer-recomputed `log_probs`.
 
@@ -37,12 +37,8 @@ The rejection mask $M_t$ is evaluated on the uncapped weight $w_t$ before clampi
 
 ## Parameters
 
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `--bpo-smoothing` | `0.1` | Additive smoothing $\varepsilon > 0$ (fp32 normal range) for complementary probabilities (Appendix B default). |
-| `--bpo-weight-cap` | `3.0` | Upper cap $C > 0$ (fp32 normal range) on the detached weight $w_t$ (Appendix B default). |
-| `--eps-clip` | `0.2` | Lower mask threshold $\epsilon_{\text{low}} \in [0, 1)$ when $A_t < 0$. |
-| `--eps-clip-high` | `--eps-clip` | Upper mask threshold $\epsilon_{\text{high}} \ge 0$ when $A_t > 0$ (pass `0.28` for the paper's ClipHigher setting). |
+- `--bpo-smoothing`, `--bpo-weight-cap`: additive smoothing $\varepsilon$ and upper cap $C$ on the detached weight $w_t$; see `BpoConfig` and `_validate_bpo_hyperparams` in [bpo_loss.py](bpo_loss.py) for defaults and validation bounds.
+- `--eps-clip`, `--eps-clip-high`: lower ($\epsilon_{\text{low}}$) and upper ($\epsilon_{\text{high}}$) mask thresholds on $w_t$; see core `AlgoConfig` in [miles/utils/args/configs/algo.py](../../../miles/utils/args/configs/algo.py) for defaults and `_validate_bpo_args` in [bpo_loss.py](bpo_loss.py) for BPO constraints.
 
 ## Constraints
 

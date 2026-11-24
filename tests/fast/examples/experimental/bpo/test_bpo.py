@@ -308,7 +308,8 @@ class TestBpoPipelineIntegration:
     """End-to-end `custom_loss` dispatch through `objective.loss_function` and `policy_loss_function`."""
 
     @pytest.fixture(scope="class", autouse=True)
-    def _process_group(self, tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    @classmethod
+    def _process_group(cls, tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
         from miles.backends.training_utils import parallel
 
         saved_state = parallel._parallel_state
@@ -502,6 +503,45 @@ class TestBpoPipelineIntegration:
         assert torch.isfinite(metrics["pg_loss"]) and metrics["pg_loss"].item() == 0.0
         grad = torch.autograd.grad(loss, logits)[0]
         assert torch.isfinite(grad).all() and grad.abs().max().item() == 0.0
+
+    def test_opsm_preserves_dtype_promotion_for_fp16_custom_hook(self) -> None:
+        """OPSM masking keeps `pg_loss * opsm_mask` dtype promotion so `fp16` hooks do not overflow in int32-mask reducers."""
+        from miles.backends.training_utils.loss.hub.losses import policy_loss_function
+
+        n_tokens = 8192
+        args = self._make_custom_bpo_args(
+            use_rollout_logprobs=True,
+            use_opsm=True,
+            opsm_delta=1.0,
+            true_on_policy_mode=False,
+            entropy_coef=0.0,
+            observe_training_entropy=False,
+        )
+        logits = torch.zeros((1, n_tokens + 1, 2), dtype=torch.float32)
+        mask_i32 = torch.ones(n_tokens, dtype=torch.int32)
+        batch = dict(
+            unconcat_tokens=[torch.zeros(n_tokens + 1, dtype=torch.long)],
+            total_lengths=[n_tokens + 1],
+            response_lengths=[n_tokens],
+            loss_masks=[mask_i32],
+            advantages=[torch.ones(n_tokens)],
+            rollout_log_probs=[torch.full((n_tokens,), -math.log(2.0))],
+        )
+
+        def _fp16_pg_loss(*, log_probs: torch.Tensor, **_: object) -> tuple[torch.Tensor, torch.Tensor]:
+            return torch.full_like(log_probs, 10.0, dtype=torch.float16), torch.zeros_like(log_probs)
+
+        seen_dtypes: list[torch.dtype] = []
+
+        def _int32_mask_mean(x: torch.Tensor) -> torch.Tensor:
+            seen_dtypes.append(x.dtype)
+            return (x * mask_i32).sum() / mask_i32.sum()
+
+        loss, metrics = policy_loss_function(args, batch, logits, _int32_mask_mean, pg_loss_fn=_fp16_pg_loss)
+        assert seen_dtypes[0] == torch.float32
+        assert torch.isfinite(loss)
+        torch.testing.assert_close(loss, torch.tensor(10.0))
+        torch.testing.assert_close(metrics["pg_loss"], torch.tensor(10.0))
 
     @pytest.mark.parametrize("per_token", [False, True])
     def test_bpo_keeps_policy_loss_aggregation(self, per_token: bool) -> None:

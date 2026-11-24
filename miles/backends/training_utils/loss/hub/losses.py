@@ -251,7 +251,8 @@ def policy_loss_function(
         )
 
     if args.use_opsm:
-        pg_loss = torch.where(opsm_mask.bool(), pg_loss, 0.0)
+        opsm_dtype = torch.promote_types(pg_loss.dtype, opsm_mask.dtype)
+        pg_loss = torch.where(opsm_mask.bool(), pg_loss.to(opsm_dtype), 0.0)
 
     # Apply off-policy correction using importance sampling if enabled
     if args.get_mismatch_metrics or args.use_tis:
