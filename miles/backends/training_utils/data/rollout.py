@@ -31,6 +31,7 @@ from miles.utils.object_store import ObjectStoreGetResult
 from miles.utils.output_store.plan import is_segments_column
 from miles.utils.ray_utils import Box
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
+from miles.utils.timer import timer
 from miles.utils.types import RolloutBatch
 
 if TYPE_CHECKING:
@@ -62,19 +63,22 @@ def get_rollout_data(
 
     `sample_device` defaults to the accelerator; `PaddedRows` keeps them on the host.
     """
-    # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
-    # Both first pp stage and the last pp stage will receive the data.
-    rollout_data, store_get_result = process_rollout_data(
-        args,
-        rollout_data_ref,
-        dp_rank=get_parallel_state().effective_dp.rank,
-        train_parallel_config=train_parallel_config,
-        witness_info=witness_info,
-        output_store=output_store,
-    )
-    rollout_data = prepare_rollout_data(
-        args, rollout_data, sample_device=sample_device, token_space_processor=token_space_processor
-    )
+    # Both the first and the last pp stage receive the data. The two phases are the host-side start of the step's
+    # "train" timer: the store read (one shard, or the whole batch split here under --delay-split-train-data-by-dp)
+    # and the per-sample lists becoming tensors on `sample_device`.
+    with timer("rollout_data_fetch"):
+        rollout_data, store_get_result = process_rollout_data(
+            args,
+            rollout_data_ref,
+            dp_rank=get_parallel_state().effective_dp.rank,
+            train_parallel_config=train_parallel_config,
+            witness_info=witness_info,
+            output_store=output_store,
+        )
+    with timer("rollout_data_prepare"):
+        rollout_data = prepare_rollout_data(
+            args, rollout_data, sample_device=sample_device, token_space_processor=token_space_processor
+        )
     return rollout_data, store_get_result
 
 

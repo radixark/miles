@@ -6,6 +6,7 @@ from miles.backends.training_utils.data import rollout as data_utils
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState
 from miles.ray.rollout.train_data_conversion import split_train_data_by_dp, split_train_data_by_dp_scheduled_raw
 from miles.utils.dp_schedule import TrainParallelConfig
+from miles.utils.timer import Timer
 
 
 def _parallel_state(*, dp_size: int) -> ParallelState:
@@ -196,3 +197,21 @@ class TestGetRolloutDataParallelWiring:
         assert seen == [(2, config, None)]
         assert rollout["tokens"][0].device.type == "cpu"
         assert result is store_result
+
+    def test_the_fetch_and_the_tensor_preparation_are_timed_apart(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Both phases sit inside the step's "train" timer; perf/ metrics show each one's share of it."""
+        state = _parallel_state(dp_size=1)
+        config = state.train_parallel_config(supports_precomputed_schedule=True)
+        monkeypatch.setattr(data_utils, "get_parallel_state", lambda: state)
+        monkeypatch.setattr(
+            data_utils, "process_rollout_data", lambda *_a, **_k: ({"tokens": [[1]], "loss_masks": [[1]]}, object())
+        )
+        monkeypatch.setattr(data_utils.current_platform, "current_device", lambda: data_utils.torch.device("cpu"))
+        args = Namespace(enable_witness=False, multimodal_token_space_processing=False, qkv_format="thd")
+        timers = Timer()
+        timers.reset()
+
+        data_utils.get_rollout_data(args=args, rollout_data_ref=object(), train_parallel_config=config)
+
+        assert set(timers.log_dict()) == {"rollout_data_fetch", "rollout_data_prepare"}
+        assert not timers.start_time

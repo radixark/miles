@@ -250,23 +250,27 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         # The dp schedule and a custom convert may leave rows out of the train data: collect from the samples.
         self._unreleased_store_refs[rollout_id] = store_refs_of(data) | take_dropped_refs()
 
+        # After generation the batch is still on this actor's critical path for two host phases, timed as the
+        # "rollout" timer's neighbours: the sample -> train-data conversion and the DP split + object-store put.
         with SampleOwnershipRecorder.suppress_drop_logging() if replay is not None else nullcontext():
-            train_data = convert_samples_to_train_data(
-                self.args,
-                data,
-                metadata=metadata,
-                custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
-                custom_reward_post_process_func=self.custom_reward_post_process_func,
-            )
-            sample_indices = train_data.get("sample_indices")
-            if self.args.delay_split_train_data_by_dp:
-                data_ref = object_store.get_instance().put(value=train_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
-            else:
-                shards = split_train_data_by_dp(
-                    self.args, train_data, self._train_parallel_configs_of_model_id[trainer_model_id]
+            with timer("convert_train_data"):
+                train_data = convert_samples_to_train_data(
+                    self.args,
+                    data,
+                    metadata=metadata,
+                    custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
+                    custom_reward_post_process_func=self.custom_reward_post_process_func,
                 )
-                store = object_store.get_instance()
-                data_ref = [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
+            sample_indices = train_data.get("sample_indices")
+            with timer("store_train_data"):
+                if self.args.delay_split_train_data_by_dp:
+                    data_ref = object_store.get_instance().put(value=train_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
+                else:
+                    shards = split_train_data_by_dp(
+                        self.args, train_data, self._train_parallel_configs_of_model_id[trainer_model_id]
+                    )
+                    store = object_store.get_instance()
+                    data_ref = [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
             return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
 
     async def release(self, rollout_id: int) -> None:

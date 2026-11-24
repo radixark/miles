@@ -51,6 +51,12 @@ should be supplied via Ray's `env_vars` rather than baked into the launch script
 Panel names follow what `loss.py` and the rollout logger emit; Miles's wandb metrics
 live under `train/`, `rollout/`, `perf/`, `multi_turn/`, `passrate/` namespaces.
 
+`perf/train_time` is the trainer's whole step; `perf/rollout_data_fetch_time` (the object-store read of this
+rank's shard) and `perf/rollout_data_prepare_time` (the per-sample lists becoming tensors) are its first two
+phases, before `perf/log_probs_time` and `perf/actor_train_time`. On the rollout side, the executor's dashboard
+phases `convert_train_data` and `store_train_data` are the host work between the end of generation and the
+batch being ready for the trainer.
+
 ## Custom loggers
 
 Replace the default rollout logger with your own to push to internal systems:
