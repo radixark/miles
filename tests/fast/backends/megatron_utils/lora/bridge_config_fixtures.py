@@ -5,6 +5,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from tests.fast.fixtures.bridge_precision_fixtures import BRIDGE_PRECISION_ARG_DEFAULTS
 from transformers import LlamaConfig
 
 
@@ -73,6 +74,7 @@ def bridge_args(tmp_path: Path) -> Namespace:
         vocab_size=8,
     ).save_pretrained(tmp_path)
     backend = Namespace(
+        **BRIDGE_PRECISION_ARG_DEFAULTS,
         tensor_model_parallel_size=2,
         pipeline_model_parallel_size=3,
         expert_model_parallel_size=4,

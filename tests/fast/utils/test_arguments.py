@@ -2603,6 +2603,63 @@ class TestPartitionRadixCacheByRolloutCallResolution:
             assert args.rollout_function_path == "miles.rollout.sglang_rollout.generate_rollout"
 
 
+class TestAllowTruncatedContinuationResolution:
+    def _parse(self, extra):
+        parser = get_megatron_arg_parser()
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def test_it_is_unset_before_validation(self):
+        """The flag is tri-state, so parsing alone must not decide it."""
+        assert self._parse(["--use-session-server"]).allow_truncated_continuation is None
+
+    @pytest.mark.parametrize(
+        ("tito_model", "expected"),
+        [("qwen3", True), ("deepseekv4", True), ("default", False), ("inkling", True), ("muse_spark", True)],
+    )
+    def test_an_omitted_flag_takes_the_family_default(self, caplog, tito_model, expected):
+        """A family continues truncated turns by default exactly when it declares a closer."""
+        args = self._parse(["--use-session-server", "--tito-model", tito_model])
+
+        with caplog.at_level(logging.INFO, logger="miles.utils.arguments"):
+            miles_validate_args(args)
+
+        assert args.allow_truncated_continuation is expected
+        verdict = "allowed" if expected else "rejected"
+        assert any(
+            record.getMessage()
+            == f"Session server truncated-turn continuation {verdict} (--tito-model={tito_model} default)"
+            for record in caplog.records
+        )
+
+    def test_an_explicit_no_wins_over_the_family_default(self):
+        args = self._parse(["--use-session-server", "--tito-model", "qwen3", "--no-allow-truncated-continuation"])
+
+        miles_validate_args(args)
+
+        assert args.allow_truncated_continuation is False
+
+    def test_a_family_without_a_closer_cannot_allow_it(self):
+        args = self._parse(["--use-session-server", "--tito-model", "default", "--allow-truncated-continuation"])
+        with pytest.raises(
+            ValueError, match="--allow-truncated-continuation is not supported with --tito-model=default"
+        ):
+            miles_validate_args(args)
+
+    @pytest.mark.parametrize("flag", ["--allow-truncated-continuation", "--no-allow-truncated-continuation"])
+    def test_an_explicit_flag_requires_the_session_server(self, flag):
+        """Without a session server nothing reads the flag, so setting it is refused instead of ignored."""
+        args = self._parse([flag])
+        with pytest.raises(ValueError, match="--allow-truncated-continuation requires --use-session-server"):
+            miles_validate_args(args)
+
+    def test_no_session_server_resolves_to_off(self):
+        args = self._parse([])
+
+        miles_validate_args(args)
+
+        assert args.allow_truncated_continuation is False
+
+
 class TestAllowStopTokenReplaceResolution:
     def _parse(self, extra):
         parser = get_megatron_arg_parser()

@@ -2,12 +2,14 @@ import dataclasses
 from types import SimpleNamespace
 
 import pytest
+from tests.fast.fixtures.bridge_precision_fixtures import BRIDGE_PRECISION_ARG_DEFAULTS
 
 from miles.backends.megatron_utils.model_provider import _apply_bridge_runtime_config
 
 
 def _runtime_args(**overrides):
     values = {
+        **BRIDGE_PRECISION_ARG_DEFAULTS,
         "tensor_model_parallel_size": 1,
         "pipeline_model_parallel_size": 8,
         "expert_model_parallel_size": 4,

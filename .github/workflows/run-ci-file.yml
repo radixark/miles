@@ -172,7 +172,7 @@ jobs:
             echo "tag=${PR_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if docker buildx imagetools inspect "radixark/miles:${PR_IMAGE_TAG}" >/dev/null 2>&1; then
+          if docker buildx imagetools inspect "${GITHUB_REPOSITORY}:${PR_IMAGE_TAG}" >/dev/null 2>&1; then
             echo "tag=${PR_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
             echo "Using this PR's image ${PR_IMAGE_TAG}."
           else

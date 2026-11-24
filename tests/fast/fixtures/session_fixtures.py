@@ -17,6 +17,7 @@ def make_session_server_config(**overrides: Any) -> SessionServerConfig:
         chat_template_path=None,
         tito_model="default",
         allow_stop_token_replace=False,
+        allow_truncated_continuation=False,
         apply_chat_template_kwargs=None,
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,

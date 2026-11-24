@@ -87,10 +87,10 @@ from miles.utils.chat_template_utils.tito_tokenizer import (
     QwenNextTITOTokenizer,
     TITOTokenizer,
     TITOTokenizerType,
-    _build_dummy_assistant,
     extract_template_args,
     get_tito_tokenizer,
 )
+from miles.utils.chat_template_utils.tito_tokenizer.base import _build_dummy_assistant
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.test_utils.mock_trajectories import (
     IntermediateSystemTrajectory,
@@ -913,8 +913,8 @@ _TITO_LOGGER = "miles.utils.chat_template_utils.tito_tokenizer"
 
 
 def _tito_warnings(caplog) -> list[str]:
-    """Warnings from the TITO module; INFO records such as template resolution on a cold tokenizer cache are ignored."""
-    return [r.getMessage() for r in caplog.records if r.name == _TITO_LOGGER and r.levelno >= logging.WARNING]
+    """Warnings from the TITO package and its family modules; INFO records such as template resolution on a cold tokenizer cache are ignored."""
+    return [r.getMessage() for r in caplog.records if r.name.startswith(_TITO_LOGGER) and r.levelno >= logging.WARNING]
 
 
 class TestMergeTokensBoundary:

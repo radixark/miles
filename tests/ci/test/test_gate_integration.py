@@ -71,7 +71,7 @@ def _clear_github_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def store():
-    s = SQLiteMetricHistoryStore(":memory:")
+    s = SQLiteMetricHistoryStore(":memory:", repository="radixark/miles")
     yield s
     s.close()
 
@@ -174,24 +174,26 @@ class TestBuildStoreFromEnv:
         constructed = []
 
         class _FakeNeonStore:
-            def __init__(self, dsn=None):
-                constructed.append(dsn)
+            def __init__(self, dsn=None, repository=None):
+                constructed.append((dsn, repository))
 
         monkeypatch.setattr("tests.ci.ci_utils.NeonMetricHistoryStore", _FakeNeonStore)
         monkeypatch.setenv("NEON_DATABASE_URL", "postgres://example/db")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "radixark/miles")
 
         store = build_store_from_env()
         assert isinstance(store, _FakeNeonStore), "NEON_DATABASE_URL must route to NeonMetricHistoryStore"
-        assert constructed == ["postgres://example/db"]
+        assert constructed == [("postgres://example/db", "radixark/miles")]
 
     def test_store_construction_failure_propagates(self, monkeypatch):
         # A configured store must not silently disable enforcement on failure.
         class _ExplodingStore:
-            def __init__(self, dsn=None):
+            def __init__(self, dsn=None, repository=None):
                 raise RuntimeError("connection refused")
 
         monkeypatch.setattr("tests.ci.ci_utils.NeonMetricHistoryStore", _ExplodingStore)
         monkeypatch.setenv("NEON_DATABASE_URL", "postgres://unreachable/db")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "radixark/miles")
 
         with pytest.raises(RuntimeError, match="connection refused"):
             build_store_from_env()
@@ -595,7 +597,7 @@ class TestShadowNeverBlocks:
             def write_run(self, *a, **k):
                 raise RuntimeError("DB down")
 
-        store = _ExplodingStore(":memory:")
+        store = _ExplodingStore(":memory:", repository="radixark/miles")
         try:
             result = run_gate_hook(
                 test_file,
@@ -1030,12 +1032,13 @@ class TestRocmNeonCredential:
         constructed = []
 
         class Store:
-            def __init__(self, dsn=None):
+            def __init__(self, dsn=None, repository=None):
                 constructed.append(dsn)
 
         monkeypatch.setattr(ci_utils, "NeonMetricHistoryStore", Store)
         monkeypatch.setenv("NEON_DATABASE_URL", "postgres://cuda/fixture")
         monkeypatch.setenv("AMD_NEON_DATABASE_URL", "postgres://amd/fixture")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "radixark/miles")
         assert isinstance(build_store_from_env(backend=backend), Store)
         assert constructed == [expected]
 

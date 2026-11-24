@@ -862,9 +862,9 @@ async def test_each_leaf_path_mismatch_is_computed_once(core, monkeypatch):
     rendered_paths = []
     compute_mismatch = core.registry.compute_mismatch
 
-    def recording_compute_mismatch(messages, token_ids, *, turn_args):
-        rendered_paths.append(list(token_ids))
-        return compute_mismatch(messages, token_ids, turn_args=turn_args)
+    def recording_compute_mismatch(leaf):
+        rendered_paths.append(list(leaf.token_ids))
+        return compute_mismatch(leaf)
 
     monkeypatch.setattr(core.registry, "compute_mismatch", recording_compute_mismatch)
 

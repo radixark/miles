@@ -10,8 +10,10 @@ https://github.com/radixark/miles/settings/secrets/actions
 
 ### Step 0: Prepare `/data/miles_ci`
 
-The miles CI workflow bind-mounts `/data/miles_ci` (and its `models`,
-`datasets`, `hf_cache` subdirectories) from the host into every job container.
+The miles CI workflow bind-mounts the `jit`, `dumps`, `models`, `datasets` and
+`hf_cache` subdirectories of `/data/miles_ci` from the host into every job
+container, never `/data/miles_ci` itself: the runners of a host share it, and a
+job must not read another runner's work directory.
 `models` also holds the `<model>_torch_dist` checkpoints that
 `convert_checkpoint` writes by default, so a host converts each model once and
 every later job on it reuses the result.
@@ -34,6 +36,28 @@ cd /root/miles/.claude/skills/setup-ci-host
 The script probes mounts with `df`, picks the biggest non-system mount, and
 ensures `/data/miles_ci` resolves there (real dir if `/data` is biggest;
 symlink otherwise). Idempotent.
+
+### Step 0.5: Install the job-start hook
+
+`docker-compose.yml` runs `remove-foreign-checkouts.sh` before every job: a job
+container mounts its runner's whole work directory, so the checkouts that other
+repositories' jobs left there must go first.
+
+```shell
+sudo install -d /data/miles_ci/runner-hooks
+sudo install -m 755 tests/ci/github_runner/remove-foreign-checkouts.sh /data/miles_ci/runner-hooks/
+```
+
+### Step 0.6: Install the job-container docker hook
+
+`docker-compose.yml` puts `job-container-docker/docker` first in the runner's
+`PATH`: it drops the host docker socket the runner would otherwise mount into
+every job container.
+
+```shell
+sudo install -D -m 755 tests/ci/github_runner/job-container-docker/docker \
+  /data/miles_ci/runner-hooks/job-container-docker/docker
+```
 
 ### Step 1: Env
 
@@ -138,6 +162,7 @@ registration token in `.env`:
 
 ```shell
 sudo install -d /data/miles_ci/runner-hooks
+sudo install -m 755 remove-foreign-checkouts.sh /data/miles_ci/runner-hooks/
 sudo install -m 755 b200-job-start.sh /data/miles_ci/runner-hooks/
 sudo install -m 644 b200_job_lock.py /data/miles_ci/runner-hooks/
 docker compose --env-file .env -f docker-compose.b200.yml config --quiet
@@ -172,8 +197,8 @@ Step 0's `setup-host.sh` guarantees `/data/miles_ci` exists on the host
 wherever the big disk is). Either way, the bind mount works uniformly across
 hosts.
 
-The workflow `.github/workflows/_run-ci.yml`'s four data mounts use the same
-literal path (no parameterization). Tests hardcode the container-side targets
+The workflow `.github/workflows/_run-ci.yml`'s data mounts use literal host
+paths (no parameterization). Tests hardcode the container-side targets
 (`/root/models`, `/root/datasets`, `/root/.cache/huggingface`); the host side
 is always `/data/miles_ci/...`.
 

@@ -220,10 +220,15 @@ class BaseReplayManager:
 
     @staticmethod
     def fill_replay_padding(top_indices, num_scores):
-        # padding rows (all -1) take arange; branchless so fullgraph traces it
+        # Padding rows (all -1) are loss-masked but still dispatched: stride them across the
+        # columns by pad-row ordinal so they do not all pile onto the first experts.
+        # Branchless so fullgraph traces it.
         all_invalid = (top_indices == -1).all(dim=-1)
-        ar = torch.arange(top_indices.shape[1], device=top_indices.device, dtype=top_indices.dtype) % num_scores
-        return torch.where(all_invalid.unsqueeze(-1), ar, top_indices)
+        topk = top_indices.shape[1]
+        ordinal = all_invalid.to(top_indices.dtype).cumsum(0, dtype=top_indices.dtype) - 1
+        ar = torch.arange(topk, device=top_indices.device, dtype=top_indices.dtype)
+        fill = (ordinal.unsqueeze(-1) * topk + ar) % num_scores
+        return torch.where(all_invalid.unsqueeze(-1), fill, top_indices)
 
     def get_topk_fn(self, old_topk_fn, return_probs):
         manager = self

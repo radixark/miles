@@ -191,9 +191,10 @@ Chart key: rectangle = a step or check; rounded box = a data artifact; diamond =
 
 **Tables & read path**:
 
-- `runs` — one row per CI run of one series: the identity above + provenance (`commit_sha`, `pr_number`, `github_run_id`, `github_run_attempt`, `event_name`, `ref`) + `created_at` + `trusted` (run-level).
+- `runs` — one row per CI run of one series: the `repository` the store is bound to (`GITHUB_REPOSITORY` in CI) + the identity above + provenance (`commit_sha`, `pr_number`, `github_run_id`, `github_run_attempt`, `event_name`, `ref`) + `created_at` + `trusted` (run-level).
 - `metric_values` — one row per value: `run_id` FK + `(metric_key, step)` + `value`, plus the judging declaration's `steps_key` / `constraint_key`.
-- The baseline read is served by the composite index `runs(test_path, backend, suite, trusted, created_at DESC)`.
+- Every read, write, and revocation is scoped to the store's `repository`, so repositories that share a database keep separate baselines.
+- The baseline read is served by the composite index `runs(repository, test_path, backend, suite, trusted, created_at DESC)`.
 
 **Operations** — hosted Postgres setup is out-of-band: the two tables and application role are provisioned outside this repo, and runtime gate code stays DML-only (`NeonMetricHistoryStore` never issues DDL). Old-row cleanup policy is a later operational concern, not part of the M0/M1 substrate.
 
@@ -226,7 +227,7 @@ Every `register_ci_gate(...)` declaration defaults to `enforce=True`; tests and 
 - Missing, empty, invalid or non-finite metrics fail tests with enforcement enabled. With a configured store, record-merge, gate-evaluation and database errors also fail instead of silently bypassing the gate.
 - The harness reports the verdict and metric details before writing a baseline. Nightly/weekly retain the original trusted/untrusted verdict, including numerical regressions that fail enforcement. Ordinary PR and release runs only read history. Gate failures affect suite exit status, honor fail-fast/continue policy, and do not retry successful child processes. Invalid declarations fail CI.
 - A missing or empty backend-specific URL explicitly skips the history gate: CUDA reads `NEON_DATABASE_URL`, and ROCm reads only `AMD_NEON_DATABASE_URL`. CPU behavior is unchanged.
-- ROCm runs record metrics and write `backend=rocm` baselines on the same cadences as CUDA, but every ROCm declaration stays shadow: under `run_gate_hook(enforce=False)` a store error or a regression does not fail a ROCm test; only an invalid declaration, which fails CUDA too, does. Enforcing ROCm is a later switch, once its series have ten trusted values and the Spur jobs reach the store reliably.
+- ROCm runs record metrics and write `backend=rocm` baselines under the same cadence rules as CUDA. While ROCm has [no scheduled run](00-stage.md#rocm-prnightlyweekly-mirror), only PRs with the `nightly` label write them. Every ROCm declaration stays shadow: under `run_gate_hook(enforce=False)` a store error or a regression does not fail a ROCm test; only an invalid declaration, which fails CUDA too, does. Enforcing ROCm is a later switch, once its series have ten trusted values and the Spur jobs reach the store reliably.
 - The AMD credential is provisioned separately, so it can be revoked and rotated independently of the CUDA credential. History is selected by exact `(test_path, backend, executing suite, metric_key, step)` coordinates; physical GPU model and node are not additional keys. Database role permissions are provisioned separately from this query scoping.
 
 CUDA [`/rerun-test`](01-label.md#manage-ci-from-pr-comments) runs use the same harness and gate, with baseline writes disabled. The default-branch command workflow must include that wiring; a PR-only workflow edit does not change the dispatched command.
