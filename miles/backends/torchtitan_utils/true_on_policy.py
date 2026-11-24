@@ -45,8 +45,24 @@ def install(model: torch.nn.Module) -> None:
     rope = _engine_rope(next(block.attention for block in blocks if not isinstance(block.attention, GDN)))
     for block in blocks:
         block.forward = functools.partial(_block_forward, block, _attend(block.attention, rope), gemma)
+    model.forward = functools.partial(_forward_with_starts, model.forward)
     model.norm.forward = functools.partial(_final_norm_forward, model.norm, gemma)
     model.lm_head.forward = functools.partial(_lm_head_forward, model.lm_head)
+
+
+def _forward_with_starts(orig_forward, *args, **kwargs):
+    """Precompute `sequence_starts` once per microbatch instead of sorting `segment_ids` inside every layer."""
+    if attention_metadata := kwargs.get("attention_metadata"):
+        first = next(iter(attention_metadata.values()))
+        starts = packed_sequences.sequence_starts(first, MAX_SEQUENCES)
+        kwargs["attention_metadata"] = {k: (v, starts) for k, v in attention_metadata.items()}
+    return orig_forward(*args, **kwargs)
+
+
+def _unpack_attention_metadata(attention_metadata):
+    if isinstance(attention_metadata, tuple):
+        return attention_metadata
+    return attention_metadata, packed_sequences.sequence_starts(attention_metadata, MAX_SEQUENCES)
 
 
 def log_probs(logits: torch.Tensor, targets: torch.Tensor, temperature: float) -> torch.Tensor:
@@ -144,7 +160,7 @@ def _block_forward(
     return torch.cat([ffn, residual], dim=-1).reshape(*x.shape[:-1], 2 * dim)
 
 
-def _attention(attention, rope, x, segment_ids, positions):
+def _attention(attention, rope, x, attention_metadata, positions):
     tokens, head_dim = x.shape[0], attention.head_dim
     qkv_linear = attention.qkv_linear
     qkv = ops.matmul(x, qkv_linear.wqkv.weight).view(tokens, -1, qkv_linear.r_dim, head_dim)
@@ -152,13 +168,14 @@ def _attention(attention, rope, x, segment_ids, positions):
     q = ops.rms_norm(q.reshape(-1, head_dim), None, attention.q_norm.weight, _eps(attention.q_norm)).view(q.shape)
     k = ops.rms_norm(k.reshape(-1, head_dim), None, attention.k_norm.weight, _eps(attention.k_norm)).view(k.shape)
     q, k = rope.forward_native(positions, q, k)
+    segment_ids, starts = _unpack_attention_metadata(attention_metadata)
     out = _PackedAttention.apply(
-        q.view(tokens, -1, head_dim), k.view(tokens, -1, head_dim), v.view(tokens, -1, head_dim), segment_ids
+        q.view(tokens, -1, head_dim), k.view(tokens, -1, head_dim), v.view(tokens, -1, head_dim), segment_ids, starts
     )
     return ops.matmul(out.reshape(tokens, -1), attention.wo.weight)
 
 
-def _gated_attention(attention, rope, x, segment_ids, positions):
+def _gated_attention(attention, rope, x, attention_metadata, positions):
     """Qwen3.5 attention: per head the Q projection is [query | output gate], and RoPE covers rotary_dim channels."""
     tokens, head_dim = x.shape[0], attention.head_dim
     q, gate = ops.matmul(x, attention.wq.weight).view(tokens, -1, 2 * head_dim).chunk(2, dim=-1)
@@ -168,20 +185,22 @@ def _gated_attention(attention, rope, x, segment_ids, positions):
     q = ops.rms_norm(q.reshape(-1, head_dim), None, q_norm.weight, _eps(q_norm), gemma=True).view(tokens, -1)
     k = ops.rms_norm(k.reshape(-1, head_dim), None, k_norm.weight, _eps(k_norm), gemma=True).view(tokens, -1)
     q, k = rope.forward_native(positions, q, k)
+    segment_ids, starts = _unpack_attention_metadata(attention_metadata)
     out = _PackedAttention.apply(
-        q.view(tokens, -1, head_dim), k.view(tokens, -1, head_dim), v.view(tokens, -1, head_dim), segment_ids
+        q.view(tokens, -1, head_dim), k.view(tokens, -1, head_dim), v.view(tokens, -1, head_dim), segment_ids, starts
     )
     out = out.reshape(tokens, -1) * torch.sigmoid(gate.reshape(tokens, -1))
     return ops.matmul(out, attention.wo.weight)
 
 
-def _gated_delta_net(gdn, x, segment_ids, positions):
+def _gated_delta_net(gdn, x, attention_metadata, positions):
     tokens, key_dim, value_dim = x.shape[0], gdn.key_head_dim, gdn.value_head_dim
     q, k, v, z, a, b = (
         ops.matmul(x, proj.weight)
         for proj in (gdn.in_proj_q, gdn.in_proj_k, gdn.in_proj_v, gdn.in_proj_z, gdn.in_proj_a, gdn.in_proj_b)
     )
     conv = (gdn.conv_q.weight, gdn.conv_k.weight, gdn.conv_v.weight)
+    segment_ids, starts = _unpack_attention_metadata(attention_metadata)
     # The engine's op is its per-token recurrence, forward only; the trainer's kernel solves the same math in chunks
     # and gives other bytes, so it only carries the gradient.
     engine = ops.packed_gated_delta_net(
@@ -191,7 +210,7 @@ def _gated_delta_net(gdn, x, segment_ids, positions):
         torch.cat(conv).detach(),
         gdn.A_log.detach().to(torch.bfloat16),
         gdn.dt_bias.detach().to(torch.bfloat16),
-        packed_sequences.sequence_starts(segment_ids, MAX_SEQUENCES),
+        starts,
         q.shape[-1] // key_dim,
         v.shape[-1] // value_dim,
         key_dim,
@@ -233,9 +252,8 @@ class _PackedAttention(torch.autograd.Function):
     """Forward: the engine's attention. Backward: splash attention's gradient at the same inputs."""
 
     @staticmethod
-    def forward(ctx, q, k, v, segment_ids):
+    def forward(ctx, q, k, v, segment_ids, starts):
         ctx.save_for_backward(q, k, v, segment_ids)
-        starts = packed_sequences.sequence_starts(segment_ids, MAX_SEQUENCES)
         return ops.packed_causal_attention(q, k, v, starts, q.shape[-1] ** -0.5)  # _check_supported pins this scale
 
     @staticmethod
@@ -246,4 +264,4 @@ class _PackedAttention(torch.autograd.Function):
         seg = segment_ids.unsqueeze(0)
         out, lse = _splash_forward(q4, k4, v4, seg)
         dq, dk, dv = _splash_backward(q4, k4, v4, out, lse, g4, seg)
-        return (*(t.squeeze(0).transpose(0, 1) for t in (dq, dk, dv)), None)
+        return (*(t.squeeze(0).transpose(0, 1) for t in (dq, dk, dv)), None, None)
