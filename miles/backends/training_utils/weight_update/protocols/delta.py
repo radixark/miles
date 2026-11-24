@@ -96,6 +96,10 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         self._snapshot: dict[str, np.ndarray] = {}
         self._baseline_captured = False
         self._snapshot_file_version = 0
+        self._max_bytes = -1
+        self._free_q: queue.Queue = queue.Queue()
+        self._pool_size = 0
+        self._use_pinned = False
         # Post-write hook: object-store-backed shared filesystems lack cross-host
         # read-after-write consistency, so written files need an explicit step
         # (e.g. uploading them to the backing object store) before the engines can see them.
@@ -141,7 +145,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             if self._use_pinned and nbytes <= self._max_bytes:
                 buf = self._free_q.get()  # blocks when all buffers are in flight -> backpressures the gather
                 buf[:nbytes].copy_(flat, non_blocking=True)
-                torch.cuda.current_stream().synchronize()
+                torch.accelerator.current_stream().synchronize()
                 payload, pinned = buf, True
             else:
                 payload, pinned = flat.cpu().numpy(), False
@@ -262,16 +266,21 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         self._checksums: dict[str, str] = {}  # changed tensor name -> new-state checksum
         self.changed_bytes = self.total_bytes = 0
 
-        # Pinned host-buffer pool: a pinned non_blocking GPU->CPU copy is far faster than .cpu().
-        self._max_bytes = max((int(v.nbytes) for v in self._snapshot.values()), default=0)
-        self._free_q: queue.Queue = queue.Queue()
-        self._use_pinned = True
-        try:
-            for _ in range(max(4, min(2 * NUM_WORKERS, (32 << 30) // max(self._max_bytes, 1)))):
-                self._free_q.put(torch.empty(self._max_bytes, dtype=torch.uint8, pin_memory=True))
-        except RuntimeError as e:  # low memlock limit
-            logger.warning("pinned host buffers unavailable (%s); using pageable .cpu()", e)
-            self._use_pinned = False
+        # pinned non_blocking D2H beats .cpu(); kept across syncs, as freed pinned memory never goes back to the OS,
+        # unless the largest tensor changed or an aborted sync left buffers out of the queue
+        max_bytes = max((int(v.nbytes) for v in self._snapshot.values()), default=0)
+        if max_bytes != self._max_bytes or self._free_q.qsize() < self._pool_size:
+            self._max_bytes = max_bytes
+            self._free_q = queue.Queue()
+            self._use_pinned = True
+            try:
+                self._pool_size = max(4, min(2 * NUM_WORKERS, (32 << 30) // max(max_bytes, 1)))
+                for _ in range(self._pool_size):
+                    self._free_q.put(torch.empty(max_bytes, dtype=torch.uint8, pin_memory=True))
+            except RuntimeError as e:  # low memlock limit
+                logger.warning("pinned host buffers unavailable (%s); using pageable .cpu()", e)
+                self._use_pinned = False
+                self._pool_size = 0
 
         self._pool = ThreadPoolExecutor(max_workers=NUM_WORKERS)
         self._inflight: deque = deque()
@@ -392,17 +401,20 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             )
             if mode != "in_place":
                 async_utils.wait_futures([async_utils.submit(client.flush_cache()) for client in self.rollout_engines])
-            results = async_utils.wait_futures(
-                [
-                    async_utils.submit(
-                        client.update_weights_from_disk(
-                            model_path=self.args.update_weight_local_checkpoint_dir,
-                            weight_version=str(weight_version),
+            wave = self.args.update_weight_disk_reload_wave or len(self.rollout_engines)
+            results = []
+            for start in range(0, len(self.rollout_engines), wave):
+                results += async_utils.wait_futures(
+                    [
+                        async_utils.submit(
+                            client.update_weights_from_disk(
+                                model_path=self.args.update_weight_local_checkpoint_dir,
+                                weight_version=str(weight_version),
+                            )
                         )
-                    )
-                    for client in self.rollout_engines
-                ]
-            )
+                        for client in self.rollout_engines[start : start + wave]
+                    ]
+                )
             check_weight_sync_results(results, is_lora=False)
             async_utils.wait_futures(
                 [async_utils.submit(client.continue_generation()) for client in self.rollout_engines]
@@ -412,12 +424,9 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
     def _record_metrics(self, *, weight_version: int) -> None:
         """All-reduce the byte counts and record changed-fraction / wire size; the actor drains
         update_weight_metrics onto the step log."""
-        counts = torch.tensor(
-            [self.changed_bytes, self.total_bytes, self.wire_bytes],
-            dtype=torch.int64,
-            device=torch.cuda.current_device(),
-        )
-        dist.all_reduce(counts)
+        # byte counts pass 2**31, which some device collectives (neuron) saturate to int32
+        counts = torch.tensor([self.changed_bytes, self.total_bytes, self.wire_bytes], dtype=torch.int64)
+        dist.all_reduce(counts, group=get_gloo_group())
         changed, total, wire = counts.tolist()
         self.update_weight_metrics = {
             "perf/update_weights_density": changed / max(total, 1),
