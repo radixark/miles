@@ -27,7 +27,12 @@ from miles.utils.args.runtime import TrainerConfig
 from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora.utils import is_multi_lora_enabled, targets_expert_leaves
-from miles.utils.megatron_bridge_utils import apply_dsa_backend_args, load_auto_bridge
+from miles.utils.megatron_bridge_utils import (
+    apply_dsa_backend_args,
+    apply_pipeline_layout,
+    apply_precision_args,
+    load_auto_bridge,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -200,11 +205,9 @@ def _setup_lora_model_via_bridge(args: TrainerConfig) -> list:
                 "dispatcher's permutation, which the fused kernel does not expose"
             )
         provider.moe_permute_fusion = False
-    if args.backend.decoder_first_pipeline_num_layers is not None:
-        provider.num_layers_in_first_pipeline_stage = args.backend.decoder_first_pipeline_num_layers
-    if args.backend.decoder_last_pipeline_num_layers is not None:
-        provider.num_layers_in_last_pipeline_stage = args.backend.decoder_last_pipeline_num_layers
+    apply_pipeline_layout(provider, args)
     apply_dsa_backend_args(provider, args)
+    apply_precision_args(provider, args)
     provider.finalize()
 
     if is_multi_lora_enabled(args):

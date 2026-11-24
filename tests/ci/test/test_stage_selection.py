@@ -8,8 +8,10 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 from tests.ci.ci_policy import REGULAR_CADENCE, resolve_policy
 from tests.ci.ci_register import CIRegistry, HWBackend, register_cpu_ci
+from tests.ci.hardware import CUDA_STAGES
 from tests.ci.stage_selection import PR_GPU_STAGES, ChangedFile, read_changed_files, select_skipped_gpu_stages
 
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
@@ -26,7 +28,7 @@ def test_a_cpu_failure_cannot_skip_the_gpu_stages_a_nightly_asked_for():
     """
     workflow = WORKFLOW.read_text()
     blocks = dict(re.findall(r"\n  ([a-z][a-z0-9-]*):\n(.*?)(?=\n  [a-z][a-z0-9-]*:\n|\Z)", workflow, re.S))
-    for job in ("docker-build", "resolve-ci-image"):
+    for job in ("docker-build-amd64", "docker-build-arm64", "resolve-ci-image-amd64"):
         block = blocks[job]
         assert "if:" in block, f"{job} inherits success() over the closure, defeating bypass_fastfail"
         assert "always()" in block, f"{job} must not be gated on an unrelated upstream failure"
@@ -40,7 +42,7 @@ def _registration(
     disabled: str | None = None,
     hardware: list[str] | None = None,
 ) -> CIRegistry:
-    backend = HWBackend.ROCM if suite == "stage-c-4-gpu-mi350" else HWBackend.CUDA
+    backend = HWBackend.ROCM if suite.endswith("-mi350") else HWBackend.CUDA
     if hardware is None and backend is HWBackend.CUDA:
         # Mirror the home-stage invariant the registry enforces.
         hardware = ["blackwell"] if suite.endswith("-b200") else ["hopper"]
@@ -157,12 +159,22 @@ def test_blackwell_only_scope_keeps_b200_for_non_blackwell_changes(changed_path)
         _registration("tests/e2e/test_hopper.py", "stage-c-8-gpu-h200", hardware=["hopper"]),
         _registration("tests/e2e/test_blackwell_8.py", "stage-c-8-gpu-b200", hardware=["blackwell"]),
         _registration("tests/e2e/test_blackwell_4.py", "stage-c-4-gpu-b200", hardware=["blackwell"]),
+        _registration("tests/e2e/test_rocm.py", "stage-c-4-gpu-mi350"),
     ]
     changed_files = (ChangedFile("M", (changed_path,)),)
 
     skipped = set(_select(changed_files, registrations, raw_labels=("run-ci-blackwell-only",)))
 
     assert skipped == PR_GPU_STAGES - {"stage-c-8-gpu-b200", "stage-c-4-gpu-b200"}
+
+
+def test_run_on_dispatch_keeps_a_selected_rocm_stage():
+    registrations = [_registration("tests/e2e/test_rocm.py", "stage-c-4-gpu-mi350")]
+    changed_files = (ChangedFile("M", ("miles/trainer.py",)),)
+
+    skipped = set(_select(changed_files, registrations, raw_labels=("run-ci-precision", "run-on-blackwell")))
+
+    assert "stage-c-4-gpu-mi350" not in skipped
 
 
 def test_bypass_fastfail_does_not_make_a_docs_change_affect_gpu_stages():
@@ -304,19 +316,40 @@ def test_policy_cli_image_demand_matches_selected_gpu_tests(
     assert outputs["needs_cuda_image"] == str("stage-c-4-gpu-h200" in expected_stages).lower()
 
 
-def test_image_jobs_require_their_selected_gpu_stages():
+def test_image_builds_and_resolvers_need_cuda():
     cuda = WORKFLOW.read_text()
-    build = cuda.split("\n  docker-build:\n", 1)[1].split("\n  resolve-ci-image:\n", 1)[0]
-    resolver = cuda.split("\n  resolve-ci-image:\n", 1)[1].split("\n  stage-a-cpu:\n", 1)[0]
+    builds = cuda.split("\n  docker-build-amd64:\n", 1)[1].split("\n  resolve-ci-image-amd64:\n", 1)[0]
+    resolver = cuda.split("\n  resolve-ci-image-amd64:\n", 1)[1].split("\n  stage-a-cpu:\n", 1)[0]
     assert "needs_cuda_image: ${{ steps.resolve.outputs.needs_cuda_image }}" in cuda
-    assert "needs.resolve-ci-policy.outputs.needs_cuda_image == 'true'" in build
-    assert "needs: [docker-build]" in resolver
-    assert "needs.docker-build.result == 'success'" in resolver
+    # Both the amd64 and the arm64 call.
+    assert builds.count("(needs.resolve-ci-policy.outputs.needs_cuda_image == 'true' ||") == 2
+    # A CPU-only PR build-tests its image on request.
+    assert builds.count("contains(github.event.pull_request.labels.*.name, 'rebuild-ci-image')) &&") == 2
+    assert "needs: [resolve-ci-policy, docker-build-amd64]" in resolver
+    assert "needs.docker-build-amd64.result == 'success'" in resolver
+    assert "needs.resolve-ci-policy.outputs.needs_cuda_image == 'true'" in resolver
 
     rocm = WORKFLOW.with_name("pr-test-rocm.yml").read_text()
-    resolver = rocm.split("\n  resolve-ci-image:\n", 1)[1].split("\n  resolve-ci-deps:\n", 1)[0]
-    assert "needs: [resolve-ci-policy]" in resolver
-    assert (
-        "if: ${{ !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350') }}"
-        in resolver
-    )
+    policy = rocm.split("\n  resolve-ci-policy:\n", 1)[1].split("    steps:", 1)[0]
+    build = rocm.split("\n  docker-build-rocm10-mi35x:\n", 1)[1].split("\n  resolve-ci-image:\n", 1)[0]
+    resolver = rocm.split("\n  resolve-ci-image:\n", 1)[1].split("    runs-on:", 1)[0]
+    for stage in ("stage-c-2-gpu-mi350", "stage-c-4-gpu-mi350", "stage-c-8-gpu-mi350"):
+        assert f"contains(fromJSON(steps.resolve.outputs.skipped_stages || '[]'), '{stage}')" in policy
+    assert "needs: [resolve-ci-policy]" in build
+    assert "arch: rocm10-mi35x" in build
+    assert "(needs.resolve-ci-policy.outputs.needs_rocm_image == 'true' ||" in build
+    assert "contains(github.event.pull_request.labels.*.name, 'rebuild-ci-image'))" in build
+    assert "needs: [resolve-ci-policy, docker-build-rocm10-mi35x]" in resolver
+    assert "needs.docker-build-rocm10-mi35x.result == 'success'" in resolver
+    assert "needs.resolve-ci-policy.outputs.needs_rocm_image == 'true'" in resolver
+
+
+def test_each_cuda_stage_requires_the_image_of_its_declared_architecture():
+    jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+    for name, stage in CUDA_STAGES.items():
+        # Both B200 stages are planned by one job.
+        job = jobs.get(name) or jobs["stage-c-b200"]
+        resolver = f"resolve-ci-image-{stage.image_arch}"
+        assert resolver in job["needs"], name
+        assert f"needs.{resolver}.outputs.container_image" in job["with"]["container_image"], name
+        assert f"docker-build-{stage.image_arch}" in jobs[resolver]["needs"]

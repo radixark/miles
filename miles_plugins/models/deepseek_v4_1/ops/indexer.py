@@ -137,7 +137,7 @@ def indexer_select(
             indexer_replay_manager.check_replay_indices(idx, replay_idx)
         idx = indexer_replay_manager.fill_replay_padding(replay_idx, max(n_kv, topk))
     idx = idx.reshape(bsz, seqlen, topk)
-    # Replay fills all-padding rows with arange; restore the compressed-key bounds.
+    # Replay fills all-padding rows with in-range ids; restore the compressed-key bounds.
     idx = torch.where(idx < compress_lens.unsqueeze(-1), idx, -1)
     if not canonical_topk:
         idx = idx.sort(dim=-1).values

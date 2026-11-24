@@ -20,7 +20,6 @@ miles/
 │   ├── ray/                  # Ray actors, placement groups, the train and rollout groups
 │   ├── rollout/              # rollout functions, data source, filters, fully-async buffer
 │   ├── router/               # Miles Router (FastAPI proxy in router.py)
-│   ├── dashboard/            # the run dashboard (collector + backend)
 │   ├── true_on_policy/       # true-on-policy contracts and model profiles
 │   └── utils/                # arguments.py, async / IO / distributed helpers, audit utils
 ├── miles_plugins/            # opt-in plugins, imported by name from flags
@@ -28,6 +27,7 @@ miles/
 │   ├── mbridge/              # per-architecture weight bridges
 │   ├── megatron_bridge/      # megatron.bridge shims
 │   └── optimizers/           # optimizer plugins (NVMe streaming store)
+├── packages/                 # packages that install on their own
 ├── scripts/                  # launchers, one per recipe; scripts/models/ holds the architecture flags
 ├── tools/                    # checkpoint converters, quantizers, profilers
 ├── tests/                    # fast / fast-gpu / e2e / ci / manual (see Running CI)
@@ -43,6 +43,7 @@ git remote add me git@github.com:<your_user>/miles.git
 git checkout -b feat/awesome
 
 pip install -e . --no-deps       # editable install, deps come from the image
+pip install -e packages/miles-dashboard --no-deps  # the dashboard plugin, also editable
 pre-commit install               # optional, runs the hooks on every commit
 
 pytest tests/fast                # CPU suite, no GPU needed
@@ -186,12 +187,13 @@ runs; any maintainer-applied `run-ci-*` label doubles as the approval.
 
 ## PR-description CI tags
 
-Three directives are read out of the PR description itself, one per line, matched at the
+Four directives are read out of the PR description itself, one per line, matched at the
 start of a line:
 
 | Line in the PR description | Effect |
 |---|---|
 | `ci-image-tag: <tag>` | Run the GPU suites on `radixark/miles:<tag>` instead of `dev`. Must be a bare tag, not a full image reference |
+| `ci-rocm-image-tag: <tag>` | Select a bare ROCm tag for suites and file runs. `pr-<number>-rocm10-mi35x` uses `radixark/miles`; other tags use `rocm/sgl-dev` |
 | `ci-sglang-pr: <ref>` | Check the SGLang tree out at `<ref>` instead of the default `sglang-miles` branch |
 | `ci-megatron-pr: <ref>` | Check Megatron-LM out at `<ref>` instead of the default `miles-main` branch |
 
@@ -206,9 +208,10 @@ ci-image-tag: dev-202608100600
 ```
 
 Precedence, when several sources disagree: a `workflow_dispatch` input wins, then the
-PR-description line, then the default. `ci-image-tag:` has one more rule: on a PR that
-built its own image, the fresh `pr-<number>` tag outranks the directive, so a docker PR
-always tests what it just built.
+PR-description line, then the default. For both CUDA and ROCm suites, a current PR
+image (`pr-<number>` or `pr-<number>-rocm10-mi35x`) outranks its corresponding body
+directive, including when a matching image is reused. A called workflow's
+`image_tag` also outranks these choices. See [image selection](/developer/ci/00-stage#shared-by-cuda-and-rocm).
 
 ## PR conventions
 

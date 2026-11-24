@@ -1,46 +1,26 @@
-"""The synthetic rollout shards a fixed-shape (TPU) trainer compiles its first step on (--compile-warmup)."""
+"""The synthetic rollout shard a fixed-shape (TPU) trainer compiles its first step on (--compile-warmup)."""
 
-from collections.abc import Iterator
 from typing import Any
 
-from miles.utils.data import fixed_shape_length_buckets
+import numpy as np
 
 # a one-token prompt and one response token
 _MIN_SAMPLE_LENGTH = 2
 
 
-def warmup_shards(
-    *, seq_len: int, pad_size: int, max_tokens_per_gpu: int, num_samples: int
-) -> Iterator[tuple[int, dict[str, Any]]]:
-    """One optimizer step's worth of samples per length bucket, sized so the packer gives the bucket a microbatch.
+def warmup_shard(num_samples: int, routed_experts_shape: tuple[int, int] | None = None) -> dict[str, Any]:
+    """One optimizer step's worth of the shortest samples, keyed as the rollout side ships a shard: zero tokens,
+    a one-token prompt, the rest response.
 
-    A bucket the samples overshoot even at their minimum length is skipped; it compiles at its first real step.
+    Every fixed-shape microbatch pads to --seq-length, so any batch compiles the step's programs.
+    `routed_experts_shape` is `(num_layers, top_k)` under rollout routing replay, whose steps compile the replay
+    programs: each sample then carries the engine's routing rows.
     """
-    for bucket in sorted(fixed_shape_length_buckets(seq_len)):
-        lengths = _sample_lengths(
-            bucket, pad_size=pad_size, max_tokens_per_gpu=max_tokens_per_gpu, num_samples=num_samples
-        )
-        if lengths is not None:
-            yield bucket, _zero_token_shard(lengths)
-
-
-def _sample_lengths(bucket: int, *, pad_size: int, max_tokens_per_gpu: int, num_samples: int) -> list[int] | None:
-    # get_batch pads a packed microbatch up to pad_size, so its tokens must round down to it to stay in the bucket
-    tokens = bucket - bucket % pad_size
-    if tokens > max_tokens_per_gpu:
-        # the packer gives a sample above its cap a microbatch of its own; the rest share the smallest bucket
-        return [tokens] + [_MIN_SAMPLE_LENGTH] * (num_samples - 1)
-    if tokens < _MIN_SAMPLE_LENGTH * num_samples:
-        return None
-    return [tokens // num_samples] * num_samples
-
-
-def _zero_token_shard(lengths: list[int]) -> dict[str, Any]:
-    """A shard keyed as the rollout side ships one: zero tokens, a one-token prompt, the rest response."""
+    lengths = [_MIN_SAMPLE_LENGTH] * num_samples
     response_lengths = [length - 1 for length in lengths]
     sample_ids = list(range(len(lengths)))
     zeros = [0.0] * len(lengths)
-    return {
+    shard = {
         "tokens": [[0] * length for length in lengths],
         "total_lengths": list(lengths),
         "response_lengths": response_lengths,
@@ -55,3 +35,10 @@ def _zero_token_shard(lengths: list[int]) -> dict[str, Any]:
         "rollout_ids": list(sample_ids),
         "partition": list(sample_ids),
     }
+    if routed_experts_shape is not None:
+        # replay's padding rows: the routers spread them across the experts, and the --ci-test
+        # replay check skips them
+        shard["rollout_routed_experts"] = [
+            np.full((length - 1, *routed_experts_shape), -1, dtype=np.int32) for length in lengths
+        ]
+    return shard

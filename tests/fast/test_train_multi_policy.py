@@ -32,6 +32,7 @@ def _make_args(**overrides: Any) -> Namespace:
         update_weights_interval=1,
         save=None,
         save_interval=None,
+        keep_recent_checkpoints=None,
         save_trigger_sentinel=None,
         debug_exit_after_rollout=None,
         check_weight_update_equal=False,

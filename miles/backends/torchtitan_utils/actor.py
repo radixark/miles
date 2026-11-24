@@ -8,13 +8,14 @@ import torch.distributed as dist
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.torchtitan_utils import compat
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
-from miles.backends.torchtitan_utils.compile_warmup import warmup_shards
+from miles.backends.torchtitan_utils.compile_warmup import warmup_shard
 from miles.backends.torchtitan_utils.config import build_trainer_config
 from miles.backends.torchtitan_utils.hf_weight_iterator import TitanHfWeightIterator
 from miles.backends.torchtitan_utils.lora_checkpoint import TorchtitanLoraCheckpoint
 from miles.backends.torchtitan_utils.optimizer_state_on_disk import setup_adam_state_on_disk
 from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallelism_context_from_config
 from miles.backends.torchtitan_utils.routing_replay import install as install_routing_replay
+from miles.backends.torchtitan_utils.routing_replay import router_top_k
 from miles.backends.torchtitan_utils.trainer import TitanTrainer
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.replay.routing_replay import enable as enable_routing_replay
@@ -99,8 +100,10 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         )
         install_routing_replay(self.trainer.model_parts)
 
+        # torchtitan shards sequences inside the model, so CP peers hold the same rollout data
         cp_mesh = self.trainer.parallelism.get_optional_mesh("cp")
         cp_rank0 = cp_mesh is None or dist.get_rank(cp_mesh.get_group()) == 0
+        self.dumps_train_data = cp_rank0
         if cp_rank0 and get_parallel_state().is_metrics_rank:
             init_tracking(args, primary=False)
 
@@ -143,23 +146,17 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         print_memory(f"after releasing the GPU cache for {where}")
 
     def _compile_warmup(self) -> None:
-        """Compile the first step's programs on a synthetic batch per length bucket, before the engines are up."""
-        args = self.args
-        state = get_parallel_state()
-        pad_size = state.tp.size * args.data_pad_size_multiplier  # as get_batch pads a packed microbatch
-        seconds_per_bucket = {}
-        shards = warmup_shards(
-            seq_len=args.backend.seq_length,
-            pad_size=pad_size,
-            max_tokens_per_gpu=args.max_tokens_per_gpu,
-            num_samples=args.backend.global_batch_size // state.effective_dp.size,
+        """Compile the first step's programs on a synthetic batch, before the engines are up."""
+        start = time.monotonic()
+        num_samples = self.args.backend.global_batch_size // get_parallel_state().effective_dp.size
+        # the engine's rows: a stream per decoder layer (as rollout decodes them), top-k wide
+        routed_experts_shape = (
+            (self.args.backend.num_layers, router_top_k(self.model_parts))
+            if self.args.use_rollout_routing_replay
+            else None
         )
-        for bucket, shard in shards:
-            start = time.monotonic()
-            self._compile_warmup_passes(shard)
-            seconds_per_bucket[bucket] = round(time.monotonic() - start, 1)
-        assert seconds_per_bucket, f"--compile-warmup warmed no length bucket of {args.backend.seq_length}"
-        logger.info(f"Compiled the first step's programs; seconds per length bucket: {seconds_per_bucket}")
+        self._compile_warmup_passes(warmup_shard(num_samples, routed_experts_shape=routed_experts_shape))
+        logger.info(f"Compiled the first step's programs in {time.monotonic() - start:.1f} s")
 
     def _step_runner(self):
         return self.trainer.step_runner()

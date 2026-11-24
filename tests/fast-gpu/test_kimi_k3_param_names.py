@@ -16,7 +16,7 @@ register_cuda_ci(
     est_time=60, suite="stage-b-2-gpu-h200", labels=["miles-plugin"], hardware=["hopper", "blackwell"], num_gpus=1
 )
 
-register_rocm_ci(est_time=60, suite="nightly-stage-c-2-gpu-mi350", labels=["miles-plugin"])
+register_rocm_ci(est_time=60, suite="stage-c-2-gpu-mi350", labels=["miles-plugin"])
 
 pytest.importorskip("fla")
 pytest.importorskip("mbridge")
