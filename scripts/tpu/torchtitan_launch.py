@@ -219,9 +219,7 @@ def _trainer_env(args: ScriptArgs) -> dict[str, str]:
         {"TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": args.compile_cache_dir} if args.compile_cache_dir else {}
     )
     sglang_admin_key = (
-        {"SGLANG_ADMIN_API_KEY": admin_api_key}
-        if (admin_api_key := os.environ.get("SGLANG_ADMIN_API_KEY"))
-        else {}
+        {"SGLANG_ADMIN_API_KEY": admin_api_key} if (admin_api_key := os.environ.get("SGLANG_ADMIN_API_KEY")) else {}
     )
     return {
         **_slice_env(args, _TRAINER_LIBTPU_ARGS),
