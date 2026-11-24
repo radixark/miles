@@ -69,7 +69,7 @@ def compute_engine_launch_cmd(
 ) -> str:
     _assert_launch_gate_served()
     if args.use_sampling_support_replay:
-        _assert_sampling_support_replay_served()
+        _assert_sampling_support_replay_served(args)
 
     server_args_dict = _compute_server_args(
         args,
@@ -258,24 +258,30 @@ def _assert_launch_gate_served() -> None:
     )
 
 
-# Request fields sampling-support replay sends on every training request (`--rollout-top-p` < 1 or
-# `--rollout-top-k` > 0): the realized support, and its log-probs in support mode.
-_SAMPLING_SUPPORT_REPLAY_REQUEST_FIELDS = ("return_sampling_mask", "sampling_logprobs_mode")
+def _required_sampling_support_replay_fields(args) -> tuple[str, ...]:
+    from miles.rollout.generate_utils.sampling_mask import FLAT_SAMPLING_MASK_REQUEST_FIELDS
+    from miles.utils.rollout_topk_logprobs import requests_support_logprobs
+
+    fields = ["return_sampling_mask"]
+    if not args.use_output_store:
+        fields.extend(FLAT_SAMPLING_MASK_REQUEST_FIELDS)
+    if requests_support_logprobs(args):
+        fields.append("sampling_logprobs_mode")
+    return tuple(fields)
 
 
-@functools.cache
-def _assert_sampling_support_replay_served() -> None:
-    # Checked when the engine is launched: otherwise the run starts, and the first rollout fails on a
-    # request the engine rejects or a response without per-support log-probs.
+def _assert_sampling_support_replay_served(args) -> None:
+    # lazy import: avoid loading torch/zmq/sglang runtime on non-replay launches
     from sglang.srt.managers.io_struct import GenerateReqInput
 
-    missing = [
-        name for name in _SAMPLING_SUPPORT_REPLAY_REQUEST_FIELDS if name not in _record_field_names(GenerateReqInput)
-    ]
+    required = _required_sampling_support_replay_fields(args)
+    missing = [name for name in required if name not in _record_field_names(GenerateReqInput)]
     if missing:
+        remedies = ["upgrade sglang", "sample with --rollout-top-p 1 --rollout-top-k -1"]
+        if "sampling_logprobs_mode" in missing:
+            remedies.append("set --rollout-top-logprobs-num 0")
         raise RuntimeError(
-            "sampling-support replay (--rollout-top-p below 1 or a positive --rollout-top-k) needs an sglang "
-            f"whose generate requests take {', '.join(missing)}, and this sglang does not "
-            "(sglang-miles before v0.5.20 lacks support-mode log-probs). Upgrade sglang, or sample with "
-            "--rollout-top-p 1 --rollout-top-k -1."
+            "sampling-support replay needs an sglang whose generate requests take "
+            f"{', '.join(missing)}, and this sglang does not. "
+            f"Either {', or '.join(remedies)}."
         )

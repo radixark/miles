@@ -183,7 +183,24 @@ class TestTheLaunchGateSglangMustServe:
 
 
 @dataclasses.dataclass
-class _RequestWithSupportLogprobs:
+class _RequestWithAllReplayFields:
+    text: str = ""
+    return_sampling_mask: bool = False
+    return_flat_raw_sampling_mask: bool = False
+    return_flat_raw_sampling_mask_b64: bool = False
+    sampling_logprobs_mode: str | None = None
+
+
+@dataclasses.dataclass
+class _RequestWithInlineFlatMask:
+    text: str = ""
+    return_sampling_mask: bool = False
+    return_flat_raw_sampling_mask: bool = False
+    return_flat_raw_sampling_mask_b64: bool = False
+
+
+@dataclasses.dataclass
+class _RequestWithoutFlatMask:
     text: str = ""
     return_sampling_mask: bool = False
     sampling_logprobs_mode: str | None = None
@@ -191,8 +208,6 @@ class _RequestWithSupportLogprobs:
 
 @dataclasses.dataclass
 class _RequestWithMaskOnly:
-    """sglang-miles v0.5.19: the sampling mask, but no support-mode log-probs."""
-
     text: str = ""
     return_sampling_mask: bool = False
 
@@ -208,34 +223,87 @@ class TestSamplingSupportReplaySglangMustServe:
         from sglang.srt.managers import io_struct
 
         monkeypatch.setattr(io_struct, "GenerateReqInput", request)
-        sglang_engine._assert_sampling_support_replay_served.cache_clear()
 
     def test_the_installed_sglang_serves_replay(self) -> None:
-        """The pinned sglang must pass the check, or no replay run could start."""
-        sglang_engine._assert_sampling_support_replay_served.cache_clear()
-
-        sglang_engine._assert_sampling_support_replay_served()
+        """The pinned sglang must pass the check for inline replay and support log-probs."""
+        args = make_engine_args(
+            use_sampling_support_replay=True,
+            use_output_store=False,
+            rollout_top_logprobs_num=8,
+            rollout_sampling_logprobs_mode="support",
+        )
+        sglang_engine._assert_sampling_support_replay_served(args)
 
     @pytest.mark.parametrize(
-        ("request_type", "missing"),
+        ("request_type", "arg_overrides", "missing"),
         [
-            (_RequestWithMaskOnly, "sampling_logprobs_mode"),
-            (_RequestWithoutSamplingMask, "return_sampling_mask, sampling_logprobs_mode"),
+            pytest.param(
+                _RequestWithoutFlatMask,
+                {"use_output_store": False},
+                "return_flat_raw_sampling_mask, return_flat_raw_sampling_mask_b64",
+                id="inline_missing_flat_mask",
+            ),
+            pytest.param(
+                _RequestWithInlineFlatMask,
+                {"rollout_top_logprobs_num": 8, "rollout_sampling_logprobs_mode": "support"},
+                "sampling_logprobs_mode",
+                id="support_logprobs_missing_mode",
+            ),
+            pytest.param(
+                _RequestWithoutSamplingMask,
+                {"use_output_store": False},
+                "return_sampling_mask, return_flat_raw_sampling_mask, return_flat_raw_sampling_mask_b64",
+                id="missing_all_inline_fields",
+            ),
+            pytest.param(
+                _RequestWithoutSamplingMask,
+                {"use_output_store": True},
+                "return_sampling_mask",
+                id="output_store_missing_mask",
+            ),
         ],
     )
-    def test_a_replay_run_is_refused_at_launch(self, monkeypatch, request_type, missing) -> None:
+    def test_a_replay_run_is_refused_at_launch(self, monkeypatch, request_type, arg_overrides, missing) -> None:
         """Without the fields the run would start and fail only when the first rollout comes back."""
         self._pretend_generate_request_is(monkeypatch, request_type)
 
         with pytest.raises(RuntimeError, match=f"take {missing},"):
-            _cmd(args=make_engine_args(use_sampling_support_replay=True))
+            _cmd(args=make_engine_args(use_sampling_support_replay=True, **arg_overrides))
 
     def test_a_run_without_replay_launches_on_an_older_sglang(self, monkeypatch) -> None:
         self._pretend_generate_request_is(monkeypatch, _RequestWithoutSamplingMask)
 
         assert "sglang.launch_server" in _cmd(args=make_engine_args(use_sampling_support_replay=False))
 
-    def test_a_replay_run_launches_when_sglang_serves_it(self, monkeypatch) -> None:
-        self._pretend_generate_request_is(monkeypatch, _RequestWithSupportLogprobs)
+    @pytest.mark.parametrize(
+        ("request_type", "arg_overrides"),
+        [
+            pytest.param(
+                _RequestWithInlineFlatMask,
+                {"use_output_store": False, "rollout_top_logprobs_num": 0},
+                id="inline_without_topk_logprobs",
+            ),
+            pytest.param(
+                _RequestWithMaskOnly,
+                {"use_output_store": True, "rollout_top_logprobs_num": 0},
+                id="output_store_without_topk_logprobs",
+            ),
+            pytest.param(
+                _RequestWithAllReplayFields,
+                {
+                    "use_output_store": False,
+                    "rollout_top_logprobs_num": 8,
+                    "rollout_sampling_logprobs_mode": "support",
+                },
+                id="inline_with_support_logprobs",
+            ),
+        ],
+    )
+    def test_a_replay_run_launches_when_sglang_serves_required_fields(
+        self, monkeypatch, request_type, arg_overrides
+    ) -> None:
+        self._pretend_generate_request_is(monkeypatch, request_type)
+        if arg_overrides.get("use_output_store"):
+            monkeypatch.setattr(sglang_engine, "sglang_output_store_server_args", lambda args, *, local_hostname: {})
 
-        assert "sglang.launch_server" in _cmd(args=make_engine_args(use_sampling_support_replay=True))
+        assert "sglang.launch_server" in _cmd(args=make_engine_args(use_sampling_support_replay=True, **arg_overrides))

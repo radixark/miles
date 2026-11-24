@@ -80,10 +80,13 @@ def validate_sampling_support_request(
     return True
 
 
+FLAT_SAMPLING_MASK_REQUEST_FIELDS = ("return_flat_raw_sampling_mask", "return_flat_raw_sampling_mask_b64")
+
+
 def configure_sampling_mask_request(request: dict[str, Any]) -> None:
     """Ask for a requested sampling mask as flat base64 arrays, unless the output store takes it."""
     inline = request.get("return_sampling_mask", False) and not request.get(OUTPUT_STORE_REQUEST_KEY, False)
-    for key in ("return_flat_raw_sampling_mask", "return_flat_raw_sampling_mask_b64"):
+    for key in FLAT_SAMPLING_MASK_REQUEST_FIELDS:
         if inline:
             request[key] = True
         else:
