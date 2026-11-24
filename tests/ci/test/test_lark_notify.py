@@ -1,5 +1,7 @@
 import base64
+import http.client
 import importlib.util
+import io
 import json
 import sys
 import urllib.error
@@ -218,6 +220,57 @@ def test_green_card_makes_no_analysis_call_and_posts_once(monkeypatch):
     HANDLER.cmd_ci_status(args(), FakeGitHub(run(conclusion="success"), [job(conclusion="success")]))
     assert calls == [] and len(posted) == 1
     assert posted[0]["card"]["header"]["title"]["content"].endswith("PASSED (1 job)")
+
+
+@pytest.mark.parametrize("recover", [True, False])
+def test_truncated_jobs_response_retries_then_reports_the_run(monkeypatch, capsys, recover):
+    gh = HANDLER.GitHub("token", "radixark/miles", retries=2)
+    current_run = run(run_attempt=2, conclusion="success" if recover else "failure")
+    monkeypatch.setattr(gh, "run", lambda run_id: current_run)
+    monkeypatch.setattr(gh, "run_attempt_jobs", lambda *unused: [job()])
+    monkeypatch.setattr(HANDLER.time, "sleep", lambda seconds: None)
+    requests = []
+
+    class TruncatedResponse(io.BytesIO):
+        def read(self):
+            raise http.client.IncompleteRead(b"", 219073)
+
+    def open_jobs(request, timeout):
+        requests.append(request.full_url)
+        if recover and len(requests) == 2:
+            return io.BytesIO(json.dumps({"jobs": [job(conclusion="success")]}).encode())
+        return TruncatedResponse()
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", open_jobs)
+    if recover:
+        HANDLER.cmd_ci_status(args(dry_run=True), gh)
+    else:
+        with pytest.raises(RuntimeError, match="GET .*jobs"):
+            HANDLER.cmd_ci_status(args(dry_run=True), gh)
+
+    assert len(requests) == 2 and requests[0] == requests[1]
+    card = json.loads(capsys.readouterr().out)
+    header = card["card"]["header"]
+    if recover:
+        assert header["title"]["content"].endswith("PASSED (1 job, 1 flaky)")
+    else:
+        assert header["template"] == "red" and "FAIL" in header["title"]["content"]
+        assert "Job details unavailable" in markdown(card)
+        assert card["card"]["body"]["elements"][-1]["behaviors"][0]["default_url"] == current_run["html_url"]
+
+
+def test_missing_previous_attempt_keeps_current_failures(monkeypatch, capsys):
+    gh = FakeGitHub(run(run_attempt=2), [job()])
+
+    def unavailable(run_id, attempt):
+        raise RuntimeError("GitHub returned 502")
+
+    monkeypatch.setattr(gh, "run_attempt_jobs", unavailable)
+    monkeypatch.setattr(HANDLER, "analyze_failures", lambda **kwargs: no_analysis())
+    HANDLER.cmd_ci_status(args(dry_run=True), gh)
+    card = json.loads(capsys.readouterr().out)
+    assert "[unit](https://example/jobs/10)" in markdown(card)
+    assert "Previous attempt unavailable" in markdown(card)
 
 
 def test_failed_rerun_analyzes_only_still_and_new_displayed_jobs(monkeypatch):

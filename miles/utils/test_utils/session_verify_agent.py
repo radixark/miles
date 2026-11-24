@@ -5,7 +5,7 @@ Wired through ``--custom-generate-function-path`` /
 ``tests/e2e/sglang/test_session_server_multi_role/`` (one test file per
 model family) and ``scripts/tools/verify_session_tito_tokenizer.py``.
 
-Each sample runs one of two rollouts, named by the ``session_verify_kind`` of
+Each sample runs one of three rollouts, named by the ``session_verify_kind`` of
 its prompt record:
 
 - ``normal`` answers a tool call with a ``tool`` message and an answer with
@@ -17,10 +17,18 @@ its prompt record:
   accepts must succeed.  It also rolls back, appends a system message and
   injects assistant messages, which the session server must handle too.
 
-  Some steps need the model to call the tool, or to stop calling it.  A sample
-  whose model does not is recorded as unfinished and stops at that step; the
-  run fails only when too many spec samples are unfinished (the runner's
-  ``SPEC_UNFINISHED_RATIO_THRESHOLD``).
+- ``truncate`` generates one reply in full, regenerates it with a ``max_tokens``
+  that would stop it inside its reasoning, a tool call or its answer
+  (``session_verify_cut_kind`` of the prompt record), and continues the cut
+  turn.  The continuation must succeed exactly when the run continues
+  truncated turns (``--allow-truncated-continuation``), and then the next
+  prompt must close the cut turn with the family's closer.
+
+Some spec and truncate steps need something of the model: a tool call, no tool
+call, or a reply that has the structure to cut.  A sample whose model does not
+deliver is recorded as unfinished and stops at that step; the run fails only
+when too many samples of a rollout are unfinished (the runner's
+``UNFINISHED_RATIO_THRESHOLD``).
 """
 
 from __future__ import annotations
@@ -42,6 +50,12 @@ from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_hub.agentic_tool_call import generate as _base_generate
 from miles.utils.chat_template_utils.tito_tokenizer import VALID_APPEND_ROLES, FixedTemplate, TITOTokenizerType
 from miles.utils.test_utils.openai_stream_client import stream_chat_completions
+from miles.utils.test_utils.session_truncation import (
+    check_continued_cuts,
+    cut_length,
+    load_tito_tokenizer,
+    record_cut_kind,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -93,16 +107,21 @@ def _journal_verifier_assertions(stage: str):
 class SessionVerifyKind(StrEnum):
     NORMAL = "normal"
     SPEC = "spec"
+    TRUNCATE = "truncate"
 
 
 # Stage name of ``generate`` in a journaled verification error.
 _GENERATE_STAGE = "session_verify_agent.generate"
 # Prompt-record metadata key that names a sample's rollout.
 SESSION_VERIFY_KIND_KEY = "session_verify_kind"
-# Agent metadata key carrying a spec rollout's expected and actual statuses.
+# Prompt-record metadata key that names where a truncate sample cuts its reply (``truncation.CUT_KINDS``).
+SESSION_VERIFY_CUT_KIND_KEY = "session_verify_cut_kind"
+# Agent metadata key carrying a spec or truncate rollout's expected and actual statuses.
 EXPECTATIONS_KEY = "session_verify_expectations"
-# Agent metadata key carrying why a spec rollout stopped before its last step, or None.
+# Agent metadata key carrying why a spec or truncate rollout stopped before its last step, or None.
 UNFINISHED_KEY = "session_verify_unfinished"
+# Agent metadata key carrying a truncate rollout's continued cuts (``session_truncation.check_continued_cuts``).
+CUTS_KEY = "session_verify_cuts"
 
 # Mismatch tiers reported by the session-server's per-sample comparator.  Any
 # occurrence of these "hard" types in a sample's tito_session_mismatch
@@ -124,6 +143,16 @@ _RETRY_SEED_STRIDE = 1_000_000
 _MAX_TOOL_ROUNDS = 3
 _ACCEPTED = 200
 _REFUSED = 400
+# A run that does not continue truncated turns refuses the continuation with this status.
+_TRUNCATED_REFUSED = 409
+# The one probe of a truncate rollout.
+CONTINUE_CUT_STEP = "continue cut turn"
+# Where a truncate rollout cuts when the family declares no closer to place the cut by.
+_BLIND_CUT_TOKENS = 8
+# Regenerations a truncate rollout tries until one stops in the planned place.  Each is a new sample:
+# a training session pins the temperature and refuses top_k, and SGLang honours a seed only under
+# deterministic inference, so nothing makes the regeneration repeat the probed reply.
+_MAX_CUT_ATTEMPTS = 4
 
 
 def fixed_template(tito_model: TITOTokenizerType | str) -> FixedTemplate:
@@ -217,7 +246,7 @@ def spec_probe_steps(fixed: FixedTemplate) -> list[str]:
 
 
 def build_initial_messages() -> list[dict]:
-    """The fixed (system, user) prompt both rollouts start from."""
+    """The fixed (system, user) prompt every rollout starts from."""
     return [
         {"role": "system", "content": INITIAL_SYSTEM_PROMPT},
         {"role": "user", "content": INITIAL_USER_PROMPT},
@@ -236,22 +265,31 @@ async def _chat(client, base_url, messages, request_kwargs, *, label):
     return resp.json()
 
 
-async def _chat_status(client, base_url, messages, request_kwargs, *, label) -> tuple[int, dict | None]:
-    """Send a request the server may refuse; return its status and, on 200, the response.
+async def _chat_status(
+    client, base_url, messages, request_kwargs, *, label, refused_status=_REFUSED
+) -> tuple[int, dict | None]:
+    """Send a request the server may refuse with *refused_status*; return its status and, on 200, the response.
 
-    Non-streaming, so a 400 reaches the caller as a status instead of a broken stream.
+    Non-streaming, so a refusal reaches the caller as a status instead of a broken stream.
     """
     payload = {"messages": messages, "tools": TOOLS, **request_kwargs, "stream": False}
     resp = await client.post(f"{base_url}/v1/chat/completions", json=payload)
     if resp.status_code == _ACCEPTED:
         return _ACCEPTED, resp.json()
-    assert resp.status_code == _REFUSED, f"{label} failed ({resp.status_code}): {resp.text}"
+    assert resp.status_code == refused_status, f"{label} failed ({resp.status_code}): {resp.text}"
     logger.info("%s refused (%d): %s", label, resp.status_code, resp.text[:300])
-    return _REFUSED, None
+    return refused_status, None
+
+
+async def _session_records(client, base_url) -> list[dict]:
+    """The session's records along its latest generation's path, oldest first."""
+    resp = await client.get(base_url)
+    assert resp.status_code == 200, f"reading the session failed ({resp.status_code}): {resp.text}"
+    return resp.json()["records"]
 
 
 class _ModelBehaviorError(Exception):
-    """The model did not do what a spec rollout step needs: call the tool, or stop calling it.
+    """The model did not do what a rollout step needs: call the tool, stop calling it, or reply with what is to be cut.
 
     The server did nothing wrong, so the sample stops at that step and stays valid.
     """
@@ -280,6 +318,7 @@ class _Driver:
     request_kwargs: dict
     events: list[str] = field(default_factory=list)
     expectations: list[dict] = field(default_factory=list)
+    cuts: list[dict] = field(default_factory=list)
     counters: dict[str, int] = field(
         default_factory=lambda: dict.fromkeys(
             (
@@ -315,17 +354,29 @@ class _Driver:
             f"needed); replies: {rejected}"
         )
 
-    async def probe(self, messages, *, label, expected_status) -> dict | None:
-        """Send a continuation the spec decides; record its status and return the reply if it was accepted."""
+    async def probe(self, messages, *, label, expected_status, refused_status=_REFUSED) -> dict | None:
+        """Send a continuation the family decides; record its status and return the reply if it was accepted."""
         for retry in range(_MAX_RESAMPLES + 1):
             kwargs = _with_retry_seed(self.request_kwargs, retry)
-            status, response = await _chat_status(self.client, self.base_url, messages, kwargs, label=label)
-            if status == _REFUSED or response["choices"][0].get("finish_reason") != "length":
+            status, response = await _chat_status(
+                self.client, self.base_url, messages, kwargs, label=label, refused_status=refused_status
+            )
+            if status != _ACCEPTED or response["choices"][0].get("finish_reason") != "length":
                 break
         else:
             raise AssertionError(f"{label} exhausted {_MAX_RESAMPLES} resamples after finish_reason='length'")
         self.expectations.append({"step": label, "expected_status": expected_status, "actual_status": status})
-        return None if status == _REFUSED else self._accept(response["choices"][0]["message"])
+        return None if status != _ACCEPTED else self._accept(response["choices"][0]["message"])
+
+    async def cut(self, messages, *, max_tokens: int, label, retry: int) -> dict | None:
+        """Regenerate the last reply with at most *max_tokens* tokens; ``None`` if it ended by itself before that."""
+        kwargs = _with_retry_seed({**self.request_kwargs, "max_tokens": max_tokens}, retry)
+        response = await _chat(self.client, self.base_url, messages, kwargs, label=label)
+        choice = response["choices"][0]
+        return choice["message"] if choice.get("finish_reason") == "length" else None
+
+    async def records(self) -> list[dict]:
+        return await _session_records(self.client, self.base_url)
 
     def _accept(self, message: dict) -> dict:
         self.counters["tool_call_count"] += len(message.get("tool_calls") or [])
@@ -444,11 +495,64 @@ async def _run_spec(driver: _Driver, fixed: FixedTemplate) -> None:
         await driver.chat(messages, label="Assistant input")
 
 
-def _assert_spec_rollout_supported(tito_model: str, fixed: FixedTemplate) -> None:
-    # The spec rollout returns to a tool call with a user question after an answer.
+async def _run_truncate(driver: _Driver, tito, *, cut_kind: str, expected_status: int) -> None:
+    """Cut one reply inside *cut_kind*, continue the cut turn, and check what the server did with it.
+
+    *tito* is the family's TITO tokenizer, or ``None`` for a family without a closer.
+    """
+    messages = build_initial_messages()
+    if cut_kind == "answer":
+        # The first reply is a tool call without prose; the answer follows its result.
+        call = await driver.chat(messages, label="Initial", need_tool_call=True)
+        driver.events.append("initial")
+        driver.append_tool_results(messages, call)
+    await driver.chat(messages, label="Probe", need_tool_call=cut_kind == "tool_call")
+    driver.events.append("probe")
+    # A full reply tells where such a reply has its reasoning, call and answer: the probe places the
+    # first cut.  A regeneration is another sample, so try a few until one stops in the planned place;
+    # one that ends by itself is a full reply too and places the next cut.  Each attempt replaces the
+    # one before it in the session, so only the last one is left to continue, wherever it stopped.
+    max_tokens = _BLIND_CUT_TOKENS
+    cut = None
+    for attempt in range(_MAX_CUT_ATTEMPTS):
+        if tito is not None and cut is None:
+            placed = cut_length(tito, (await driver.records())[-1], cut_kind)
+            if placed is None and attempt == 0:
+                raise _ModelBehaviorError(f"the probed reply has no {cut_kind} to cut")
+            max_tokens = placed or max_tokens
+        cut = await driver.cut(messages, max_tokens=max_tokens, label=f"Cut in {cut_kind}", retry=attempt)
+        driver.events.append("cut")
+        if cut is not None and (tito is None or record_cut_kind(tito, (await driver.records())[-1]) == cut_kind):
+            break
+    if cut is None:
+        raise _ModelBehaviorError(f"the last regenerated reply ended by itself within {max_tokens} tokens")
+    driver.counters["tool_call_count"] += len(cut.get("tool_calls") or [])
+
+    probed_messages = list(messages)
+    # The continuation follows the normal rollout: answer the cut turn's complete calls, else ask on.
+    if cut.get("tool_calls"):
+        driver.append_tool_results(messages, cut)
+    else:
+        driver.append_user(messages, cut, driver.next_city_question())
+    reply = await driver.probe(
+        messages, label=CONTINUE_CUT_STEP, expected_status=expected_status, refused_status=_TRUNCATED_REFUSED
+    )
+    if reply is None:
+        # The refusal leaves the cut turn as the session's last one, and a turn nothing closed fails
+        # the mismatch check.  Re-sending the probed request replaces it with a complete turn.
+        await driver.chat(probed_messages, label="After refused cut")
+        driver.events.append("regenerate_refused_cut")
+    elif tito is not None:
+        driver.events.append("continue_cut")
+        driver.cuts.extend(check_continued_cuts(tito, await driver.records()))
+
+
+def _assert_rollout_supported(kind: SessionVerifyKind, tito_model: str, fixed: FixedTemplate) -> None:
+    # The spec rollout returns to a tool call with a user question after an answer,
+    # and the truncate rollout continues a cut turn without calls with one.
     if "user" not in fixed.roles_after_no_tool_call:
         raise ValueError(
-            f"the spec rollout needs 'user' after an assistant without tool calls; "
+            f"the {kind} rollout needs 'user' after an assistant without tool calls; "
             f"{tito_model!r} accepts only {sorted(fixed.roles_after_no_tool_call)} there"
         )
 
@@ -463,50 +567,67 @@ def _session_verify_kind(metadata: dict) -> SessionVerifyKind:
 async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     """Custom-agent entry point.
 
-    Returns ``{"driver_events": [...], EXPECTATIONS_KEY: [...], UNFINISHED_KEY: str | None, **counters}``.
+    Returns ``{"driver_events": [...], EXPECTATIONS_KEY: [...], CUTS_KEY: [...], UNFINISHED_KEY: str | None,
+    **counters}``.
 
     ``metadata`` must carry ``tito_model`` (the ``generate`` wrapper below
     injects it from ``args.tito_model``) and ``session_verify_kind`` (from the
-    prompt record).  ``prompt`` is ignored: both rollouts start from
-    ``build_initial_messages`` so runs are reproducible.
+    prompt record).  A truncate rollout also needs ``session_verify_cut_kind``
+    (from the prompt record) and the run's ``hf_checkpoint`` and resolved
+    ``allow_truncated_continuation`` (injected by ``generate``).  ``prompt`` is
+    ignored: every rollout starts from ``build_initial_messages`` so runs are
+    reproducible.
     """
     tito_model = metadata.get("tito_model")
     if tito_model is None:
         raise ValueError("session_verify_agent.run_agent requires tito_model in metadata")
     kind = _session_verify_kind(metadata)
     fixed = fixed_template(tito_model)
-    if kind is SessionVerifyKind.SPEC:
-        _assert_spec_rollout_supported(tito_model, fixed)
+    if kind is not SessionVerifyKind.NORMAL:
+        _assert_rollout_supported(kind, tito_model, fixed)
 
     rk = {k: v for k, v in request_kwargs.items() if k not in ("tools",)}
     async with httpx.AsyncClient(timeout=180) as client:
         driver = _Driver(client=client, base_url=base_url, request_kwargs=rk)
         unfinished = None
-        if kind is SessionVerifyKind.SPEC:
-            try:
+        try:
+            if kind is SessionVerifyKind.SPEC:
                 await _run_spec(driver, fixed)
-            except _ModelBehaviorError as exc:
-                unfinished = str(exc)
-                logger.warning("Spec rollout unfinished after events=%s: %s", driver.events, unfinished)
-        else:
-            await _run_normal(driver, cycles=metadata.get("session_verify_cycles", DEFAULT_CYCLES))
+            elif kind is SessionVerifyKind.TRUNCATE:
+                await _run_truncate(
+                    driver,
+                    (
+                        None
+                        if fixed.truncation_closer is None
+                        else load_tito_tokenizer(metadata["hf_checkpoint"], tito_model)
+                    ),
+                    cut_kind=metadata[SESSION_VERIFY_CUT_KIND_KEY],
+                    expected_status=_ACCEPTED if metadata["allow_truncated_continuation"] else _TRUNCATED_REFUSED,
+                )
+            else:
+                await _run_normal(driver, cycles=metadata.get("session_verify_cycles", DEFAULT_CYCLES))
+        except _ModelBehaviorError as exc:
+            unfinished = str(exc)
+            logger.warning("%s rollout unfinished after events=%s: %s", kind, driver.events, unfinished)
 
     logger.info("Agent done: kind=%s events=%s expectations=%s", kind, driver.events, driver.expectations)
     return {
         "driver_events": driver.events,
         EXPECTATIONS_KEY: driver.expectations,
+        CUTS_KEY: driver.cuts,
         UNFINISHED_KEY: unfinished,
         **driver.counters,
     }
 
 
-def _verify_tito_samples(samples, *, kind: SessionVerifyKind) -> None:
+def _verify_tito_samples(samples, *, kind: SessionVerifyKind, cut_kind: str | None = None) -> None:
     """Record every sample and defer hard failures to the run-level gate.
 
     The rollout loop treats custom-generate exceptions as retryable sample
-    failures.  With a metrics sidecar, hard TITO mismatches and unmet spec
-    expectations must therefore be persisted instead of raised here and
-    discarded with the sample.  Direct callers without a sidecar retain the
+    failures.  With a metrics sidecar, hard TITO mismatches, unmet
+    expectations and cut turns the closer did not close must therefore be
+    persisted instead of raised here and discarded with the sample.  *cut_kind*
+    is where a truncate sample was told to cut.  Direct callers without a sidecar retain the
     immediate-failure behavior.
     """
     metrics_path = os.environ.get("MILES_SESSION_VERIFY_METRICS_PATH")
@@ -524,12 +645,15 @@ def _verify_tito_samples(samples, *, kind: SessionVerifyKind) -> None:
             logger.error("Hard TITO mismatch: leaf=%r mismatches=%r", sample.metadata.get("leaf"), forbidden)
         expectations = sample.metadata.get(EXPECTATIONS_KEY) or []
         unmet = [e for e in expectations if e["actual_status"] != e["expected_status"]]
+        cut_problems = [problem for cut in sample.metadata.get(CUTS_KEY) or [] for problem in cut["problems"]]
         if metrics_path:
-            _append_session_verify_record(_sample_record(i, sample, kind, mismatches, forbidden, expectations))
-        elif forbidden or unmet:
+            record = _sample_record(i, sample, kind, mismatches, forbidden, expectations)
+            _append_session_verify_record({**record, "cut_kind": cut_kind})
+        elif forbidden or unmet or cut_problems:
             raise AssertionError(
-                f"Session multi-role e2e: {kind} sample {i} has forbidden mismatches {forbidden} "
-                f"and unmet spec expectations {unmet}.  Both must be empty for any TITO-correct setup."
+                f"Session multi-role e2e: {kind} sample {i} has forbidden mismatches {forbidden}, "
+                f"unmet expectations {unmet} and cut turns the closer did not close {cut_problems}.  "
+                "All must be empty for any TITO-correct setup."
             )
 
 
@@ -556,6 +680,7 @@ def _sample_record(index, sample, kind, mismatches, forbidden, expectations) -> 
         "kind": str(kind),
         "driver_events": sample.metadata.get("driver_events", []),
         "expectations": expectations,
+        "cuts": sample.metadata.get(CUTS_KEY) or [],
         "unfinished": sample.metadata.get(UNFINISHED_KEY),
         "had_assistant_mismatch": bool(assistant_mismatches),
         "total_mismatches": len(mismatches),
@@ -613,10 +738,10 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     - The sample's prompt must be one of the planned ones (``_journal_unplanned_prompt``).
     - Every sample must carry the agent's metadata: the base generate still
       collects the samples of an agent that raised, and those carry none.
-    - Spec samples must carry one expectation per probe of the family, in order;
-      an unfinished one carries the probes up to the step it stopped at.  Without
-      a metrics sidecar an unfinished sample fails here (with one, the runner
-      gates how many there are across the run).
+    - Spec and truncate samples must carry one expectation per probe of their
+      rollout, in order; an unfinished one carries the probes up to the step it
+      stopped at.  Without a metrics sidecar an unfinished sample fails here
+      (with one, the runner gates how many there are across the run).
     - Without a metrics sidecar, at least one normal sample must have answered
       a tool call (with one, the runner checks this across the run).
     """
@@ -629,15 +754,21 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     # Sample.metadata is mutable even when the outer dataclass is frozen.
     input.sample.metadata["tito_model"] = tito_model
     input.sample.metadata["session_verify_cycles"] = cycles
+    if kind is SessionVerifyKind.TRUNCATE:
+        input.sample.metadata["hf_checkpoint"] = input.args.hf_checkpoint
+        input.sample.metadata["allow_truncated_continuation"] = input.args.allow_truncated_continuation
 
     output = await _base_generate(input)
 
     samples = output.samples if isinstance(output.samples, list) else [output.samples]
     if not samples:
         raise AssertionError("Session multi-role e2e: generate returned no samples")
-    _verify_tito_samples(samples, kind=kind)
+    _verify_tito_samples(samples, kind=kind, cut_kind=input.sample.metadata.get(SESSION_VERIFY_CUT_KIND_KEY))
 
-    steps = spec_probe_steps(fixed_template(tito_model)) if kind is SessionVerifyKind.SPEC else None
+    steps = {
+        SessionVerifyKind.SPEC: spec_probe_steps(fixed_template(tito_model)),
+        SessionVerifyKind.TRUNCATE: [CONTINUE_CUT_STEP],
+    }.get(kind)
     for i, sample in enumerate(samples):
         if "driver_events" not in sample.metadata:
             _fail_sample(
@@ -648,9 +779,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             recorded = [e["step"] for e in sample.metadata.get(EXPECTATIONS_KEY) or []]
             unfinished = sample.metadata.get(UNFINISHED_KEY)
             if recorded != (steps if unfinished is None else steps[: len(recorded)]):
-                _fail_sample(f"Session multi-role e2e: spec sample {i} recorded probes {recorded}, expected {steps}")
+                _fail_sample(f"Session multi-role e2e: {kind} sample {i} recorded probes {recorded}, expected {steps}")
             elif unfinished is not None and not os.environ.get("MILES_SESSION_VERIFY_METRICS_PATH"):
-                raise AssertionError(f"Session multi-role e2e: spec sample {i} is unfinished: {unfinished}")
+                raise AssertionError(f"Session multi-role e2e: {kind} sample {i} is unfinished: {unfinished}")
     if (
         kind is SessionVerifyKind.NORMAL
         and not os.environ.get("MILES_SESSION_VERIFY_METRICS_PATH")

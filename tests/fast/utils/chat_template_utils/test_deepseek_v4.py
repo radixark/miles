@@ -27,8 +27,9 @@ from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 from sglang.srt.entrypoints.openai.serving_deepseek_recipe import DeepSeekRecipeChatEncodingAdapter
 from transformers import AutoTokenizer
 
-from miles.utils.chat_template_utils import apply_chat_template, deepseek, tito_tokenizer
+from miles.utils.chat_template_utils import apply_chat_template, deepseek
 from miles.utils.chat_template_utils.tito_tokenizer import DeepSeekV4TITOTokenizer, DeepSeekV41TITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer import deepseek as tito_deepseek
 
 _MSGS_BASIC = [{"role": "user", "content": "Hello"}]
 
@@ -421,7 +422,7 @@ def test_appended_messages_tokenize_as_with_the_whole_history(spec, thinking, to
         _assert_delta_is_the_render_tail(spec, thinking, tools, messages[:start], messages[start:end])
         delta = tito.tokenize_additional_messages(messages[:start], messages[:end], template_args=args)
         with monkeypatch.context() as whole_history:
-            whole_history.setattr(tito_tokenizer, "_from_last_assistant", lambda history: history)
+            whole_history.setattr(tito_deepseek, "_from_last_assistant", lambda history: history)
             assert delta == tito.tokenize_additional_messages(messages[:start], messages[:end], template_args=args)
 
 

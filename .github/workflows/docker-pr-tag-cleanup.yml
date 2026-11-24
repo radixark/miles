@@ -32,14 +32,18 @@ jobs:
               headers={'Content-Type': 'application/json'})
           print(json.load(urllib.request.urlopen(req))['token'])")
           # One tag per PR_IMAGE_ARCHES entry in docker/image_inputs.py, plus pr-test-tpu.yml's -tpu image.
-          tags=("pr-${{ github.event.pull_request.number }}-rocm10-mi35x")
+          # The ROCm and TPU PR images exist only in radixark/miles: no other repository builds them.
+          tags=()
+          if [ "$GITHUB_REPOSITORY" = radixark/miles ]; then
+            tags=("pr-${{ github.event.pull_request.number }}-rocm10-mi35x")
+            [ "$FORK" = true ] || tags+=("pr-${{ github.event.pull_request.number }}-tpu")
+          fi
           if [ "$FORK" != true ]; then
-            tags=("pr-${{ github.event.pull_request.number }}" "pr-${{ github.event.pull_request.number }}-arm64" \
-                  "pr-${{ github.event.pull_request.number }}-tpu" "${tags[@]}")
+            tags=("pr-${{ github.event.pull_request.number }}" "pr-${{ github.event.pull_request.number }}-arm64" "${tags[@]}")
           fi
           for tag in "${tags[@]}"; do
             curl -s -X DELETE \
               -H "Authorization: JWT ${TOKEN}" \
-              "https://hub.docker.com/v2/repositories/radixark/miles/tags/${tag}/" \
+              "https://hub.docker.com/v2/repositories/${GITHUB_REPOSITORY}/tags/${tag}/" \
               || true
           done

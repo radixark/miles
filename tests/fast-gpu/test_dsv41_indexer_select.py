@@ -14,6 +14,7 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA requ
 
 from miles.kernels.attention.dsa.topk import get_dsa_topk_fn  # noqa: E402
 from miles.utils.replay_base import IndexerReplayManager  # noqa: E402
+from miles_plugins.models.deepseek_v4.ops.v4_indexer import indexer_topk  # noqa: E402
 from miles_plugins.models.deepseek_v4_1.ops import indexer as indexer_ops  # noqa: E402
 from miles_plugins.models.deepseek_v4_1.ops.indexer import indexer_select, select_candidate_blocks  # noqa: E402
 
@@ -66,12 +67,55 @@ def test_canonical_select_matches_torch_select(bsz, seqlen, ratio, query_chunk, 
         assert torch.equal(canonical_cand, torch_cand)
 
 
+@pytest.mark.parametrize("seqlen,query_chunk", [(1, None), (3, 2)])
+@pytest.mark.parametrize("n_kv", [701, 1027])
+def test_a_lone_query_row_selects_over_an_unaligned_key_count(seqlen, query_chunk, n_kv):
+    """A chunk of one query row against more keys than topk, off SCORE_ROW_ALIGN (as a context-parallel rank
+    holds one row of a packed sample): the canonical selection still matches torch's."""
+    torch.manual_seed(0)
+    q = torch.randn(1, seqlen, HEADS, DIM, device="cuda", dtype=torch.bfloat16)
+    index_k = torch.randn(1, n_kv, DIM, device="cuda", dtype=torch.bfloat16)
+    weights = torch.randn(1, seqlen, HEADS, device="cuda") * HEADS**-0.5 * DIM**-0.5
+    compress_lens = torch.full((seqlen,), n_kv, device="cuda")
+    options = dict(is_candidate_source=False, query_chunk=query_chunk)
+    torch_idx, _ = _select(q, index_k, weights, compress_lens, None, "torch", **options)
+    canonical_idx, _ = _select(q, index_k, weights, compress_lens, None, "canonical", **options)
+
+    assert torch.equal(canonical_idx.sort(dim=-1).values, torch_idx)
+
+
 def _flashinfer_topk(monkeypatch, tie_break):
     if torch.version.hip is not None:
         pytest.skip("FlashInfer top-k requires CUDA")
     pytest.importorskip("flashinfer")
     monkeypatch.setenv("SGLANG_DSA_TOPK_FLASHINFER_TIE_BREAK", tie_break)
     return get_dsa_topk_fn("flashinfer")
+
+
+@pytest.mark.parametrize("n_kv", [701, 1027])
+def test_dsv4_one_query_row_over_an_unaligned_key_count(n_kv):
+    """DeepSeek-V4's indexer_topk on a rank that scores one query row against every key: canonical matches torch."""
+    torch.manual_seed(0)
+    q = torch.randn(1, 1, HEADS, DIM, device="cuda", dtype=torch.bfloat16)
+    k = torch.randn(n_kv, 1, DIM, device="cuda", dtype=torch.bfloat16)
+    weights = torch.randn(1, 1, HEADS, device="cuda") * HEADS**-0.5 * DIM**-0.5
+    positions = torch.tensor([n_kv * 4 - 1], device="cuda")
+    picks = {
+        backend: indexer_topk(
+            q,
+            k,
+            weights,
+            positions,
+            None,
+            compress_ratio=4,
+            index_topk=TOPK,
+            topk_fn=get_dsa_topk_fn(backend),
+            clean_logits=backend != "canonical",
+        )
+        for backend in ("torch", "canonical")
+    }
+
+    assert torch.equal(picks["canonical"].sort(dim=-1).values, picks["torch"].sort(dim=-1).values)
 
 
 @pytest.mark.parametrize("tie_break", ["small", "large"])
