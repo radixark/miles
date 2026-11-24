@@ -58,7 +58,14 @@ class LossFunction(Protocol):
 
 
 class PgLossFunction(Protocol):
-    """Per-token policy-gradient loss and clip-fraction hook for `policy_loss_function`."""
+    """Per-token policy-gradient loss and clip-fraction hook for `policy_loss_function`.
+
+    Inputs are aligned to the microbatch `ResponseLayout` with inactive/padding
+    rows zeroed, `old_log_probs` and `advantages` detached, and `NaN`/`+inf`
+    sanitized on active rows (`-inf` is preserved in `old_log_probs` for `q = 0`).
+    Implementations must return finite `(pg_loss, pg_clipfrac)` tensors with the
+    same shape as `log_probs`.
+    """
 
     def __call__(
         self,
@@ -208,10 +215,18 @@ def policy_loss_function(
     )
 
     if pg_loss_fn is not None:
+        # sanitize NaN/+inf on active rows to current log_probs (w=1 fallback, matching ppo_kl nan_to_num) while keeping -inf (q=0)
+        fallback_old_log_probs = torch.where(torch.isfinite(log_probs), log_probs.detach(), 0.0)
+        bad_old_log_probs = old_log_probs.isnan() | (old_log_probs == float("inf"))
+        clean_old_log_probs = torch.where(
+            active_tokens,
+            torch.where(bad_old_log_probs, fallback_old_log_probs, old_log_probs),
+            0.0,
+        )
         pg_loss, pg_clipfrac = pg_loss_fn(
             args=args,
             log_probs=log_probs,
-            old_log_probs=torch.where(active_tokens, old_log_probs, 0.0),
+            old_log_probs=clean_old_log_probs,
             ppo_kl=ppo_kl,
             advantages=clean_advantages,
         )
@@ -236,7 +251,7 @@ def policy_loss_function(
         )
 
     if args.use_opsm:
-        pg_loss = pg_loss * opsm_mask
+        pg_loss = torch.where(opsm_mask.bool(), pg_loss, 0.0)
 
     # Apply off-policy correction using importance sampling if enabled
     if args.get_mismatch_metrics or args.use_tis:

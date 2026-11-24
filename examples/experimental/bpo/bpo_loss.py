@@ -16,6 +16,20 @@ from miles.utils.args.schema import A, Arg, BaseConfig
 from miles.utils.types import RolloutBatch
 
 
+def _validate_bpo_hyperparams(bpo_smoothing: float, bpo_weight_cap: float) -> None:
+    finfo = torch.finfo(torch.float32)
+    if not math.isfinite(bpo_smoothing) or not finfo.tiny <= bpo_smoothing <= finfo.max:
+        raise ValueError(
+            f"--bpo-smoothing must be a finite positive float32 normal value "
+            f"[{finfo.tiny}, {finfo.max}], got {bpo_smoothing}"
+        )
+    if not math.isfinite(bpo_weight_cap) or not finfo.tiny <= bpo_weight_cap <= finfo.max:
+        raise ValueError(
+            f"--bpo-weight-cap must be a finite positive float32 normal value "
+            f"[{finfo.tiny}, {finfo.max}], got {bpo_weight_cap}"
+        )
+
+
 class BpoConfig(BaseConfig):
     bpo_smoothing: A[
         float,
@@ -28,10 +42,7 @@ class BpoConfig(BaseConfig):
 
     @model_validator(mode="after")
     def _validate_bpo_params(self) -> Self:
-        if not math.isfinite(self.bpo_smoothing) or self.bpo_smoothing <= 0.0:
-            raise ValueError("--bpo-smoothing must be finite and positive")
-        if not math.isfinite(self.bpo_weight_cap) or self.bpo_weight_cap <= 0.0:
-            raise ValueError("--bpo-weight-cap must be finite and positive")
+        _validate_bpo_hyperparams(self.bpo_smoothing, self.bpo_weight_cap)
         return self
 
 
@@ -44,10 +55,7 @@ def _validate_bpo_args(args: Namespace) -> None:
         raise ValueError(f"BPO requires finite --eps-clip in [0, 1), got {args.eps_clip}")
     if args.eps_clip_high is None or not math.isfinite(args.eps_clip_high) or args.eps_clip_high < 0.0:
         raise ValueError(f"BPO requires finite, nonnegative --eps-clip-high, got {args.eps_clip_high}")
-    if not math.isfinite(args.bpo_smoothing) or args.bpo_smoothing <= 0.0:
-        raise ValueError(f"--bpo-smoothing must be finite and positive, got {args.bpo_smoothing}")
-    if not math.isfinite(args.bpo_weight_cap) or args.bpo_weight_cap <= 0.0:
-        raise ValueError(f"--bpo-weight-cap must be finite and positive, got {args.bpo_weight_cap}")
+    _validate_bpo_hyperparams(args.bpo_smoothing, args.bpo_weight_cap)
 
 
 def compute_bpo_policy_loss(
@@ -60,17 +68,34 @@ def compute_bpo_policy_loss(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute per-token BPO loss and clip indicator (arXiv:2609.15987, Eqs. 14-15)."""
     del ppo_kl
-    # promote bf16/fp16 so weight thresholds do not flip and clip sums do not saturate at 256
-    calc_dtype = torch.promote_types(log_probs.dtype, torch.float32)
-    scores = log_probs.to(calc_dtype)
+    # promote bf16/fp16 so clip thresholds do not flip and clip sums do not saturate
+    calc_dtype = torch.promote_types(
+        torch.promote_types(torch.float32, log_probs.dtype),
+        torch.promote_types(old_log_probs.dtype, advantages.dtype),
+    )
+    log_probs_fp = log_probs.to(calc_dtype)
     with torch.no_grad():
-        old_scores = old_log_probs.to(calc_dtype)
-        adv = advantages.to(calc_dtype)
-        weight = (args.bpo_smoothing - old_scores.expm1()) / (args.bpo_smoothing - scores.expm1())
-        clipped = ((adv > 0) & (weight > 1.0 + args.eps_clip_high)) | ((adv < 0) & (weight < 1.0 - args.eps_clip))
-        coefficient = adv * weight.clamp(max=args.bpo_weight_cap) * (~clipped)
-    # zero masked scores before multiplying so 0 * (-inf) never produces NaN
-    pg_loss = -coefficient * torch.where(coefficient != 0, scores, 0.0)
+        old_log_probs_fp = old_log_probs.to(calc_dtype)
+        advantages_fp = advantages.to(calc_dtype)
+        smoothing = torch.tensor(args.bpo_smoothing, dtype=calc_dtype, device=log_probs.device)
+        numerator = smoothing - old_log_probs_fp.expm1()
+        denominator = smoothing - log_probs_fp.expm1()
+        # keep valid old_log_probs == -inf (q = 0) while gating non-finite log_probs or corrupted inputs
+        valid = torch.isfinite(log_probs_fp) & torch.isfinite(numerator) & (numerator >= 0) & (denominator > 0)
+        safe_denominator = torch.where(valid, denominator, 1.0)
+        weight = torch.where(valid, numerator / safe_denominator, 1.0)
+        clipped = valid & (
+            ((advantages_fp > 0) & (weight > 1.0 + args.eps_clip_high))
+            | ((advantages_fp < 0) & (weight < 1.0 - args.eps_clip))
+        )
+        coefficient = torch.where(
+            valid & (~clipped),
+            advantages_fp * weight.clamp(min=0.0, max=args.bpo_weight_cap),
+            0.0,
+        )
+    # zero masked/invalid positions before multiplying so 0 * (-inf) or NaN never propagates
+    active_coeff = valid & (coefficient != 0)
+    pg_loss = -coefficient * torch.where(active_coeff, log_probs_fp, 0.0)
     pg_clipfrac = clipped.to(calc_dtype)
     return pg_loss, pg_clipfrac
 

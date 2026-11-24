@@ -33,22 +33,24 @@ $$
 \ell_t = -\operatorname{sg}\!\left(M_t \cdot \min(w_t, C) \cdot A_t\right) \log \pi_\theta(y_t \mid x, y_{<t})
 $$
 
-The rejection mask $M_t$ is evaluated on the uncapped weight $w_t$ before clamping to $C$. All surrounding `policy_loss_function` features — `ResponseLayout`, entropy regularization, reference KL loss, OPSM, TIS/MIS, custom PG reducers, and training diagnostics — remain available unchanged.
+The rejection mask $M_t$ is evaluated on the uncapped weight $w_t$ before clamping to $C$. Surrounding `policy_loss_function` features on `PackedSlices` — entropy regularization, reference KL loss, OPSM, TIS/MIS, custom PG reducers, and training diagnostics — remain available (with the `custom_loss` caveats under Constraints below).
 
 ## Parameters
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--bpo-smoothing` | `0.1` | Additive smoothing $\varepsilon > 0$ for complementary probabilities. |
-| `--bpo-weight-cap` | `3.0` | Upper cap $C > 0$ on the detached weight $w_t$. |
+| `--bpo-smoothing` | `0.1` | Additive smoothing $\varepsilon > 0$ (fp32 normal range) for complementary probabilities (Appendix B default). |
+| `--bpo-weight-cap` | `3.0` | Upper cap $C > 0$ (fp32 normal range) on the detached weight $w_t$ (Appendix B default). |
 | `--eps-clip` | `0.2` | Lower mask threshold $\epsilon_{\text{low}} \in [0, 1)$ when $A_t < 0$. |
-| `--eps-clip-high` | `--eps-clip` | Upper mask threshold $\epsilon_{\text{high}} \ge 0$ when $A_t > 0$ (pass `0.28` for the paper default). |
+| `--eps-clip-high` | `--eps-clip` | Upper mask threshold $\epsilon_{\text{high}} \ge 0$ when $A_t > 0$ (pass `0.28` for the paper's ClipHigher setting). |
 
 ## Constraints
 
-- Requires `--advantage-estimator grpo`.
-- Incompatible with Dual-clip PPO (`--eps-clip-c`).
-- Because this runs via `--loss-type custom_loss`, options restricted to built-in `policy_loss` (`--log-probs-backend fused_lm_head`, `--skip-actor-forward-only`) are rejected by startup argument validation.
+- Requires `--advantage-estimator grpo` and is incompatible with Dual-clip PPO (`--eps-clip-c`). `--bpo-smoothing` and `--bpo-weight-cap` validate at startup via `BpoConfig`; cross-flag constraints (`--advantage-estimator`, `--eps-clip*`) validate on the first `bpo_loss_function` call.
+- Because this runs via `--loss-type custom_loss`, options restricted to built-in `policy_loss` (`--log-probs-backend fused_lm_head`, `--skip-actor-forward-only`) are rejected at startup.
+- On Megatron, `--loss-type custom_loss` runs `forward_step` with `fp32_output=True`, holding full `[tokens, vocab/TP]` logits in `fp32` (~2× logits memory vs built-in `policy_loss`).
+- On static-shape platforms (such as TorchTPU with `torchtitan`), `custom_loss` is not in `_PADDED_ROWS_LOSS_TYPES` and falls back to `PackedSlices` (compiling per response length).
+- In multi-LoRA / Tinker runs where `batch["loss_fn"]` is provided per datum, Tinker losses take precedence over `--loss-type custom_loss`.
 
 ## Relation to Score Centering
 
