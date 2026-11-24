@@ -128,6 +128,9 @@ class TestGetDeepscalerRuleBasedReward:
             r"<|message_model|><|content_text|>\boxed{42}<|end_message|><|content_model_end_sampling|>"
         )
         assert get_deepscaler_rule_based_reward(direct_tool_call_then_answer, "42") == 1
+        # Length-cut Inkling tool call before <|end_message|> must not fall through to ###Response inside JSON args.
+        length_cut_tool_call = r'calc<|content_invoke_tool_json|>{"text":"###Response \boxed{42}"'
+        assert get_deepscaler_rule_based_reward(length_cut_tool_call, "42") == 0
         # Mid-prose mention of <|message_tool|> inside model text is not a framed tool role.
         prose_tool_token = (
             r"<|content_text|>Inkling uses <|message_tool|> for tools. \boxed{42}"
@@ -214,6 +217,13 @@ class TestGetDeepscalerRuleBasedReward:
                 r"<|end|><|start|>user<|message|>next<|end|><|start|>assistant<|channel|>analysis<|message|>\boxed{7}",
                 0,
             ),
+            (
+                r"<|start|>user<|message|>q<|end|><|start|>assistant<|channel|>final<|message|>\boxed{42}"
+                r"<|end|><|start|>user<|message|>next<|end|><|start|>assistant<|channel|>analysis<|message|>work",
+                0,
+            ),
+            # Ordinary prose starting with `to=` mentioning `<|channel|>` later must not lock Harmony.
+            (r"to=alice mentions <|channel|>. \boxed{wrong}</think>\boxed{42}<|im_end|>", 1),
             # Ordinary text mentioning <|content_invoke_tool_json|> before whitespace must not lock Inkling.
             (r"Example:<|content_invoke_tool_json|> means a tool call. \boxed{wrong}</think>\boxed{42}", 1),
             # Muse Spark subsequent thinking block after to=user<|eom|> must not leak into answer.

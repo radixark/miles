@@ -89,31 +89,31 @@ def _detect_framed_family(text: str) -> str | None:
         if stripped.startswith(prefixes):
             return family
 
-    # Both Harmony and Muse Spark use `<|start|>assistant to=...` / `to=...`; Harmony headers
-    # always contain `<|channel|>` before `<|message|>`, while Muse Spark headers never do.
+    # Both Harmony and Muse Spark use `<|start|>assistant to=...` / `to=...`; Harmony attaches
+    # `<|channel|>` directly to the recipient before `<|message|>`, while Muse Spark never does.
     if stripped.startswith("<|start|>assistant to="):
-        msg_idx = stripped.find("<|message|>")
-        header = stripped[:msg_idx] if msg_idx != -1 else stripped.split("\n", 1)[0]
-        return "harmony" if "<|channel|>" in header else "muse_spark"
+        rest_first = stripped[len("<|start|>assistant ") :].split(None, 1)[0]
+        return "harmony" if "<|channel|>" in rest_first else "muse_spark"
+
+    if stripped.startswith(("<|start|>user", "<|start|>developer", "<|start|>system")):
+        if "<|start|>assistant<|channel|>" in text or "<|end|><|start|>assistant" in text:
+            return "harmony"
+        if "<|eot|><|start|>" in text:
+            return "muse_spark"
 
     first_token = stripped.split(None, 1)[0]
     if stripped.startswith("to="):
-        msg_idx = stripped.find("<|message|>")
-        header = stripped[:msg_idx] if msg_idx != -1 else stripped.split("\n", 1)[0]
-        if "\n" not in header and "<|channel|>" in header:
+        if "<|channel|>" in first_token:
             return "harmony"
         if "<|message|>" in first_token:
             return "muse_spark"
 
-    # Inkling direct tool call right after prompt's `<|message_model|>`: `<recipient><|content_invoke_tool_json|>{...}<|end_message|>`.
-    if _INKLING_TOOL_INVOKE in first_token and _INKLING_END_MESSAGE in stripped:
+    # Inkling direct tool call right after prompt's `<|message_model|>`: `<recipient><|content_invoke_tool_json|>{...}`.
+    # Native InklingResponseParser accepts empty or `_` recipients and length-cut JSON before `<|end_message|>`.
+    if _INKLING_TOOL_INVOKE in first_token:
         recipient, _ = first_token.split(_INKLING_TOOL_INVOKE, 1)
         after_invoke = stripped[len(recipient) + len(_INKLING_TOOL_INVOKE) :].lstrip()
-        if (
-            recipient
-            and recipient.replace("_", "").replace("-", "").replace(".", "").isalnum()
-            and after_invoke.startswith("{")
-        ):
+        if all(ch.isalnum() or ch in "_-." for ch in recipient) and after_invoke.startswith("{"):
             return "inkling"
 
     # Prompt-opened completions omit their opening token; identify by trailing closing special tokens.

@@ -129,6 +129,26 @@ class TestStripChainOfThought:
                 "Example:<|content_invoke_tool_json|> means a tool call. Answer: B</think>Answer: A.",
                 "Answer: A.",
             ),
+            # Ordinary prose starting with `to=` mentioning `<|channel|>` later must not lock Harmony.
+            (
+                "to=alice mentions <|channel|>. Answer: B</think>Answer: A",
+                "Answer: A",
+            ),
+            # Inkling direct tool calls with empty or `_` recipient still route through multi-block Inkling parsing.
+            (
+                '<|content_invoke_tool_json|>{"x":1}<|end_message|><|content_model_end_sampling|>'
+                "<|message_tool|><|content_text|>ok<|end_message|>"
+                "<|message_model|><|content_text|>Answer: A<|end_message|>"
+                "<|message_model|><|content_text|>.<|end_message|><|content_model_end_sampling|>",
+                "Answer: A.",
+            ),
+            (
+                '_<|content_invoke_tool_json|>{"x":1}<|end_message|><|content_model_end_sampling|>'
+                "<|message_tool|>_<|content_text|>ok<|end_message|>"
+                "<|message_model|><|content_text|>Answer: A<|end_message|>"
+                "<|message_model|><|content_text|>.<|end_message|><|content_model_end_sampling|>",
+                "Answer: A.",
+            ),
         ],
     )
     def test_rightmost_structural_delimiter_precedence(self, text, expected):
