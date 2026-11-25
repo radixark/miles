@@ -23,7 +23,7 @@ _WORKFLOW_ONLY_LABELS = {"nightly", "bypass-fastfail", "no-restricted-stages"} |
 # Not a PR-side choice: the workflow adds it for a run that restricted stages
 # (`CudaStage.fallback`) do not admit, and every stage job receives it with the
 # other raw labels. Setting it by hand only moves tests onto fallback stages.
-_NO_RESTRICTED_STAGES_LABEL = "no-restricted-stages"
+NO_RESTRICTED_STAGES_LABEL = "no-restricted-stages"
 
 # Scope label selecting the tests that only run on Blackwell. Distinct from
 # `run-on-blackwell`: this one runs the Blackwell-exclusive set, that one
@@ -160,7 +160,7 @@ def resolve_policy(cadence: str, raw_labels: set[str]) -> RunPolicy:
         write_baseline=cadence in {NIGHTLY_CADENCE, WEEKLY_CADENCE},
         dispatch_arches=dispatch_arches,
         absorb=absorb,
-        admit_restricted_stages=_NO_RESTRICTED_STAGES_LABEL not in raw_labels,
+        admit_restricted_stages=NO_RESTRICTED_STAGES_LABEL not in raw_labels,
     )
 
 
@@ -219,8 +219,8 @@ def resolve_workflow_inputs(
         cadence, raw_labels = REGULAR_CADENCE, ()
     else:
         raise ValueError(f"Unsupported PR Test trigger: {event_name}")
-    if head_is_fork and _NO_RESTRICTED_STAGES_LABEL not in raw_labels:
-        raw_labels = (*raw_labels, _NO_RESTRICTED_STAGES_LABEL)
+    if head_is_fork and NO_RESTRICTED_STAGES_LABEL not in raw_labels:
+        raw_labels = (*raw_labels, NO_RESTRICTED_STAGES_LABEL)
 
     run_policy = resolve_policy(cadence, set(raw_labels))
     return WorkflowPolicy(
