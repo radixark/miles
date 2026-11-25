@@ -10,7 +10,12 @@ import torch.distributed as dist
 from tests.ci.ci_register import register_cuda_ci
 
 register_cuda_ci(
-    est_time=44, suite="stage-b-2-gpu-h200", labels=["miles-plugin"], hardware=["hopper", "blackwell"], num_gpus=1
+    est_time=50,
+    suite="stage-b-2-gpu-h200",
+    labels=["miles-plugin"],
+    hardware=["hopper", "blackwell"],
+    num_gpus=1,
+    nightly=True,
 )
 
 pytest.importorskip("transformer_engine")
