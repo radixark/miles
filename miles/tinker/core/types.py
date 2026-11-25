@@ -30,6 +30,7 @@ class CommandOp(str, Enum):
 
 # wire loss_fn_inputs key -> internal datum key
 LOSS_INPUT_KEYS = {"weights": "weights", "advantages": "advantages", "logprobs": "sampling_logprobs"}
+MTP_MASK_KEY = "mtp_mask"
 
 # reject missing loss inputs before they enter a shared batch
 LOSS_FN_INPUTS = {
@@ -76,6 +77,7 @@ class GatewayConfig:
     trains_attn: bool = True
     trains_mlp: bool = True
     trains_unembed: bool = False
+    trains_mtp: bool = False
     # download URLs are built from it; None: from the URL each request arrived at, wrong behind an ingress
     public_url: str | None = None
     lease_timeout_s: float = 300.0  # sessions stale beyond this lose their sampling, models, and slots

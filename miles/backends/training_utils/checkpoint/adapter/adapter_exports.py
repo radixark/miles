@@ -25,7 +25,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion
     plan_parametrization_conversion,
 )
 from miles.utils.lora.hf_lora_targets import HfLoraTargets
-from miles.utils.lora.utils import get_adapter_target_modules, save_adapter_to_disk
+from miles.utils.lora.utils import get_adapter_target_modules, matches_lora_target, save_adapter_to_disk
 
 
 def _components_without_plain_peft_form(parametrization: AdapterParametrization, targets: HfLoraTargets) -> list[str]:
@@ -148,8 +148,20 @@ def write_sampler_adapter(
     lora_dropout: float,
 ) -> None:
     """bf16 adapter sglang loads from disk; experts stay stacked 3D. Carries its parametrization, so it reads back."""
-    tensors = {}
     expanded = _expand_shared_lora_a(weights, parametrization, targets)
+    draft_modules = {
+        module for module in parametrization.target_modules if any(matches_lora_target(module, t) for t in targets.mtp)
+    }
+    if draft_modules:
+        parametrization = replace(
+            parametrization,
+            target_modules=tuple(module for module in parametrization.target_modules if module not in draft_modules),
+            shared_lora_a_groups=tuple(
+                group for group in parametrization.shared_lora_a_groups if not draft_modules.intersection(group)
+            ),
+        )
+        expanded = {key: value for key, value in expanded.items() if key.rsplit(".", 1)[0] not in draft_modules}
+    tensors = {}
     packed = _packed_experts(expanded)
     for key, value in expanded.items():
         name = map_hf_keys_to_peft_keys(key)

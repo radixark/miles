@@ -24,7 +24,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization import (
     read_parametrization,
 )
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
-from miles.tinker.core.types import OwnershipError, UserInputError
+from miles.tinker.core.types import MTP_MASK_KEY, OwnershipError, UserInputError
 from miles.tinker.core.utils import PRE_COMMIT_META_FILENAME
 from miles.utils import object_store
 from miles.utils.http_utils import post
@@ -62,6 +62,10 @@ def _build_train_data(slot_datums: list) -> dict:
     for datum_key, batch_key in DATUM_TO_BATCH_KEYS.items():
         if datum_key in datums[0]:
             train_data[batch_key] = [datum[datum_key] for datum in datums]
+    if MTP_MASK_KEY in datums[0]:
+        train_data["mtp_loss_masks"] = [
+            [0] * datum["target_len"] if datum.get("padding") else datum[MTP_MASK_KEY] for datum in datums
+        ]
     return train_data
 
 
@@ -147,6 +151,7 @@ def classify_lora_groups(target_modules, layout: HfLoraTargets) -> dict[str, boo
         "train_attn": layout.attention + layout.whole_fused_attention,
         "train_mlp": layout.mlp,
         "train_unembed": layout.unembed,
+        "train_mtp": layout.mtp,
     }
     # a checkpoint records routed experts stacked (experts.down_proj) where the layout names them per expert
     groups = {
@@ -163,6 +168,7 @@ def classify_lora_groups(target_modules, layout: HfLoraTargets) -> dict[str, boo
             # a checkpoint another gateway wrote may come from another model
             raise UserInputError(f"adapter target {module!r} is in no LoRA group of this model")
         flags.update(dict.fromkeys(hits, True))
+    del flags["train_mtp"]  # The draft layout is fixed at launch; the SDK has no corresponding flag.
     return flags
 
 
@@ -203,9 +209,12 @@ class MilesBackend:
         train_data["loss_fn_config"] = loss_fn_config
         worker_results = await self._call_trainer(method, batch_id, train_data)
         by_index: dict[int, dict] = {}
+        metrics = None
         for worker_result in worker_results:
             if "error" in worker_result:
                 return worker_result
+            if "mtp_metrics" in worker_result:
+                metrics = worker_result["mtp_metrics"]
             for datum_output in worker_result["per_datum"]:
                 index = int(datum_output["sample_index"])
                 if index not in by_index:
@@ -213,7 +222,8 @@ class MilesBackend:
                         "loss": float(datum_output["loss"]),
                         "logprobs": datum_output["logprobs"].tolist(),
                     }
-        return [by_index[index] for index in range(len(slot_datums))]
+        outputs = [by_index[index] for index in range(len(slot_datums))]
+        return outputs if metrics is None else {"outputs": outputs, "metrics": metrics}
 
     async def _call_trainer(self, method: str, batch_id: int, train_data: dict) -> list:
         store = object_store.get_instance()

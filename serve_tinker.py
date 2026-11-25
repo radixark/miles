@@ -84,7 +84,7 @@ async def serve(args, *, disposer: Disposer):
         checkpoint_root=args.tinker_checkpoint_root,
         public_url=args.tinker_public_url,
         vocab_size=hf_config.vocab_size,
-        exports_tinker_names=bool(lora_layout.tinker_name_renames),
+        exports_tinker_names=bool(lora_layout.tinker_name_renames) and not args.enable_mtp_training,
         max_tokens_per_datum=max_tokens_per_datum,
         max_tokens_per_sample=max_tokens_per_sample,
         lora_alpha=args.lora_alpha,
@@ -95,6 +95,7 @@ async def serve(args, *, disposer: Disposer):
         trains_attn="attn" in args.tinker_lora_groups,
         trains_mlp="mlp" in args.tinker_lora_groups,
         trains_unembed="unembed" in args.tinker_lora_groups,
+        trains_mtp=args.enable_mtp_training,
     )
     router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node

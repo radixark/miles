@@ -28,6 +28,7 @@ class HfLoraTargets:
     packed_expert_gate_up_layout: str | None = None
     # the HF vocab: the most head lora_B rows an HF-shaped source may hold
     vocab_size: int | None = None
+    mtp: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,7 @@ class _HfLoraModelSpec:
     tinker_name_renames: tuple[tuple[str, str], ...] = ()
     component_rows_by_fused_module: Callable[[dict], tuple[tuple[str, tuple[int, ...]], ...]] = lambda config: ()
     packed_expert_gate_up_layout: str | None = None
+    mtp: tuple[str, ...] = ()
 
 
 # official Tinker exports (checked against SDK 0.36 exports): HF names except the head and the stacked 3D experts
@@ -282,6 +284,9 @@ def _mimo_v2_targets(config):
     return _QKVO_ATTENTION, tuple(mlp)
 
 
+_QWEN35_MTP_TARGETS = ("mtp.fc",) + _prefix_paths("mtp.layers.*", *_QKVO_ATTENTION, *_DENSE_MLP)
+
+
 _HF_LORA_MODELS = {
     "llama": _HfLoraModelSpec(_dense_targets),
     "qwen2": _HfLoraModelSpec(_dense_targets),
@@ -309,6 +314,7 @@ _HF_LORA_MODELS = {
         build_whole_fused_attention=_qwen3_5_whole_fused_attention,
         tinker_name_renames=_TINKER_RENAMES,
         component_rows_by_fused_module=_gdn_35_component_rows,
+        mtp=_QWEN35_MTP_TARGETS,
     ),
     "qwen3_5_moe": _HfLoraModelSpec(
         _qwen3_5_moe_targets,
@@ -381,6 +387,7 @@ def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
         component_rows_by_fused_module=spec.component_rows_by_fused_module(text_config),
         vocab_size=text_config.get("vocab_size"),
         packed_expert_gate_up_layout=spec.packed_expert_gate_up_layout,
+        mtp=spec.mtp,
     )
 
 

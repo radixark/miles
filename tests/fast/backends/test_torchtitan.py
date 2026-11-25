@@ -373,6 +373,7 @@ def test_lora_targets_bypass_megatrons_native_spec(monkeypatch):
     args = Namespace(
         train_backend="torchtitan",
         megatron_to_hf_mode="raw",
+        enable_mtp_training=False,
         hf_checkpoint="/hf",
         lora_rank=8,
         lora_alpha=None,

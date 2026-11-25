@@ -92,6 +92,53 @@ Training accepts text with 1-D loss inputs. 2-D soft targets, including SDFT,
 are not supported. Sampling requires a `/sampler_weights/` path returned by
 `save_weights_for_sampler()`; `/weights/` training checkpoints cannot be sampled directly.
 
+## Qwen3.5 MTP adapter training
+
+This recipe uses a dense Qwen3.5 checkpoint with MTP weights, Megatron Bridge,
+one training GPU, and a separate sampling GPU. The client sends an `mtp_mask`
+with one binary value per next-token label. A value of 1 marks a token for draft
+supervision. The gateway runs one MTP training request per forward/backward
+batch so each request retains its draft loss normalization.
+
+Set `BASE_MODEL` to the local checkpoint, `SAVE_DIR` to the checkpoint parent,
+and `TRAIN_DATA` to DAPO JSONL with `prompt` and `label` fields. Start the
+gateway with the same policy-scoring temperature as the client:
+
+```bash
+python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve \
+  --hf-checkpoint "$BASE_MODEL" --model-type qwen3.5-4B --tp 1 --ep 1 \
+  --num-gpus-per-node 2 --actor-num-gpus 1 --rollout-num-gpus 1 \
+  --rollout-num-gpus-per-engine 1 --n-adapters 2 --target-modules attn,mlp \
+  --lora-rank 8 --lora-alpha 16 --save-dir "$SAVE_DIR" --run-id mtp \
+  --extra-args "--max-tokens-per-gpu 4096 --sglang-context-length 4096 --attention-backend auto --enable-mtp-training --mtp-num-layers 1 --mtp-loss-scaling-factor 0.2 --rollout-temperature 0.9"
+```
+
+Run the client. Each rollout batch uses one `forward_backward` and one
+`optim_step`:
+
+```bash
+python -m examples.multi_lora.run_mtp_training \
+  --base-model "$BASE_MODEL" --tokenizer "$BASE_MODEL" --dataset "$TRAIN_DATA" \
+  --lr 5e-6 --steps 10 --spec-eval-interval 5 --metrics "$TRAINING_METRICS"
+```
+
+The client records each evaluation snapshot URI as `spec_eval_checkpoint` in
+the metrics JSONL. Training checkpoints include both adapters and optimizer
+state. Live sampler exports contain the target adapter for standard decoding.
+
+For offline NEXTN, the evaluator merges both adapters and invokes a
+caller-provided evaluation script on another GPU. Set `NEXTN_EVAL_SCRIPT` to a
+script that accepts `<run-name> <merged-model-path> on` and writes
+`$SMOKE_EVAL_LOG_DIR/<run-name>.json` with `metrics.average_accept_length`. The
+evaluator can be rerun as new snapshots appear.
+
+```bash
+python -m examples.multi_lora.eval_mtp_checkpoints \
+  --metrics "$TRAINING_METRICS" --checkpoint-root "$SAVE_DIR/mtp" \
+  --base-model "$BASE_MODEL" --eval-script "$NEXTN_EVAL_SCRIPT" \
+  --output-dir "$EVAL_RESULTS"
+```
+
 ## Failure handling
 
 A terminal failure of `forward_backward`, `optim_step`, or `load_state` ends

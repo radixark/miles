@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 import torch.distributed as dist
@@ -25,8 +25,9 @@ from miles.backends.megatron_utils.lora.utils import (
 from miles.backends.training_utils.model_companion import ModelCompanionInstallationUtils
 from miles.utils.args.runtime import TrainerConfig
 from miles.utils.hf_utils.config import load_hf_config
-from miles.utils.hf_utils.weight_mapping import HfWeightMapping
-from miles.utils.lora.utils import is_multi_lora_enabled, targets_expert_leaves
+from miles.utils.hf_utils.weight_mapping import HfWeightMapping, get_checkpoint_weight_map
+from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
+from miles.utils.lora.utils import is_multi_lora_enabled, matches_lora_target, targets_expert_leaves
 from miles.utils.megatron_bridge_utils import (
     apply_dsa_backend_args,
     apply_pipeline_layout,
@@ -191,9 +192,11 @@ def _setup_lora_model_via_bridge(args: TrainerConfig) -> list:
     provider.variable_seq_lengths = True
     provider.moe_token_dispatcher_type = "alltoall"
     provider.moe_router_load_balancing_type = "none"
-    # The HF config can carry MTP layers; LoRA trains none and SGLang serves no MTP draft with LoRA, so build none.
-    assert not args.enable_mtp_training, "LoRA does not support MTP training"
     provider.mtp_num_layers = None
+    if args.enable_mtp_training:
+        provider.mtp_num_layers = args.backend.mtp_num_layers
+        provider.mtp_detach_heads = args.backend.mtp_detach_heads
+        provider.mtp_loss_scaling_factor = args.backend.mtp_loss_scaling_factor
     if is_multi_lora_enabled(args) and targets_expert_leaves(args.hf_lora_targets):
         # Expert adapters cannot replay the fused permute's row_id_map, and most bridge
         # MoE providers default the fusion on — so turn it off rather than refuse to build.
@@ -217,6 +220,18 @@ def _setup_lora_model_via_bridge(args: TrainerConfig) -> list:
     model_bridge = bridge._model_bridge
     model_bridge.hf_pretrained = bridge.hf_pretrained
     hf_mapping = HfWeightMapping.from_config(hf_config)
+    if args.enable_mtp_training:
+        draft_targets = get_hf_lora_targets(hf_config.to_dict()).mtp
+        draft_parameters = {
+            name
+            for name in get_checkpoint_weight_map(args.hf_checkpoint)
+            if any(matches_lora_target(name.removesuffix(".weight"), target) for target in draft_targets)
+        }
+        assert all(
+            any(matches_lora_target(name.removesuffix(".weight"), target) for name in draft_parameters)
+            for target in draft_targets
+        ), "the HF checkpoint is missing MTP projection weights"
+        hf_mapping = replace(hf_mapping, parameter_names=hf_mapping.parameter_names | draft_parameters)
 
     def apply_lora_hook(model_chunks):
         parameter_names = set(model_bridge._megatron_global_param_names_all_pp_ranks(model_chunks))
@@ -240,6 +255,16 @@ def _setup_lora_model_via_bridge(args: TrainerConfig) -> list:
         )
         lora = create_adapter(args, target_modules=adapter_targets)
         transformed = lora(model_chunks, training=True)
+        if args.enable_mtp_training:
+            draft_adapters = [
+                parameter
+                for chunk in transformed
+                for name, parameter in chunk.named_parameters()
+                if "mtp" in name.split(".") and parameter.requires_grad
+            ]
+            assert draft_adapters, "Bridge attached no trainable MTP adapters"
+            for parameter in draft_adapters:
+                parameter.grad_norm_group = "mtp"
         enable_expert_parallel_grad_sync_in_finalize(transformed)
         if is_multi_lora_enabled(args):
             for chunk in transformed:

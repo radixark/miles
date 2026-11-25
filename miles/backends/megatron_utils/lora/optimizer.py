@@ -116,6 +116,7 @@ class SlotOptimizer:
     def __init__(self, args: Namespace, model, slot: int, slot_params: list[torch.nn.Parameter]) -> None:
         self.slot = slot
         self._slot_params = slot_params
+        self._trains_mtp = any(getattr(param, "grad_norm_group", None) == "mtp" for param in slot_params)
         assert slot_params, f"adapter slot {slot} has no parameters; is this a multi-LoRA model?"
 
         config = OptimizerConfig(
@@ -159,20 +160,26 @@ class SlotOptimizer:
     def clip_and_step(self, clip_grad: float) -> dict:
         """-> {"grad_norm": x} stepped, {"skipped_nonfinite": 1.0} dropped.
         Collective: the slot's grad norm is all-reduced over the world."""
-        grads_for_norm = []
-        slot_params = []
-        for child in self._inner.chained_optimizers:
-            grads_for_norm += child.get_grads_for_grad_norm()
-            slot_params += child.get_parameters()
-        slot_norm = get_grad_norm_fp32(grads_for_norm, grad_stats_parallel_group=None)
+        norms_and_params = {"grad_norm": self._norm_and_parameters(None)}
+        if self._trains_mtp:
+            norms_and_params["mtp_grad_norm"] = self._norm_and_parameters("mtp")
         # BF16 has no grad scaler; the all-reduced norm detects inf/nan on every rank
-        if not math.isfinite(slot_norm):
+        if any(not math.isfinite(norm) for norm, _ in norms_and_params.values()):
             return {"skipped_nonfinite": 1.0}
-        if clip_grad > 0.0 and slot_params:
-            clip_grad_by_total_norm_fp32(slot_params, clip_grad, slot_norm, False)
+        for norm, params in norms_and_params.values():
+            if clip_grad > 0.0 and params:
+                clip_grad_by_total_norm_fp32(params, clip_grad, norm, False)
         for child in self._inner.chained_optimizers:
             child.step_with_ready_grads()
-        return {"grad_norm": float(slot_norm)}
+        return {name: float(norm) for name, (norm, _) in norms_and_params.items()}
+
+    def _norm_and_parameters(self, norm_group: str | None) -> tuple[float, list]:
+        grads = []
+        params = []
+        for child in self._inner.chained_optimizers:
+            grads.extend(child.get_grads_for_grad_norm(norm_group) if norm_group else child.get_grads_for_grad_norm())
+            params.extend(p for p in child.get_parameters() if getattr(p, "grad_norm_group", None) == norm_group)
+        return get_grad_norm_fp32(grads, grad_stats_parallel_group=None), params
 
     def allgather_params(self) -> None:
         self._inner.allgather_params()
