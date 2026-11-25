@@ -82,11 +82,16 @@ RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f
 # fla 0.5.2 computes BK = triton.next_power_of_2(K) inside a @triton.jit KDA kernel, which this triton
 # rejects at the first GLM-5.3-Flash trainer forward. Fixed upstream by
 # https://github.com/fla-org/flash-linear-attention/pull/1108; drop the patch once a release has it.
+# fla 0.5.2 computes short-conv row offsets (row * D) in int32, which wraps once T * D >= 2**31: GLM-5.3-Flash KDA
+# (D = 3 * 64 * 128 = 24576) reads and writes out of bounds from row 87382 on. Fixed upstream in
+# flash-linear-attention 0.6.0; drop the patch with the bump.
 COPY docker/patch/fla_kda_hoist_next_power_of_2.patch /tmp/fla_kda_hoist_next_power_of_2.patch
+COPY docker/patch/fla_conv_int64_row_offsets.patch /tmp/fla_conv_int64_row_offsets.patch
 RUN pip install flash-linear-attention==0.5.2 && \
     FLA_DIR=$(python3 -c 'import importlib.util; print(importlib.util.find_spec("fla").submodule_search_locations[0])') && \
     patch --fuzz=0 -p1 -d "$FLA_DIR" < /tmp/fla_kda_hoist_next_power_of_2.patch && \
-    rm /tmp/fla_kda_hoist_next_power_of_2.patch
+    patch --fuzz=0 -p1 -d "$FLA_DIR" < /tmp/fla_conv_int64_row_offsets.patch && \
+    rm /tmp/fla_kda_hoist_next_power_of_2.patch /tmp/fla_conv_int64_row_offsets.patch
 # required for DeepSeek V4
 RUN pip install tilelang==0.1.14 apache-tvm-ffi==0.1.11
 # TileLang fp16 256-bit store fix on Blackwell: https://github.com/tile-ai/tilelang/pull/3158. Drop with TileLang > 0.1.14.
