@@ -14,7 +14,7 @@ def _args(argv, *, sglang_has_enable_dp_attention=True):
     RouterConfig.add_arguments(parser)
     args = parser.parse_args(argv)
     if not sglang_has_enable_dp_attention:
-        del args.sglang_enable_dp_attention
+        vars(args).pop("sglang_enable_dp_attention", None)
     args.rollout_num_gpus_per_engine = 4
     args.true_on_policy_mode = False
     args.loss_type = "policy_loss"
