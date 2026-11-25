@@ -1,12 +1,16 @@
 from unittest.mock import MagicMock
 
 import pytest
-from tests.fast.ray.rollout.conftest import FakeInferenceTopologyProvider, make_args
+from tests.fast.ray.rollout.conftest import FakeInferenceTopologyProvider, make_args, make_rollout_config
+from tests.fast.ray.rollout.nested_hook_fixtures import _RecordingSource
 
 from miles.ray.rollout import rollout_executor as executor_module
 from miles.ray.rollout.rollout_executor import RolloutExecutor
+from miles.rollout.fully_async_rollout import FullyAsyncRolloutFn
 from miles.rollout.session.types import SessionServerInstance
+from miles.utils import object_store
 from miles.utils.args.component_rollout import InferenceRuntimeImmutState, InferenceRuntimeMutState
+from miles.utils.function_registry import function_registry
 from miles.utils.init_once import InitOnce, InitState
 
 pytestmark = pytest.mark.asyncio
@@ -113,3 +117,38 @@ async def test_disposing_an_executor_whose_init_failed_still_sweeps_the_output_s
     await executor.dispose()
 
     assert swept == [True]
+
+
+class _CustomProducer(FullyAsyncRolloutFn):
+    def __init__(self, input) -> None:
+        pass
+
+
+@pytest.mark.parametrize("fully_async", [False, True])
+async def test_a_fully_async_subclass_is_loaded_only_under_fully_async(
+    monkeypatch: pytest.MonkeyPatch, fully_async: bool
+) -> None:
+    """Without --fully-async the subclass would run as a plain plugin, past the mode's checks and driver scheduling."""
+    monkeypatch.setenv("MILES_USE_LEGACY_ROLLOUT_V1", "0")
+    monkeypatch.setattr(object_store, "_INSTANCE", None)
+    monkeypatch.setattr(executor_module, "load_rollout_function", lambda input, path: _CustomProducer(input))
+    args = make_rollout_config(
+        debug_train_only=True,
+        enable_sample_ownership_checker=False,
+        data_source_path="test-source",
+        object_store_backend="ray",
+        use_wandb=False,
+        use_mlflow=False,
+        fully_async=fully_async,
+    )
+    executor = RolloutExecutor(
+        args=args, router_providers=[], session_server_provider=None, inference_controller_provider=object()
+    )
+
+    with function_registry.temporary("test-source", _RecordingSource):
+        if fully_async:
+            await executor.init()
+            assert isinstance(executor.generate_rollout, _CustomProducer)
+        else:
+            with pytest.raises(ValueError, match="pass --fully-async"):
+                await executor.init()
