@@ -180,7 +180,12 @@ def _compute_server_args(
             ["all"] if args.lora_adapter_targets == "all-linear" else args.lora_adapter_targets
         )
     elif lora_rollout_enabled(args):
-        attention_dp = sglang_attention_dp_enabled(attn_dp_size=base_args["attn_dp_size"])
+        attention_dp = sglang_attention_dp_enabled(
+            attn_dp_size=base_args["attn_dp_size"],
+            # absent on SGLang builds that dropped --enable-dp-attention
+            enable_dp_attention=base_args.get("enable_dp_attention", False),
+            dp_size=base_args["dp_size"],
+        )
         kwargs["enable_lora"] = True
         # attention DP serves only pinned adapters (sgl-project/sglang#36389), and SGLang never pins the last slot
         kwargs["max_loras_per_batch"] = 2 if attention_dp else 1
