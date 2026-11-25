@@ -108,14 +108,14 @@ class TestDoProxy:
     def test_unreachable_backend_is_a_502(self):
         result = _proxy_to(f"http://127.0.0.1:{find_available_port(33100)}", "echo")
 
-        assert result["status_code"] == 502
+        assert (result["status_code"], result["transport_error"]) == (502, True)
         assert json.loads(result["response_body"])["error"].startswith("backend transport error: ")
 
     def test_header_value_with_a_line_break_is_a_502(self, echo_backend):
         """The routing key is the session id from a decoded URL path, so it can carry CR/LF."""
         result = _proxy_to(echo_backend, "echo", headers={"X-SMG-Routing-Key": "a\r\nX-Injected: 1"})
 
-        assert result["status_code"] == 502
+        assert (result["status_code"], result["transport_error"]) == (502, False)
         assert json.loads(result["response_body"])["error"].startswith("backend transport error: ValueError")
 
     def test_netrc_adds_no_credentials(self, echo_backend, monkeypatch, tmp_path):

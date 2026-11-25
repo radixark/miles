@@ -9,7 +9,6 @@ from starlette.responses import Response
 
 from miles.rollout.session.core import (
     JSON_MEDIA_TYPE,
-    ProxyRequest,
     SessionCore,
     _chat_client_response,
     _render_json,
@@ -228,9 +227,7 @@ class SessionCoreV2(SessionCore):
 
         # --- Phase 2: proxy to backend (NO lock held) ---
         headers = self._with_routing_key(headers, session_id)
-        result = await self.backend.do_proxy(
-            ProxyRequest(method=method, query=query), "v1/chat/completions", body=proxy_body, headers=headers
-        )
+        result = await self._proxy_turn(method, query, proxy_body, headers)
         await self._take_store_ref(session, request_body, result)
 
         # Non-200 (e.g. 400 context too long) passes through unrecorded so the

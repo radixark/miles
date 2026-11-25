@@ -770,3 +770,26 @@ class TestSessionExtraKey:
 
         assert response.status_code == 200
         assert len(response.json()["session_id"]) == 32
+
+
+def test_a_turn_lost_in_transport_is_retried_and_recorded_once(router_env):
+    proxy, lost = SessionServer.do_proxy, []
+
+    async def lose_the_first_turn(self, request, path, *, body, headers):
+        if path == "v1/chat/completions" and not lost:
+            lost.append(path)
+            return {
+                "request_body": body,
+                "response_body": b"{}",
+                "status_code": 502,
+                "headers": {},
+                "transport_error": True,
+            }
+        return await proxy(self, request, path, body=body, headers=headers)
+
+    session_id = _create_session(router_env.url)
+    with patch.object(SessionServer, "do_proxy", lose_the_first_turn):
+        response = _post_chat(router_env.url, session_id, {"messages": [{"role": "user", "content": "hi"}]})
+
+    records = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"]
+    assert (response.status_code, len(lost), len(records)) == (200, 1, 1)
