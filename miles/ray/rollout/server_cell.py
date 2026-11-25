@@ -176,13 +176,9 @@ class ServerCell:
         return self.addr_info.server_url
 
     def _build_api_client(self, server_url: str) -> SGLangApiClient:
-        if self.meta.sglang_admin_api_key:
-            return SGLangApiClient(
-                server_url=server_url,
-                api_key=self.meta.sglang_api_key,
-                admin_api_key=self.meta.sglang_admin_api_key,
-            )
-        return SGLangApiClient(server_url=server_url, api_key=self.meta.sglang_api_key)
+        return SGLangApiClient(
+            server_url=server_url, api_key=self.meta.sglang_api_key, admin_api_key=self.meta.sglang_admin_api_key
+        )
 
     @property
     def api_client(self) -> SGLangApiClient:

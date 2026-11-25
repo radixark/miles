@@ -113,14 +113,13 @@ class SGLangApiClient:
 
     @property
     def _normal_headers(self) -> dict[str, str]:
-        # SGLang NORMAL routes require api_key even when admin_api_key is also configured, and allow any header when
-        # only admin_api_key is configured (sglang/srt/utils/auth.py:decide_request_auth).
-        return _compute_headers(self.api_key or self.admin_api_key)
+        # SGLang's NORMAL routes check only api_key, and admit any request on a server without one
+        # (sglang/srt/utils/auth.py:decide_request_auth).
+        return _compute_headers(self.api_key)
 
     @property
     def _headers(self) -> dict[str, str]:
-        # SGLang ADMIN_FORCE / ADMIN_OPTIONAL routes require admin_api_key whenever configured, falling back to api_key
-        # on pre-#49896 servers or ADMIN_OPTIONAL routes with only api_key configured.
+        # SGLang's ADMIN_FORCE / ADMIN_OPTIONAL routes take admin_api_key whenever the server has one, else api_key.
         return _compute_headers(self.admin_api_key or self.api_key)
 
     async def _make_request(
@@ -223,7 +222,7 @@ class SGLangApiClient:
         response = await GeneralHttpClientProvider.client().get(
             f"{self.server_url}/parallelism_config",
             params={"rank": rank, "role": role},
-            headers=self._normal_headers,
+            headers=self._headers,
             timeout=5.0,
         )
         response.raise_for_status()

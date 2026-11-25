@@ -81,7 +81,7 @@ class _RecordingRouterApiClient:
 class _RecordingApiClient:
     calls: list[tuple[str, dict]] = []
 
-    def __init__(self, server_url: str, api_key: str | None = None):
+    def __init__(self, server_url: str, api_key: str | None = None, admin_api_key: str | None = None):
         self.server_url = server_url
         self.api_key = api_key
 
@@ -100,7 +100,7 @@ class _ResultApiClient:
     results: dict[str, dict] = {}
     errors: dict[str, Exception] = {}
 
-    def __init__(self, server_url: str, api_key: str | None = None):
+    def __init__(self, server_url: str, api_key: str | None = None, admin_api_key: str | None = None):
         self.server_url = server_url
         self.api_key = api_key
 

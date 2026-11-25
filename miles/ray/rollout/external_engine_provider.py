@@ -49,8 +49,7 @@ class StaticInferenceEngineWorkerProvider(BaseWorkerProvider):
 
     async def init(self) -> None:
         urls = _compute_external_engine_urls(self._args)
-        api_key, _admin_api_key = _resolve_external_engine_keys(self._args)
-        engines = await _discover_external_engines(urls, api_key=api_key)
+        engines = await _discover_external_engines(urls, api_key=self._args.sglang.base_args["api_key"])
         _assert_engines_match_args(self._args, engines=engines)
 
         self._cells = _compute_cells(args=self._args, engines=engines)
@@ -120,31 +119,19 @@ class _ExternalEngineInfo:
     disaggregation_bootstrap_port: int | None
 
 
-def _resolve_external_engine_keys(args: Any) -> tuple[str | None, str | None]:
-    """Return ``(api_key, admin_api_key)`` for an external SGLang server.
+def _resolve_external_admin_api_key(args: Any) -> str | None:
+    """``--sglang-admin-api-key``, else ``SGLANG_ADMIN_API_KEY``, as SGLang's own admin clients resolve it.
 
-    Override order (matching SGLang's ``handle_admin_api_key_env`` / ``decide_request_auth``, which treat empty
-    strings as unset):
-    - ``admin_api_key``: explicit ``--sglang-admin-api-key`` wins over ``SGLANG_ADMIN_API_KEY``; an empty value
-      disables admin auth without falling back to the environment.
-    - ``api_key`` (for ``AuthLevel.NORMAL`` routes such as ``/server_info`` and ``/model_info``): explicit
-      ``--sglang-api-key`` wins even when ``admin_api_key`` is also set, because SGLang's ``decide_request_auth``
-      requires ``api_key`` on normal routes when both keys are configured; otherwise falls back to ``admin_api_key``.
+    Only for engines miles does not launch: an engine miles launches gets the flag, so its cells use that alone.
     """
-    base_args = args.sglang.base_args
-    admin_api_key = base_args.get("admin_api_key")
-    if admin_api_key is None:
-        admin_api_key = os.environ.get("SGLANG_ADMIN_API_KEY")
-    admin_api_key = admin_api_key or None
-    api_key = base_args["api_key"] or admin_api_key
-    return api_key, admin_api_key
+    admin_api_key = args.sglang.base_args["admin_api_key"]
+    return os.environ.get("SGLANG_ADMIN_API_KEY") if admin_api_key is None else admin_api_key
 
 
 def _compute_cells(*, args: Any, engines: list[_ExternalEngineInfo]) -> dict[str, _ExternalCell]:
     cells: dict[str, _ExternalCell] = {}
     gpu_offset = 0
-    resolved_api_key, resolved_admin_api_key = _resolve_external_engine_keys(args)
-    extra_admin_meta = dict(sglang_admin_api_key=resolved_admin_api_key) if resolved_admin_api_key is not None else {}
+    admin_api_key = _resolve_external_admin_api_key(args)
     for cell_index, engine in enumerate(engines):
         cell_id = compute_cell_id(pool_id=_EXTERNAL_ENGINE_POOL_ID, cell_index=cell_index)
         worker_name = compute_worker_name(pool_id=_EXTERNAL_ENGINE_POOL_ID, cell_index=cell_index)
@@ -160,8 +147,8 @@ def _compute_cells(*, args: Any, engines: list[_ExternalEngineInfo]) -> dict[str
                     worker_type=engine.worker_type.value,
                     num_gpus_per_engine=engine.num_gpus,
                     gpu_offset=gpu_offset,
-                    sglang_api_key=resolved_api_key,
-                    **extra_admin_meta,
+                    sglang_api_key=args.sglang.base_args["api_key"],
+                    sglang_admin_api_key=admin_api_key,
                     needs_offload=False,
                     update_weights=True,
                     # The engine's own SGLANG_HEALTH_CHECK_TIMEOUT is not reported, so assume SGLang's default

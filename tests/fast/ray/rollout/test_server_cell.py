@@ -17,7 +17,7 @@ class TestServerCellAbortAll:
         timeouts: list[float | None] = []
 
         class _RecordingApiClient:
-            def __init__(self, server_url: str, api_key: str | None = None) -> None:
+            def __init__(self, server_url: str, api_key: str | None = None, admin_api_key: str | None = None) -> None:
                 self.server_url = server_url
                 self.api_key = api_key
 

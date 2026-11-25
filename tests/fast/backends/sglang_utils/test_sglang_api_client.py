@@ -573,6 +573,9 @@ _AUTHENTICATED_CALLS = [
     ("stop_profile", lambda c: c.stop_profile()),
 ]
 
+# the calls whose routes SGLang declares NORMAL (/health_generate, /server_info, /model_info)
+_NORMAL_ROUTE_CALLS = {"health_generate", "get_server_info", "get_weight_version"}
+
 
 class TestEveryRequestIsAuthenticated:
     """An engine started with --sglang-api-key answers 401 to any request that carries no bearer token."""
@@ -589,6 +592,20 @@ class TestEveryRequestIsAuthenticated:
         await call(SGLangApiClient(server_url=SERVER_URL, api_key="secret"))
 
         assert rec.calls[0][2]["headers"]["Authorization"] == "Bearer secret"
+
+    @pytest.mark.parametrize("name, call", _AUTHENTICATED_CALLS, ids=[name for name, _call in _AUTHENTICATED_CALLS])
+    async def test_a_client_holding_both_keys_sends_the_one_each_route_checks(self, monkeypatch, name, call):
+        """With both keys set, SGLang checks api_key on its NORMAL routes and admin_api_key on every other one."""
+        rec = _Recorder()
+        rec.install(
+            monkeypatch,
+            responses=[_FakeResponse(payload={"weight_version": "v1", "remote_instance_transfer_engine_info": {}})],
+        )
+
+        await call(SGLangApiClient(server_url=SERVER_URL, api_key="normal", admin_api_key="admin"))
+
+        expected = "normal" if name in _NORMAL_ROUTE_CALLS else "admin"
+        assert rec.calls[0][2]["headers"]["Authorization"] == f"Bearer {expected}"
 
 
 class TestMethodsThatBypassMakeRequest:

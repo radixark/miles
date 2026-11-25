@@ -78,7 +78,7 @@ def _addr_info() -> CellAddrInfo:
 
 
 class _RecordingApiClient:
-    def __init__(self, server_url: str, api_key: str | None = None) -> None:
+    def __init__(self, server_url: str, api_key: str | None = None, admin_api_key: str | None = None) -> None:
         self.server_url = server_url
         self.api_key = api_key
 
@@ -88,7 +88,7 @@ class _RecordingApiClient:
 
 
 class _NoopEngineApiClient:
-    def __init__(self, server_url: str, api_key: str | None = None) -> None:
+    def __init__(self, server_url: str, api_key: str | None = None, admin_api_key: str | None = None) -> None:
         self.server_url = server_url
         self.api_key = api_key
 
