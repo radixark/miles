@@ -369,6 +369,26 @@ class TestExternalRolloutValidation:
         assert args.rollout_external is True
         assert args.custom_inference_engine_provider_path == "my_pkg.my_provider"
 
+    @pytest.mark.parametrize(
+        ("extra", "env", "expected"),
+        [
+            pytest.param(EXTERNAL_ARGS + ["--sglang-admin-api-key", "from-flag"], "from-env", "from-flag", id="flag"),
+            pytest.param(EXTERNAL_ARGS, "from-env", "from-env", id="env-fallback"),
+            pytest.param(EXTERNAL_ARGS + ["--sglang-admin-api-key", ""], "from-env", "", id="empty-flag-is-none"),
+            pytest.param(["--num-rollout", "1"], "from-env", None, id="engines-miles-launches"),
+        ],
+    )
+    def test_the_admin_key_falls_back_to_the_environment_only_for_external_engines(
+        self, monkeypatch, extra, env, expected
+    ):
+        """Read on the driver, as SGLang's admin clients do; an engine miles launches gets only the flag."""
+        monkeypatch.setenv("SGLANG_ADMIN_API_KEY", env)
+        args = self._parse(extra)
+
+        miles_validate_args(args)
+
+        assert args.sglang_admin_api_key == expected
+
     def test_static_addrs_do_not_overrule_a_custom_provider_path(self):
         """Both args together are how a custom provider reads the address book miles parsed."""
         args = self._parse(EXTERNAL_ARGS + ["--custom-inference-engine-provider-path", "my_pkg.my_provider"])
