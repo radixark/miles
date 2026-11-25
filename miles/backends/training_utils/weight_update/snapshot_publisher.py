@@ -1,7 +1,7 @@
 import json
 import logging
 import shutil
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 
 import safetensors.torch
@@ -9,6 +9,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
+from miles.utils.hf_utils.weight_mapping import get_checkpoint_weight_map
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,28 @@ HF_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".gguf")
 def _is_hf_metadata_file(path: Path) -> bool:
     # The base checkpoint's weight index must not overwrite the exported shard mapping.
     return path.is_file() and path.suffix not in HF_WEIGHT_SUFFIXES and not path.name.endswith(".index.json")
+
+
+def _partial_export_warning(path: Path, exported_names: Collection[str], hf_checkpoint: str) -> str | None:
+    """The warning for an export that holds fewer tensors than its base checkpoint, or ``None``."""
+    base_checkpoint = Path(hf_checkpoint)
+    if not base_checkpoint.is_dir():
+        return None
+    try:
+        base_names = get_checkpoint_weight_map(base_checkpoint).keys()
+    except (OSError, ValueError, KeyError):
+        return None
+    missing = sorted(set(base_names) - set(exported_names))
+    if not missing:
+        return None
+    examples = ", ".join(missing[:3])
+    return (
+        f"The export to {path} holds {len(exported_names)} of the {len(base_names)} tensors in "
+        f"{hf_checkpoint}; {len(missing)} base tensors were not exported (e.g. {examples}). "
+        f"The export loads correctly only on top of the base checkpoint. "
+        f"To make it a standalone checkpoint, run: python tools/complete_hf_export.py "
+        f"--export-dir {path} --hf-checkpoint {hf_checkpoint}"
+    )
 
 
 class SnapshotPublisher:
@@ -65,3 +88,6 @@ class SnapshotPublisher:
                 logger.warning(f"hf_checkpoint {hf_checkpoint} is not a local dir; metadata not copied to {path}")
             index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
             (path / "model.safetensors.index.json").write_text(json.dumps(index, indent=2))
+            warning = _partial_export_warning(path, weight_map.keys(), hf_checkpoint)
+            if warning is not None:
+                logger.warning(warning)
