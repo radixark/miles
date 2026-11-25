@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import logging
+import os
 from enum import Enum
 from typing import Any
 
@@ -24,6 +25,14 @@ class WorkerType(Enum):
         if mode == "null":
             mode = "regular"
         return cls(mode)
+
+
+def resolve_admin_api_key(flag: str | None) -> str | None:
+    """``--admin-api-key``, else ``SGLANG_ADMIN_API_KEY``: the order SGLang's server and its admin clients use.
+
+    Resolved where a client is built, so a key from the environment never enters args, cell metadata or manifests.
+    """
+    return os.environ.get("SGLANG_ADMIN_API_KEY") if flag is None else flag
 
 
 def _compute_headers(api_key: str | None) -> dict[str, str]:
@@ -108,8 +117,9 @@ def encode_update_weights_from_tensor_body(
 @dataclasses.dataclass(frozen=True)
 class SGLangApiClient:
     server_url: str
-    api_key: str | None = None
-    admin_api_key: str | None = None
+    # kept out of repr, which tracebacks and logs print
+    api_key: str | None = dataclasses.field(default=None, repr=False)
+    admin_api_key: str | None = dataclasses.field(default=None, repr=False)
 
     @property
     def _normal_headers(self) -> dict[str, str]:

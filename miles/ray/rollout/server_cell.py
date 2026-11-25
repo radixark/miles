@@ -7,9 +7,15 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from pydantic import Field
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, WorkerType, probe_server_healthy
+from miles.backends.sglang_utils.sglang_api_client import (
+    SGLangApiClient,
+    WorkerType,
+    probe_server_healthy,
+    resolve_admin_api_key,
+)
 from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.cell_state import (
@@ -54,8 +60,10 @@ class ServerCellMetadata(FrozenStrictBaseModel):
     cell_id: str
     num_gpus_per_engine: int
     gpu_offset: int
-    sglang_api_key: str | None
-    sglang_admin_api_key: str | None = None
+    # keys are kept out of repr, which tracebacks and validation errors print
+    sglang_api_key: str | None = Field(repr=False)
+    # the flag only; the environment fallback is resolved by the cell
+    sglang_admin_api_key: str | None = Field(default=None, repr=False)
     worker_name: str
     needs_offload: bool
     update_weights: bool
@@ -75,8 +83,10 @@ class ServerCell:
     _env_reporter: EngineEnvReporter = dataclasses.field(init=False)
     _state: CellState = dataclasses.field(default_factory=StateUninitialized)
     _startup_probe: asyncio.Task[bool] | None = dataclasses.field(default=None, init=False)
+    _admin_api_key: str | None = dataclasses.field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        self._admin_api_key = resolve_admin_api_key(self.meta.sglang_admin_api_key)
         self._env_reporter = EngineEnvReporter(interval_seconds=self.args.env_report_interval_seconds)
         self._health_checker = create_rollout_cell_health_checker(
             args=self.args,
@@ -177,7 +187,7 @@ class ServerCell:
 
     def _build_api_client(self, server_url: str) -> SGLangApiClient:
         return SGLangApiClient(
-            server_url=server_url, api_key=self.meta.sglang_api_key, admin_api_key=self.meta.sglang_admin_api_key
+            server_url=server_url, api_key=self.meta.sglang_api_key, admin_api_key=self._admin_api_key
         )
 
     @property

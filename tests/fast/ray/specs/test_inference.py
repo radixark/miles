@@ -1180,8 +1180,8 @@ class TestEngineMetaApiKey:
         )
         assert meta["sglang_api_key"] == ""
 
-    def test_the_admin_key_is_the_one_the_engine_is_launched_with(self, tmp_path, monkeypatch):
-        """miles does not pass its own SGLANG_ADMIN_API_KEY to an engine it launches, so its cells do not read it."""
+    def test_the_metadata_carries_the_admin_key_flag_only(self, tmp_path, monkeypatch):
+        """The cell resolves SGLANG_ADMIN_API_KEY itself, so a key from the environment never reaches the pod annotation."""
         monkeypatch.setenv("SGLANG_ADMIN_API_KEY", "from-miles-env")
         assert self._meta_for(tmp_path)["sglang_admin_api_key"] is None
         assert self._meta_for(tmp_path, sglang_admin_api_key="from-args")["sglang_admin_api_key"] == "from-args"

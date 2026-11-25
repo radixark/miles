@@ -58,3 +58,43 @@ class TestServerCellAbortAll:
 
         assert actual is result
         assert timeouts == [ABORT_REQUEST_TIMEOUT_SECONDS]
+
+
+class TestServerCellAdminKey:
+    @pytest.mark.parametrize(
+        ("flag", "expected"),
+        [("from-flag", "from-flag"), (None, "from-env"), ("", "")],
+        ids=["flag-wins", "env-fallback", "empty-flag-means-none"],
+    )
+    def test_the_cell_client_resolves_the_flag_else_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch, flag, expected
+    ) -> None:
+        """The metadata carries the flag only; the cell resolves SGLANG_ADMIN_API_KEY as SGLang itself does."""
+        monkeypatch.setenv("SGLANG_ADMIN_API_KEY", "from-env")
+        cell = track_server_cell(
+            ServerCell(
+                args=make_args(),
+                meta=ServerCellMetadata(
+                    model_id="default",
+                    worker_type="regular",
+                    cell_id="inference-engine-0-0-0",
+                    num_gpus_per_engine=1,
+                    gpu_offset=0,
+                    sglang_api_key="normal",
+                    sglang_admin_api_key=flag,
+                    worker_name="inference-engine-0-0-0-0",
+                    needs_offload=False,
+                    update_weights=True,
+                    health_check_timeout_seconds=20,
+                    workers_hash="pseudo-hash-0",
+                ),
+                router_api_client=None,
+                provider=None,
+            )
+        )
+
+        client = cell._build_api_client("http://10.0.0.1:30000")
+
+        assert (client.api_key, client.admin_api_key) == ("normal", expected)
+        assert "normal" not in repr(client) and "from-env" not in repr(client)
+        assert "normal" not in repr(cell.meta)
