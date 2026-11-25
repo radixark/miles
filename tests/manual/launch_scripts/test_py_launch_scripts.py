@@ -205,7 +205,9 @@ class TestDiscovery:
     def test_every_environment_knob_a_model_script_reads_is_frozen(self):
         """The snapshots now pin expanded model args, so a developer's exported override would fail them."""
         knobs = set()
-        for script in sorted((REPO_ROOT / "scripts" / "models").iterdir()):
+        # model_args_utils holds the helpers model scripts call, so its knobs reach the args too.
+        helpers = REPO_ROOT / "miles" / "utils" / "external_utils" / "model_args_utils.py"
+        for script in [*sorted((REPO_ROOT / "scripts" / "models").iterdir()), helpers]:
             if not script.is_file():
                 continue
             text = script.read_text()

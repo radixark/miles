@@ -191,6 +191,8 @@ def _setup_lora_model_via_bridge(args: TrainerConfig) -> list:
     provider.variable_seq_lengths = True
     provider.moe_token_dispatcher_type = "alltoall"
     provider.moe_router_load_balancing_type = "none"
+    if args.no_moe_permute_fusion:
+        provider.moe_permute_fusion = False
     # The HF config can carry MTP layers; LoRA trains none and SGLang serves no MTP draft with LoRA, so build none.
     assert not args.enable_mtp_training, "LoRA does not support MTP training"
     provider.mtp_num_layers = None

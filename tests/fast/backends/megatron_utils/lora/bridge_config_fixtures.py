@@ -109,4 +109,5 @@ def bridge_args(tmp_path: Path) -> Namespace:
         lora_type="lora",
         offload_train=False,
         dsa_attention_backend="megatron",
+        no_moe_permute_fusion=False,
     )

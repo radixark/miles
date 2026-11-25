@@ -59,3 +59,15 @@ class TestLoraBridgeBackendConfiguration:
         assert provider.fp8_param is True
         assert provider.first_last_layers_bf16 is True
         assert provider.quant_recipe is None
+
+    @pytest.mark.parametrize("disabled", [False, True])
+    def test_only_no_moe_permute_fusion_turns_the_providers_fusion_off(
+        self, bridge_args: Namespace, bridge_provider: object, disabled: bool
+    ) -> None:
+        """Bridge MoE providers default the fused permute on; leaving --moe-permute-fusion out keeps it."""
+        bridge_provider.moe_permute_fusion = True
+        bridge_args.no_moe_permute_fusion = disabled
+
+        [provider] = _setup_lora_model_via_bridge(bridge_args)
+
+        assert provider.moe_permute_fusion is not disabled

@@ -1,6 +1,6 @@
 import os
 
-from model_args_utils import moe_layer_freq
+from model_args_utils import moe_layer_freq, moe_permute_fusion
 
 
 FIRST_K_DENSE_REPLACE = 0
@@ -37,6 +37,6 @@ def model_args(nlayers: int | None = None, rotary_base: str | None = None) -> st
         "--moe-grouped-gemm "
         "--moe-token-drop-policy probs "
         "--moe-router-dtype fp32 "
-        "--moe-permute-fusion "
+        f"{moe_permute_fusion()}"
         "--moe-aux-loss-coeff 0 "
     )

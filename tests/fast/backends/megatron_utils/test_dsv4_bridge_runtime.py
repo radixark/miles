@@ -48,6 +48,7 @@ def _runtime_args(**overrides):
         enable_mtp_training=False,
         dsa_attention_backend=values.get("dsa_attention_backend"),
         routed_expert_qat=values.get("routed_expert_qat"),
+        no_moe_permute_fusion=values.get("no_moe_permute_fusion", False),
     )
 
 

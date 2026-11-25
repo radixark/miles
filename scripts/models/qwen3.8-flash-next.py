@@ -1,4 +1,4 @@
-from model_args_utils import moe_layer_freq
+from model_args_utils import moe_layer_freq, moe_permute_fusion
 
 
 def model_args(nlayers: int = 48) -> str:
@@ -32,7 +32,7 @@ def model_args(nlayers: int = 48) -> str:
         "--moe-grouped-gemm "
         "--moe-token-drop-policy probs "
         "--moe-router-dtype fp32 "
-        "--moe-permute-fusion "
+        f"{moe_permute_fusion()}"
         "--moe-aux-loss-coeff 0 "
         "--attention-output-gate "
         "--moe-shared-expert-gate "

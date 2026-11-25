@@ -1,4 +1,5 @@
 import importlib.util
+import os
 import shlex
 import sys
 from pathlib import Path
@@ -35,6 +36,16 @@ def shell_safe_model_args(model_type: str | None) -> str:
 
 
 # ==================== what a model script may call ====================
+
+
+def moe_permute_fusion() -> str:
+    """--moe-permute-fusion, or --no-moe-permute-fusion with MODEL_ARGS_MOE_PERMUTE_FUSION=0.
+
+    Megatron's flag has no negative form, and a bridge provider turns the fusion on by itself,
+    so leaving the flag out would not turn it off there; Miles' --no-moe-permute-fusion does."""
+    if os.environ.get("MODEL_ARGS_MOE_PERMUTE_FUSION", "1") == "0":
+        return "--no-moe-permute-fusion "
+    return "--moe-permute-fusion "
 
 
 def moe_layer_freq(*, nlayers: int, first_k_dense_replace: int) -> str:

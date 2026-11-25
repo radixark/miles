@@ -1376,6 +1376,9 @@ def miles_validate_args(args):
             raise FileNotFoundError(f"--chat-template-path file not found: {args.chat_template_path}")
         args.sglang_chat_template = args.chat_template_path
 
+    if args.no_moe_permute_fusion:
+        assert args.train_backend == "megatron", "--no-moe-permute-fusion applies to --train-backend megatron"
+        assert not args.moe_permute_fusion, "--moe-permute-fusion and --no-moe-permute-fusion contradict each other"
     if args.kl_coef != 0 or args.use_kl_loss:
         if not os.path.exists(args.ref_load):
             raise FileNotFoundError(f"ref_load {args.ref_load} does not exist, please check the path.")
