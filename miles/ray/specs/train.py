@@ -217,6 +217,9 @@ def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, fp8_scales: str)
         "NCCL_CUMEM_ENABLE": os.environ.get("NCCL_CUMEM_ENABLE", "0"),
         # DeepEP/NVSHMEM's internal NCCL conflicts with our NCCL and hangs under CUDA graphs.
         "NVSHMEM_DISABLE_NCCL": os.environ.get("NVSHMEM_DISABLE_NCCL", "1"),
+        # Keep Inductor's compile pool alive: re-forking it after torch's 60 s idle shutdown can hang step 1 (#4046).
+        # The launcher environment and --train-env-vars still override this default.
+        "TORCHINDUCTOR_QUIESCE_ASYNC_COMPILE_POOL": os.environ.get("TORCHINDUCTOR_QUIESCE_ASYNC_COMPILE_POOL", "0"),
         "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": fp8_scales,
         **{name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST},
         **args.train_env_vars,
