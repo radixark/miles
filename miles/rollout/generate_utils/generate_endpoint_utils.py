@@ -144,7 +144,7 @@ def compute_request_payload(
     payload = {
         "input_ids": input_ids,
         "sampling_params": {**sampling_params, "max_new_tokens": max_new_tokens},
-        "return_logprob": True,
+        "return_logprob": not getattr(args, "rollout_skip_return_logprob", False),
         "return_routed_experts": args.use_rollout_routing_replay,
         "return_indexer_topk": args.use_rollout_indexer_replay,
     }
@@ -214,6 +214,10 @@ async def update_sample_from_response(
     if x := output["meta_info"].get("output_token_logprobs"):
         new_response_tokens = [item[1] for item in x]
         new_response_log_probs = [item[0] for item in x]
+    elif not payload.get("return_logprob", True):
+        # Log-probs were not requested: the tokens come from output_ids and no log-probs are recorded.
+        new_response_tokens = list(output.get("output_ids") or [])
+        new_response_log_probs = None
     else:
         new_response_tokens, new_response_log_probs = [], []
 
@@ -240,9 +244,10 @@ async def update_sample_from_response(
     sample.response_length += len(new_response_tokens)
     sample.response += output["text"]
 
-    if sample.rollout_log_probs is None:
-        sample.rollout_log_probs = []
-    sample.rollout_log_probs += new_response_log_probs
+    if new_response_log_probs is not None:
+        if sample.rollout_log_probs is None:
+            sample.rollout_log_probs = []
+        sample.rollout_log_probs += new_response_log_probs
     # With the output store, the trainer builds support-mode candidates from the stored mask.
     if payload.get("top_logprobs_num") or (sampling_logprobs_mode == "support" and not via_store):
         append_rollout_topk_logprobs(

@@ -15,6 +15,17 @@ class RolloutRelatedConfig(BaseConfig):
     use_sampling_support_replay: bool
     rollout_sampling_logprobs_mode: Literal["selected", "support"]
     rollout_top_logprobs_num: A[int, Arg()] = 0
+    rollout_skip_return_logprob: A[
+        bool,
+        Arg(
+            help=(
+                "Do not ask the rollout engine for per-token log-probs (return_logprob=False on every generate "
+                "request). The response tokens then come from output_ids and Sample.rollout_log_probs stays None. "
+                "Only valid when nothing consumes the rollout log-probs: no --use-rollout-logprobs, no --use-tis, "
+                "no mismatch metrics, no score centering IS, no top-k log-probs, no sampling-support replay."
+            )
+        ),
+    ] = False
 
     hf_checkpoint: A[
         str | None,
