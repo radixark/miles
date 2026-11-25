@@ -41,7 +41,11 @@ COMMAND_MARKERS = (
 TEST_FILE_PATTERN = re.compile(
     r"tests/(?:e2e|fast|fast-gpu|ci)(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*)*/test_[A-Za-z0-9_][A-Za-z0-9_.-]*\.py"
 )
-RUN_FILE_COMMAND_PATTERN = re.compile(rf"/{RUN_FILE_COMMAND} +({TEST_FILE_PATTERN.pattern})(?: +--hw +(rocm))?")
+RUN_FILE_COMMAND_PATTERN = re.compile(rf"/{RUN_FILE_COMMAND} +({TEST_FILE_PATTERN.pattern})(?: +--hw +(rocm|k8s))?")
+# `--hw k8s` runs the file on its restricted stage (tests/ci/hardware.py), whose runners take
+# only runs this group vouches for.
+RESTRICTED_STAGE_HW = "k8s"
+RESTRICTED_STAGE_GROUP = "restricted_stage_access"
 # PR-body dependency pins, mirroring the exact patterns the pr-test.yml
 # resolve steps grep for; each match is forwarded as one dispatch input.
 PR_BODY_PINS = (
@@ -81,7 +85,9 @@ WORKFLOW_RUN_URL_PATTERN = re.compile(rf"https://github\.com/{re.escape(REPOSITO
 # Suite names come from the resolver, and reach a comment body verbatim.
 SUITE_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]*")
 POLICY_PERMISSIONS = frozenset({"write", "admin"})
-POLICY_GROUPS = frozenset({"add_label_access", "repo_write_access", "prior_contributor_access"})
+POLICY_GROUPS = frozenset(
+    {"add_label_access", "repo_write_access", "prior_contributor_access", RESTRICTED_STAGE_GROUP}
+)
 # The comment payload's author_association enum, as GitHub defines it. Groups
 # may allow a subset; associations outside the enum fail loudly.
 AUTHOR_ASSOCIATIONS = frozenset(
@@ -147,6 +153,11 @@ class CommandContext(NamedTuple):
     head_owner_login: str
     head_ref: str
     body: str
+    restricted_stage_permissions: frozenset
+    restricted_stage_user_ids: frozenset
+    # Raw GitHub user objects; validated only by the check that needs them.
+    pull_author: object
+    head_owner: object
 
 
 def _strict_object(pairs):
@@ -209,18 +220,19 @@ def load_policy(path):
     raw = load_json(path)
     if not isinstance(raw, dict) or set(raw) != {"version", "groups", "commands"}:
         raise CommentCommandError("policy must contain only version, groups, and commands")
-    if type(raw["version"]) is not int or raw["version"] != 4:
-        raise CommentCommandError("policy version must be 4")
+    if type(raw["version"]) is not int or raw["version"] != 5:
+        raise CommentCommandError("policy version must be 5")
 
     raw_groups = raw["groups"]
     if not isinstance(raw_groups, dict) or set(raw_groups) != POLICY_GROUPS:
         raise CommentCommandError(
-            "policy groups must contain only add_label_access, repo_write_access, and prior_contributor_access"
+            "policy groups must contain only add_label_access, repo_write_access, prior_contributor_access, "
+            "and restricted_stage_access"
         )
     groups = {}
     for name, raw_group in raw_groups.items():
         expected_keys = {"repository_permissions"}
-        if name in {"add_label_access", "prior_contributor_access"}:
+        if name in {"add_label_access", "prior_contributor_access", RESTRICTED_STAGE_GROUP}:
             expected_keys.add("users")
         if name == "prior_contributor_access":
             expected_keys.add("author_associations")
@@ -290,7 +302,7 @@ def parse_command(body):
         return RunTestFile(match.group(1), match.group(2) or "auto")
     if any(marker in command for marker in COMMAND_MARKERS):
         raise CommentCommandError(
-            "comment must contain one exact /<label>, /rerun-test <test-file> [--hw rocm], /clear-labels, "
+            "comment must contain one exact /<label>, /rerun-test <test-file> [--hw rocm|k8s], /clear-labels, "
             "or /rerun-failed-ci command"
         )
     return None
@@ -619,7 +631,7 @@ def resolve_policy(event, policy):
     )
 
 
-def require_permission(api, actor_id, actor_login, allowed_permissions):
+def _live_permission(api, actor_id, actor_login):
     permission_result = api.get_permission(actor_login)
     if not isinstance(permission_result, dict):
         raise CommentCommandError("GitHub API returned an invalid repository permission")
@@ -632,7 +644,11 @@ def require_permission(api, actor_id, actor_login, allowed_permissions):
     permission = permission_result.get("permission")
     if not isinstance(permission, str):
         raise CommentCommandError("GitHub API returned an invalid repository permission")
-    if permission not in allowed_permissions:
+    return permission
+
+
+def require_permission(api, actor_id, actor_login, allowed_permissions):
+    if _live_permission(api, actor_id, actor_login) not in allowed_permissions:
         raise CommentCommandError("comment author is not authorized for the requested operation")
 
 
@@ -755,7 +771,7 @@ def _handle_rerun_failed_ci(context, request):
         head_repository_id,
         head_owner_login,
         head_ref,
-        _,
+        *_,
     ) = context
     is_fork = head_repository_id != REPOSITORY_ID
     if is_fork:
@@ -932,6 +948,40 @@ def _pr_body_pins(body, table=PR_BODY_PINS):
     return pins
 
 
+def _is_restricted_stage_member(context, user, role):
+    """Whether one GitHub user object is in the restricted-stage group; only a human account can be."""
+    if not isinstance(user, dict):
+        raise CommentCommandError(f"{role} is missing from the pull request")
+    user_id = _positive_int(user.get("id"), f"{role} ID")
+    login = user.get("login")
+    if not isinstance(login, str) or not login:
+        raise CommentCommandError(f"{role} login is missing")
+    if user.get("type") != "User":
+        return False
+    if user_id in context.restricted_stage_user_ids:
+        return True
+    return _live_permission(context.api, user_id, login) in context.restricted_stage_permissions
+
+
+def _require_restricted_stage_access(context):
+    # A restricted stage runs the head's code next to other tenants, so the group must vouch for
+    # who asks and for whose code runs: the commenter, the pull request author, and, for a fork
+    # head, the owner of the head repository.
+    subjects = [
+        ("comment author", {"id": context.actor_id, "login": context.actor_login, "type": "User"}),
+        ("pull request author", context.pull_author),
+    ]
+    if context.head_repository_id != REPOSITORY_ID:
+        subjects.append(("head repository owner", context.head_owner))
+    admitted_ids = set()
+    for role, user in subjects:
+        if isinstance(user, dict) and user.get("id") in admitted_ids:
+            continue
+        if not _is_restricted_stage_member(context, user, role):
+            raise CommentCommandError(f"{role} is not authorized for restricted stages")
+        admitted_ids.add(user["id"])
+
+
 def _handle_run_test_file(context, request):
     if not isinstance(request, RunTestFile):
         raise CommentCommandError("rerun-test handler received the wrong request type")
@@ -958,6 +1008,8 @@ def _handle_run_test_file(context, request):
         context.allowed_user_ids,
         context.allowed_author_associations,
     )
+    if request.hw == RESTRICTED_STAGE_HW:
+        _require_restricted_stage_access(context)
     inputs = {
         "pull_number": str(context.pull_number),
         "head_sha": context.head_sha,
@@ -1092,6 +1144,10 @@ def process_event(event, policy, api):
         head_owner_login,
         head_ref,
         _pull_body(pull),
+        policy["groups"][RESTRICTED_STAGE_GROUP]["repository_permissions"],
+        policy["groups"][RESTRICTED_STAGE_GROUP]["user_ids"],
+        pull.get("user"),
+        pull["head"]["repo"].get("owner"),
     )
     return spec.handler(context, request)
 

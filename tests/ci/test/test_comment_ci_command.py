@@ -177,16 +177,24 @@ def pull(
     head_ref=HEAD_REF,
     state="open",
     labels=(),
+    author=None,
+    head_owner=None,
 ):
-    head_owner = "radixark" if head_repository_id == HANDLER.REPOSITORY_ID else "fork-owner"
+    same_repository = head_repository_id == HANDLER.REPOSITORY_ID
+    head_owner = head_owner or (
+        {"id": 9, "login": "radixark", "type": "Organization"}
+        if same_repository
+        else {"id": 7001, "login": "fork-owner", "type": "User"}
+    )
     return {
         "number": 123,
         "state": state,
+        "user": author or {"id": ACTOR_ID, "login": "actor", "type": "User"},
         "base": {"repo": {"id": HANDLER.REPOSITORY_ID, "full_name": HANDLER.REPOSITORY}},
         "head": {
             "ref": head_ref,
             "sha": head_sha,
-            "repo": {"id": head_repository_id, "owner": {"login": head_owner}},
+            "repo": {"id": head_repository_id, "owner": head_owner},
         },
         "labels": [{"name": label} for label in labels],
     }
@@ -200,9 +208,15 @@ def policy(
     labels=("run-ci-short", "bypass-fastfail"),
     repo_permissions=("write", "admin"),
     author_associations=("OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"),
+    restricted_stage_user_ids=(),
 ):
     return {
         "groups": {
+            "restricted_stage_access": {
+                "repository_permissions": frozenset(repo_permissions),
+                "user_ids": frozenset(restricted_stage_user_ids),
+                "author_associations": frozenset(),
+            },
             "add_label_access": {
                 "repository_permissions": frozenset(permissions),
                 "user_ids": frozenset(user_ids),
@@ -373,8 +387,9 @@ def test_unknown_request_type_fails_closed():
 
 def raw_policy():
     return {
-        "version": 4,
+        "version": 5,
         "groups": {
+            "restricted_stage_access": {"repository_permissions": ["write", "admin"], "users": []},
             "add_label_access": {
                 "repository_permissions": ["write", "admin"],
                 "users": [],
@@ -487,7 +502,7 @@ def test_policy_parser_rejects_legacy_or_nonstandard_schema(tmp_path, text, mess
 @pytest.mark.parametrize(
     ("path_parts", "value", "message"),
     [
-        (("version",), 3, "version must be 4"),
+        (("version",), 4, "version must be 5"),
         (("groups", "add_label_access", "repository_permissions"), [True], "only write or admin"),
         (("groups", "add_label_access", "repository_permissions"), ["read"], "only write or admin"),
         (("groups", "add_label_access", "repository_permissions"), ["write", "write"], "duplicate permissions"),
@@ -2657,3 +2672,40 @@ def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     assert "pip install" not in workflow
     assert "contents: write" not in workflow
     assert "\n  actions: write" not in workflow
+
+
+K8S_RUN_FILE_BODY = f"{RUN_FILE_BODY} --hw k8s"
+
+
+def test_restricted_stage_member_dispatches_a_k8s_file_run_for_their_own_fork():
+    owner = {"id": ACTOR_ID, "login": "actor", "type": "User"}
+    api = FakeAPI(pull(head_repository_id=999, head_owner=owner), permission="none")
+
+    HANDLER.process_event(
+        event(body=K8S_RUN_FILE_BODY, author_association="CONTRIBUTOR"),
+        policy(restricted_stage_user_ids=(ACTOR_ID,)),
+        api,
+    )
+
+    [(_, _, inputs)] = api.dispatch_calls
+    assert inputs["hw"] == "k8s"
+
+
+@pytest.mark.parametrize(
+    ("pull_overrides", "refused_id", "refused_role"),
+    [
+        ({"author": {"id": 7002, "login": "someone", "type": "User"}}, 7002, "pull request author"),
+        ({"head_repository_id": 999}, 7001, "head repository owner"),
+    ],
+)
+def test_k8s_file_run_needs_the_group_for_the_author_and_the_fork_owner(pull_overrides, refused_id, refused_role):
+    api = FakeAPI(pull(**pull_overrides), permission="none", permission_actor_id=refused_id)
+
+    with pytest.raises(HANDLER.CommentCommandError, match=f"{refused_role} is not authorized for restricted stages"):
+        HANDLER.process_event(
+            event(body=K8S_RUN_FILE_BODY, author_association="CONTRIBUTOR"),
+            policy(restricted_stage_user_ids=(ACTOR_ID,)),
+            api,
+        )
+
+    assert api.dispatch_calls == []

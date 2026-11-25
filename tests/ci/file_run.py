@@ -13,6 +13,7 @@ import shlex
 import sys
 from pathlib import Path
 
+from tests.ci.ci_policy import NO_RESTRICTED_STAGES_LABEL
 from tests.ci.ci_register import HWBackend, collect_tests, file_timeout
 from tests.ci.hardware import CUDA_STAGES
 from tests.ci.rocm import ROCM_FILE_RUN_LIMIT_SECONDS, ROCM_STAGES
@@ -73,9 +74,14 @@ def plan_file_run(
     nightly cadence gate do not apply; only `disabled` still blocks the run.
     AUTO preserves CPU/CUDA selection. An explicit ROCm request uses the file's
     one enabled ROCm registration. Ambiguous selections are errors.
+
+    A file homed on a restricted stage runs there only for `k8s`, which the
+    comment gateway grants to its restricted-stage group; AUTO runs it on the
+    stage's fallback.
     """
-    if hw not in {"auto", "rocm"}:
+    if hw not in {"auto", "rocm", "k8s"}:
         raise FileRunError(f"unsupported file-run hardware: {hw!r}")
+    on_restricted_stage = hw == "k8s"
     if hw == "rocm":
         try:
             image = rocm_container_image(image_tag)
@@ -88,7 +94,11 @@ def plan_file_run(
     registrations = [t for t in all_tests if t.filename == test_file]
     if not registrations:
         raise FileRunError(f"{test_file} has no CI registration; /rerun-test runs only registered test files")
-    requested = {HWBackend.CPU, HWBackend.CUDA} if hw == "auto" else {HWBackend.ROCM}
+    requested = {
+        "auto": {HWBackend.CPU, HWBackend.CUDA},
+        "rocm": {HWBackend.ROCM},
+        "k8s": {HWBackend.CUDA},
+    }[hw]
     supported = [t for t in registrations if t.backend in requested]
     if not supported:
         if hw == "auto":
@@ -108,12 +118,19 @@ def plan_file_run(
         raise FileRunError(f"{test_file} is disabled: {registration.disabled}")
 
     timeout = file_timeout(registration.est_time, registration.labels, 1800)
+    # The stage that executes the file, and the labels its run_suite.py call needs to select it there.
+    suite, policy_labels = registration.suite, ""
     if registration.backend is HWBackend.CUDA:
         num_gpus = registration.required_gpus
-        runs_on = CUDA_SUITE_RUNS_ON.get(registration.suite)
+        fallback = CUDA_STAGES[registration.suite].fallback
+        if on_restricted_stage and fallback is None:
+            raise FileRunError(f"{test_file} runs in {registration.suite}, which --hw k8s does not select")
+        if fallback is not None and not on_restricted_stage:
+            suite, policy_labels = fallback, NO_RESTRICTED_STAGES_LABEL
+        runs_on = CUDA_SUITE_RUNS_ON.get(suite)
         if runs_on is None:
-            raise FileRunError(f"CUDA suite {registration.suite} has no runner mapping in CUDA_SUITE_RUNS_ON")
-        if CUDA_STAGES[registration.suite].arch == "blackwell":
+            raise FileRunError(f"CUDA suite {suite} has no runner mapping in CUDA_SUITE_RUNS_ON")
+        if CUDA_STAGES[suite].arch == "blackwell":
             runs_on = ["b200", f"{num_gpus}gpu"]
         hw = "cuda"
         runs_on_json = json.dumps(runs_on)
@@ -135,7 +152,9 @@ def plan_file_run(
     plan = {
         "hw": hw,
         "num_gpus": str(num_gpus),
-        "suite": registration.suite,
+        "suite": suite,
+        "restricted_stage": str(on_restricted_stage).lower(),
+        "policy_labels": policy_labels,
         "runs_on": runs_on_json,
         "container_image": image,
         "timeout_seconds": str(timeout),
@@ -217,7 +236,7 @@ def resolve_file_run(
 
 def main() -> int:
     hw = os.environ.get("CI_HW") or "auto"
-    image_tag = os.environ.get("CI_IMAGE_TAG") or ("dev" if hw == "auto" else "")
+    image_tag = os.environ.get("CI_IMAGE_TAG") or ("" if hw == "rocm" else "dev")
     try:
         plan = resolve_file_run(
             os.environ["TEST_FILE"],

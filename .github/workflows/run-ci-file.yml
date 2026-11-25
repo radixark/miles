@@ -23,10 +23,10 @@ on:
         required: true
         type: string
       hw:
-        description: 'Hardware backend (auto keeps the CPU/CUDA default; rocm selects AMD).'
+        description: 'Hardware backend (auto keeps the CPU/CUDA default; rocm selects AMD; k8s runs the file on its restricted Kubernetes stage, which the comment gateway grants only to its restricted-stage group).'
         required: false
         type: choice
-        options: [auto, rocm]
+        options: [auto, rocm, k8s]
         default: auto
       ci_megatron_pr:
         description: 'Megatron-LM branch/commit pin forwarded from the PR body (empty: miles-main).'
@@ -96,6 +96,8 @@ jobs:
       hw: ${{ steps.resolve.outputs.hw }}
       num_gpus: ${{ steps.resolve.outputs.num_gpus }}
       suite: ${{ steps.resolve.outputs.suite }}
+      restricted_stage: ${{ steps.resolve.outputs.restricted_stage }}
+      policy_labels: ${{ steps.resolve.outputs.policy_labels }}
       runs_on: ${{ steps.resolve.outputs.runs_on }}
       container_image: ${{ steps.resolve.outputs.container_image }}
       timeout_seconds: ${{ steps.resolve.outputs.timeout_seconds }}
@@ -191,7 +193,7 @@ jobs:
 
   run-cuda-file:
     needs: resolve-file-run
-    if: needs.resolve-file-run.outputs.hw == 'cuda'
+    if: needs.resolve-file-run.outputs.hw == 'cuda' && needs.resolve-file-run.outputs.restricted_stage != 'true'
     concurrency:
       # B200 reruns share the host lock; other runs must not reacquire their parent group.
       group: ${{ endsWith(needs.resolve-file-run.outputs.suite, '-b200') && 'b200-oma' || format('run-ci-file-execution-{0}-{1}', inputs.pull_number, inputs.test_file) }}
@@ -207,6 +209,33 @@ jobs:
       container_image: ${{ needs.resolve-file-run.outputs.container_image }}
       # Release policy admits nightly/long files but never writes baselines. As in
       # stage runs, run_suite enforces the per-file timeout around the test alone.
+      execute_command: >-
+        python3 tests/ci/run_suite.py --hw cuda
+        --suite '${{ needs.resolve-file-run.outputs.suite }}'
+        --test-file '${{ inputs.test_file }}'
+        --cadence release
+        --timeout-per-file '${{ needs.resolve-file-run.outputs.timeout_seconds }}'
+        --labels ${{ needs.resolve-file-run.outputs.policy_labels }}
+    secrets:
+      WANDB_API_KEY: ${{ needs.resolve-file-run.outputs.head_is_fork != 'true' && secrets.WANDB_API_KEY || '' }}
+      NEON_DATABASE_URL: ${{ needs.resolve-file-run.outputs.head_is_fork != 'true' && secrets.NEON_DATABASE_URL || '' }}
+
+  # `--hw k8s` only. This run is on the default branch, so the local path is the file the
+  # runner group admits. No pull request event reaches it, and the gateway has already
+  # required its restricted-stage group for the commenter, the author, and a fork's owner.
+  run-restricted-stage-file:
+    needs: resolve-file-run
+    if: needs.resolve-file-run.outputs.hw == 'cuda' && needs.resolve-file-run.outputs.restricted_stage == 'true'
+    concurrency:
+      group: run-ci-file-execution-${{ inputs.pull_number }}-${{ inputs.test_file }}
+      cancel-in-progress: false
+      queue: max
+    uses: ./.github/workflows/_run-ci-k8s.yml
+    with:
+      ref: ${{ inputs.head_sha }}
+      plan_already_resolved: true
+      runs_on: ${{ needs.resolve-file-run.outputs.runs_on }}
+      container_image: ${{ needs.resolve-file-run.outputs.container_image }}
       execute_command: >-
         python3 tests/ci/run_suite.py --hw cuda
         --suite '${{ needs.resolve-file-run.outputs.suite }}'
@@ -254,7 +283,7 @@ jobs:
   # No `if` beyond always(): a resolver failure, a cancelled run, and a failing
   # test must all reach the pull request, or a silent run reads as a pass.
   report-file-run:
-    needs: [announce-file-run, resolve-file-run, run-cuda-file, run-cpu-file, run-rocm-file]
+    needs: [announce-file-run, resolve-file-run, run-cuda-file, run-restricted-stage-file, run-cpu-file, run-rocm-file]
     if: always()
     permissions:
       actions: read
@@ -281,7 +310,8 @@ jobs:
           FILE_RUN_RUN_ID: ${{ github.run_id }}
           FILE_RUN_SUITE: ${{ needs.resolve-file-run.outputs.suite }}
           FILE_RUN_RESOLVE_RESULT: ${{ needs.resolve-file-run.result }}
-          FILE_RUN_CUDA_RESULT: ${{ needs.run-cuda-file.result }}
+          # Exactly one of the two CUDA jobs runs; the other is skipped.
+          FILE_RUN_CUDA_RESULT: ${{ needs.run-restricted-stage-file.result != 'skipped' && needs.run-restricted-stage-file.result || needs.run-cuda-file.result }}
           FILE_RUN_CPU_RESULT: ${{ needs.run-cpu-file.result }}
           FILE_RUN_ROCM_RESULT: ${{ needs.run-rocm-file.result }}
           FILE_RUN_ROCM_TIMEOUT: ${{ needs.resolve-file-run.outputs.rocm_timeout }}

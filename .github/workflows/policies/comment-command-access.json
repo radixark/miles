@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "groups": {
     "add_label_access": {
       "repository_permissions": ["write", "admin"],
@@ -24,6 +24,10 @@
       "repository_permissions": ["write", "admin"],
       "users": [],
       "author_associations": ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]
+    },
+    "restricted_stage_access": {
+      "repository_permissions": ["write", "admin"],
+      "users": []
     }
   },
   "commands": {

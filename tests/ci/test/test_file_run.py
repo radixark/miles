@@ -120,6 +120,8 @@ def test_cuda_file_resolves_to_its_suite_runner_and_image(suite, runner):
         "hw": "cuda",
         "num_gpus": runner[1].removesuffix("gpu"),
         "suite": suite,
+        "restricted_stage": "false",
+        "policy_labels": "",
         "runs_on": json.dumps(runner),
         "container_image": "radixark/miles:dev",
         "timeout_seconds": "1800",
@@ -133,6 +135,8 @@ def test_cpu_file_resolves_without_runner_labels():
         "hw": "cpu",
         "num_gpus": "0",
         "suite": "stage-a-cpu",
+        "restricted_stage": "false",
+        "policy_labels": "",
         "runs_on": "",
         "container_image": "radixark/miles:pr-42",
         "timeout_seconds": "1800",
@@ -205,6 +209,8 @@ def test_explicit_rocm_selects_one_registration_and_its_spur_allocation(suite, n
     assert plan == {
         "hw": "rocm",
         "suite": suite,
+        "restricted_stage": "false",
+        "policy_labels": "",
         "num_gpus": str(num_gpus),
         "runs_on": '["linux-miles-mi35x-spur"]',
         "container_image": "rocm/sgl-dev:miles-rocm10-mi35x",
@@ -390,8 +396,8 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
     assert "name: Rerun Test" in workflow
     assert 'run-name: "/rerun-test ' in workflow
     assert workflow.count("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683") == 4
-    assert workflow.count("ref: ${{ inputs.head_sha }}") == 4
-    assert workflow.count("plan_already_resolved: true") == 3
+    assert workflow.count("ref: ${{ inputs.head_sha }}") == 5
+    assert workflow.count("plan_already_resolved: true") == 4
     assert "path: pr-source" in workflow
     assert "CI_SOURCE_ROOT: ${{ github.workspace }}/pr-source" in workflow
     assert "run: python3 -S -m tests.ci.file_run" in workflow
@@ -434,7 +440,10 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
     assert workflow.count("pull-requests: write") == 2
     report_job = workflow.split("  report-file-run:", 1)[1]
     assert "actions: read" in report_job
-    assert "needs: [announce-file-run, resolve-file-run, run-cuda-file, run-cpu-file, run-rocm-file]" in report_job
+    assert (
+        "needs: [announce-file-run, resolve-file-run, run-cuda-file, run-restricted-stage-file, run-cpu-file, "
+        "run-rocm-file]" in report_job
+    )
     assert "FILE_RUN_ROCM_RESULT: ${{ needs.run-rocm-file.result }}" in report_job
     rocm_job = workflow.split("  run-rocm-file:", 1)[1].split("  run-cpu-file:", 1)[0]
     assert "uses: ./.github/workflows/_run-ci-rocm.yml" in rocm_job
@@ -466,3 +475,19 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
         "GITHUB_COMMIT_NAME: ${{ inputs.ref || github.sha }}_"
         "${{ github.event.pull_request.number || github.event.inputs.pull_number || 'non-pr' }}"
     ) in gpu_workflow
+
+
+def test_a_restricted_stage_file_runs_there_only_for_k8s():
+    path = "tests/e2e/x/test_a.py"
+    tests = [_make(path, suite="stage-c-8-gpu-h200-k8s")]
+
+    fallback = plan_file_run(tests, path, "dev")
+    assert (fallback["suite"], fallback["runs_on"]) == ("stage-c-8-gpu-h200", '["h200", "8gpu"]')
+    assert (fallback["restricted_stage"], fallback["policy_labels"]) == ("false", "no-restricted-stages")
+
+    restricted = plan_file_run(tests, path, "dev", hw="k8s")
+    assert (restricted["suite"], restricted["runs_on"]) == ("stage-c-8-gpu-h200-k8s", '["k8s-h200-driver"]')
+    assert (restricted["restricted_stage"], restricted["policy_labels"]) == ("true", "")
+
+    with pytest.raises(FileRunError, match="--hw k8s does not select"):
+        plan_file_run([_make(path)], path, "dev", hw="k8s")
