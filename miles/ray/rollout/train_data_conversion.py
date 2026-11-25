@@ -486,6 +486,9 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
 
     if args.balance_data:
         partitions = get_seqlen_balanced_partitions(total_lengths, dp_size, equal_size=True)
+    elif args.trie_packing:
+        global_batch_size = data.get("dynamic_global_batch_size", args.global_batch_size)
+        partitions = _step_block_partitions(len(total_lengths), dp_size=dp_size, global_batch_size=global_batch_size)
     else:
         partitions = [range(i, len(total_lengths), dp_size) for i in range(dp_size)]
 
@@ -496,6 +499,25 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
         partitions = [sorted(p, key=lambda i: adapter_slots[i]) for p in partitions]
 
     return _package_shards(args, data, partitions)
+
+
+def _step_block_partitions(num_samples: int, *, dp_size: int, global_batch_size: int) -> list[list[int]]:
+    """Each rank's samples as one contiguous block per training step.
+
+    A step trains the same samples as under the strided split, but a prompt's samples, which
+    arrive adjacent, stay on one rank, where trie packing stores their prompt once. Samples past
+    the last full step are dealt strided, as before.
+    """
+    local_batch_size = global_batch_size // dp_size
+    num_full = num_samples // global_batch_size * global_batch_size
+    partitions: list[list[int]] = [[] for _ in range(dp_size)]
+    for step_start in range(0, num_full, global_batch_size):
+        for rank in range(dp_size):
+            block_start = step_start + rank * local_batch_size
+            partitions[rank].extend(range(block_start, block_start + local_batch_size))
+    for rank in range(dp_size):
+        partitions[rank].extend(range(num_full + rank, num_samples, dp_size))
+    return partitions
 
 
 def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, Any]]:

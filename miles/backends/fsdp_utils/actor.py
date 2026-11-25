@@ -8,8 +8,16 @@ import torch.distributed as dist
 
 from miles.backends.fsdp_utils import checkpoint
 from miles.backends.fsdp_utils.adaptations import routing_replay
+from miles.backends.fsdp_utils.adaptations.trie_attention import (
+    FLASH_ATTN_MODULES,
+    TrieAttentionArgs,
+    register_trie_attention,
+    trie_attn_implementation,
+    trie_model_spec,
+)
 from miles.backends.fsdp_utils.config import FsdpArgsNamespace
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
+from miles.backends.training_utils.data.trie_packing import TrieModelSpec
 from miles.backends.training_utils.metrics import train_token_reporter
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.torch_native.actor import TorchNativeTrainRayActor
@@ -90,6 +98,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
 
         self.arch_adapter = resolve_arch_adapter(self.hf_config)
         validate_hf_config(self.hf_config, verified=self.arch_adapter.verified, rank=dist.get_rank())
+        self.model_spec = self._trie_model_spec(args)
         self.precision_policy = self.arch_adapter.resolve_precision(default_precision_policy(args), args)
 
         routing_replay.enable(args)
@@ -180,6 +189,20 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         )  # config-access-exempt: HF configurations without custom auto classes omit auto_map
         return not auto_map or "AutoModelForImageTextToText" in auto_map
 
+    def _trie_model_spec(self, args) -> TrieModelSpec | None:
+        """What this model's trie rows depend on, or None without --trie-packing."""
+        if not args.trie_packing:
+            return None
+        # trie attention replaces the configured implementation with its own on the same flash-attn, so refuse
+        # one it has no kernel for rather than silently override it
+        if args.backend.attn_implementation not in FLASH_ATTN_MODULES:
+            raise ValueError(
+                f"--trie-packing runs its own flash-attn attention; got attn_implementation="
+                f"{args.backend.attn_implementation!r}, expected one of {sorted(FLASH_ATTN_MODULES)}"
+            )
+        register_trie_attention(args.backend.attn_implementation)
+        return trie_model_spec(self.hf_config.get_text_config())
+
     def _get_model_cls(self):
         if self._has_image_text_to_text_impl():
             from transformers import AutoModelForImageTextToText
@@ -226,6 +249,8 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         # it exactly as it did before this path existed.
         use_triton_bridge = self.args.backend.attn_implementation == "triton" and torch.version.hip is not None
         effective_attn = "eager" if use_triton_bridge else self.args.backend.attn_implementation
+        if self.model_spec is not None:
+            effective_attn = trie_attn_implementation(self.hf_config, effective_attn)
 
         with init_context():
             model = self._get_model_cls().from_pretrained(
@@ -332,7 +357,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         per-response chunks, which avoids a full-vocab fp32 tensor."""
         model_args = self._get_model_inputs_args(batch)
         with precision_forward_context(self.precision_policy):
-            return model(**model_args).logits
+            return _logits(model, model_args, batch)
 
     def _step_runner(self) -> LinearStepRunner:
         return LinearStepRunner(self._forward, self._zero_grad, self._apply_step)
@@ -363,7 +388,7 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         replaying = routing_replay_manager.stage == routing_replay.REPLAY_BACKWARD
         replay_stage = routing_replay.stage(routing_replay.REPLAY_FORWARD) if replaying else nullcontext()
         with replay_stage, precision_forward_context(self.precision_policy):
-            return self.model(**model_args).logits
+            return _logits(self.model, model_args, batch)
 
     def _zero_grad(self) -> None:
         self.optimizer.zero_grad(set_to_none=True)
@@ -416,6 +441,15 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             raise NotImplementedError(f"Loading from checkpoint file {ref_load_path} not yet implemented")
 
     def _get_model_inputs_args(self, batch: dict) -> dict:
+        if "trie_layout" in batch:
+            return {
+                "input_ids": batch["tokens"],
+                "position_ids": batch["position_ids"],
+                # trie attention masks itself; its registered mask function builds none
+                "attention_mask": None,
+                "use_cache": False,
+                "miles_trie_attn_args": TrieAttentionArgs(batch["trie_layout"], batch["tokens"].device),
+            }
         model_args = {
             "input_ids": batch["tokens"],
             "position_ids": batch["position_ids"],
@@ -437,6 +471,16 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
             model_args.update(batch["multimodal_train_inputs"])
 
         return model_args
+
+
+def _logits(model: torch.nn.Module, model_args: dict, batch: dict) -> torch.Tensor:
+    """The model's logits; for a trie row, only the rows that predict a response, back to back."""
+    rows = batch.get("trie_logit_rows")
+    if rows is None:
+        return model(**model_args).logits
+    logits = model(**model_args, logits_to_keep=rows).logits
+    assert logits.size(1) == rows.numel(), f"logits_to_keep was ignored: {tuple(logits.shape)} for {rows.numel()} rows"
+    return logits
 
 
 @torch.no_grad()

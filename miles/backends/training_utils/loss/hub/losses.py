@@ -444,6 +444,7 @@ def value_loss_function(
         total_lengths=batch["total_lengths"],
         response_lengths=batch["response_lengths"],
         max_seq_lens=batch.get("max_seq_lens", None),
+        response_row_starts=batch.get("response_row_starts"),
     )
     values = torch.cat([value.flatten() for value in values["values"]], dim=0)
 
@@ -503,6 +504,7 @@ def sft_loss_function(
         response_lengths=response_lengths,
         with_entropy=False,
         max_seq_lens=batch.get("max_seq_lens", None),
+        response_row_starts=batch.get("response_row_starts"),
         lm_head=batch.get("lm_head"),
     )
 
