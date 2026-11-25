@@ -1,6 +1,7 @@
 import asyncio
 import ipaddress
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -118,9 +119,20 @@ class _ExternalEngineInfo:
     disaggregation_bootstrap_port: int | None
 
 
+def _resolve_external_admin_api_key(args: Any) -> str | None:
+    """``--sglang-admin-api-key``, else ``SGLANG_ADMIN_API_KEY``, as SGLang's own admin clients resolve it.
+
+    Read here rather than copied into args, which W&B and the launch manifests record. A key that only the
+    driver's shell holds is not seen here, and the engine then answers the first admin call with 401.
+    """
+    admin_api_key = args.sglang.base_args["admin_api_key"]
+    return os.environ.get("SGLANG_ADMIN_API_KEY") if admin_api_key is None else admin_api_key
+
+
 def _compute_cells(*, args: Any, engines: list[_ExternalEngineInfo]) -> dict[str, _ExternalCell]:
     cells: dict[str, _ExternalCell] = {}
     gpu_offset = 0
+    admin_api_key = _resolve_external_admin_api_key(args)
     for cell_index, engine in enumerate(engines):
         cell_id = compute_cell_id(pool_id=_EXTERNAL_ENGINE_POOL_ID, cell_index=cell_index)
         worker_name = compute_worker_name(pool_id=_EXTERNAL_ENGINE_POOL_ID, cell_index=cell_index)
@@ -137,7 +149,7 @@ def _compute_cells(*, args: Any, engines: list[_ExternalEngineInfo]) -> dict[str
                     num_gpus_per_engine=engine.num_gpus,
                     gpu_offset=gpu_offset,
                     sglang_api_key=args.sglang.base_args["api_key"],
-                    sglang_admin_api_key=args.sglang.base_args["admin_api_key"],
+                    sglang_admin_api_key=admin_api_key,
                     needs_offload=False,
                     update_weights=True,
                     # The engine's own SGLANG_HEALTH_CHECK_TIMEOUT is not reported, so assume SGLang's default

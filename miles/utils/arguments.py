@@ -2004,10 +2004,6 @@ def miles_validate_args(args):
         args.use_routing_replay = True
 
     args.rollout_external = _compute_rollout_external(args)
-    if args.rollout_external and args.sglang_admin_api_key is None:
-        # Like SGLang's own admin clients, fall back to SGLANG_ADMIN_API_KEY for engines miles does not launch; read
-        # it here on the driver, since the engine provider runs in a worker that may not inherit this environment.
-        args.sglang_admin_api_key = os.environ.get("SGLANG_ADMIN_API_KEY")
     args.custom_inference_engine_provider_path = _compute_custom_inference_engine_provider_path(args)
 
     args.worker_comm_backend = resolve_worker_comm_backend(
