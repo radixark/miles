@@ -1180,6 +1180,18 @@ class TestEngineMetaApiKey:
         )
         assert meta["sglang_api_key"] == ""
 
+    def test_the_metadata_carries_the_admin_key_flag_only(self, tmp_path, monkeypatch):
+        """An engine miles launches may not read SGLANG_ADMIN_API_KEY (sglang-miles never does), so its cells use the flag."""
+        monkeypatch.setenv("SGLANG_ADMIN_API_KEY", "from-miles-env")
+        assert self._meta_for(tmp_path)["sglang_admin_api_key"] is None
+        assert self._meta_for(tmp_path, sglang_admin_api_key="from-args")["sglang_admin_api_key"] == "from-args"
+        meta = self._meta_for(
+            tmp_path,
+            overrides_yaml="        overrides:\n          admin_api_key: from-override\n",
+            sglang_admin_api_key="from-args",
+        )
+        assert meta["sglang_admin_api_key"] == "from-override"
+
     def test_a_group_pipeline_override_sets_its_cells_health_check_budget(self, tmp_path, monkeypatch):
         monkeypatch.delenv("SGLANG_HEALTH_CHECK_TIMEOUT", raising=False)
         meta = self._meta_for(
