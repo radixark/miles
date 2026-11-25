@@ -137,7 +137,7 @@ def get_glm5_next_spec(args, config, vp_stage=None):
         else:
             layer_spec.submodules.self_attention = ModuleSpec(
                 module=Glm5NextKDAAttention,
-                params={"args": args},
+                params={"args": args, "kda_tp_sharding": args.glm5_kda_tp_sharding},
             )
         transformer_layer_spec.layer_specs[layer_id] = layer_spec
 

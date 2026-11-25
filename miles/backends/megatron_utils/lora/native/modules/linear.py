@@ -282,6 +282,28 @@ class LoRAUnreducedRowLinear(LoRALinear):
         return down
 
 
+class LoRAGlobalFanUnreducedRowLinear(LoRAUnreducedRowLinear):
+    """``LoRAUnreducedRowLinear`` whose ``A`` shard is a column slice of one full-width ``A``.
+
+    ``new_lora_parameter`` initializes this rank's ``[rank, in / TP]`` shard on its own, so xavier / kaiming see a
+    fan-in of ``in / TP`` and draw values sqrt(TP) larger than the same adapter on a replicated host, which also
+    scales the ``B`` gradient by sqrt(TP). Every rank draws the full ``[rank, in]`` ``A`` instead and keeps its
+    columns, so the adapter starts from the same distribution at any TP size.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        context = kwargs["context"]
+        a = getattr(
+            self, f"{self.param_prefix}_A"
+        )  # config-access-exempt: the projection prefix selects its registered A parameter
+        local_in = a.shape[1]
+        full = torch.empty(a.shape[0], local_in * context.tp_size, dtype=a.dtype, device=a.device)
+        _LORA_A_INITS[context.lora.a_init_method](full)
+        with torch.no_grad():
+            a.copy_(full[:, context.tp_rank * local_in : (context.tp_rank + 1) * local_in])
+
+
 class LoRAReplicatedPlainLinear(LoRALinear):
     """Replicated adapter on a plain local ``nn.Linear`` that every TP rank runs on the same input."""
 
@@ -290,6 +312,38 @@ class LoRAReplicatedPlainLinear(LoRALinear):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         assert self.layout == ShardLayout.REPLICATED, f"{type(self).__name__} requires a replicated projection"
+
+
+class LoRAShardedPlainColumnLinear(LoRALinear):
+    """Column-parallel adapter on a plain local ``nn.Linear`` holding this rank's output rows (the head-sharded
+    GLM-5.3 KDA). The layer has already moved the input into the TP region (SP all-gather or copy), so, like the
+    grouped adapter, the input takes no further TP mapping. ``A`` is replicated and its gradient a partial sum over TP.
+    """
+
+    host_returns_bias = False
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        assert self.layout == ShardLayout.COLUMN, f"{type(self).__name__} requires a column-parallel projection"
+
+    def prepare_input(self, x: torch.Tensor, base_module: nn.Module) -> torch.Tensor:
+        return apply_lora_dropout(x, self.context, base_module.training)
+
+
+class LoRAPartialReplicatedPlainLinear(LoRALinear):
+    """Replicated adapter on a plain local ``nn.Linear`` whose replicated output feeds head-sharded consumers (the
+    head-sharded GLM-5.3 KDA's ``f_a_proj`` / ``g_a_proj``): every rank computes the same delta, but its gradient
+    flows back through that rank's heads only, so the ``A`` and ``B`` gradients are partial sums over TP."""
+
+    host_returns_bias = False
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        assert self.layout == ShardLayout.REPLICATED, f"{type(self).__name__} requires a replicated projection"
+        for suffix in ("_A", "_B"):
+            getattr(self, f"{self.param_prefix}{suffix}")._lora_grad_sum_group = (
+                "tp"  # config-access-exempt: the projection prefix selects its registered parameter
+            )
 
 
 class LoRAGroupedColumnLinear(LoRALinear):

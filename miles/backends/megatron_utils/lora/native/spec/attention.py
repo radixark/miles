@@ -7,8 +7,11 @@ import dataclasses
 import torch.nn as nn
 
 from miles.backends.megatron_utils.lora.native.modules.linear import (
+    LoRAGlobalFanUnreducedRowLinear,
     LoRAGroupedColumnLinear,
+    LoRAPartialReplicatedPlainLinear,
     LoRAReplicatedPlainLinear,
+    LoRAShardedPlainColumnLinear,
     LoRASplitAdapter,
     LoRASplitQKV,
     LoRAUnreducedRowLinear,
@@ -159,12 +162,28 @@ class MLAAttentionSpec(AttentionSpecBase):
         )
 
 
+# per-projection (shard layout, adapter) on the head-sharded GLM-5.3 KDA, keyed by parameter prefix
+_GLM5_NEXT_KDA_SHARDED_LAYOUTS = {
+    "q": (ShardLayout.COLUMN, LoRAShardedPlainColumnLinear),
+    "k": (ShardLayout.COLUMN, LoRAShardedPlainColumnLinear),
+    "v": (ShardLayout.COLUMN, LoRAShardedPlainColumnLinear),
+    "b": (ShardLayout.COLUMN, LoRAShardedPlainColumnLinear),
+    "f_a": (ShardLayout.REPLICATED, LoRAPartialReplicatedPlainLinear),
+    "f_b": (ShardLayout.COLUMN, LoRAShardedPlainColumnLinear),
+    "g_a": (ShardLayout.REPLICATED, LoRAPartialReplicatedPlainLinear),
+    "g_b": (ShardLayout.COLUMN, LoRAShardedPlainColumnLinear),
+    # A drawn as a column slice of a full-width A, as on the replicated module (see the class)
+    "o": (ShardLayout.ROW, LoRAGlobalFanUnreducedRowLinear),
+}
+
+
 class Glm5NextAttentionSpec(MLAAttentionSpec):
     """GLM-5.3-Flash: DSA layers adapt the MLA projections, KDA layers their HF-named projections.
 
     The DSA block reads ``linear_kv_up_proj.weight`` to absorb it into the query and output and never
     calls the module, so a ``kv_b_proj`` adapter would not run. A KDA block gathers the sequence-parallel
-    input and runs plain ``nn.Linear``s that every TP rank holds whole.
+    input and runs plain ``nn.Linear``s that every TP rank holds whole, or, head-sharded
+    (``--glm5-kda-tp-sharding``), this rank's rows (columns for ``o_proj``) of them.
     """
 
     name = "glm5_next"
@@ -201,6 +220,26 @@ class Glm5NextAttentionSpec(MLAAttentionSpec):
         ),
     )
 
+    # the same projections on the head-sharded KDA (``block.kda.tp_sharded``): column adapters on the
+    # head-sharded inputs, replicated-with-partial-gradient adapters on the low-rank gate inputs, and an unreduced row
+    # adapter on o_proj (the layer reduces its partial sums). HF names and global shapes are unchanged.
+    kda_sharded_layout = ModuleLayout(
+        name="glm5_next_kda_attention_tp_sharded",
+        full_sequence=True,
+        singles=tuple(
+            dataclasses.replace(
+                binding,
+                projection=ProjectionSpec(
+                    binding.projection.hf_leaf,
+                    binding.projection.param_prefix,
+                    _GLM5_NEXT_KDA_SHARDED_LAYOUTS[binding.projection.param_prefix][0],
+                ),
+                adapter_class=_GLM5_NEXT_KDA_SHARDED_LAYOUTS[binding.projection.param_prefix][1],
+            )
+            for binding in kda_layout.singles
+        ),
+    )
+
     @property
     def supported_targets(self) -> frozenset[str]:
         return self.layout.targets | self.kda_layout.targets
@@ -216,7 +255,10 @@ class Glm5NextAttentionSpec(MLAAttentionSpec):
     def attach(self, block: nn.Module, layer: nn.Module, context: AttachContext) -> int:
         if hasattr(block, "kda"):  # config-access-exempt: only KDA layers carry the HF-style KDA module
             L.assert_no_slots_under_cp_relayout(context)
-            return attach_layout(block.kda, self.kda_layout, layer, context)
+            head_sharded = getattr(block.kda, "tp_sharded", False)  # config-access-exempt: optional marker
+            return attach_layout(
+                block.kda, self.kda_sharded_layout if head_sharded else self.kda_layout, layer, context
+            )
         return attach_layout(block, self.layout, layer, context)
 
 

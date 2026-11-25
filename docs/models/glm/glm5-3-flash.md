@@ -91,6 +91,13 @@ GRPO on DAPO-Math-17k, Adam at `lr 1e-6`, `max_tokens_per_gpu 8192`, full unifor
 Rollout is colocated, with the trainer offloaded to disk; both DSA paths run on tilelang and
 the KV cache is BF16. Routing replay turns on with `--enable-r3`.
 
+By default every TP rank runs all 64 heads of each KDA layer over the full sequence.
+`--glm5-kda-tp-sharding` shards the KDA heads over TP instead: column-parallel `q/k/v`, gate and
+short-conv weights, a row-parallel `o_proj`, and each rank's KDA kernel over its own heads only.
+Parameter names and `torch_dist` checkpoint keys do not change, so a checkpoint converted without
+the flag (section 3) loads either way; HF-to-`torch_dist` conversion and mbridge export assume the
+replicated module. Context parallelism is not supported with it yet.
+
 ## 5. What a Healthy Run Looks Like
 
 From the validation run in [#2786](https://github.com/radixark/miles/pull/2786) — 16 nodes ×
