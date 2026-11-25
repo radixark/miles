@@ -114,6 +114,9 @@ def _apply_bridge_runtime_config(provider, args: TrainerConfig) -> None:
         provider.moe_router_bias_update_rate = args.backend.moe_router_bias_update_rate
     if args.backend.moe_aux_loss_coeff is not None:
         provider.moe_aux_loss_coeff = args.backend.moe_aux_loss_coeff
+    # Most bridge MoE providers default the fusion on; only an explicit --no-moe-permute-fusion turns it off.
+    if args.no_moe_permute_fusion:
+        provider.moe_permute_fusion = False
 
     apply_pipeline_layout(provider, args)
     apply_dsa_backend_args(provider, args)

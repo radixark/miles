@@ -1,4 +1,4 @@
-from model_args_utils import moe_layer_freq
+from model_args_utils import moe_layer_freq, moe_permute_fusion
 
 
 def model_args(nlayers: int = 45, first_k_dense_replace: int = 3) -> str:
@@ -28,7 +28,7 @@ def model_args(nlayers: int = 45, first_k_dense_replace: int = 3) -> str:
         "--moe-shared-expert-intermediate-size 2048 "
         "--moe-router-dtype fp32 "
         "--moe-grouped-gemm "
-        "--moe-permute-fusion "
+        f"{moe_permute_fusion()}"
         "--vocab-size 154880 "
         "--rotary-base 10000 "
         "--rope-type rope "

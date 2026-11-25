@@ -147,7 +147,7 @@ into a hard failure. If KL is non-zero:
 ### Is `grad_norm` reasonable?
 
 Step 1 with `num_steps_per_rollout=1` should produce a tiny gradient. If it does not, look
-at MoE fusion first (`--moe-permute-fusion`), then at whether the reward is being computed
+at MoE fusion first (`--moe-permute-fusion`; launch with `MODEL_ARGS_MOE_PERMUTE_FUSION=0` to turn it off), then at whether the reward is being computed
 from the right key (a `--label-key` typo is the usual cause).
 
 ### Does step 2 OOM under colocate?

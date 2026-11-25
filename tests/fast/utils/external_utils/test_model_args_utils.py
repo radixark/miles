@@ -7,10 +7,12 @@ from pathlib import Path
 import pytest
 
 import miles.utils.external_utils.model_args_utils as model_args_utils
+from tests.fast.fixtures.args_fixtures import parse_fsdp_test_config, parse_megatron_test_config
 from miles.utils.external_utils.model_args_utils import (
     load_model_args,
     load_sibling_model_args,
     moe_layer_freq,
+    moe_permute_fusion,
     shell_safe_model_args,
 )
 
@@ -87,6 +89,26 @@ class TestMoeLayerFreq:
     def test_renders_an_all_moe_mask_when_no_dense_layers(self):
         """DeepSeek V4 has no dense prefix, so every entry is a MoE layer."""
         assert moe_layer_freq(nlayers=3, first_k_dense_replace=0) == "[1,1,1]"
+
+
+class TestMoePermuteFusion:
+    def test_is_on_unless_the_environment_turns_it_off(self, monkeypatch):
+        """Model scripts keep fusing by default; with =0 they pass Miles' negative flag, which also reaches bridge."""
+        monkeypatch.delenv("MODEL_ARGS_MOE_PERMUTE_FUSION", raising=False)
+        assert moe_permute_fusion() == "--moe-permute-fusion "
+        monkeypatch.setenv("MODEL_ARGS_MOE_PERMUTE_FUSION", "1")
+        assert moe_permute_fusion() == "--moe-permute-fusion "
+        monkeypatch.setenv("MODEL_ARGS_MOE_PERMUTE_FUSION", "0")
+        assert moe_permute_fusion() == "--no-moe-permute-fusion "
+
+    def test_a_model_script_swaps_only_that_flag_when_turned_off(self, monkeypatch):
+        monkeypatch.delenv("MODEL_ARGS_MOE_PERMUTE_FUSION", raising=False)
+        fused = load_model_args("qwen3-30B-A3B").split()
+        monkeypatch.setenv("MODEL_ARGS_MOE_PERMUTE_FUSION", "0")
+        unfused = load_model_args("qwen3-30B-A3B").split()
+
+        assert "--moe-permute-fusion" in fused
+        assert unfused == ["--no-moe-permute-fusion" if arg == "--moe-permute-fusion" else arg for arg in fused]
 
 
 class TestLoadModelArgs:
@@ -257,3 +279,19 @@ class TestShellSafeModelArgs:
     def test_is_empty_without_a_model_type(self):
         """FSDP launchers pass None and must contribute no argv at all."""
         assert shell_safe_model_args(None) == ""
+
+
+class TestNoMoePermuteFusionFlag:
+    def test_the_launch_parses_it_without_turning_megatrons_flag_on(self):
+        config = parse_megatron_test_config("--no-moe-permute-fusion")
+
+        assert config.no_moe_permute_fusion is True
+        assert config.raw_megatron.base_args["moe_permute_fusion"] is False
+
+    def test_it_cannot_be_combined_with_moe_permute_fusion(self):
+        with pytest.raises(AssertionError, match="contradict"):
+            parse_megatron_test_config("--moe-permute-fusion", "--no-moe-permute-fusion")
+
+    def test_it_is_rejected_off_megatron(self):
+        with pytest.raises(AssertionError, match="--train-backend megatron"):
+            parse_fsdp_test_config("--no-moe-permute-fusion")

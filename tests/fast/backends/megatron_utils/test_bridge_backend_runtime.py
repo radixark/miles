@@ -129,3 +129,15 @@ def test_bridge_provider_sets_every_precision_field() -> None:
     }
 
     assert precision_fields - no_command_line_flag == set(BRIDGE_PRECISION_FIELDS) | {"quant_recipe"}
+
+
+@pytest.mark.parametrize("disabled", [False, True])
+def test_bridge_provider_keeps_its_permute_fusion_unless_turned_off(disabled: bool) -> None:
+    """Bridge MoE providers turn the fused permute on by themselves; Megatron's --moe-permute-fusion has no
+    negative form, so only --no-moe-permute-fusion turns it off, and leaving it out keeps the provider's value."""
+    args = _runtime_args(no_moe_permute_fusion=disabled)
+    provider = SimpleNamespace(experimental_attention_variant="dsv4_hybrid", moe_permute_fusion=True)
+
+    _apply_bridge_runtime_config(provider, args)
+
+    assert provider.moe_permute_fusion is not disabled

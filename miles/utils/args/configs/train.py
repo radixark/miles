@@ -107,6 +107,17 @@ class TrainConfig(BaseConfig):
             ),
         ),
     ] = None
+    no_moe_permute_fusion: A[
+        bool,
+        Arg(
+            help=(
+                "Turn the fused MoE permute off. Megatron's --moe-permute-fusion has no negative form, and "
+                "under --megatron-to-hf-mode bridge the provider turns the fusion on for most MoE models "
+                "whether or not the flag is passed; this flag turns it off on both paths. Model scripts "
+                "pass it when MODEL_ARGS_MOE_PERMUTE_FUSION=0."
+            ),
+        ),
+    ] = False
     dsa_attention_backend: A[
         str,
         Arg(
