@@ -13,6 +13,7 @@ from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.session.samples.codec import SamplesReply
 from miles.rollout.session.types import SessionServerInstance
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
+from miles.utils.http_utils import PostStatusError
 from miles.utils.output_store import dropped
 from miles.utils.output_store.dropped import take_dropped_refs
 from miles.utils.output_store.plan import StorePlanError
@@ -209,7 +210,7 @@ async def test_infra_abort_discards_the_sample_with_its_cause(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "collect_error", [TimeoutError("samples unavailable"), RuntimeError("HTTP 503 from /samples")]
+    "collect_error", [TimeoutError("samples unavailable"), PostStatusError("/samples", 503, "unavailable")]
 )
 async def test_infra_abort_cause_outranks_a_failed_collection(monkeypatch, collect_error):
     tracer = _Tracer(error=collect_error)
@@ -220,6 +221,19 @@ async def test_infra_abort_cause_outranks_a_failed_collection(monkeypatch, colle
 
     (aborted,) = output.samples
     assert aborted.metadata["exit_status"] == "ServerUnreachable"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "collect_error", [StorePlanError("HTTP 424 from /samples"), RuntimeError("samples failed to decode")]
+)
+async def test_a_collect_error_other_than_a_status_stops_the_rollout_after_an_infra_abort(monkeypatch, collect_error):
+    tracer = _Tracer(error=collect_error)
+    _patch_agent(monkeypatch, tracer)
+    monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: _abort_for_infra)
+
+    with pytest.raises(type(collect_error), match=str(collect_error)):
+        await agentic_tool_call.generate(_generate_input())
 
 
 @pytest.mark.asyncio

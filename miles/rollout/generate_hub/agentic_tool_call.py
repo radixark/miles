@@ -48,6 +48,7 @@ from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
 from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.function_registry import load_function
+from miles.utils.http_utils import PostStatusError
 from miles.utils.output_store.dropped import record_dropped_samples
 from miles.utils.rollout_data_config import lower_limit
 from miles.utils.types import Sample
@@ -126,7 +127,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         except (TimeoutError, httpx.TransportError) as e:
             collect_failed = True
             logger.warning(f"{log_prefix} Failed collecting samples: {e!r}", exc_info=True)
-        except Exception as e:
+        except PostStatusError as e:
             if infra_abort is None:
                 raise
             collect_failed = True
