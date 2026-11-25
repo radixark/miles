@@ -129,24 +129,8 @@ def collect_eval_sglang_overrides(args) -> dict:
     }
 
 
-def sglang_attention_dp_enabled(*, attn_dp_size: int) -> bool:
-    return attn_dp_size > 1
-
-
-def translate_deprecated_sglang_args(args) -> None:
-    """Rewrite ``--sglang-dp-size N --sglang-enable-dp-attention`` as ``--sglang-attn-dp-size N``.
-
-    Mirrors SGLang's own ``_handle_deprecated_dp_attention``, so the engine resolves the same layout and miles reads
-    only ``attn_dp_size``. SGLang main no longer registers the flag, so on it there is nothing to translate.
-    """
-    if not getattr(
-        args, "sglang_enable_dp_attention", False
-    ):  # config-access-exempt: SGLang main no longer registers --enable-dp-attention
-        return
-    if args.sglang_attn_dp_size == 1:
-        args.sglang_attn_dp_size = args.sglang_dp_size
-        args.sglang_dp_size = 1
-    args.sglang_enable_dp_attention = False
+def sglang_attention_dp_enabled(*, attn_dp_size: int, enable_dp_attention: bool, dp_size: int) -> bool:
+    return attn_dp_size > 1 or (enable_dp_attention and dp_size > 1)
 
 
 def add_sglang_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
@@ -178,11 +162,16 @@ def validate_args(args):
         args.sglang_enable_prefill_only_deterministic_inference = True
         args.sglang_enable_deterministic_inference = True
 
-    assert (
-        args.sglang_dp_size == 1
-    ), "miles runs one data-parallel replica per engine; use --sglang-attn-dp-size for attention DP"
+    # SGLang main no longer registers the deprecated `--dp-size N --enable-dp-attention` spelling
+    enable_dp_attention = getattr(
+        args, "sglang_enable_dp_attention", False
+    )  # config-access-exempt: absent on SGLang builds that dropped --enable-dp-attention
+    if args.sglang_dp_size > 1:
+        assert enable_dp_attention
 
-    if sglang_attention_dp_enabled(attn_dp_size=args.sglang_attn_dp_size):
+    if sglang_attention_dp_enabled(
+        attn_dp_size=args.sglang_attn_dp_size, enable_dp_attention=enable_dp_attention, dp_size=args.sglang_dp_size
+    ):
         args.router_dp_aware = True
 
     if args.sglang_router_policy is None and args.use_session_server:
