@@ -535,22 +535,19 @@ class TestWorkflowScopeSeam:
         assert "max-parallel:" not in self._workflow()
 
     @pytest.mark.parametrize("cadence", [REGULAR_CADENCE, NIGHTLY_CADENCE])
-    @pytest.mark.parametrize("suite", ["stage-c-8-gpu-h100", "stage-c-8-gpu-h200"])
+    @pytest.mark.parametrize("suite", ["stage-c-8-gpu-h100", "stage-c-8-gpu-h200", "stage-c-8-gpu-h200-k8s"])
     def test_eight_gpu_hopper_shards_fit_runtime_budget(self, cadence, suite):
         workflow = self._workflow()
         job = workflow.split(f"\n  {suite}:", 1)[1].split("\n  stage-", 1)[0]
-        if suite == "stage-c-8-gpu-h100":
+        if suite == "stage-c-8-gpu-h200":
+            assert "partition_id: [0, 1, 2]" in job
+            shard_count = 3
+        else:
             assert (
                 "partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' "
                 "&& '[0,1]' || '[0,1,2]') }}"
             ) in job
             shard_count = 2 if cadence == REGULAR_CADENCE else 3
-        else:
-            assert (
-                "partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' "
-                "&& '[0,1,2,3]' || '[0,1,2,3,4]') }}"
-            ) in job
-            shard_count = 4 if cadence == REGULAR_CADENCE else 5
         policy = resolve_policy(cadence, {"run-ci-image"} if cadence == REGULAR_CADENCE else set())
         tests, _ = filter_tests(
             collect_tests(discover_ci_files()),
