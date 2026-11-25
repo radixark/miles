@@ -171,6 +171,7 @@ class TestCISuites:
             "stage-c-2-gpu-h200",
             "stage-c-4-gpu-b200",
             "stage-c-8-gpu-b200",
+            "stage-c-8-gpu-h200-k8s",
         ]
 
     def test_rocm_suites_include_the_pr_stage(self):
@@ -374,7 +375,7 @@ class TestWorkflowScopeSeam:
     def test_every_stage_consumes_resolved_policy(self):
         workflow = self._workflow()
         commands = workflow.split("execute_command:")[1:]
-        assert len(commands) == 7, "stage inventory changed; update this lock test"
+        assert len(commands) == 8, "stage inventory changed; update this lock test"
         for block in commands:
             cmd = block.split("secrets:")[0]
             assert "--cadence ${{ needs.resolve-ci-policy.outputs.cadence }}" in cmd
@@ -416,6 +417,8 @@ class TestWorkflowScopeSeam:
         workflow = self._workflow()
         assert workflow.count("uses: ./.github/workflows/_run-cpu-ci.yml") == 2
         assert workflow.count("uses: ./.github/workflows/_run-ci.yml") == 5
+        # Pinned to the default branch: the runner group admits no other ref of this file.
+        assert workflow.count("uses: radixark/miles/.github/workflows/_run-ci-k8s.yml@main") == 1
         assert workflow.count("uses: ./.github/workflows/_run-ci-b200.yml") == 1
         # One call per PR image architecture.
         assert workflow.count("uses: ./.github/workflows/_build-pr-ci-image.yml") == 2
@@ -593,7 +596,7 @@ class TestWorkflowScopeSeam:
         assert "ci_scope" not in dispatch_inputs
         manual_scope = "${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}"
         cuda_stages = workflow.split("  stage-b-2-gpu-h200:", 1)[1]
-        assert cuda_stages.count(manual_scope) == 5
+        assert cuda_stages.count(manual_scope) == 6
         assert "match_all_labels: ${{ github.event_name == 'workflow_dispatch' }}" in cuda_stages
         assert "match_all_labels: ${{ inputs.match_all_labels }}" in self._reusable_workflow("_run-ci-b200.yml")
         assert "${{ inputs.match_all_labels && '--match-all-labels' || '' }}" in self._reusable_workflow(
@@ -604,9 +607,9 @@ class TestWorkflowScopeSeam:
         workflow = self._workflow()
         gpu_stages = workflow.split("  stage-b-2-gpu-h200:", 1)[1]
         bypass_gate = "needs.resolve-ci-policy.outputs.bypass_fastfail == 'true'"
-        assert gpu_stages.count(bypass_gate) == 6
-        assert gpu_stages.count("needs.resolve-ci-policy.result == 'success'") == 6
-        assert gpu_stages.count("needs.resolve-ci-image-amd64.result == 'success'") == 6
+        assert gpu_stages.count(bypass_gate) == 7
+        assert gpu_stages.count("needs.resolve-ci-policy.result == 'success'") == 7
+        assert gpu_stages.count("needs.resolve-ci-image-amd64.result == 'success'") == 7
         assert "needs.stage-a-cpu.result == 'failure'" not in gpu_stages
 
     def test_each_cuda_stage_consumes_the_fail_open_skip_list(self):

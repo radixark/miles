@@ -119,7 +119,8 @@ def test_weekly_schedule_resolves_to_independent_full_policy():
             "existing=value\ncadence=nightly\n"
             "raw_labels=run-ci-megatron nightly run-ci-megatron\n"
             "bypass_fastfail=true\n"
-            "skipped_stages=[]\nneeds_cuda_image=true\n",
+            # No test is homed on the Kubernetes stage yet.
+            'skipped_stages=["stage-c-8-gpu-h200-k8s"]\nneeds_cuda_image=true\n',
         ),
     ],
 )
@@ -206,3 +207,11 @@ def test_cli_fails_for_unknown_schedule(tmp_path):
     assert result.returncode == 1
     assert "::error::No CI policy is defined for schedule: 0 0 * * 0" in result.stderr
     assert not output_path.exists()
+
+
+def test_a_fork_head_is_not_admitted_to_restricted_stages():
+    policy = resolve_workflow_inputs("pull_request", "", '["run-ci-short"]', head_is_fork=True)
+
+    assert policy.raw_labels == ("run-ci-short", "no-restricted-stages")
+    assert resolve_policy(policy.cadence, set(policy.raw_labels)).admit_restricted_stages is False
+    assert resolve_policy("regular", {"run-ci-short"}).admit_restricted_stages is True

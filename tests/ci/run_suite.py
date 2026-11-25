@@ -64,6 +64,7 @@ def runs_in_stage(
     *,
     dispatch_arches: frozenset[str] = frozenset(),
     absorb: bool = False,
+    admit_restricted_stages: bool = True,
 ) -> bool:
     """Whether `registration` executes in `suite`, ignoring label selection.
 
@@ -83,6 +84,7 @@ def runs_in_stage(
         registration.hardware,
         dispatch_arches=dispatch_arches,
         absorb=absorb,
+        admit_restricted_stages=admit_restricted_stages,
     )
 
 
@@ -94,6 +96,7 @@ def filter_tests(
     labels: set[str] | None = None,
     dispatch_arches: frozenset[str] = frozenset(),
     absorb: bool = False,
+    admit_restricted_stages: bool = True,
 ) -> tuple[list[CIRegistry], list[CIRegistry]]:
     """Filter registered tests down to the set that should run.
 
@@ -116,7 +119,13 @@ def filter_tests(
         t
         for t in ci_tests
         if t.backend == hw
-        and runs_in_stage(t, suite, dispatch_arches=dispatch_arches, absorb=absorb)
+        and runs_in_stage(
+            t,
+            suite,
+            dispatch_arches=dispatch_arches,
+            absorb=absorb,
+            admit_restricted_stages=admit_restricted_stages,
+        )
         and registration_matches_selection(
             t.labels,
             t.nightly,
@@ -266,6 +275,7 @@ def run_a_suite(args):
         labels=include_labels,
         dispatch_arches=policy.dispatch_arches,
         absorb=policy.absorb,
+        admit_restricted_stages=policy.admit_restricted_stages,
     )
 
     if args.test_file:
