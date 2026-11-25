@@ -48,6 +48,10 @@ CI_SUITES = {
 }
 
 
+def is_kubernetes_cluster_backend() -> bool:
+    return os.environ.get("MILES_SCRIPT_CLUSTER_BACKEND", "").strip().lower() == "kubernetes"
+
+
 def snapshot_hardware(suite: str) -> str:
     if suite in CI_SUITES[HWBackend.CPU]:
         return "cpu"
@@ -314,6 +318,11 @@ def run_a_suite(args):
     ):
         os.environ[CI_GATE_RECORD_DIR_ENV] = tempfile.mkdtemp(prefix="miles-ci-gate-")
 
+    is_k8s_backend = is_kubernetes_cluster_backend()
+    gate_write_baseline = False if is_k8s_backend else policy.write_baseline
+    gate_enforce = False if is_k8s_backend else None
+    gate_shadow_tag = "k8s" if is_k8s_backend else None
+
     return run_unittest_files(
         ci_tests,
         timeout_per_file=timeout,
@@ -324,7 +333,9 @@ def run_a_suite(args):
         gate_store=gate_store,
         gate_executing_suite=suite,
         snapshot_hardware=snapshot_hardware(suite) if SNAPSHOT_TESTING_ENABLED else None,
-        gate_write_baseline=policy.write_baseline,
+        gate_write_baseline=gate_write_baseline,
+        gate_enforce=gate_enforce,
+        gate_shadow_tag=gate_shadow_tag,
         gate_provenance=gate_provenance,
         reap_leftovers=reaping_is_isolated(),
     )
