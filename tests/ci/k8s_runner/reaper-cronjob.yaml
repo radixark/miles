@@ -1,0 +1,79 @@
+# Orphan reaper CronJob: sweeps leaked Helm releases, command-jobs, and expired
+# GPFS staging/run directories whose driver Job has ended or disappeared.
+#
+# The image is pinned by digest, so it cannot be relied on to contain the
+# launcher of the current default branch. The script comes from the
+# `miles-ci-reaper-script` ConfigMap instead; README.md shows how to create it.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: miles-ci-orphan-reaper
+  namespace: miles-ci-k8s
+  labels:
+    app.kubernetes.io/name: miles-ci-orphan-reaper
+    app.kubernetes.io/component: reaper
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 1800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: miles-ci-orphan-reaper
+            app.kubernetes.io/component: reaper
+        spec:
+          serviceAccountName: miles-ci-reaper
+          restartPolicy: Never
+          enableServiceLinks: false
+          nodeSelector:
+            kubernetes.io/hostname: gpu-10-220-71-29
+          tolerations:
+            - key: radixark.io/pool
+              operator: Equal
+              value: cicd
+              effect: NoSchedule
+          containers:
+            - name: reaper
+              image: radixark/miles@sha256:5fc9441be1dd0119c07387bbb4e069adfc880985983b6d8bcc5b71c480841354
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              command:
+                - python3
+                - /opt/miles-ci/k8s_run_driver_job.py
+                - reap
+                - --namespace
+                - miles-ci-k8s
+                - --gpfs-root
+                - /storage/shared/miles-ci-k8s/ext
+                - --max-age-seconds
+                - "10800"
+              volumeMounts:
+                - name: gpfs-ci-root
+                  mountPath: /storage/shared/miles-ci-k8s/ext
+                - name: reaper-script
+                  mountPath: /opt/miles-ci
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: "250m"
+                  memory: 512Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+          volumes:
+            - name: reaper-script
+              configMap:
+                name: miles-ci-reaper-script
+            - name: gpfs-ci-root
+              hostPath:
+                path: /storage/shared/miles-ci-k8s/ext
+                type: DirectoryOrCreate
