@@ -119,8 +119,7 @@ def test_weekly_schedule_resolves_to_independent_full_policy():
             "existing=value\ncadence=nightly\n"
             "raw_labels=run-ci-megatron nightly run-ci-megatron\n"
             "bypass_fastfail=true\n"
-            # No test is homed on the Kubernetes stage yet.
-            'skipped_stages=["stage-c-8-gpu-h200-k8s"]\nneeds_cuda_image=true\n',
+            "skipped_stages=[]\nneeds_cuda_image=true\n",
         ),
     ],
 )

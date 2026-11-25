@@ -8,7 +8,7 @@ from tests.e2e.ft.conftest_ft.scenario_trainer_all_gather_fault import run_ci
 
 register_cuda_ci(
     est_time=2200,
-    suite="stage-c-8-gpu-h200",
+    suite="stage-c-8-gpu-h200-k8s",
     labels=["ft-short"],
     hardware=["hopper", "blackwell"],
 )

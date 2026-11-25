@@ -8,7 +8,7 @@ from tests.e2e.ft.conftest_ft.scenario_random_crash_fully_async import run_ci
 
 register_cuda_ci(
     est_time=4800,
-    suite="stage-c-8-gpu-h200",
+    suite="stage-c-8-gpu-h200-k8s",
     labels=["ft-long"],
     hardware=["hopper", "blackwell"],
     num_gpus=8,
