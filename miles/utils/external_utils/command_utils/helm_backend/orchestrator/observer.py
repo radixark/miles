@@ -106,8 +106,7 @@ def wait_for_run(
 
         state = OrchestratorState.read(state_file)
         if not has_started and (
-            state is not None
-            or (observed is not None and observed.phase not in (_PENDING_PHASE, _UNREADABLE_PHASE))
+            state is not None or (observed is not None and observed.phase not in (_PENDING_PHASE, _UNREADABLE_PHASE))
         ):
             has_started = True
 
@@ -204,7 +203,11 @@ def _compute_run_outcome(
             started=started,
         )
 
-    if not started and admission_timeout_seconds is not None and admission_elapsed_seconds >= admission_timeout_seconds:
+    if (
+        not started
+        and admission_timeout_seconds is not None
+        and admission_elapsed_seconds >= admission_timeout_seconds
+    ):
         return _RunOutcome(
             exit_code=_NO_VERDICT_EXIT_CODE,
             reason=(

@@ -199,7 +199,9 @@ class TestTimeoutSeparation:
             args = argv[1:]
             if args[:2] == ["get", "pods"]:
                 phase = pod_phases.pop(0) if pod_phases else "Running"
-                payload = json.dumps({"items": [{"metadata": {"name": "c-0", "uid": "u-0"}, "status": {"phase": phase}}]})
+                payload = json.dumps(
+                    {"items": [{"metadata": {"name": "c-0", "uid": "u-0"}, "status": {"phase": phase}}]}
+                )
                 return subprocess.CompletedProcess(args=argv, returncode=0, stdout=payload, stderr="")
             if args[:2] == ["get", "job"]:
                 status = job_statuses.pop(0) if job_statuses else "complete"
@@ -321,7 +323,9 @@ class TestCiGateRecordDirForwardingAndSplitPreservation:
         )
         written = yaml.safe_load(written_files[0].read_text())
         assert written["run"]["env"][RECORD_DIR_ENV] == record_dir
-        upgrade_cmds = [cmd for cmd in issued if cmd[:3] == ["helm", "upgrade", "--install"] and "--dry-run" not in cmd]
+        upgrade_cmds = [
+            cmd for cmd in issued if cmd[:3] == ["helm", "upgrade", "--install"] and "--dry-run" not in cmd
+        ]
         assert len(upgrade_cmds) == 1
         assert f"{CI_JOB_ID_LABEL}=gh-777-1" in upgrade_cmds[0]
         assert not any(cmd[:2] == ["helm", "uninstall"] for cmd in issued)
