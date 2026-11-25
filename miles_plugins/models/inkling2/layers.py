@@ -257,7 +257,7 @@ class Inkling2RowParallelGroupedLinear(_ExpertWeightFakeQuant, TERowParallelGrou
 
 class Inkling2GroupedMLP(TEGroupedMLP):
     """Routed experts with the routing weight applied inside the soft-capped SwiGLU (one
-    rounding before fc2), returning fp32 so the top-k combine sums in fp32."""
+    rounding before fc2); the top-k combine sums their bf16 rows in fp32."""
 
     def forward(self, permuted_local_hidden_states, tokens_per_expert, permuted_probs):
         tokens_per_expert = tokens_per_expert.tolist()
@@ -267,7 +267,9 @@ class Inkling2GroupedMLP(TEGroupedMLP):
             fc1_output, permuted_probs.unsqueeze(-1), inkling2.mlp_gate_softcap, inkling2.mlp_up_softcap
         )
         output, _ = self.linear_fc2(activated, tokens_per_expert)
-        return output.float(), None
+        # The combine upcasts these exact bf16 rows and sums them in fp32
+        # (moe_permute_accumulation_in_fp32), so no fp32 copy is built per routed row.
+        return output, None
 
 
 def pipeline_stage_edges(config, layer_idx: int) -> tuple[bool, bool]:

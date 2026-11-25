@@ -11,7 +11,7 @@ import torch.nn as nn
 from tests.ci.ci_register import register_cuda_ci
 
 register_cuda_ci(
-    est_time=30, suite="stage-b-2-gpu-h200", labels=["miles-plugin"], hardware=["hopper", "blackwell"], num_gpus=1
+    est_time=53, suite="stage-b-2-gpu-h200", labels=["miles-plugin"], hardware=["hopper", "blackwell"], num_gpus=1
 )
 
 # Inkling2's layers import Transformer Engine; the checks themselves run on CPU tensors.
@@ -144,3 +144,9 @@ def test_entry_layer_rejects_a_payload_with_the_wrong_block_count() -> None:
     # Layer 4 with blocks every 3 layers expects the embedding and block 3 (2 rows), not 1.
     with pytest.raises(AssertionError, match="stage-boundary payload width"):
         layer.forward(torch.randn(TOKENS, 1, 2 * HIDDEN), packed_seq_params=packed)
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(pytest.main([__file__, "-v"]))
