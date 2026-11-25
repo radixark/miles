@@ -35,6 +35,7 @@ from tests.fast.utils.chat_template_utils.tito_families import load_family_tito
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, TITOTokenizerType, extract_template_args
 from miles.utils.chat_template_utils.token_seq_comparator import MismatchType
 from miles.utils.chat_template_utils.truncation import MarkerPair, TruncationGrammar
+from miles.utils.reasoning import REASONING_DELIMITERS, extract_after_reasoning
 
 register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["rollout"])
 
@@ -513,3 +514,37 @@ def test_closing_text_completes_a_marker_already_started():
 def test_closing_text_skips_whitespace_already_sampled():
     assert _GRAMMAR.closing_text("<think>\nR\n", [_GRAMMAR.think]) == "</think>\n\n<e>"
     assert _GRAMMAR.closing_text("<think>\nR", [_GRAMMAR.think, _TOOL_CALL]) == "\n</tool_call>\n</think>\n\n<e>"
+
+
+def test_every_tito_closer_delimiter_is_registered_in_reasoning_ssot():
+    """Every TITO family's reasoning delimiter and end_of_turn must stay registered in the shared SSOT."""
+    structural_delimiters = {
+        delimiter for family, (_, delimiter) in REASONING_DELIMITERS.items() if family != "legacy_response"
+    }
+    checked = 0
+    for family in TITOTokenizerType:
+        closer = TITOTokenizerType.get_tokenizer_class(family).FIXED_TEMPLATE.truncation_closer
+        if closer is None:
+            continue
+        delimiter = closer.reasoning_answer_delimiter
+        assert delimiter in structural_delimiters, (
+            f"{family.value}'s truncation_closer delimiter {delimiter!r} is missing from "
+            "miles.utils.reasoning.REASONING_DELIMITERS"
+        )
+        if isinstance(closer, TruncationGrammar):
+            suffix = closer.end_of_turn or ""
+            assert extract_after_reasoning(f"<think>\nwork\n{delimiter}\n\nA{suffix}") == "\n\nA"
+        checked += 1
+    assert checked > 0
+
+    # Verify non-TruncationGrammar TITO closers' real closed wire formats round-trip cleanly.
+    assert (
+        extract_after_reasoning(
+            "<|content_thinking|>work<|end_message|><|message_model|><|content_text|>A<|end_message|>"
+            "<|content_model_end_sampling|>"
+        )
+        == "A"
+    )
+    assert (
+        extract_after_reasoning(" to=self<|message|>work<|eom|><|start|>assistant to=user<|message|>A<|eot|>") == "A"
+    )

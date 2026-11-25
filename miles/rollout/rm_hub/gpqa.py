@@ -2,6 +2,8 @@ import re
 import string
 from collections.abc import Iterable
 
+from miles.utils.reasoning import extract_after_reasoning
+
 DEFAULT_VALID_LETTERS = list(string.ascii_uppercase[:8])
 
 
@@ -9,10 +11,8 @@ def _strip_chain_of_thought(text: str) -> str:
     if not text:
         return ""
 
-    if "</think>" in text:
-        return text.rsplit("</think>", 1)[-1]
-
-    return text
+    answer = extract_after_reasoning(text)
+    return text if answer is None else answer
 
 
 def _normalize_text(text: str) -> str:
