@@ -210,6 +210,38 @@ class TestPipelinedGeneration:
         assert "generate_start:2" not in events
         assert components.actor_model.trained == [0, 1]
 
+    @pytest.mark.parametrize("max_weight_staleness", [None, 0])
+    async def test_a_strictly_on_policy_fully_async_run_still_defers_the_drain(
+        self, monkeypatch: pytest.MonkeyPatch, max_weight_staleness: int | None
+    ):
+        """Without a tolerated staleness, a batch drained before the update would train one version behind."""
+        events: list[str] = []
+        args = _make_args(
+            fully_async=True, num_rollout=2, update_weights_interval=1, max_weight_staleness=max_weight_staleness
+        )
+        components = _install_driver_fakes(monkeypatch, args, events)
+
+        await with_disposer(train_async_driver.train, _startup_info(args))
+
+        assert events.index("update_weights:0") < events.index("generate_start:1")
+        assert components.actor_model.trained == [0, 1]
+
+    async def test_fully_async_drains_the_next_batch_before_a_weight_update_it_tolerates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """With --max-weight-staleness >= 1 the next drain overlaps this step and its update instead of following it."""
+        events: list[str] = []
+        args = _make_args(fully_async=True, num_rollout=3, update_weights_interval=1, max_weight_staleness=1)
+        components = _install_driver_fakes(monkeypatch, args, events)
+
+        await with_disposer(train_async_driver.train, _startup_info(args))
+
+        assert events.index("generate_start:1") < events.index("actor_train:0")
+        assert events.index("actor_train:0") < events.index("update_weights:0")
+        assert events.index("generate_start:2") < events.index("actor_train:1") < events.index("update_weights:1")
+        assert "generate_start:3" not in events
+        assert components.actor_model.trained == [0, 1, 2]
+
     async def test_fully_async_keeps_lookahead_between_weight_updates(self, monkeypatch: pytest.MonkeyPatch):
         """A drain may still overlap training when that step cannot change the current weight version."""
         events: list[str] = []

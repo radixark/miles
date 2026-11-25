@@ -20,6 +20,19 @@ from miles.utils.orchestration_utils import (
 logger = logging.getLogger(__name__)
 
 
+def _drains_before_weight_update(args) -> bool:
+    """Whether a fully-async step drains the next batch before publishing its weights.
+
+    The buffer's staleness filter compares a group with the engine's version at the drain. A batch drained before
+    this step's update trains one version later than it was drained, so its groups are up to
+    --max-weight-staleness + 1 versions behind the weights they train with; a run that tolerates a stale version
+    takes that for a drain (buffer wait, sample conversion, DP split, store put) that overlaps training and the
+    weight update instead of sitting between them. A strictly on-policy run (bound 0 or none) keeps the drain after
+    the update.
+    """
+    return args.max_weight_staleness is not None and args.max_weight_staleness >= 1
+
+
 # The framework supports other asynchronous approaches such as fully async (see miles/rollout/fully_async_rollout.py).
 async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
     args = startup_info.args
@@ -97,9 +110,13 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
         has_next_rollout = rollout_id + 1 < args.num_rollout
         weight_update_due = (rollout_id + 1) % args.update_weights_interval == 0
 
-        # A fully-async producer keeps generating without a pending get(). When
-        # weights will change, defer the next drain so it uses the new version.
-        defer_next_drain = args.fully_async and has_next_rollout and weight_update_due
+        # A fully-async producer keeps generating without a pending get(). When weights will change, defer the
+        # next drain so it uses the new version, unless the run accepts a batch that is one version behind
+        # (--max-weight-staleness >= 1): then the drain overlaps this step and its weight update instead of
+        # following them.
+        defer_next_drain = (
+            args.fully_async and has_next_rollout and weight_update_due and not _drains_before_weight_update(args)
+        )
         if args.colocate:
             await inference_controller.pause_generation(mode=args.pause_generation_mode)
             await inference_controller.flush_cache()

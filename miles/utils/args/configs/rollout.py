@@ -189,6 +189,32 @@ class RolloutRelatedConfig(BaseConfig):
         512 * 1024**2
     )
     update_weights_interval: A[int, Arg(help="Interval for updating the weights")] = 1
+    # the orchestrator reads the staleness bound too: it decides whether the next batch may be drained before
+    # this step's weight update (train_async.py)
+    max_weight_staleness: A[
+        int | None,
+        Arg(
+            help=(
+                "Maximum allowed gap between a group's oldest generated-token weight version and the current "
+                "engine weight version. Prompt KV weight staleness is not considered. "
+                "Groups exceeding this threshold are recycled back to "
+                "the data buffer instead of being sent to training. Only effective in fully "
+                "async mode. None (default) disables staleness filtering."
+            )
+        ),
+    ] = None
+    async_submit_within_staleness: A[
+        bool,
+        Arg(
+            help=(
+                "Also apply --max-weight-staleness N when the fully async producer submits a group: the default "
+                "data buffer admits one only while the buffered and in-flight groups number fewer than "
+                "N * rollout_batch_size, plus one rollout_batch_size while a training step waits for its batch. "
+                "N = 0 makes generation synchronous. Requires one weight version per training step, and a data "
+                "buffer that implements admits()."
+            )
+        ),
+    ] = False
     pause_generation_mode: A[
         str,
         Arg(
@@ -535,30 +561,6 @@ class RolloutRelatedRolloutOnlyConfig(BaseConfig):
             help=(
                 "Whether to mask previous generation in partial rollout. "
                 "If set, only on-policy generated tokens will be used in training"
-            )
-        ),
-    ] = False
-    max_weight_staleness: A[
-        int | None,
-        Arg(
-            help=(
-                "Maximum allowed gap between a group's oldest generated-token weight version and the current "
-                "engine weight version. Prompt KV weight staleness is not considered. "
-                "Groups exceeding this threshold are recycled back to "
-                "the data buffer instead of being sent to training. Only effective in fully "
-                "async mode. None (default) disables staleness filtering."
-            )
-        ),
-    ] = None
-    async_submit_within_staleness: A[
-        bool,
-        Arg(
-            help=(
-                "Also apply --max-weight-staleness N when the fully async producer submits a group: the default "
-                "data buffer admits one only while the buffered and in-flight groups number fewer than "
-                "N * rollout_batch_size, plus one rollout_batch_size while a training step waits for its batch. "
-                "N = 0 makes generation synchronous. Requires one weight version per training step, and a data "
-                "buffer that implements admits()."
             )
         ),
     ] = False
