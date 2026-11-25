@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from miles.backends.training_utils.data.context_parallel import CPLayout, take_ranges
+from miles.backends.training_utils.data.trie_packing import trie_replay_rows
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.output_store.plan import ForwardSegments, RowRead, StorePlanError, is_segments_column
 from miles.utils.replay_base import BaseReplayManager
@@ -76,10 +77,16 @@ def attach_replay_data(
     For `bshd`, `sequence_first` selects Megatron MoE's `[S, B]` token order;
     indexer replay consumes the default `[B, S]` order. `align`, if given, is
     applied to each micro batch's rows before they are registered.
+
+    With --trie-packing (`data_iterator[0].trie_micro_batches`), each micro batch is one trie row, the one
+    `get_batch` lays out, and its rows are the row's tokens (`trie_replay_rows`).
     """
     data_key = manager.data_key
     if data_key not in rollout_data:
         raise ValueError(f"{data_key} is required in rollout_data for replay.")
+    trie_micro_batches = data_iterator[0].trie_micro_batches
+    if trie_micro_batches is not None and manager.replay_indices_are_token_positions:
+        raise ValueError(f"--trie-packing cannot replay {data_key}: its indices are token positions")
 
     order = data_iterator[0].microbatch_indices(sum(num_microbatches))
     column = rollout_data[data_key]
@@ -146,12 +153,15 @@ def attach_replay_data(
             # A copy: store rows are views of a slot the next micro batch overwrites.
             kept_rows.update((j, torch.cat(r, dim=1)) for j, r in zip(order[index], rows, strict=True) if r)
 
-        replay_data = [pack([r[i] for r in rows], layout, pad_size) for i in range(len(blocks))]
+        trie_layout = None if trie_micro_batches is None else trie_micro_batches.layout(index, pad_multiple=pad_size)
+        replay_data = [pack([r[i] for r in rows], layout, pad_size, trie_layout) for i in range(len(blocks))]
         manager.register_replay_list_func(manager.replays, replay_data, blocks=blocks)
 
-    def pack(replay_data, layout, pad_size):
+    def pack(replay_data, layout, pad_size, trie_layout):
         """One block's rows of the micro batch's samples, in the token layout its forward consumes."""
-        if qkv_format == "bshd":
+        if trie_layout is not None:
+            replay_data = trie_replay_rows(trie_layout, replay_data)
+        elif qkv_format == "bshd":
             replay_data = torch.stack(replay_data, dim=0)
             batch_size, seqlen, num_layers, topk = replay_data.shape
             if sequence_first:

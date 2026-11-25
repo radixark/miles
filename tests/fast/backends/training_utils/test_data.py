@@ -43,6 +43,7 @@ def _scheduled_args() -> Namespace:
         use_dynamic_batch_size=True,
         max_tokens_per_gpu=64,
         balance_data=False,
+        trie_packing=False,
         balance_by_flops=False,
         allow_partial_train_step=False,
         multi_lora=False,

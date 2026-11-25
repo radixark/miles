@@ -1,0 +1,598 @@
+"""The FSDP actor's trie path must score every sample of a tiny HF model as if it ran alone.
+
+Every kernel is replaced by a plain-PyTorch reference, so this checks everything around the kernels on CPU: the
+registered attention and mask functions, the actor's model inputs, logical positions through HF RoPE, sliding
+windows, and response-only logits. ``tests/fast-gpu/test_fsdp_trie_packing.py`` runs the kernels.
+"""
+
+import itertools
+import random
+import sys
+import types
+from types import SimpleNamespace
+
+import pytest
+import torch
+import torch.nn.functional as F
+from tests.fast.backends.training_utils.reference_trie_attention import reference_trie_attention
+from transformers import (
+    Glm4MoeLiteConfig,
+    NemotronHConfig,
+    Qwen3_5TextConfig,
+    Qwen3Config,
+    Qwen3MoeConfig,
+    Qwen3VLConfig,
+)
+from transformers.models.glm4_moe_lite.modeling_glm4_moe_lite import Glm4MoeLiteForCausalLM
+from transformers.models.nemotron_h import modeling_nemotron_h
+from transformers.models.nemotron_h.modeling_nemotron_h import NemotronHForCausalLM
+from transformers.models.qwen3.modeling_qwen3 import Qwen3ForCausalLM
+from transformers.models.qwen3_5 import modeling_qwen3_5
+from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5ForCausalLM
+from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeForCausalLM
+from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLForConditionalGeneration
+
+from miles.backends.fsdp_utils import actor as fsdp_actor
+from miles.backends.fsdp_utils.actor import FSDPTrainRayActor
+from miles.backends.fsdp_utils.adaptations import routing_replay, trie_linear_attention
+from miles.backends.fsdp_utils.adaptations.packing import keep_packing_kwargs_out_of_vision
+from miles.backends.fsdp_utils.adaptations.specs import resolve_arch_adapter
+from miles.backends.fsdp_utils.adaptations.trie_attention import (
+    register_trie_attention,
+    trie_attn_implementation,
+    trie_media,
+    trie_model_spec,
+)
+from miles.backends.fsdp_utils.adaptations.trie_linear_attention import install_trie_linear_attention
+from miles.backends.training_utils.data import context_parallel
+from miles.backends.training_utils.data import rollout as data_utils
+from miles.backends.training_utils.data import trie_batch
+from miles.backends.training_utils.data.trie_batch import TrieMicroBatches, trie_media_items, trie_packing_keys
+from miles.backends.training_utils.data.trie_packing import TrieKV, TrieModelSpec
+from miles.backends.training_utils.replay import data as replay_data
+from miles.utils.replay_base import routing_replay_manager
+
+_VOCAB = 128
+_WINDOW = 12
+
+
+def _reference_flash_attn_varlen(
+    q, k, v, *, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, causal, window_size, softmax_scale
+):
+    """flash_attn_varlen_func's contract, bottom-right causal, on the trie reference."""
+    assert causal
+    kv = TrieKV(index=torch.arange(k.size(0)), cu_seqlens=cu_seqlens_k, max_seqlen=max_seqlen_k)
+    window_left = None if window_size[0] < 0 else window_size[0]
+    return reference_trie_attention(q, k, v, kv, cu_seqlens_q, window_left=window_left, softmax_scale=softmax_scale)
+
+
+def _reference_causal_conv1d(x, weight, bias=None, seq_idx=None, activation=None):
+    """causal_conv1d_fn's contract: a depthwise causal convolution that restarts at every seq_idx change."""
+    ids, outs, start = seq_idx[0].tolist(), [], 0
+    for end in range(1, len(ids) + 1):
+        if end == len(ids) or ids[end] != ids[start]:
+            piece = F.conv1d(
+                x[:, :, start:end], weight.unsqueeze(1), bias, padding=weight.shape[-1] - 1, groups=x.size(1)
+            )
+            outs.append(piece[:, :, : end - start])
+            start = end
+    out = torch.cat(outs, dim=2)
+    return F.silu(out) if activation in ("silu", "swish") else out
+
+
+# transformers binds these to the CUDA kernels when installed; the solo runs need its own torch versions
+_TORCH_CONV = modeling_qwen3_5.causal_conv1d_fn.__wrapped__
+_TORCH_CHUNK_DELTA_RULE = modeling_qwen3_5.torch_chunk_gated_delta_rule.__wrapped__
+_RECURRENT_DELTA_RULE = modeling_qwen3_5.torch_recurrent_gated_delta_rule.__wrapped__
+_NEMOTRON_H_TORCH_KERNELS = {
+    name: getattr(modeling_nemotron_h, name).__wrapped__
+    for name in ("causal_conv1d_fn", "mamba2_chunk_scan", "mamba2_split_conv1d_scan_combined")
+}
+
+
+def _reference_chunk_gated_delta_rule(
+    q, k, v, g, beta, initial_state=None, output_final_state=False, cu_seqlens=None, use_qk_l2norm_in_kernel=False
+):
+    """fla's varlen contract on HF's exact recurrent rule: one sequence per cu_seqlens span, each with its own
+    initial state, returning every sequence's final state."""
+    bounds, outs, states = cu_seqlens.tolist(), [], []
+    for i, (start, end) in enumerate(zip(bounds, bounds[1:], strict=False)):
+        out, state = _RECURRENT_DELTA_RULE(
+            q[:, start:end],
+            k[:, start:end],
+            v[:, start:end],
+            g=g[:, start:end],
+            beta=beta[:, start:end],
+            initial_state=None if initial_state is None else initial_state[i : i + 1],
+            output_final_state=True,
+            use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
+        )
+        outs.append(out)
+        states.append(state[0])
+    return torch.cat(outs, dim=1), torch.stack(states)
+
+
+@pytest.fixture
+def cpu_trie(monkeypatch):
+    state = SimpleNamespace(cp=SimpleNamespace(rank=0, size=1), tp=SimpleNamespace(rank=0, size=1))
+    monkeypatch.setattr(data_utils.current_platform, "current_device", lambda: torch.device("cpu"))
+    monkeypatch.setattr(data_utils, "get_parallel_state", lambda: state)
+    monkeypatch.setattr(context_parallel, "get_parallel_state", lambda: state)
+    monkeypatch.setattr(replay_data, "get_parallel_state", lambda: state)
+    monkeypatch.setitem(
+        sys.modules, "flash_attn", SimpleNamespace(flash_attn_varlen_func=_reference_flash_attn_varlen)
+    )
+    # a key tile short enough that these prompts' window gathers drop ancestors
+    monkeypatch.setattr(trie_batch, "WINDOW_START_MULTIPLE", 4)
+    monkeypatch.setitem(sys.modules, "causal_conv1d", SimpleNamespace(causal_conv1d_fn=_reference_causal_conv1d))
+    fla_ops = types.ModuleType("fla.ops.gated_delta_rule")
+    fla_ops.chunk_gated_delta_rule = _reference_chunk_gated_delta_rule
+    monkeypatch.setitem(sys.modules, "fla.ops.gated_delta_rule", fla_ops)
+    # a chunk short enough that these prompts' delta-rule runs start at many depths, and part-way into a parent
+    monkeypatch.setattr(trie_linear_attention, "DELTA_RULE_CHUNK", 4)
+    # the solo runs use transformers' torch kernels, which install_trie_linear_attention then wraps
+    monkeypatch.setattr(modeling_qwen3_5, "causal_conv1d_fn", _TORCH_CONV)
+    monkeypatch.setattr(modeling_qwen3_5, "torch_chunk_gated_delta_rule", _TORCH_CHUNK_DELTA_RULE)
+    for name, kernel in _NEMOTRON_H_TORCH_KERNELS.items():
+        monkeypatch.setattr(modeling_nemotron_h, name, kernel)
+    register_trie_attention("flash_attention_2")
+
+
+def _actor_for(model):
+    actor = object.__new__(FSDPTrainRayActor)
+    actor.arch_adapter = resolve_arch_adapter(model.config)
+    return actor
+
+
+def _samples(seed: int) -> dict:
+    """Two prompts of three samples sharing a system prompt longer than the window; two of each prompt's
+    responses open alike, so they share rows too."""
+    rng = random.Random(seed)
+    system = [rng.randrange(1, _VOCAB) for _ in range(20)]
+    tokens, total_lengths, response_lengths = [], [], []
+    for _ in range(2):
+        prompt = system + [rng.randrange(1, _VOCAB) for _ in range(rng.randrange(4, 10))]
+        opening = [rng.randrange(1, _VOCAB) for _ in range(2)]
+        for sample in range(3):
+            response = (opening if sample < 2 else []) + [rng.randrange(1, _VOCAB) for _ in range(rng.randrange(3, 8))]
+            tokens.append(torch.tensor(prompt + response))
+            total_lengths.append(len(prompt) + len(response))
+            response_lengths.append(len(response))
+    return {
+        "tokens": tokens,
+        "loss_masks": [torch.ones(r, dtype=torch.int) for r in response_lengths],
+        "total_lengths": total_lengths,
+        "response_lengths": response_lengths,
+    }
+
+
+def _tiny_model(kind: str, sliding: bool):
+    torch.manual_seed(0)
+    common = dict(
+        vocab_size=_VOCAB,
+        hidden_size=64,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=16,
+        sliding_window=_WINDOW if sliding else None,
+        use_sliding_window=sliding,
+        layer_types=["sliding_attention", "full_attention"] if sliding else ["full_attention"] * 2,
+    )
+    if kind == "qwen3":
+        return Qwen3ForCausalLM._from_config(Qwen3Config(intermediate_size=128, **common), attn_implementation="sdpa")
+    if kind == "qwen3_5":
+        config = Qwen3_5TextConfig(
+            intermediate_size=128,
+            linear_num_key_heads=2,
+            linear_num_value_heads=4,
+            linear_key_head_dim=16,
+            linear_value_head_dim=16,
+            **(common | dict(layer_types=["linear_attention", "full_attention"], sliding_window=None)),
+        )
+        model = Qwen3_5ForCausalLM._from_config(config, attn_implementation="sdpa")
+        install_trie_linear_attention(model)
+        return model
+    if kind == "nemotron_h":
+        # Mamba2, attention, then an MLP block that mixes no tokens
+        config = NemotronHConfig(
+            vocab_size=_VOCAB,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=3,
+            hybrid_override_pattern="M*-",
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            mamba_num_heads=4,
+            mamba_head_dim=16,
+            ssm_state_size=16,
+            n_groups=1,
+            # steps large enough that the scan's state, not the skip connection, carries the output
+            time_step_min=0.3,
+            time_step_max=1.0,
+        )
+        model = NemotronHForCausalLM._from_config(config, attn_implementation="sdpa")
+        install_trie_linear_attention(model)
+        return model
+    if kind == "glm4_moe_lite":
+        # multi-head latent attention: values narrower than queries and keys
+        config = Glm4MoeLiteConfig(
+            vocab_size=_VOCAB,
+            hidden_size=64,
+            intermediate_size=128,
+            moe_intermediate_size=32,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=4,
+            n_routed_experts=4,
+            num_experts_per_tok=2,
+            n_group=1,
+            topk_group=1,
+            first_k_dense_replace=1,
+            q_lora_rank=None,
+            kv_lora_rank=32,
+            qk_nope_head_dim=16,
+            qk_rope_head_dim=8,
+            v_head_dim=8,
+        )
+        return Glm4MoeLiteForCausalLM._from_config(config, attn_implementation="sdpa")
+    config = Qwen3MoeConfig(moe_intermediate_size=32, num_experts=4, num_experts_per_tok=2, **common)
+    return Qwen3MoeForCausalLM._from_config(config, attn_implementation="sdpa")
+
+
+def _log_probs(logits, targets):
+    return torch.log_softmax(logits, dim=-1).gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+
+
+def _solo(model, samples) -> torch.Tensor:
+    model.set_attn_implementation("sdpa")
+    out = []
+    for index, total in enumerate(samples["total_lengths"]):
+        tokens, response = samples["tokens"][index], samples["response_lengths"][index]
+        positions = torch.arange(total)[None]
+        media = samples["multimodal_train_inputs"][index] if "multimodal_train_inputs" in samples else None
+        logits = model(
+            input_ids=tokens[None],
+            position_ids=positions,
+            use_cache=False,
+            **(media or {}),
+        ).logits
+        out.append(_log_probs(logits[0, total - response - 1 : total - 1], tokens[-response:]))
+    return torch.cat(out)
+
+
+def _trie_iterator(rollout, model_spec: TrieModelSpec, micro_batch_indices=None) -> data_utils.DataIterator:
+    micro_batch_indices = micro_batch_indices or [list(range(len(rollout["tokens"])))]
+    media = trie_media_items(rollout, model_spec)
+    packing_keys = trie_packing_keys(rollout, media)
+    trie_micro_batches = TrieMicroBatches(
+        rollout, model_spec, micro_batch_indices, media=media, packing_keys=packing_keys
+    )
+    return data_utils.DataIterator(
+        rollout, micro_batch_indices=micro_batch_indices, trie_micro_batches=trie_micro_batches
+    )
+
+
+def _trie(model, samples, iterator=None) -> torch.Tensor:
+    model.set_attn_implementation(trie_attn_implementation(model.config, "sdpa"))
+    keys = ["tokens", "loss_masks", "total_lengths", "response_lengths"]
+    if "multimodal_train_inputs" in samples:
+        keys.append("multimodal_train_inputs")
+    model_spec = trie_model_spec(model.config.get_text_config(), media=trie_media(model.config))
+    batch = data_utils.get_batch(
+        iterator or _trie_iterator(samples, model_spec),
+        keys,
+        pad_multiplier=8,
+        qkv_format="thd",
+    )
+    layout = batch["trie_layout"]
+    assert layout.num_tokens < sum(samples["total_lengths"])
+    if layout.window_kv is not None:
+        assert layout.window_kv.index.numel() < layout.kv.index.numel(), "no window gather dropped an ancestor"
+    model_args = _actor_for(model)._get_model_inputs_args(batch)
+    logits = fsdp_actor._logits(model, model_args, batch)[0]
+    targets = torch.cat([t[-r:] for t, r in zip(batch["unconcat_tokens"], batch["response_lengths"], strict=True)])
+    return _log_probs(logits, targets)
+
+
+@pytest.mark.parametrize(
+    ("kind", "sliding"),
+    [
+        ("qwen3", False),
+        ("qwen3", True),
+        ("qwen3_moe", False),
+        ("qwen3_moe", True),
+        ("qwen3_5", False),
+        ("nemotron_h", False),
+        ("glm4_moe_lite", False),
+    ],
+    ids=[
+        "qwen3-full",
+        "qwen3-sliding",
+        "qwen3_moe-full",
+        "qwen3_moe-sliding",
+        "qwen3_5-gated_deltanet",
+        "nemotron_h-mamba2",
+        "glm4_moe_lite-mla",
+    ],
+)
+def test_trie_row_scores_and_trains_each_sample_as_if_alone(cpu_trie, kind, sliding):
+    model = _tiny_model(kind, sliding)
+    samples = _samples(0)
+
+    model.zero_grad()
+    solo = _solo(model, samples)
+    solo.sum().backward()
+    solo_grads = {name: p.grad.clone() for name, p in model.named_parameters() if p.grad is not None}
+    model.zero_grad()
+    trie = _trie(model, samples)
+    trie.sum().backward()
+
+    torch.testing.assert_close(trie, solo, rtol=0, atol=1e-5)
+    for name, p in model.named_parameters():
+        if name in solo_grads:
+            torch.testing.assert_close(p.grad, solo_grads[name], rtol=1e-4, atol=1e-5, msg=name)
+
+
+def _run_paths(levels) -> tuple[dict[int, list[int]], dict[int, int]]:
+    """Each run's path positions (row token indices, in path order) and the run whose output each token takes."""
+    token_indices, owner = {}, {}
+    for level in levels:
+        bounds = level.cu_seqlens.tolist()
+        index = level.token_index.tolist()
+        for segment, start, end in zip(level.segments, bounds, bounds[1:], strict=False):
+            token_indices[segment] = index[start:end]
+        for row, token_index in zip(level.out_rows.tolist(), level.out_token_indices.tolist(), strict=True):
+            assert token_index not in owner, f"token {token_index} is the output of two runs"
+            owner[token_index] = next(
+                s for s, (a, b) in zip(level.segments, itertools.pairwise(bounds), strict=True) if a <= row < b
+            )
+    return token_indices, owner
+
+
+def test_delta_rule_runs_start_on_the_chunk_grid_and_cover_every_token_once():
+    """Segments (depth-first): a root of 10 tokens; under it one of 1 (inside a chunk) with children of 5 and 6, and
+    one of 7 with a child of 1; then a second root (padding) of 3. With chunks of 4, a run starts at the last
+    multiple of 4 on its segment's path, and a parent with children stops at its last multiple."""
+    parents = (-1, 0, 1, 1, 0, 4, -1)
+    lengths = (10, 1, 5, 6, 7, 1, 3)
+    q_bounds = [0, *itertools.accumulate(lengths)]
+    levels = trie_linear_attention._levels(parents, q_bounds, torch.device("cpu"), chunk=4)
+    token_indices, owner = _run_paths(levels)
+
+    path_starts = (0, 10, 11, 11, 10, 17, 0)
+    # segment 1 (path positions 10..10) has children and no grid point inside it: no run of its own
+    assert set(token_indices) == {0, 2, 3, 4, 5, 6}
+    for segment, indices in token_indices.items():
+        recomputed = path_starts[segment] % 4
+        own = list(range(q_bounds[segment], q_bounds[segment + 1]))
+        assert indices[recomputed:] == own[: len(indices) - recomputed]
+    # the children of segment 1 recompute segment 0's tokens after its last grid point, and segment 1's
+    assert token_indices[2][:3] == token_indices[3][:3] == [8, 9, 10]
+    assert token_indices[4][:2] == [8, 9]
+    assert token_indices[5] == [28, 29]
+    # every token is one run's output; a recomputed token is the first run's, depth-first
+    assert sorted(owner) == list(range(q_bounds[-1]))
+    assert owner[8] == owner[9] == owner[10] == 2
+    # each run starts from the final state of the run that ends where it starts
+    sources = {s: source for level in levels for s, source in zip(level.segments, level.sources, strict=True)}
+    assert sources == {0: -1, 2: 0, 3: 0, 4: 0, 5: 4, 6: -1}
+
+
+def _rollout_routing(samples, num_layers: int, num_experts: int, top_k: int) -> list[torch.Tensor]:
+    """``[T - 1, layers, top_k]`` routing per sample that is a function of each token's prefix, so samples
+    sharing a prefix were routed alike on it, as when they hit one radix-cache entry."""
+    routes = []
+    for tokens in samples["tokens"]:
+        ids = tokens.tolist()
+        rows = [
+            [
+                random.Random(hash((layer, *ids[: p + 1]))).sample(range(num_experts), top_k)
+                for layer in range(num_layers)
+            ]
+            for p in range(len(ids) - 1)
+        ]
+        routes.append(torch.tensor(rows))
+    return routes
+
+
+@pytest.fixture
+def rollout_routing_replay(monkeypatch):
+    # replay entries otherwise wait in pinned host memory, which needs a GPU
+    monkeypatch.setattr(data_utils.current_platform, "dynamic_shapes", False)
+    routing_replay.enable(SimpleNamespace(use_routing_replay=True, ci_test=False))
+    yield
+    routing_replay_manager.clear_all()
+    routing_replay_manager.enabled = False
+    routing_replay_manager.replays = []
+    routing_replay_manager.current = None
+
+
+def _routed_apart(routes, samples, num_experts: int) -> list[torch.Tensor]:
+    """``routes`` with sample 4 routed apart from its prompt's other samples on a system-prompt token, and
+    sample 1 from sample 0 on the response opening they share, as when siblings prefill on different engines
+    or decode in different batches."""
+    routes = [route.clone() for route in routes]
+    opening = samples["total_lengths"][1] - samples["response_lengths"][1]
+    for sample, position in ((4, 5), (1, opening)):
+        routes[sample][position] = (routes[sample][position] + 1) % num_experts
+    return routes
+
+
+@pytest.mark.parametrize("routed_apart", [False, True], ids=["routed_alike", "routed_apart"])
+def test_rollout_routing_replay_on_a_trie_row_matches_each_sample_alone(
+    cpu_trie, rollout_routing_replay, routed_apart
+):
+    """A trie token replays the routing its samples were given at its depth; padding and final tokens none.
+    Two micro-batches, so each must replay its own rows. Where rollouts routed a shared token apart, the samples
+    part there, so each still replays its own routing."""
+    model = _tiny_model("qwen3_moe", sliding=False)
+    config = model.config
+    routing_replay.install(model, resolve_arch_adapter(config).routing_replay)
+    samples = _samples(3)
+    routes = _rollout_routing(samples, config.num_hidden_layers, config.num_experts, config.num_experts_per_tok)
+    if routed_apart:
+        routes = _routed_apart(routes, samples, config.num_experts)
+
+    def solo_replayed() -> torch.Tensor:
+        routing_replay_manager.clear_all()
+        for route in routes:
+            route = torch.cat([route, route.new_full((1, *route.shape[1:]), -1)])
+            for layer, replay in enumerate(routing_replay_manager.replays):
+                replay.record(route[:, layer])
+        with routing_replay.stage(routing_replay.REPLAY_FORWARD):
+            return _solo(model, samples)
+
+    unreplayed = _solo(model, samples).detach()
+    model.zero_grad()
+    solo = solo_replayed()
+    solo.sum().backward()
+    solo_grads = {name: p.grad.clone() for name, p in model.named_parameters() if p.grad is not None}
+    assert not torch.allclose(solo.detach(), unreplayed, atol=1e-3), "the replayed routing must change the scores"
+
+    rollout_data = samples | {"rollout_routed_experts": routes}
+    halves = [list(range(len(routes) // 2)), list(range(len(routes) // 2, len(routes)))]
+    iterator = _trie_iterator(rollout_data, trie_model_spec(config), halves)
+    args = SimpleNamespace(
+        use_rollout_routing_replay=True,
+        qkv_format="thd",
+        allgather_cp=False,
+        data_pad_size_multiplier=8,
+        train_backend="fsdp",
+        save_debug_train_data=None,
+    )
+    routing_replay.attach(args, [iterator], [len(halves)], rollout_data)
+    model.zero_grad()
+    with routing_replay.stage(routing_replay.REPLAY_FORWARD):
+        trie = torch.cat([_trie(model, samples, iterator) for _ in halves])
+    trie.sum().backward()
+
+    torch.testing.assert_close(trie, solo, rtol=0, atol=1e-5)
+    for name, p in model.named_parameters():
+        if name in solo_grads:
+            torch.testing.assert_close(p.grad, solo_grads[name], rtol=1e-4, atol=1e-6, msg=name)
+
+
+_IMAGE, _VISION_START, _VISION_END, _VIDEO = _VOCAB - 1, _VOCAB - 2, _VOCAB - 3, _VOCAB - 4
+_IMAGE_GRID = (1, 4, 4)  # 16 patch rows, 4 placeholder tokens after the 2x2 merge
+_VIDEO_GRID = (2, 4, 4)  # two frames of 4 placeholder tokens
+
+
+def _tiny_vl_model():
+    torch.manual_seed(0)
+    config = Qwen3VLConfig(
+        text_config=dict(
+            vocab_size=_VOCAB,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            rope_parameters={"rope_type": "default", "rope_theta": 10000.0, "mrope_section": [4, 2, 2]},
+        ),
+        vision_config=dict(
+            depth=2,
+            hidden_size=32,
+            intermediate_size=64,
+            num_heads=2,
+            patch_size=4,
+            temporal_patch_size=2,
+            spatial_merge_size=2,
+            out_hidden_size=64,
+            deepstack_visual_indexes=[0],
+        ),
+        image_token_id=_IMAGE,
+        video_token_id=_VIDEO,
+        vision_start_token_id=_VISION_START,
+        vision_end_token_id=_VISION_END,
+    )
+    model = Qwen3VLForConditionalGeneration._from_config(config, attn_implementation="sdpa")
+    keep_packing_kwargs_out_of_vision(model)
+    return model
+
+
+def _vl_samples() -> dict:
+    """Prompts that differ only in their image must not share it, even where their images straddle the end of
+    the prompt; one image is shared, and an image and a video, whose frames text separates, sit in responses."""
+    rng = random.Random(4)
+    text = lambda n: [rng.randrange(1, _VOCAB - 8) for _ in range(n)]  # noqa: E731
+    image = lambda: torch.randn(16, 3 * 2 * 4 * 4)  # noqa: E731
+    shown, other, answered = image(), image(), image()
+    placeholder = [_VISION_START] + [_IMAGE] * 4 + [_VISION_END]
+    system, question = text(12), text(3)
+    prompts = [
+        (system + placeholder + question, [shown]),
+        (system + placeholder + question, [shown]),
+        (system + placeholder + question, [other]),
+        (system + placeholder + question, [other]),
+        (system + placeholder[:-2], [shown]),  # the prompt ends inside its image
+        (system + placeholder[:-2], [other]),
+    ]
+    frame = [_VISION_START] + [_VIDEO] * 4 + [_VISION_END]
+    tokens, total_lengths, response_lengths, multimodal = [], [], [], []
+    for index, (prompt, images) in enumerate(prompts):
+        response = text(3) + (placeholder + text(2) if index == 1 else text(2))
+        if index == 3:
+            response = text(2) + frame + text(1) + frame + text(2)
+        if index >= 4:
+            response = [_IMAGE, _VISION_END] + text(4)
+        images = images + ([answered] if index == 1 else [])
+        tokens.append(torch.tensor(prompt + response))
+        total_lengths.append(len(prompt) + len(response))
+        response_lengths.append(len(response))
+        sample_media = {"pixel_values": torch.cat(images), "image_grid_thw": torch.tensor([_IMAGE_GRID] * len(images))}
+        if index == 3:
+            sample_media |= {"pixel_values_videos": torch.randn(32, 96), "video_grid_thw": torch.tensor([_VIDEO_GRID])}
+        multimodal.append(sample_media)
+    return {
+        "tokens": tokens,
+        "loss_masks": [torch.ones(r, dtype=torch.int) for r in response_lengths],
+        "total_lengths": total_lengths,
+        "response_lengths": response_lengths,
+        "multimodal_train_inputs": multimodal,
+    }
+
+
+def test_images_merge_on_content_and_each_is_fed_once(cpu_trie):
+    model = _tiny_vl_model()
+    samples = _vl_samples()
+
+    model.zero_grad()
+    solo = _solo(model, samples)
+    solo.sum().backward()
+    solo_grads = {name: p.grad.clone() for name, p in model.named_parameters() if p.grad is not None}
+    model.zero_grad()
+    trie = _trie(model, samples)
+    trie.sum().backward()
+
+    torch.testing.assert_close(trie, solo, rtol=0, atol=1e-5)
+    for name, p in model.named_parameters():
+        if name in solo_grads:
+            torch.testing.assert_close(p.grad, solo_grads[name], rtol=1e-4, atol=1e-5, msg=name)
+
+
+def test_routing_replay_lays_a_row_with_images_out_as_get_batch_does(cpu_trie, rollout_routing_replay):
+    """The replay fill builds the row ahead of get_batch, which then reuses it: both must see the same media."""
+    config = _tiny_vl_model().config
+    model_spec = trie_model_spec(config.get_text_config(), media=trie_media(config))
+    samples = _vl_samples()
+    routes = [torch.zeros(len(tokens) - 1, 1, 1, dtype=torch.long) for tokens in samples["tokens"]]
+    rollout_data = samples | {"rollout_routed_experts": routes}
+    iterator = _trie_iterator(rollout_data, model_spec)
+    args = SimpleNamespace(
+        use_rollout_routing_replay=True,
+        qkv_format="thd",
+        allgather_cp=False,
+        data_pad_size_multiplier=8,
+        train_backend="fsdp",
+        save_debug_train_data=None,
+    )
+    routing_replay.attach(args, [iterator], [1], rollout_data)
+    routing_replay_manager.wait_filled(0)
+    batch = data_utils.get_batch(
+        _trie_iterator(samples, model_spec), list(samples), pad_multiplier=8, qkv_format="thd"
+    )
+    replayed = iterator.trie_micro_batches.layout(0, pad_multiple=8)
+    torch.testing.assert_close(replayed.tokens, batch["trie_layout"].tokens)

@@ -209,6 +209,7 @@ def _delay_split_args(**overrides: Any) -> Namespace:
         max_tokens_per_gpu=64,
         micro_batch_size=None,
         balance_data=False,
+        trie_packing=False,
         balance_by_flops=False,
         allow_partial_train_step=False,
         multi_lora=False,
