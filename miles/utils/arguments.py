@@ -52,6 +52,7 @@ from miles.utils.lora.arguments import validate_lora_args, validate_lora_args_af
 from miles.utils.lora.hf_lora_targets import unembed_lora_targets
 from miles.utils.lora.utils import is_lora_enabled, lora_sync_sends_base
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp, pp_layer_splits
+from miles.utils.msc_utils import reject_msc_checkpoint_args, storage_path, validate_msc_checkpoint_args
 from miles.utils.object_store_config import (
     MOONCAKE_MASTER_ADDRESS_KEY,
     ObjectStoreBackend,
@@ -1376,11 +1377,15 @@ def miles_validate_args(args):
             raise FileNotFoundError(f"--chat-template-path file not found: {args.chat_template_path}")
         args.sglang_chat_template = args.chat_template_path
 
+    if args.train_backend != "megatron":
+        reject_msc_checkpoint_args(args)
     if args.kl_coef != 0 or args.use_kl_loss:
-        if not os.path.exists(args.ref_load):
+        # storage_path("") would resolve to the working directory, so an empty path fails here.
+        ref_load = storage_path(args.ref_load) if args.ref_load else None
+        if ref_load is None or not ref_load.exists():
             raise FileNotFoundError(f"ref_load {args.ref_load} does not exist, please check the path.")
 
-        if not os.path.exists(os.path.join(args.ref_load, "latest_checkpointed_iteration.txt")):
+        if not (ref_load / "latest_checkpointed_iteration.txt").exists():
             logger.info(
                 f"ref_load {args.ref_load} does not have latest_checkpointed_iteration.txt, "
                 "please make sure it is a valid megatron checkpoint directory."
@@ -1561,6 +1566,9 @@ def miles_validate_args(args):
         )
 
     args.use_critic = args.advantage_estimator == "ppo"
+    if args.train_backend == "megatron":
+        # After use_critic: the msc:// checks cover every trainer, the critic's --critic-load included.
+        validate_msc_checkpoint_args(args)
     if args.use_critic:
         assert not args.indep_dp, (
             "Shared Actor/Critic PPO hands the critic outputs to a single trainer cell as external data; "

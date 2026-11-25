@@ -1,5 +1,4 @@
 import logging
-import os
 import re
 import shutil
 from collections.abc import Sequence
@@ -27,6 +26,7 @@ from miles.utils import megatron_bridge_utils
 from miles.utils.args.runtime import TrainerConfig
 from miles.utils.audit_utils.config_snapshot.dumper import ConfigSnapshotDumper
 from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
+from miles.utils.msc_utils import assert_megatron_msc_enabled, storage_path, storage_reader
 from miles_plugins.models.deepseek_v4.arguments import assert_checkpoint_is_current, is_dsv4_model
 
 from .model_provider import LinearForLastLayer
@@ -137,8 +137,8 @@ def load_checkpoint(
     if has_local_checkpoint_manager:
         logger.info("Skipping disk path validation: using in-memory checkpoint via local_checkpoint_manager")
     else:
-        assert Path(load_path).exists() and _is_dir_nonempty(
-            load_path
+        assert (
+            load_path and storage_path(load_path).exists() and _is_dir_nonempty(load_path)
         ), f"{args.backend.load=} does not exist or is an empty directory. Did you specify the wrong folder?"
 
     if SNAPSHOT_TESTING_ENABLED:
@@ -155,6 +155,8 @@ def load_checkpoint(
             assert_checkpoint_is_current(checkpoint_path)
         if not has_local_checkpoint_manager and _has_linear_attention(ddp_model):
             assert_linear_attn_checkpoint_is_current(checkpoint_path)
+        if not has_local_checkpoint_manager:
+            assert_megatron_msc_enabled(load_path)
         with safe_globals([MegatronArgsNamespace]), args.backend.mutable():
             result_iteration, _ = _load_checkpoint_megatron(
                 ddp_model=ddp_model,
@@ -205,9 +207,7 @@ def assert_linear_attn_checkpoint_is_current(load_dir: str) -> None:
     """Reject torch_dist checkpoints written before the shared linear-attention layer (group-major GDN
     q/k/v and conv rows, Kimi-K3 KDA under linear_attn.*). Megatron skips tensors a checkpoint lacks, so
     such a checkpoint would load scrambled or half-initialized instead of failing."""
-    from torch.distributed.checkpoint import FileSystemReader
-
-    path = Path(load_dir)
+    path = storage_path(load_dir)
     step_file = path / "latest_checkpointed_iteration.txt"
     if step_file.is_file():
         step = step_file.read_text().strip()
@@ -215,7 +215,7 @@ def assert_linear_attn_checkpoint_is_current(load_dir: str) -> None:
     if not path.is_dir():
         return
     if not any(
-        key.endswith(LINEAR_ATTN_LAYOUT_KEY) for key in FileSystemReader(path).read_metadata().state_dict_metadata
+        key.endswith(LINEAR_ATTN_LAYOUT_KEY) for key in storage_reader(str(path)).read_metadata().state_dict_metadata
     ):
         raise ValueError(
             f"{load_dir} was written before the shared linear-attention layer's weight layout and would load "
@@ -224,9 +224,8 @@ def assert_linear_attn_checkpoint_is_current(load_dir: str) -> None:
 
 
 def _is_megatron_checkpoint(path: str | Path) -> bool:
-    return (Path(path) / "latest_checkpointed_iteration.txt").is_file() or bool(
-        re.fullmatch(r"iter_\d{7}", Path(path).name)
-    )
+    path = storage_path(path)
+    return (path / "latest_checkpointed_iteration.txt").is_file() or bool(re.fullmatch(r"iter_\d{7}", path.name))
 
 
 @contextmanager
@@ -324,5 +323,4 @@ def _load_checkpoint_hf(ddp_model, optimizer, args, load_path: str):
 
 
 def _is_dir_nonempty(path):
-    with os.scandir(path) as it:
-        return any(it)
+    return any(storage_path(path).iterdir())

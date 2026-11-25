@@ -114,3 +114,20 @@ class TestBackendInitializationSdk:
 
         initialization_sdk.tokenizer.assert_called_once_with(args.backend)
         initialization_sdk.microbatches.assert_called_once_with(0, [4, 8, 16], 12, 3, 2, True)
+
+    @pytest.mark.parametrize("enable_msc", [False, True])
+    def test_a_trainer_worker_turns_on_megatron_msc_from_its_args(
+        self, initialization_sdk: _InitializationSdk, enable_msc: bool
+    ) -> None:
+        """Megatron enables MSC only inside the driver's parse_args, so the worker's init must do it."""
+        pytest.importorskip("multistorageclient")
+        from megatron.core.msc_utils import MultiStorageClientFeature
+
+        was_enabled = MultiStorageClientFeature.is_enabled()
+        MultiStorageClientFeature.disable()
+        try:
+            initialization_sdk.module.init(_initialization_args(enable_msc=enable_msc))
+
+            assert MultiStorageClientFeature.is_enabled() is enable_msc
+        finally:
+            (MultiStorageClientFeature.enable if was_enabled else MultiStorageClientFeature.disable)()
