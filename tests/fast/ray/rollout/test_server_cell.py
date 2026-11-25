@@ -63,13 +63,13 @@ class TestServerCellAbortAll:
 class TestServerCellAdminKey:
     @pytest.mark.parametrize(
         ("flag", "expected"),
-        [("from-flag", "from-flag"), (None, "from-env"), ("", "")],
-        ids=["flag-wins", "env-fallback", "empty-flag-means-none"],
+        [("from-flag", "from-flag"), (None, None), ("", "")],
+        ids=["flag", "no-flag-ignores-env", "empty-flag"],
     )
-    def test_the_cell_client_resolves_the_flag_else_the_environment(
+    def test_the_cell_client_uses_the_metadata_key_and_ignores_the_environment(
         self, monkeypatch: pytest.MonkeyPatch, flag, expected
     ) -> None:
-        """The metadata carries the flag only; the cell resolves SGLANG_ADMIN_API_KEY as SGLang itself does."""
+        """A managed engine may not hold SGLANG_ADMIN_API_KEY (sglang-miles never reads it), so the cell never adds it."""
         monkeypatch.setenv("SGLANG_ADMIN_API_KEY", "from-env")
         cell = track_server_cell(
             ServerCell(
@@ -96,5 +96,6 @@ class TestServerCellAdminKey:
         client = cell._build_api_client("http://10.0.0.1:30000")
 
         assert (client.api_key, client.admin_api_key) == ("normal", expected)
-        assert "normal" not in repr(client) and "from-env" not in repr(client)
+        assert client._headers["Authorization"] == f"Bearer {expected or 'normal'}"
+        assert "normal" not in repr(client)
         assert "normal" not in repr(cell.meta)

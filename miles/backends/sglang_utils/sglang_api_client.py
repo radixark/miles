@@ -30,7 +30,8 @@ class WorkerType(Enum):
 def resolve_admin_api_key(flag: str | None) -> str | None:
     """``--admin-api-key``, else ``SGLANG_ADMIN_API_KEY``: the order SGLang's server and its admin clients use.
 
-    Resolved where a client is built, so a key from the environment never enters args, cell metadata or manifests.
+    Only for engines miles does not launch: an engine miles launches may not see this environment (sglang-miles
+    never reads it), so its cells use the flag it is launched with. Not stored in args, which W&B and manifests record.
     """
     return os.environ.get("SGLANG_ADMIN_API_KEY") if flag is None else flag
 

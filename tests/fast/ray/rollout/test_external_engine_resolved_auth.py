@@ -26,17 +26,30 @@ class TestResolvedExternalAuth:
         assert cell.meta["sglang_api_key"] == "resolved-secret"
         assert cell.meta["sglang_admin_api_key"] == "resolved-admin-secret"
 
-    async def test_the_provider_publishes_the_flag_without_reading_the_environment(
-        self, fake_api_client: Any, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        ("flag", "env", "expected"),
+        [
+            pytest.param("from-flag", "from-env", "from-flag", id="flag-wins"),
+            pytest.param(None, "from-env", "from-env", id="env-fallback"),
+            pytest.param("", "from-env", "", id="empty-flag-means-none"),
+            pytest.param(None, None, None, id="no-key"),
+        ],
+    )
+    async def test_the_admin_key_is_the_flag_else_the_environment(
+        self, fake_api_client: Any, monkeypatch: pytest.MonkeyPatch, flag, env, expected
     ) -> None:
-        """The cell resolves SGLANG_ADMIN_API_KEY, so the published metadata never carries a key from the environment."""
-        monkeypatch.setenv("SGLANG_ADMIN_API_KEY", "from-env")
+        """For engines miles does not launch, like SGLang's own admin clients; the flag in args stays as given."""
+        if env is None:
+            monkeypatch.delenv("SGLANG_ADMIN_API_KEY", raising=False)
+        else:
+            monkeypatch.setenv("SGLANG_ADMIN_API_KEY", env)
         args = _make_args(["host1:8000"])
-        args.sglang = make_sglang_config(api_key="normal-secret", admin_api_key=None)
+        args.sglang = make_sglang_config(api_key="normal-secret", admin_api_key=flag)
         fake_api_client.answers = [_regular_payload()]
         provider = StaticInferenceEngineWorkerProvider(args=args)
 
         await provider.init()
 
         [cell] = provider.cell_infos
-        assert cell.meta["sglang_admin_api_key"] is None
+        assert cell.meta["sglang_admin_api_key"] == expected
+        assert args.sglang.base_args["admin_api_key"] == flag
