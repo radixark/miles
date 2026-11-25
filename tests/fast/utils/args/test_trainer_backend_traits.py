@@ -1,5 +1,6 @@
 import pytest
-from tests.fast.fixtures.args_fixtures import parse_fsdp_test_config, parse_megatron_test_config
+import torch
+from tests.fast.fixtures.args_fixtures import _parse_test_config, parse_fsdp_test_config, parse_megatron_test_config
 
 from miles.utils.args.runtime import TrainerConfig
 from miles.utils.args.trainer_utils import compute_trainer_config
@@ -73,3 +74,27 @@ class TestTrainerBackendTraits:
         trainer = compute_trainer_config(config, config.raw_megatron.trainers[0])
 
         assert trainer.backend.replay_layer_splits == []
+
+
+def _parse_torchtitan_test_config(monkeypatch: pytest.MonkeyPatch, *argv: str):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")  # the backend's floor; CI's torch is older
+    base = ["--train-backend", "torchtitan", "--rollout-batch-size", "2", "--num-rollout", "1"]
+    base += ["--actor-num-gpus-per-node", "1", "--rollout-max-response-len", "1024"]
+    return _parse_test_config([*base, *argv])
+
+
+class TestWandbExpName:
+    @pytest.mark.parametrize("backend", ["megatron", "fsdp", "torchtitan"])
+    @pytest.mark.parametrize("argv,expected", [((), None), (("--wandb-exp-name", "run-a"), "run-a")])
+    def test_the_flag_reaches_the_orchestrator_and_every_trainer(self, monkeypatch, backend, argv, expected) -> None:
+        """--wandb-exp-name is parsed for every backend and survives the trainer config round trip."""
+        if backend == "torchtitan":
+            config = _parse_torchtitan_test_config(monkeypatch, *argv)
+        else:
+            config = {"megatron": parse_megatron_test_config, "fsdp": parse_fsdp_test_config}[backend](*argv)
+        trainer = compute_trainer_config(config, config.raw_megatron.trainers[0])
+        restored = TrainerConfig.model_validate_json(trainer.model_dump_json())
+
+        assert config.wandb_exp_name == expected
+        assert restored.wandb_exp_name == expected
+        assert restored.backend.wandb_exp_name == expected
