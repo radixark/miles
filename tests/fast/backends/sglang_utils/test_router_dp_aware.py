@@ -4,7 +4,9 @@ register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 
 import argparse
 
-from miles.backends.sglang_utils.arguments import add_sglang_arguments, validate_args
+import pytest
+
+from miles.backends.sglang_utils.arguments import add_sglang_arguments, translate_deprecated_sglang_args, validate_args
 from miles.utils.args.configs.router import RouterConfig
 from miles.utils.http_utils import router_worker_base_urls
 
@@ -21,12 +23,18 @@ def _args(argv):
     # Registered by RouterArgs.add_cli_args, not by add_sglang_arguments.
     args.router_assignment_mode = "random"
     args.router_dp_aware = False
+    translate_deprecated_sglang_args(args)
     validate_args(args)
     return args
 
 
-def test_dp_attention_turns_on_router_dp_aware():
-    assert _args(["--sglang-enable-dp-attention", "--sglang-dp-size", "4"]).router_dp_aware is True
+@pytest.mark.parametrize(
+    "argv",
+    [["--sglang-attn-dp-size", "4"], ["--sglang-enable-dp-attention", "--sglang-dp-size", "4"]],
+    ids=["new", "deprecated"],
+)
+def test_dp_attention_turns_on_router_dp_aware(argv):
+    assert _args(argv).router_dp_aware is True
 
 
 def test_router_dp_aware_untouched_without_dp_attention():

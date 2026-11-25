@@ -18,7 +18,7 @@ from miles.backends.megatron_utils.megatron_config import (
     resolve_megatron_config,
     resolve_mtp_num_layers,
 )
-from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
+from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides, translate_deprecated_sglang_args
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.backends.sglang_utils.sglang_config import SglangConfig
 from miles.backends.sglang_utils.sglang_scaling_config import SglangScalingConfig
@@ -1187,6 +1187,9 @@ def miles_validate_args(args):
     if args.custom_config_path:
         logger.warning("--custom-config-path is deprecated; use the custom function's declared CLI arguments instead.")
         _apply_custom_config(args, yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {})
+
+    # before any check reads the attention-DP layout, and after a custom config may have set it
+    translate_deprecated_sglang_args(args)
 
     validate_length_penalty_args(args)
     mode = args.update_weight_transfer_mode

@@ -96,10 +96,10 @@ def _add_prefixed_server_args(parser, *, flag_prefix: str, dest_prefix: str, ski
                     break
 
         action = final_kwargs.get("action")
-        # SGLang's DeprecatedChoiceToFlagAction maps legacy choice values to target boolean dests and sets its own
-        # default=SUPPRESS in __init__, so prefix its target dests/flags and omit a duplicate default kwarg.
+        # SGLang's DeprecatedChoiceToFlagAction (matched by name: sglang-miles lacks it) sets the dests named in
+        # `flags` and passes its own default=SUPPRESS, so prefix those dests and flags and add no default.
         is_deprecated_choice_map = isinstance(action, type) and action.__name__ == "DeprecatedChoiceToFlagAction"
-        if is_deprecated_choice_map and isinstance(final_kwargs.get("flags"), dict):
+        if is_deprecated_choice_map:
             final_kwargs["flags"] = {
                 choice: (f"{dest_prefix}{target_dest}", f"--{flag_prefix}-{new_flag.lstrip('-')}")
                 for choice, (target_dest, new_flag) in final_kwargs["flags"].items()
@@ -129,8 +129,24 @@ def collect_eval_sglang_overrides(args) -> dict:
     }
 
 
-def sglang_attention_dp_enabled(*, attn_dp_size: int, enable_dp_attention: bool, dp_size: int) -> bool:
-    return attn_dp_size > 1 or (enable_dp_attention and dp_size > 1)
+def sglang_attention_dp_enabled(*, attn_dp_size: int) -> bool:
+    return attn_dp_size > 1
+
+
+def translate_deprecated_sglang_args(args) -> None:
+    """Rewrite ``--sglang-dp-size N --sglang-enable-dp-attention`` as ``--sglang-attn-dp-size N``.
+
+    Mirrors SGLang's own ``_handle_deprecated_dp_attention``, so the engine resolves the same layout and miles reads
+    only ``attn_dp_size``. SGLang main no longer registers the flag, so on it there is nothing to translate.
+    """
+    if not getattr(
+        args, "sglang_enable_dp_attention", False
+    ):  # config-access-exempt: SGLang main no longer registers --enable-dp-attention
+        return
+    if args.sglang_attn_dp_size == 1:
+        args.sglang_attn_dp_size = args.sglang_dp_size
+        args.sglang_dp_size = 1
+    args.sglang_enable_dp_attention = False
 
 
 def add_sglang_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
@@ -162,14 +178,11 @@ def validate_args(args):
         args.sglang_enable_prefill_only_deterministic_inference = True
         args.sglang_enable_deterministic_inference = True
 
-    if args.sglang_dp_size > 1:
-        assert args.sglang_enable_dp_attention
+    assert (
+        args.sglang_dp_size == 1
+    ), "miles runs one data-parallel replica per engine; use --sglang-attn-dp-size for attention DP"
 
-    if sglang_attention_dp_enabled(
-        attn_dp_size=args.sglang_attn_dp_size,
-        enable_dp_attention=args.sglang_enable_dp_attention,
-        dp_size=args.sglang_dp_size,
-    ):
+    if sglang_attention_dp_enabled(attn_dp_size=args.sglang_attn_dp_size):
         args.router_dp_aware = True
 
     if args.sglang_router_policy is None and args.use_session_server:

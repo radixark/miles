@@ -20,7 +20,11 @@ from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
 from miles.backends.fsdp_utils.arguments import build_fsdp_parser
 from miles.backends.megatron_utils.megatron_config import MegatronConfig, get_megatron_arg_parser
-from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
+from miles.backends.sglang_utils.arguments import (
+    add_sglang_arguments,
+    collect_eval_sglang_overrides,
+    translate_deprecated_sglang_args,
+)
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
@@ -1390,6 +1394,7 @@ def test_sglang_parallel_sizes_keep_server_args_destinations():
             "5",
         ]
     )
+    assert args.sglang_dp_size == 2
     args.rollout_num_gpus_per_engine = 8 * args.sglang_pp_size
     args.true_on_policy_mode = False
     args.sglang_enable_dp_attention = True
@@ -1397,10 +1402,11 @@ def test_sglang_parallel_sizes_keep_server_args_destinations():
     args.use_session_server = False
     args.recompute_logprobs_via_prefill = False
 
+    translate_deprecated_sglang_args(args)
     validate_sglang_args(args)
 
     assert args.sglang_tp_size == 8
-    assert args.sglang_dp_size == 2
+    assert (args.sglang_attn_dp_size, args.sglang_dp_size) == (2, 1)
     assert args.sglang_pp_size == 3
     assert args.sglang_ep_size == 4
     assert args.sglang_attn_cp_size == 5
@@ -3388,10 +3394,12 @@ def test_sglang_parallel_sizes_use_short_namespace_fields(parallel_args, expecte
     args.loss_type = "policy_loss"
     args.use_session_server = False
 
+    translate_deprecated_sglang_args(args)
     validate_sglang_args(args)
 
     assert args.sglang_tp_size == 8
-    assert (args.sglang_dp_size, args.sglang_pp_size, args.sglang_ep_size) == expected[1:]
+    assert (args.sglang_attn_dp_size, args.sglang_pp_size, args.sglang_ep_size) == expected[1:]
+    assert args.sglang_dp_size == 1
 
 
 def test_sglang_parallel_size_aliases_keep_last_value():
