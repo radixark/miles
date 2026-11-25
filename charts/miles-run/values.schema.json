@@ -151,6 +151,9 @@
         },
         "emptyDir": {
           "$ref": "#/definitions/EmptyDirSource"
+        },
+        "colocateHostPath": {
+          "$ref": "#/definitions/HostPathSource"
         }
       },
       "required": [
@@ -574,6 +577,9 @@
         "resources": {
           "additionalProperties": true,
           "type": "object"
+        },
+        "needsGpuRuntime": {
+          "type": "boolean"
         },
         "restartAt": {
           "minLength": 1,

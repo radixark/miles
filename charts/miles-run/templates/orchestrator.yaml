@@ -52,6 +52,7 @@ spec:
         - name: orchestrator
           {{- $extraMounts := include "miles-run.uninstallManifestVolumeMount" . }}
           {{- include "miles-run.containerDefaultsWith" (dict "context" . "extraMounts" $extraMounts) | nindent 10 }}
+          {{- include "miles-run.cpuContainerSecurityContext" . | nindent 10 }}
           command:
             - python
             - -m

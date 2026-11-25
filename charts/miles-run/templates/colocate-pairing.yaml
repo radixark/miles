@@ -62,6 +62,7 @@ spec:
       containers:
         - name: pairing
           {{- include "miles-run.containerDefaults" . | nindent 10 }}
+          {{- include "miles-run.cpuContainerSecurityContext" . | nindent 10 }}
           command:
             - python
             - -m

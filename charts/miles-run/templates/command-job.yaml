@@ -1,5 +1,6 @@
 {{- if .Values.commandJob.enabled }}
 {{- $name := .Values.commandJob.objectName }}
+{{- $needsGpuRuntime := gt (int (default 0 .Values.commandJob.gpusPerPod)) 0 }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -50,7 +51,16 @@ spec:
       subdomain: {{ $name | quote }}
       containers:
         - name: command-job
-          {{- include "miles-run.containerDefaults" . | nindent 10 }}
+          {{- $extraMounts := "" }}
+          {{- if $needsGpuRuntime }}
+          {{- $extraMounts = include "miles-run.shmVolumeMount" . }}
+          {{- end }}
+          {{- include "miles-run.containerDefaultsWith" (dict "context" . "extraMounts" $extraMounts) | nindent 10 }}
+          {{- if $needsGpuRuntime }}
+          {{- include "miles-run.gpuContainerSecurityContext" . | nindent 10 }}
+          {{- else }}
+          {{- include "miles-run.cpuContainerSecurityContext" . | nindent 10 }}
+          {{- end }}
           command:
             {{- range .Values.commandJob.command }}
             - {{ . | quote }}
@@ -58,12 +68,16 @@ spec:
           {{- with include "miles-run.env" (dict "context" . "entry" dict) }}
           {{- . | nindent 10 }}
           {{- end }}
-          {{- if .Values.commandJob.gpusPerPod }}
+          {{- if $needsGpuRuntime }}
           resources:
             limits:
               nvidia.com/gpu: {{ .Values.commandJob.gpusPerPod }}
           {{- end }}
-      {{- $volumes := compact (list (include "miles-common.volumes" . | trim)) | join "\n" }}
+      {{- $shmVolume := "" }}
+      {{- if $needsGpuRuntime }}
+      {{- $shmVolume = include "miles-run.shmVolume" . | trim }}
+      {{- end }}
+      {{- $volumes := compact (list (include "miles-common.volumes" . | trim) $shmVolume) | join "\n" }}
       {{- with $volumes }}
       volumes:
         {{- . | nindent 8 }}

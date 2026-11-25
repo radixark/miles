@@ -110,18 +110,75 @@ affinity:
       fieldPath: metadata.annotations['{{ .annotation }}']
 {{- end }}
 
-{{- define "miles-run.shmVolume" -}}
-{{- with .Values.infra.devShm -}}
+{{- define "miles-run.interpolateShmPath" -}}
+{{- $value := .value -}}
+{{- range $reference := regexFindAll "\\$\\{[^}]*\\}" $value -1 -}}
+{{- if and (ne $reference "${NAMESPACE}") (ne $reference "${RELEASE}") -}}
+{{- fail (printf "%s is %s, which names the unknown variable %s: only ${NAMESPACE} and ${RELEASE} are allowed" $.field $value $reference) -}}
+{{- end -}}
+{{- end -}}
+{{- $value | replace "${NAMESPACE}" .root.Release.Namespace | replace "${RELEASE}" .root.Release.Name -}}
+{{- end }}
+
+{{- define "miles-run.shmVolumeFor" -}}
+{{- $context := .context -}}
+{{- with $context.Values.infra.devShm -}}
+{{- $source := . -}}
+{{- if and $.colocated .colocateHostPath -}}
+{{- $path := include "miles-run.interpolateShmPath" (dict "root" $context "field" "infra.devShm.colocateHostPath.path" "value" .colocateHostPath.path) -}}
+{{- $source = dict "hostPath" (dict "path" $path "type" (.colocateHostPath.type | default "Directory")) -}}
+{{- else if .hostPath -}}
+{{- $path := include "miles-run.interpolateShmPath" (dict "root" $context "field" "infra.devShm.hostPath.path" "value" .hostPath.path) -}}
+{{- $source = mustMergeOverwrite (deepCopy .) (dict "hostPath" (dict "path" $path)) -}}
+{{- end }}
 - name: dev-shm
-  {{- include "miles-common.volumeSource" . | trim | nindent 2 }}
+  {{- include "miles-common.volumeSource" $source | trim | nindent 2 }}
 {{- end }}
 {{- end }}
 
-{{- define "miles-run.shmVolumeMount" -}}
-{{- with .Values.infra.devShm -}}
+{{- define "miles-run.shmVolumeMountFor" -}}
+{{- with .context.Values.infra.devShm -}}
 - name: dev-shm
   mountPath: {{ .mountPath | quote }}
 {{- end }}
+{{- end }}
+
+{{- define "miles-run.shmVolume" -}}
+{{- include "miles-run.shmVolumeFor" (dict "context" . "colocated" false) }}
+{{- end }}
+
+{{- define "miles-run.shmVolumeMount" -}}
+{{- include "miles-run.shmVolumeMountFor" (dict "context" . "colocated" false) }}
+{{- end }}
+
+{{- define "miles-run.poolNeedsGpuRuntime" -}}
+{{- $pool := .pool -}}
+{{- if hasKey $pool "needsGpuRuntime" -}}
+{{- if $pool.needsGpuRuntime }}true{{ else }}false{{ end -}}
+{{- else if .gated -}}
+true
+{{- else if gt (int (default 0 (index (($pool.resources | default dict).limits | default dict) "nvidia.com/gpu"))) 0 -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- end }}
+
+{{- define "miles-run.gpuContainerSecurityContext" -}}
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    add:
+      - SYS_PTRACE
+      - SYS_NICE
+{{- end }}
+
+{{- define "miles-run.cpuContainerSecurityContext" -}}
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
 {{- end }}
 
 {{- define "miles-run.containerDefaults" -}}

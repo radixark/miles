@@ -100,6 +100,7 @@ run:
     meta:
       gpu_ids: 0,1,2,3,4,5,6,7
     name: inference-engine-all-0-0
+    needsGpuRuntime: true
     objectName: myrun-miles-run-inference-engine-all-0-0
     poolId: inference-engine-all-0-0
     ports:
@@ -187,6 +188,7 @@ run:
     meta:
       gpu_ids: 0,1,2,3,4,5,6,7
     name: inference-engine-all-0-1
+    needsGpuRuntime: true
     objectName: myrun-miles-run-inference-engine-all-0-1
     poolId: inference-engine-all-0-1
     ports:
@@ -321,6 +323,7 @@ run:
     meta:
       gpu_ids: 0,1,2,3,4,5,6,7
     name: trainer-engine-actor
+    needsGpuRuntime: true
     objectName: myrun-miles-run-trainer-engine-actor
     poolId: trainer-engine-actor
     ports:

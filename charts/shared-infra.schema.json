@@ -83,6 +83,9 @@
         },
         "emptyDir": {
           "$ref": "#/definitions/EmptyDirSource"
+        },
+        "colocateHostPath": {
+          "$ref": "#/definitions/HostPathSource"
         }
       },
       "required": [
