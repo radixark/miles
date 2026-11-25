@@ -33,9 +33,9 @@ class PairingLayout(FrozenStrictBaseModel):
 
     @model_validator(mode="after")
     def _assert_inference_pods_pair(self) -> PairingLayout:
-        assert self.gpus_per_trainer_pod <= self.num_gpus_per_node, (
-            f"A trainer pod of {self.gpus_per_trainer_pod} gpus exceeds a {self.num_gpus_per_node}-gpu node"
-        )
+        assert (
+            self.gpus_per_trainer_pod <= self.num_gpus_per_node
+        ), f"A trainer pod of {self.gpus_per_trainer_pod} gpus exceeds a {self.num_gpus_per_node}-gpu node"
         assert self.num_pods_per_inference_cell <= self.num_pods_per_trainer_cell, (
             f"An inference cell of {self.num_pods_per_inference_cell} pods cannot fit in a trainer cell of "
             f"{self.num_pods_per_trainer_cell}; colocate needs every inference worker to sit on a trainer's node"
@@ -80,9 +80,9 @@ class PairingConfig(FrozenStrictBaseModel):
                 f"controller"
             )
         trainer_pod_widths = {pool.layout.gpus_per_trainer_pod for pool in self.inference_pools}
-        assert len(trainer_pod_widths) == 1, (
-            f"Inference pools disagree on the trainer pod width: {sorted(trainer_pod_widths)}"
-        )
+        assert (
+            len(trainer_pod_widths) == 1
+        ), f"Inference pools disagree on the trainer pod width: {sorted(trainer_pod_widths)}"
         if any(pool.layout.gpus_per_trainer_pod < pool.layout.num_gpus_per_node for pool in self.inference_pools):
             assert self.pairing_dir is not None, (
                 "Sub-node trainer pods require pairing_dir so the controller can pair each inference pod with the "

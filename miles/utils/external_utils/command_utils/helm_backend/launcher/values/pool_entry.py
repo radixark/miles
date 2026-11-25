@@ -245,9 +245,9 @@ def _with_colocate_device_publisher(
     if colocate_pairing_dir is None or SECTION_OF_CATEGORY[spec.category] != TRAINER_ENGINES_SECTION:
         return command
     gpus_per_pod = spec.scheduling(scaling).gpus_per_pod()
-    assert gpus_per_pod >= 1, (
-        f"Colocated trainer pool '{spec.name}' requests {gpus_per_pod} gpus, so it has no physical GPU UUIDs to publish"
-    )
+    assert (
+        gpus_per_pod >= 1
+    ), f"Colocated trainer pool '{spec.name}' requests {gpus_per_pod} gpus, so it has no physical GPU UUIDs to publish"
     return [
         *python_argv_prefix(),
         "-m",

@@ -1569,7 +1569,9 @@ class TestSubNodePhysicalUuidPairing:
         )
         pods = [_pod(INFERENCE_POOL_ID, 0), _pod(INFERENCE_POOL_ID, 1), trainer]
 
-        asyncio.run(_attached(PairingController(config=config, core_v1=core_v1), pods).reconcile(_key(TRAINER_POOL_ID, 0, 0)))
+        asyncio.run(
+            _attached(PairingController(config=config, core_v1=core_v1), pods).reconcile(_key(TRAINER_POOL_ID, 0, 0))
+        )
 
         assert len(core_v1.patched) == 2
         assert [_base_gpu_id_written(body) for _, body in core_v1.patched] == ["0", "0"]
@@ -1604,7 +1606,9 @@ class TestSubNodePhysicalUuidPairing:
             inference_pools=[_inference_pool(layout)],
             pairing_dir=str(pairing_dir),
         )
-        controller = _attached(PairingController(config=config, core_v1=core_v1), [_pod(INFERENCE_POOL_ID, 0), trainer])
+        controller = _attached(
+            PairingController(config=config, core_v1=core_v1), [_pod(INFERENCE_POOL_ID, 0), trainer]
+        )
 
         with pytest.raises(TrainerDevicesPendingError):
             asyncio.run(controller.reconcile(_key(TRAINER_POOL_ID, 0, 0)))

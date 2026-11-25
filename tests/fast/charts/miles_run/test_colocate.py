@@ -137,9 +137,7 @@ class TestColocatedEnginePool:
 
         assert entry == {
             "name": "NVIDIA_VISIBLE_DEVICES",
-            "valueFrom": {
-                "fieldRef": {"fieldPath": f"metadata.annotations['{NVIDIA_VISIBLE_DEVICES_ANNOTATION}']"}
-            },
+            "valueFrom": {"fieldRef": {"fieldPath": f"metadata.annotations['{NVIDIA_VISIBLE_DEVICES_ANNOTATION}']"}},
         }
 
     def test_requests_no_gpus_of_its_own(self):

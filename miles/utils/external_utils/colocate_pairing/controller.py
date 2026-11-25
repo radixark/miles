@@ -185,7 +185,10 @@ class PairingController:
         trainer_uid: str,
     ) -> None:
         outcomes = await asyncio.gather(
-            *(self._delete_stale_inference(pod, trainer_coord=trainer_coord, trainer_uid=trainer_uid) for pod in stale_pods),
+            *(
+                self._delete_stale_inference(pod, trainer_coord=trainer_coord, trainer_uid=trainer_uid)
+                for pod in stale_pods
+            ),
             return_exceptions=True,
         )
         for pod, outcome in zip(stale_pods, outcomes, strict=True):
@@ -278,9 +281,7 @@ def _place_inference_pod(
         * layout.num_gpus_per_inference_pod
     )
     trainer_pod_width = layout.gpus_per_trainer_pod
-    trainer_cell_index, trainer_pod_index = divmod(
-        absolute_gpu // trainer_pod_width, layout.num_pods_per_trainer_cell
-    )
+    trainer_cell_index, trainer_pod_index = divmod(absolute_gpu // trainer_pod_width, layout.num_pods_per_trainer_cell)
     return InferencePlacement(
         trainer_coord=PodCoordinate(
             pool_id=trainer_pool_id, cell_index=trainer_cell_index, pod_in_cell_index=trainer_pod_index
