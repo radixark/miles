@@ -73,4 +73,11 @@ speculative decoding, sampling-support replay, and LoRA training and serving.
 
   </Card>
 
+  <Card title="Prompt Enhancement" icon="image" href="/advanced/prompt-enhancement">
+
+    Train an LLM to rewrite image prompts, with a frozen SGLang Diffusion
+    engine rendering each rewrite and a scorer on a reward pool.
+
+  </Card>
+
 </CardGroup>
