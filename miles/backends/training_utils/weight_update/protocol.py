@@ -84,6 +84,10 @@ def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
     if args.colocate:
+        if args.rollout_engine_backend == "lmdeploy":
+            from miles.backends.lmdeploy_utils.weight_update import LMDeployWeightFromTensor
+
+            return LMDeployWeightFromTensor(args)
         from miles.backends.training_utils.weight_update.protocols.cuda_ipc import UpdateWeightFromTensor
 
         return UpdateWeightFromTensor(args)

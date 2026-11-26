@@ -42,6 +42,10 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
 
     required_placement = WeightUpdatePlacement(gather_pp=True)
     supports_lora = True
+    wire_load_format = "flattened_bucket"
+
+    def _serialize_buckets(self, named_tensors):
+        return _serialize_sglang_buckets(named_tensors)
 
     def __init__(self, args: Namespace) -> None:
         """
@@ -166,6 +170,8 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
             ipc_gather_src=self._ipc_gather_src,
             ipc_gather_group=self._ipc_gather_group,
             selector=self._selector,
+            serialize_buckets=self._serialize_buckets,
+            load_format=self.wire_load_format,
         )
         if self.use_distribute and self._is_distributed_src_rank:
             futures_distributed = update_weights_from_distributed(
@@ -197,6 +203,8 @@ def _send_to_colocated_engine(
     ipc_gather_src,
     ipc_gather_group,
     selector: str = "all",
+    serialize_buckets=None,
+    load_format: str | None = "flattened_bucket",
 ) -> tuple[list[Future], Any]:
     # Placeholder ranks (GPU slots reserved but no engine) have no gather group.
     # gather_object is only collective among group members, so we skip entirely.
@@ -204,6 +212,32 @@ def _send_to_colocated_engine(
         return [], None
 
     is_gather_src = dist.get_rank() == ipc_gather_src
+    serialized_tensors, long_live_tensors = (serialize_buckets or _serialize_sglang_buckets)(hf_named_tensors)
+
+    serialized_named_tensors = [None] * dist.get_world_size(ipc_gather_group) if is_gather_src else None
+    dist.gather_object(
+        serialized_tensors,
+        object_gather_list=serialized_named_tensors,
+        dst=ipc_gather_src,
+        group=ipc_gather_group,
+    )
+
+    futures: list[Future] = []
+    if is_gather_src:
+        num_dtypes = len(serialized_named_tensors[0])
+        ipc_gate = asyncio.Lock()
+        for i in range(num_dtypes):
+            kwargs = {
+                "serialized_named_tensors": [tensors[i] for tensors in serialized_named_tensors],
+                "load_format": load_format,
+                "selector": selector,
+            }
+            futures.append(async_utils.submit(_update_weights_from_tensor_gated(ipc_gate, ipc_engine, kwargs)))
+
+    return futures, long_live_tensors
+
+
+def _serialize_sglang_buckets(hf_named_tensors):
     long_live_tensors = []
 
     if getattr(
@@ -228,27 +262,7 @@ def _send_to_colocated_engine(
         long_live_tensors.append(flattened_tensor_data)
         serialized_tensors.append(MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True))
 
-    serialized_named_tensors = [None] * dist.get_world_size(ipc_gather_group) if is_gather_src else None
-    dist.gather_object(
-        serialized_tensors,
-        object_gather_list=serialized_named_tensors,
-        dst=ipc_gather_src,
-        group=ipc_gather_group,
-    )
-
-    futures: list[Future] = []
-    if is_gather_src:
-        num_dtypes = len(serialized_named_tensors[0])
-        ipc_gate = asyncio.Lock()
-        for i in range(num_dtypes):
-            kwargs = {
-                "serialized_named_tensors": [tensors[i] for tensors in serialized_named_tensors],
-                "load_format": "flattened_bucket",
-                "selector": selector,
-            }
-            futures.append(async_utils.submit(_update_weights_from_tensor_gated(ipc_gate, ipc_engine, kwargs)))
-
-    return futures, long_live_tensors
+    return serialized_tensors, long_live_tensors
 
 
 async def _update_weights_from_tensor_gated(

@@ -91,3 +91,58 @@ rather than a training recipe:
 
 Treat the rest — learning rates, `--kl-loss-coef`, `--entropy-coef` — as starting points to tune,
 not as tuned values.
+
+## LMDeploy rollout backend
+
+The optional LMDeploy backend uses the Miles-compatible server in the modified
+`qescccczmr/lmdeploy` checkout. It runs LMDeploy's PyTorch engine for generation
+while Megatron continues training the actor and critic. This integration targets
+single-node, synchronous, colocated dense-model PPO with one GPU per inference
+instance. The existing SGLang backend remains the default.
+
+Install the modified LMDeploy checkout in a separate Python environment. Its CUDA
+requirements currently select Torch <=2.12.1, independently of the trainer's
+Torch version. The PyTorch engine does not require a TurboMind build:
+
+```bash
+uv venv /path/to/lmdeploy-venv --python 3.12
+uv pip install --python /path/to/lmdeploy-venv/bin/python \
+  -r /path/to/lmdeploy/requirements/runtime_cuda.txt \
+  -r /path/to/lmdeploy/requirements/serve.txt \
+  -r /path/to/lmdeploy/requirements/build.txt
+DISABLE_TURBOMIND=1 uv pip install --python /path/to/lmdeploy-venv/bin/python \
+  --no-deps --no-build-isolation -e /path/to/lmdeploy
+```
+
+Add these training flags through the launcher's `--extra-args`:
+
+```text
+--rollout-engine-backend lmdeploy
+--lmdeploy-python /path/to/lmdeploy-venv/bin/python
+--router miles
+--num-rollout 3
+```
+
+`--lmdeploy-max-batch-size` sets the per-instance running sequence capacity
+(default 64). Sampling counts, temperature and maximum response length continue
+to come from the regular rollout arguments. The backend launches a gated
+`python -m lmdeploy.serve.miles` server for each inference worker; the gate
+prevents model allocation before the trainer is ready to hand over GPU memory.
+
+At each round boundary the server drains generation, releases its model and KV
+cache, accepts updated actor weights, records their version, and rebuilds the KV
+cache before resuming generation. Weight buckets use temporary local
+`safetensors` files because newer Torch CUDA IPC handles cannot be imported by
+older Torch runtimes. Files remain alive until the receiver acknowledges them
+and are then removed. This transport adds CPU copies and local file I/O; it is
+not a zero-copy GPU transport and requires colocated workers on the same node.
+
+The LMDeploy fork adds `temperature_logprobs`: FP32 log probabilities of model
+logits scaled by the request temperature. This matches the trainer's probability
+convention for the supported untruncated sampling distribution. It does not
+represent log probabilities after arbitrary top-k/top-p or grammar filtering.
+
+The initial integration rejects asynchronous or partial rollouts, in-place
+generation pauses, LoRA, expert/indexer replay, sampling-support filtering,
+external-engine discovery and weight-checksum RPCs. It has been developed for
+Qwen3-4B BF16; other models require their own end-to-end verification.
