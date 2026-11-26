@@ -7,7 +7,7 @@ shares.
 
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["weight-update"])
+register_cpu_ci(est_time=10, suite="stage-b-cpu", labels=["weight-update"])
 
 
 from argparse import Namespace

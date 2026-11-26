@@ -3,12 +3,15 @@
 from collections import Counter
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.generation_fixtures import extra_argv_for_variant
 from tests.fast.fixtures.rollout_fixtures import RolloutEnvConfig
 from tests.fast.rollout.inference_rollout.integration.utils import MODULAR_ROLLOUT_BASE_ARGV, load_and_call_train
 
 from miles.rollout.generate_hub import single_turn
 from miles.utils.test_utils import mock_tools
+
+register_cpu_ci(est_time=20, suite="stage-b-cpu", labels=["rollout"])
 
 _MIXED_DATASETS = {
     "math": ([{"input": "What is 1+7?", "label": "8"}] * 3, {"samples_per_step": 1}),

@@ -1,6 +1,6 @@
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=220, suite="stage-b-cpu", labels=["rollout"])
+register_cpu_ci(est_time=130, suite="stage-b-cpu", labels=["rollout"])
 
 from dataclasses import replace
 import numpy as np

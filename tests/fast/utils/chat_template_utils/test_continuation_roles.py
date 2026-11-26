@@ -17,7 +17,7 @@ from tests.fast.utils.chat_template_utils.tito_families import FAMILY_CHECKPOINT
 
 from miles.utils.chat_template_utils.tito_tokenizer import VALID_APPEND_ROLES, TITOTokenizer, TITOTokenizerType
 
-register_cpu_ci(est_time=120, suite="stage-b-cpu", labels=["rollout"])
+register_cpu_ci(est_time=50, suite="stage-b-cpu", labels=["rollout"])
 
 _TOOLS = [
     {

@@ -18,7 +18,7 @@ from miles.utils.ft_utils.process_group_utils import GroupInfo
 
 from .loss_test_utils import deep_clone, make_args, make_batch, make_inputs, make_parallel_state, make_rollout_data
 
-register_cpu_ci(est_time=40, suite="stage-b-cpu", labels=["precision"])
+register_cpu_ci(est_time=40, suite="stage-b-cpu", labels=["algorithm", "precision"])
 
 
 @pytest.fixture(scope="module")

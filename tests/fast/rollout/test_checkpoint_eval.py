@@ -1,7 +1,7 @@
 from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.args_fixtures import sglang_router_args
 
-register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["eval"])
+register_cpu_ci(est_time=10, suite="stage-b-cpu", labels=["eval"])
 
 import asyncio
 from argparse import Namespace

@@ -11,7 +11,7 @@ from huggingface_hub import snapshot_download
 from tests.ci.ci_register import register_cpu_ci
 from transformers import AutoTokenizer
 
-register_cpu_ci(est_time=120, suite="stage-b-cpu", labels=["rollout"])
+register_cpu_ci(est_time=40, suite="stage-b-cpu", labels=["rollout"])
 
 
 from miles.utils.chat_template_utils import TITOTokenizerType, resolve_fixed_chat_template

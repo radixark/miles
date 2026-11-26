@@ -1,4 +1,5 @@
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.generation_fixtures import extra_argv_for_variant
 from tests.fast.fixtures.rollout_fixtures import RolloutEnvConfig
 from tests.fast.rollout.inference_rollout.integration.utils import (
@@ -9,6 +10,8 @@ from tests.fast.rollout.inference_rollout.integration.utils import (
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
+
+register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["rollout"])
 
 _VARIANTS = [
     pytest.param(

@@ -2,6 +2,7 @@ import datetime
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -35,6 +36,8 @@ def run_check(
 ):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    # Exercise gh_api's retries without sleeping between mocked failures.
+    (bin_dir / "sleep").symlink_to(shutil.which("true"))
     gh = bin_dir / "gh"
     gh.write_text(
         f"#!{sys.executable}\n"

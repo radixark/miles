@@ -39,7 +39,7 @@ from miles.utils.test_utils.fault_injector.models import FaultHookName, FaultHoo
 from miles.utils.test_utils.fault_injector.static_source import render_fault_hooks
 from miles.utils.workers.naming import compute_cell_id
 
-register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["megatron"])
+register_cpu_ci(est_time=700, suite="stage-b-cpu", labels=["algorithm", "megatron"])
 
 pytestmark = pytest.mark.asyncio
 

@@ -18,6 +18,7 @@ from the registry below.
 """
 
 KNOWN_LABELS: dict[str, str] = {
+    "algorithm": "Long-running RL algorithm and trainer orchestration tests",
     "megatron": "Megatron-LM training tests",
     "model-scripts": "Model launch script smoke tests",
     "sglang": "SGLang patch / equivalence tests",

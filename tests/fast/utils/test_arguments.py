@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import pytest
 import torch
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.args_fixtures import parse_megatron_test_config, parser_defaults
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config, write_megatron_config_trainers
 from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
@@ -64,6 +65,8 @@ from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.object_store_config import compute_mooncake_init_kwargs_vanilla
 from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
 from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH
+
+register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path", "--custom-inference-engine-provider-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]

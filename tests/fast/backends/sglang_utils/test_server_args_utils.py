@@ -8,8 +8,11 @@ from argparse import Namespace
 from typing import Any
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.backends.sglang_utils.conftest import make_engine_args as _args
 from tests.fast.backends.sglang_utils.conftest import tiny_model_path
+
+register_cpu_ci(est_time=40, suite="stage-b-cpu", labels=["sglang"])
 
 pytest.importorskip("sglang")
 

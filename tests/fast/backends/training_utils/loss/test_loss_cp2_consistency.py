@@ -22,7 +22,7 @@ from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set
 
 from .loss_test_utils import make_args, make_batch, make_inputs
 
-register_cpu_ci(est_time=70, suite="stage-b-cpu", labels=["precision"])
+register_cpu_ci(est_time=40, suite="stage-b-cpu", labels=["algorithm", "precision"])
 
 VOCAB_SIZE = 64
 MODEL_DTYPES = [torch.float32, torch.bfloat16, torch.float16]

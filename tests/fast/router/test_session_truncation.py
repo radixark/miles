@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 import requests
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.session_fixtures import make_session_server_config
 from tests.fast.router.test_sessions import _create_session, _post_chat
 
@@ -23,6 +24,8 @@ from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 from miles.utils.types import Sample
+
+register_cpu_ci(est_time=40, suite="stage-b-cpu", labels=["rollout"])
 
 _V2_ARGS = {
     "use_session_server": "v2",

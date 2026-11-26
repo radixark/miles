@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 import torch.distributed as dist
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.dist_utils import find_free_port, init_gloo, run_multiprocess
 
 from miles.backends.megatron_utils.lora import checkpoint
@@ -17,6 +18,8 @@ from miles.backends.training_utils.checkpoint.adapter.source_error import Adapte
 from miles.utils import distributed_utils
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
+
+register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 
 Q, K = "model.layers.0.self_attn.q_proj", "model.layers.0.self_attn.k_proj"
 UNSHARED = AdapterParametrization("m", 2, 4.0, "canonical_lora", (Q, K), False)

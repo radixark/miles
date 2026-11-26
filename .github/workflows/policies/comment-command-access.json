@@ -32,6 +32,7 @@
       "allowed_labels": [
         "bypass-fastfail",
         "run-ci-agentic",
+        "run-ci-algorithm",
         "run-ci-amd",
         "run-ci-blackwell-only",
         "run-ci-ckpt",

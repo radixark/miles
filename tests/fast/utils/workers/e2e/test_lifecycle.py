@@ -20,7 +20,7 @@ from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.rpc.client.misc import RpcProtocolError, ServerRestartedError
 from miles.utils.workers.worker_handle import WorkerUnreachableError
 
-register_cpu_ci(est_time=160, suite="stage-b-cpu", labels=["rpc-comm"])
+register_cpu_ci(est_time=400, suite="stage-b-cpu", labels=["rpc-comm"])
 
 
 async def _submit_and_disconnect(server: ServerProcess, method: str, query: dict) -> None:

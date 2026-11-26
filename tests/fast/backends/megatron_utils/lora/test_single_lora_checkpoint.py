@@ -13,6 +13,7 @@ import torch
 import torch.distributed as dist
 from megatron.core.optimizer import DistributedOptimizer
 from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 import miles.backends.megatron_utils.lora.checkpoint as lora_checkpoint
@@ -34,6 +35,8 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
 from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
 from miles.backends.training_utils.model_companion import ModelCompanion, ModelCompanionWeightVersionUtils
+
+register_cpu_ci(est_time=50, suite="stage-b-cpu", labels=["lora", "ckpt"])
 
 _MODULE = "miles.backends.megatron_utils.lora.checkpoint"
 

@@ -27,6 +27,7 @@ from types import SimpleNamespace
 
 import pytest
 import tests.ci.run_suite as run_suite_module
+import yaml
 from tests.ci.ci_policy import (
     NIGHTLY_CADENCE,
     REGULAR_CADENCE,
@@ -41,7 +42,7 @@ from tests.ci.labels import KNOWN_LABELS
 from tests.ci.run_suite import CI_SUITES, build_cpu_pytest_cmd, filter_tests
 from tests.ci.stage_selection import PR_GPU_STAGES
 
-register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
+register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 
 
 def _make(
@@ -401,9 +402,33 @@ class TestWorkflowScopeSeam:
 
         assert "needs: [resolve-ci-policy]" in stage_a
         assert "needs: [resolve-ci-policy, stage-a-cpu]" in stage_b
-        assert "    if:" not in stage_b
+        assert "if: needs.resolve-ci-policy.outputs.needs_stage_b_cpu == 'true'" in stage_b
+        # Without always(), GitHub still skips stage-b-cpu when stage-a-cpu fails.
+        assert "always()" not in stage_b
+        assert "bypass_fastfail" not in stage_b
         assert "resolve-ci-image" not in stage_a
         assert "resolve-ci-image" not in stage_b
+
+    def test_cpu_reusable_workflow_plans_before_heavy_setup_and_guards_disk_cleanup(self):
+        cpu_workflow = yaml.safe_load(self._reusable_workflow("_run-cpu-ci.yml"))
+        steps = cpu_workflow["jobs"]["run-cpu"]["steps"]
+        names = [step["name"] for step in steps]
+        plan_idx = names.index("Resolve suite plan")
+        for heavy in (
+            "Free disk space",
+            "Checkout sglang",
+            "Checkout Megatron-LM",
+            "Install dependencies",
+            "Run tests",
+        ):
+            heavy_idx = names.index(heavy)
+            assert plan_idx < heavy_idx, f"{heavy} should run after Resolve suite plan"
+            assert "steps.plan.outputs.has_tests == 'true'" in steps[heavy_idx]["if"]
+        plan_step = steps[plan_idx]
+        assert plan_step["id"] == "plan"
+        assert '--list-only --github-output "$GITHUB_OUTPUT"' in plan_step["run"]
+        free_disk = steps[names.index("Free disk space")]
+        assert 'if [ "$avail_gb" -lt 40 ]; then' in free_disk["run"]
 
     def test_non_default_base_pr_needs_run_ci_label(self):
         policy_gate = self._workflow().split("  resolve-ci-policy:", 1)[1].split("    runs-on:", 1)[0]

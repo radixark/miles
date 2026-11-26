@@ -26,6 +26,7 @@ import pytest
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
 from sglang.srt.parser.reasoning_parser import ReasoningParser
+from tests.ci.ci_register import register_cpu_ci
 from transformers import AutoTokenizer
 
 from miles.utils.chat_template_utils import (
@@ -48,6 +49,8 @@ from miles.utils.test_utils.mock_trajectories import (
     SingleToolThinkingTrajectory,
     SingleToolTrajectory,
 )
+
+register_cpu_ci(est_time=20, suite="stage-b-cpu", labels=["rollout"])
 
 # ---------------------------------------------------------------------------
 # SGLang reference: calls OpenAIServingChat._process_messages directly

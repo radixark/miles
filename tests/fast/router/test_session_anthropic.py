@@ -20,6 +20,7 @@ import requests
 from fastapi.responses import JSONResponse
 from sglang.srt.entrypoints.anthropic.protocol import AnthropicMessagesRequest
 from sglang.srt.entrypoints.anthropic.serving import convert_to_chat_completion_request
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 import miles.rollout.session.core as core_module
@@ -31,6 +32,8 @@ from miles.utils.http_utils import find_available_port
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
+
+register_cpu_ci(est_time=40, suite="stage-b-cpu", labels=["rollout"])
 
 # Two-key arguments: the qwen25 parser re-serializes them in this key order,
 # so a replay whose input object uses the REVERSED key order re-serializes to

@@ -23,7 +23,7 @@ from miles.utils.chat_template_utils.message_matcher_hub import (
 )
 from miles.utils.chat_template_utils.message_matcher_hub.funcs import _validated
 
-register_cpu_ci(est_time=50, suite="stage-b-cpu", labels=["rollout"])
+register_cpu_ci(est_time=40, suite="stage-b-cpu", labels=["rollout"])
 
 _MISSING = object()
 

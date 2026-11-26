@@ -25,7 +25,7 @@ from miles.utils.workers.worker_handle import WorkerUnreachableError
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort, PortInfo
 
-register_cpu_ci(est_time=70, suite="stage-b-cpu", labels=["rpc-comm"])
+register_cpu_ci(est_time=300, suite="stage-b-cpu", labels=["rpc-comm"])
 
 
 class TestLaunchOnRealRay:

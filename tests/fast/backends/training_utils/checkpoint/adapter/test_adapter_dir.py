@@ -9,6 +9,7 @@ import pytest
 import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.training_utils.checkpoint.adapter import adapter_dir
@@ -32,6 +33,8 @@ from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSour
 from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
+
+register_cpu_ci(est_time=20, suite="stage-b-cpu", labels=["lora", "ckpt"])
 
 MODULE = "model.layers.0.self_attn.q_proj"
 RUN = AdapterParametrization("m", 2, 4.0, "canonical_lora", (MODULE,), False)

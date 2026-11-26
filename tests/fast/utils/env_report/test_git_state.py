@@ -6,12 +6,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.utils.env_report.conftest import make_args
 
 from miles.utils.audit_utils.event_logger.models import EnvReportGitRepoInfo
 from miles.utils.env_report import git_state
 from miles.utils.env_report.collector import collect_env_report, collect_env_report_snapshot
 from miles.utils.env_report.git_state import collect_git_info
+
+register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 
 
 class TestCollectGitInfo:

@@ -37,7 +37,7 @@ from miles.utils.chat_template_utils.token_seq_comparator import MismatchType
 from miles.utils.chat_template_utils.truncation import MarkerPair, TruncationGrammar
 from miles.utils.reasoning import REASONING_DELIMITERS, extract_after_reasoning
 
-register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["rollout"])
+register_cpu_ci(est_time=50, suite="stage-b-cpu", labels=["rollout"])
 
 # ---------------------------------------------------------------------------
 # Families
