@@ -36,6 +36,7 @@ Exits nonzero if any check fails. Checks, per configuration:
 import argparse
 import os
 import sys
+from types import SimpleNamespace
 
 import torch
 import torch.distributed as dist
@@ -149,6 +150,7 @@ def _build_mla(tp, seq_parallel):
 
 
 class Args:
+    backend = SimpleNamespace(seed=1234)
     lora_rank = 8
     lora_alpha = 16
     lora_dropout = 0.0

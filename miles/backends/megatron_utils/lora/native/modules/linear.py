@@ -42,13 +42,15 @@ class LoRADraw:
     """Where an A parameter sits in its logical ``[r, K]`` matrices, which are drawn whole and cut to this rank.
 
     ``key`` names the matrix; a stack's matrices add their index, starting at ``first_index`` on this rank.
-    ``shard`` of ``shards`` is this rank's block of K.
+    ``shard`` of ``shards`` is this rank's block of K. With ``column_blocks`` a stack is instead one matrix whose
+    consecutive column blocks are its entries, each sharded alike (shared sub-experts).
     """
 
     key: str
     first_index: int = 0
     shard: int = 0
     shards: int = 1
+    column_blocks: bool = False
 
 
 @torch.no_grad()
@@ -57,12 +59,24 @@ def draw_lora_a(parameter: nn.Parameter, init: str, seed: int) -> None:
     so its start does not depend on how TP and EP split it."""
     draw: LoRADraw = parameter.lora_draw
     rows, cols = parameter.shape[-2:]
-    for offset, local in enumerate(parameter.view(-1, rows, cols)):
-        digest = hashlib.sha256(f"{seed}/{draw.key}/{draw.first_index + offset}".encode()).digest()
+    stack = parameter.view(-1, rows, cols)
+    block = cols * draw.shards
+
+    def whole(index: int, width: int) -> torch.Tensor:
+        digest = hashlib.sha256(f"{seed}/{draw.key}/{index}".encode()).digest()
         generator = torch.Generator(device=parameter.device).manual_seed(int.from_bytes(digest[:8], "little") >> 1)
-        whole = torch.empty(rows, cols * draw.shards, dtype=torch.float32, device=parameter.device)
-        _LORA_A_INITS[init](whole, generator=generator)
-        local.copy_(whole[:, draw.shard * cols : (draw.shard + 1) * cols])
+        matrix = torch.empty(rows, width, dtype=torch.float32, device=parameter.device)
+        _LORA_A_INITS[init](matrix, generator=generator)
+        return matrix
+
+    if draw.column_blocks:
+        matrix = whole(draw.first_index, block * len(stack))
+        for offset, local in enumerate(stack):
+            start = offset * block + draw.shard * cols
+            local.copy_(matrix[:, start : start + cols])
+        return
+    for offset, local in enumerate(stack):
+        local.copy_(whole(draw.first_index + offset, block)[:, draw.shard * cols : (draw.shard + 1) * cols])
 
 
 def new_lora_parameter(

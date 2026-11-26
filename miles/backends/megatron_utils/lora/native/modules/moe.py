@@ -262,8 +262,8 @@ class LoRASharedExpertsAdapter(NativeLoRAAdapter):
                 fc2_reference,
                 (num_shared, rank, local_intermediate),
                 init=context.lora.a_init_method,
-                # each sub-expert's intermediate is TP-sharded
-                draw=LoRADraw(f"{hf_prefix}w2_A", shard=context.tp_rank, shards=context.tp_size),
+                # served as one [r, num_shared * I] matrix; each sub-expert's block is TP-sharded
+                draw=LoRADraw(f"{hf_prefix}w2_A", shard=context.tp_rank, shards=context.tp_size, column_blocks=True),
                 seed=context.lora.seed,
             ),
         )

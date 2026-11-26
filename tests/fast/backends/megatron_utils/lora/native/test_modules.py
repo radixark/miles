@@ -149,6 +149,20 @@ class TestLoRAInitMethod:
         assert len({bytes(expert.detach().numpy().tobytes()) for expert in stack}) == experts
         assert stack.abs().max() <= math.sqrt(6 / (rank + fan_in))
 
+        served = new_lora_parameter(reference, (rank, 2 * fan_in), init="xavier", draw=LoRADraw("w2s"), seed=7)
+        sub_experts = [
+            new_lora_parameter(
+                reference,
+                (2, rank, fan_in // 2),
+                init="xavier",
+                draw=LoRADraw("w2s", shard=i, shards=2, column_blocks=True),
+                seed=7,
+            )
+            for i in range(2)
+        ]
+        blocks = [torch.cat([shard[block] for shard in sub_experts], dim=1) for block in range(2)]
+        torch.testing.assert_close(torch.cat(blocks, dim=1), served, rtol=0, atol=0)
+
 
 class _TELayerNormLinear(nn.Module):
     """TE LayerNormLinear's contract: a LayerNorm with bias here, so a recomputed RMSNorm cannot match."""
