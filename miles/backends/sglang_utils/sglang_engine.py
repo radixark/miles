@@ -68,6 +68,8 @@ def compute_engine_launch_cmd(
     random_seed: int,
 ) -> str:
     _assert_launch_gate_served()
+    if args.use_sampling_support_replay:
+        _assert_sampling_support_replay_served(args)
 
     server_args_dict = _compute_server_args(
         args,
@@ -255,3 +257,32 @@ def _assert_launch_gate_served() -> None:
         "this sglang has no --gated-launch-port, and miles launches every inference engine through "
         "that gate; upgrade sglang to one that serves it"
     )
+
+
+def _required_sampling_support_replay_fields(args) -> tuple[str, ...]:
+    from miles.rollout.generate_utils.sampling_mask import FLAT_SAMPLING_MASK_REQUEST_FIELDS
+    from miles.utils.rollout_topk_logprobs import requests_support_logprobs
+
+    fields = ["return_sampling_mask"]
+    if not args.use_output_store:
+        fields.extend(FLAT_SAMPLING_MASK_REQUEST_FIELDS)
+    if requests_support_logprobs(args):
+        fields.append("sampling_logprobs_mode")
+    return tuple(fields)
+
+
+def _assert_sampling_support_replay_served(args) -> None:
+    # lazy import: avoid loading torch/zmq/sglang runtime on non-replay launches
+    from sglang.srt.managers.io_struct import GenerateReqInput
+
+    required = _required_sampling_support_replay_fields(args)
+    missing = [name for name in required if name not in _record_field_names(GenerateReqInput)]
+    if missing:
+        remedies = ["upgrade sglang", "sample with --rollout-top-p 1 --rollout-top-k -1"]
+        if "sampling_logprobs_mode" in missing:
+            remedies.append("set --rollout-top-logprobs-num 0")
+        raise RuntimeError(
+            "sampling-support replay needs an sglang whose generate requests take "
+            f"{', '.join(missing)}, and this sglang does not. "
+            f"Either {', or '.join(remedies)}."
+        )
