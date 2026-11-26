@@ -20,11 +20,11 @@ from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
 GLOO_GROUP = None
 
 
-def init_gloo_group():
+def init_gloo_group(timeout: timedelta | None = None):
     """Initialize Gloo group for distributed communication."""
     global GLOO_GROUP
     if GLOO_GROUP is None:
-        GLOO_GROUP = dist.new_group(backend="gloo")
+        GLOO_GROUP = dist.new_group(backend="gloo", timeout=timeout)
     return GLOO_GROUP
 
 

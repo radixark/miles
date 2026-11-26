@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Literal
 import ray
 import torch
 import torch.distributed as dist
+from torch.distributed.distributed_c10d import default_pg_timeout
 
 import miles.utils.eval_config
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
@@ -259,13 +260,11 @@ class TrainRayActor(NodeProbeMixin):
             )
             logger.info(f"FSDP CPU offload enabled, using hybrid backend: {backend}")
 
+        timeout = timedelta(minutes=args.backend.distributed_timeout_minutes)
         with override_env({"TORCH_NCCL_DUMP_ON_TIMEOUT": "0"} if args.indep_dp else {}):
-            dist.init_process_group(
-                backend=backend,
-                timeout=timedelta(minutes=args.backend.distributed_timeout_minutes),
-            )
+            dist.init_process_group(backend=backend, timeout=timeout)
         current_platform.bind_device_after_process_group()
-        init_gloo_group()
+        init_gloo_group(timeout=max(timeout, default_pg_timeout))
 
         with args.backend.mutable():
             args.backend.rank = dist.get_rank()
