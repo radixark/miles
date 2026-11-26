@@ -17,11 +17,14 @@ from miles.utils.timer import timer
 
 
 class UpdateWeightFromIci(WeightTransferProtocol):
-    """Device-to-device weight sync over the ICI links of a TPU slice the trainer shares with one engine.
+    """Device-to-device weight sync over the ICI links of a TPU slice the trainer shares with its engines.
 
-    Trainer rank i sends each bucket to engine TP rank i in one transfer, all ranks at once: the gathered dense
-    tensors and rank i's own experts (the engine's EP shard of rank i), with their names, since those differ per
-    rank. Each engine rank loads them through its own weight loader; no host copies.
+    The trainer's T ranks hold slice ranks 0..T-1 and the engines, n of k devices each (n * k = T), hold T..2T-1 in
+    the order the rollout lists them, so trainer rank i pairs with slice rank T + i: TP rank i % k of engine i // k.
+    Trainer rank i sends each bucket to that rank in one transfer, all ranks at once: the gathered dense tensors and
+    rank i's own experts (the EP shard of TP rank i % k), with their names, since those differ per rank. Each engine
+    rank loads them through its own weight loader; no host copies. One engine of T devices is the single-host layout;
+    under HSDP with dp_shard = k, rank i = k * j + s is shard s of replica j and feeds TP rank s of engine j.
     """
 
     # every trainer rank sends whole dense tensors, so it must hold every PP stage's
@@ -43,16 +46,22 @@ class UpdateWeightFromIci(WeightTransferProtocol):
     ) -> None:
         shared = tpu_shared_slice.spec()
         trainer_size = dist.get_world_size()
-        # the engine pairs its TP rank i with slice rank i and expects the store at slice rank 0
+        counts = list(engine_gpu_counts or ())
+        # the engine at slice rank T + i pairs with trainer slice rank i and expects the store at slice rank 0; equal
+        # engine sizes make i -> (engine i // k, TP rank i % k) a layout every rank computes from its own rank alone
         if (
             shared.rank_offset != 0
-            or list(engine_gpu_counts or ()) != [trainer_size]
+            or not counts
+            or len(set(counts)) != 1
+            or sum(counts) != trainer_size
             or shared.size != 2 * trainer_size
         ):
             raise ValueError(
-                "--update-weight-transfer-mode ici pairs trainer rank i (slice rank i) with TP rank i of one engine "
-                f"that fills the rest of the shared slice: slice rank offset {shared.rank_offset} (must be 0), "
-                f"trainer ranks {trainer_size}, engine devices {engine_gpu_counts}, slice size {shared.size}"
+                "--update-weight-transfer-mode ici pairs trainer rank i (slice rank i) with TP rank i of one engine of "
+                "T devices, or with TP rank i % k of engine i // k when n equal engines of k devices (n * k = T) hold "
+                f"the second half of the shared slice in order: slice rank offset {shared.rank_offset} (must be 0), "
+                f"trainer ranks T = {trainer_size}, engine devices {engine_gpu_counts} (must be equal and sum to T), "
+                f"slice size {shared.size} (must be 2 T)"
             )
         self.rollout_engines = rollout_engines
         self.cell_updaters_of_cell_id = create_rollout_cell_updaters(self.args, rollout_engines, engine_cell_ids)
