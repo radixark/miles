@@ -7,6 +7,8 @@ from dataclasses import dataclass
 
 import yaml
 
+from miles.platforms import current_platform
+
 logger = logging.getLogger(__name__)
 
 
@@ -188,6 +190,23 @@ def validate_kernel_backend_args(args) -> None:
 
     if args.true_on_policy_mode or args.deterministic_mode:
         raise ValueError("--kernel-backend hub is incompatible with --true-on-policy-mode / --deterministic-mode")
+
+
+def validate_platform_args(args) -> None:
+    """Refuse what the process's platform cannot run, at startup rather than at the first call that needs it."""
+    platform = current_platform
+    if args.log_probs_backend == "fused" and not platform.triton_kernels:
+        raise ValueError(
+            f"--log-probs-backend fused is a Triton kernel; on {platform.device_type} use --log-probs-backend torch"
+        )
+    # colocate syncs through CUDA IPC, outside the transfer modes
+    modes = platform.weight_transfer_modes
+    if modes is not None and (args.colocate or args.update_weight_transfer_mode not in modes):
+        raise ValueError(
+            f"on {platform.device_type} the trainer syncs weights with --update-weight-transfer-mode "
+            f"{' or '.join(sorted(modes))} to disaggregated engines; got "
+            f"{args.update_weight_transfer_mode!r}{' with --colocate' if args.colocate else ''}"
+        )
 
 
 def validate_hybrid_shard_args(args) -> None:

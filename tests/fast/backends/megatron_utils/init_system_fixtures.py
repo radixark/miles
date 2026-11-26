@@ -29,6 +29,7 @@ def _install_process_environment(
             bind_device_after_process_group=lambda: None,
             nvml_numa_affinity=False,
             device_type="cpu",
+            dist_backend="gloo",
         ),
     )
     monkeypatch.setattr(torch.distributed, "init_process_group", lambda **kwargs: None)
