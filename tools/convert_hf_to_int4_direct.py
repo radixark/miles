@@ -1,6 +1,6 @@
 """
 python tools/convert_hf_to_int4_direct.py [-h] [--model-dir MODEL_DIR] [--save-dir SAVE_DIR]
-                           [--group-size GROUP_SIZE] [--is-symmetric IS_SYMMETRIC] [--ignore-rules IGNORE_RULES]
+                           [--group-size GROUP_SIZE] [--is-symmetric | --no-is-symmetric] [--ignore-rules IGNORE_RULES]
                            [--max-workers MAX_WORKERS]
 options:
   -h, --help            show this help message and exit
@@ -283,7 +283,7 @@ def parse_args():
     parser.add_argument("--model-dir", type=str, required=True, help="local BF16 path")
     parser.add_argument("--save-dir", type=str, required=True)
     parser.add_argument("--group-size", type=int, default=32, help="Group Size")
-    parser.add_argument("--is-symmetric", type=bool, default=True, help="Is Symmetric")
+    parser.add_argument("--is-symmetric", action=argparse.BooleanOptionalAction, default=True, help="Is Symmetric")
     parser.add_argument(
         "--ignore-rules",
         nargs="+",
