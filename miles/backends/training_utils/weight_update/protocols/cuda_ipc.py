@@ -26,6 +26,7 @@ except ImportError:
 from .broadcast import (
     connect_rollout_engines_from_distributed,
     disconnect_rollout_engines_from_distributed,
+    pp_connect_pause_mode,
     update_weights_from_distributed,
 )
 
@@ -112,6 +113,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
                     self.group_name,
                     self.distributed_rollout_engines,
                     engine_gpu_counts=distributed_gpu_counts,
+                    pause_generation_mode=pp_connect_pause_mode(self.args),
                 )
 
         colocate_gpu_offsets = engine_gpu_offsets[:colocate_engine_nums]
