@@ -148,6 +148,24 @@ cookbook only requires `tinker>=0.35`, so install the SDK pin explicitly. It sup
   gateway restarts (sign them again). Behind a TLS or path-prefix ingress, set
   `--tinker-public-url` to the URL clients reach; by default URLs use the one
   each request arrived at.
+- Import: `load_state` and `create_training_client_from_state` accept
+  `file://` adapters (PEFT, official Tinker exports, miles sampler or PEFT exports) from
+  under `--tinker-import-root`, weights only; the source must record its LoRA
+  alpha. The gateway copies only the files a reader opens
+  (`adapter_parametrization.json`, `adapter_config.json`,
+  `adapter_model.safetensors`, each JSON capped at 1 MiB plus one entry per module path a PEFT export of the base can name) into the checkpoint root
+  and the trainer loads that copy, so other files (`README.md`, `.cache/`, a
+  pickled DCP `.metadata` or `.pt`) are never read. A symlink on the path or
+  among those files is refused (an HF cache snapshot links them; download with
+  `hf download --local-dir`). A dir holding `tenant.json`, i.e. a committed
+  checkpoint (checkpoint storage mounted under the import root), or `META.json` (a
+  checkpoint saved before commits) is refused:
+  `file://` skips the owner check that `tinker://` paths get. A training adapter
+  dir (one holding `adapter_state/`, e.g. an RL `--save`) is refused too: the copy
+  would carry only its bf16 PEFT view, not the fp32 masters; import its sampler or
+  PEFT export instead. The import root is
+  shared by every tenant: any tenant can import files another tenant placed
+  there.
 
 `rl_loop` defaults to the `stable_reinforce` loss; pass
 `loss_fn="importance_sampling"` (or `"cispo"`).
