@@ -2,7 +2,12 @@ from dataclasses import dataclass
 
 import torch
 
-from miles.backends.fsdp_utils.arguments import FSDPArgs, build_dataclass_parser, load_args_from_parser
+from miles.backends.fsdp_utils.arguments import (
+    FSDPArgs,
+    build_dataclass_parser,
+    load_args_from_parser,
+    validate_platform_args,
+)
 from miles.backends.training_utils.loss.hub.response_layout import validate_response_layout_args
 from miles.kernels.tpu import FLASH_ATTENTION_BLOCK
 from miles.platforms import current_platform, tpu_shared_slice
@@ -151,18 +156,7 @@ def _validate_platform_args(args) -> None:
             f"--multimodal-keys: multimodal training is not supported on {platform.device_type} yet; the trainer "
             "builds the language model alone there"
         )
-    if args.log_probs_backend == "fused" and not platform.triton_kernels:
-        raise ValueError(
-            f"--log-probs-backend fused is a Triton kernel; on {platform.device_type} use --log-probs-backend torch"
-        )
-    # colocate syncs through CUDA IPC, outside the transfer modes
-    modes = platform.weight_transfer_modes
-    if modes is not None and (args.colocate or args.update_weight_transfer_mode not in modes):
-        raise ValueError(
-            f"on {platform.device_type} the trainer syncs weights with --update-weight-transfer-mode "
-            f"{' or '.join(sorted(modes))} to disaggregated engines; got "
-            f"{args.update_weight_transfer_mode!r}{' with --colocate' if args.colocate else ''}"
-        )
+    validate_platform_args(args)
     if platform.dynamic_shapes:
         return
     # without dynamic shapes, every packed microbatch is padded to --seq-length, the one compiled shape

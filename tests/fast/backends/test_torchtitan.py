@@ -20,6 +20,7 @@ from miles.backends.torchtitan_utils import arguments
 from miles.backends.torchtitan_utils import parallel as tp
 from miles.backends.torchtitan_utils.args_namespace import TorchtitanArgsNamespace
 from miles.backends.torchtitan_utils.arguments import validate_torchtitan_args
+from miles.platforms.xpu import XpuPlatform
 from miles.utils.arguments import parse_args_and_get_parser
 from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora import arguments as lora_arguments
@@ -111,7 +112,7 @@ def test_the_sequence_must_cover_the_rotary_tables(monkeypatch):
     validate_torchtitan_args(_args(seq_length=16384, max_seq_len=None, rollout_max_response_len=8192))
 
 
-_TPU_FACTS = (
+_PLATFORM_FACTS = (
     "dynamic_shapes",
     "compile_backend",
     "triton_kernels",
@@ -130,7 +131,7 @@ def on_tpu(monkeypatch):
     spec = importlib.util.spec_from_file_location("_test_tpu_platform", Path(platforms.__file__).with_name("tpu.py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    for fact in _TPU_FACTS:
+    for fact in _PLATFORM_FACTS:
         monkeypatch.setattr(platforms.current_platform, fact, getattr(module.TpuPlatform, fact))
     # TPU trainers sync weights over ICI, which needs the slice they share with the engine
     monkeypatch.setenv("MILES_TPU_SHARED_SLICE", "0,8,localhost:29600")
@@ -185,6 +186,54 @@ def test_tpu_weights_reach_disaggregated_engines_over_ici_only(monkeypatch, on_t
         with pytest.raises(ValueError, match="update-weight-transfer-mode ici"):
             validate_torchtitan_args(_args(**{"update_weight_transfer_mode": "ici", **unsupported}))
     validate_torchtitan_args(_tpu_args())
+
+
+@pytest.fixture
+def on_xpu(monkeypatch):
+    """The process platform takes XpuPlatform's facts."""
+    for fact in _PLATFORM_FACTS:
+        monkeypatch.setattr(platforms.current_platform, fact, getattr(XpuPlatform, fact))
+
+
+def test_the_triton_log_prob_kernel_is_refused_on_xpu(monkeypatch, on_xpu):
+    """miles.kernels' Triton kernels are CUDA Triton; XPU fails at startup, not at the first loss."""
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    with pytest.raises(ValueError, match="Triton"):
+        validate_torchtitan_args(_args(log_probs_backend="fused"))
+    validate_torchtitan_args(_args(log_probs_backend="torch"))
+
+
+@pytest.mark.parametrize(
+    "unsupported",
+    [
+        dict(update_weight_transfer_mode="p2p"),
+        dict(update_weight_transfer_mode="disk-delta"),
+        dict(update_weight_transfer_mode="ici"),
+        dict(colocate=True),
+    ],
+)
+def test_xpu_weights_reach_disaggregated_engines_by_broadcast_or_http_lora_only(monkeypatch, on_xpu, unsupported):
+    """Every other mode has a CUDA call on its path: a CUDA replica, a CUDA stream, CUDA IPC."""
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    with pytest.raises(ValueError, match="update-weight-transfer-mode broadcast or http-lora"):
+        validate_torchtitan_args(_args(**unsupported))
+    validate_torchtitan_args(_args(update_weight_transfer_mode="broadcast"))
+    validate_torchtitan_args(_args(update_weight_transfer_mode="http-lora"))
+
+
+def test_xpu_validation_ignores_the_static_shape_limits(monkeypatch, on_xpu):
+    """XPU compiles dynamic shapes as CUDA does, so no microbatch pads to --seq-length."""
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    validate_torchtitan_args(
+        _args(
+            use_dynamic_batch_size=True,
+            max_tokens_per_gpu=16384,
+            seq_length=3000,
+            max_seq_len=None,
+            rollout_max_response_len=2048,
+            expert_model_parallel_size=2,
+        )
+    )
 
 
 def test_gpu_validation_ignores_the_tpu_limits(monkeypatch):
