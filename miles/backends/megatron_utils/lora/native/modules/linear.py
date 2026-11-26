@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import hashlib
 import math
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
@@ -36,6 +37,48 @@ _LORA_A_INITS = {
 }
 
 
+@dataclass(frozen=True)
+class LoRADraw:
+    """Where an A parameter sits in its logical ``[r, K]`` matrices, which are drawn whole and cut to this rank.
+
+    ``key`` names the matrix; a stack's matrices add their index, starting at ``first_index`` on this rank.
+    ``shard`` of ``shards`` is this rank's block of K. With ``column_blocks`` a stack is instead one matrix whose
+    consecutive column blocks are its entries, each sharded alike (shared sub-experts).
+    """
+
+    key: str
+    first_index: int = 0
+    shard: int = 0
+    shards: int = 1
+    column_blocks: bool = False
+
+
+@torch.no_grad()
+def draw_lora_a(parameter: nn.Parameter, init: str, seed: int) -> None:
+    """Draw each logical matrix of ``parameter`` from a generator keyed by ``seed``, its key and its index,
+    so its start does not depend on how TP and EP split it."""
+    draw: LoRADraw = parameter.lora_draw
+    rows, cols = parameter.shape[-2:]
+    stack = parameter.view(-1, rows, cols)
+    block = cols * draw.shards
+
+    def whole(index: int, width: int) -> torch.Tensor:
+        digest = hashlib.sha256(f"{seed}/{draw.key}/{index}".encode()).digest()
+        generator = torch.Generator(device=parameter.device).manual_seed(int.from_bytes(digest[:8], "little") >> 1)
+        matrix = torch.empty(rows, width, dtype=torch.float32, device=parameter.device)
+        _LORA_A_INITS[init](matrix, generator=generator)
+        return matrix
+
+    if draw.column_blocks:
+        matrix = whole(draw.first_index, block * len(stack))
+        for offset, local in enumerate(stack):
+            start = offset * block + draw.shard * cols
+            local.copy_(matrix[:, start : start + cols])
+        return
+    for offset, local in enumerate(stack):
+        local.copy_(whole(draw.first_index + offset, block)[:, draw.shard * cols : (draw.shard + 1) * cols])
+
+
 def new_lora_parameter(
     reference: torch.Tensor,
     shape,
@@ -43,14 +86,18 @@ def new_lora_parameter(
     init: str,
     grad_sum_group: str | None = None,
     partition_dim: int | None = None,
+    draw: LoRADraw | None = None,
+    seed: int = 0,
 ) -> nn.Parameter:
-    """Create an adapter parameter matching the base weight's dtype and device."""
+    """Create an adapter parameter matching the base weight's dtype and device; an A needs its ``draw``."""
     tensor = torch.empty(*shape, dtype=reference.dtype, device=reference.device)
     if init == "zero":
         tensor.zero_()
-    else:
-        _LORA_A_INITS[init](tensor)
     parameter = nn.Parameter(tensor)
+    if init != "zero":
+        assert draw is not None, "an A parameter needs its draw"
+        parameter.lora_draw = draw
+        draw_lora_a(parameter, init, seed)
     parameter.tensor_model_parallel = partition_dim is not None
     parameter.partition_dim = partition_dim if partition_dim is not None else -1
     parameter.partition_stride = 1
@@ -215,6 +262,12 @@ class LoRALinear(PhasedLoRAAdapter):
                 init=context.lora.a_init_method,
                 grad_sum_group=a_grad_group,
                 partition_dim=1 if self.layout == ShardLayout.ROW else None,
+                draw=(
+                    LoRADraw(f"{hf_prefix}{self.param_prefix}_A", shard=context.tp_rank, shards=context.tp_size)
+                    if self.layout == ShardLayout.ROW
+                    else LoRADraw(f"{hf_prefix}{self.param_prefix}_A")
+                ),
+                seed=context.lora.seed,
             ),
         )
         self.register_parameter(
@@ -373,6 +426,8 @@ class LoRASplitAdapter(PhasedLoRAAdapter):
                     (context.lora.rank, context.transformer_config.hidden_size),
                     init=context.lora.a_init_method,
                     grad_sum_group="tp",
+                    draw=LoRADraw(f"{hf_prefix}{name}_A"),
+                    seed=context.lora.seed,
                 ),
             )
             self.register_parameter(
@@ -573,6 +628,9 @@ class NativeMultiLoRAAdapter(nn.Module):
         # a free slot adds nothing to its tokens
         self.lora_alphas_by_slot = [0.0] * len(adapters)
         self.token_counts_by_slot: tuple[int, ...] | None = None
+        # the slots are built alike; each starts from its own draw
+        for slot in range(1, len(adapters)):
+            self.redraw_slot(slot, context.lora.seed + slot)
 
     def bind_host(self, host: nn.Module) -> None:
         for adapter in self.adapters:
@@ -648,19 +706,22 @@ class NativeMultiLoRAAdapter(nn.Module):
         self.lora_ranks_by_slot[slot], self.lora_alphas_by_slot[slot] = lora_rank, float(lora_alpha)
 
     @torch.no_grad()
-    def redraw_slot(self, slot: int) -> None:
-        """A drawn at the max rank like a newly built adapter, B zero; the caller holds the RNG stream."""
+    def redraw_slot(self, slot: int, seed: int) -> None:
+        """A drawn from ``seed`` at the max rank like a newly built adapter, B zero."""
         self.assert_slot(slot)
         for name, param in self.adapters[slot].named_parameters():
             if name.endswith("_A"):
-                _LORA_A_INITS[self.context.lora.a_init_method](param)
+                draw_lora_a(param, self.context.lora.a_init_method, seed)
             else:
                 assert name.endswith("_B"), f"{name} is neither a LoRA A nor a LoRA B"
                 param.zero_()
 
     def clear_slot(self, slot: int) -> None:
-        """Free ``slot``; the redraw makes it a newly built adapter for the next claim."""
-        self.redraw_slot(slot)
+        """Free ``slot``; the redraw makes it a newly built adapter for the next claim.
+
+        Its seed comes from the RNG stream the caller holds, which is equal on every rank."""
+        device = next(self.adapters[slot].parameters()).device
+        self.redraw_slot(slot, int(torch.randint(2**62, (1,), device=device).item()))
         self.lora_ranks_by_slot[slot], self.lora_alphas_by_slot[slot] = self.max_lora_rank, 0.0
 
     def assert_slot(self, slot: int) -> None:

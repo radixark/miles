@@ -12,6 +12,7 @@ import torch.nn.functional as F
 from miles.backends.megatron_utils.lora.native.config import LoRAConfig
 from miles.backends.megatron_utils.lora.native.lora import _require_grad_on_first_activation
 from miles.backends.megatron_utils.lora.native.modules.linear import (
+    LoRADraw,
     LoRALinear,
     attach_adapter_forward,
     build_qkv_permutation,
@@ -110,8 +111,7 @@ class TestLoRAInitMethod:
         rank, fan_in = 64, 4096
 
         def draw(init):
-            torch.manual_seed(0)
-            return new_lora_parameter(reference, (rank, fan_in), init=init)
+            return new_lora_parameter(reference, (rank, fan_in), init=init, draw=LoRADraw("m.lora_A"))
 
         xavier, kaiming, normal = draw("xavier"), draw("kaiming"), draw("normal")
         assert xavier.abs().max() <= math.sqrt(6 / (rank + fan_in))
@@ -120,6 +120,48 @@ class TestLoRAInitMethod:
         torch.testing.assert_close(normal.std().item(), 0.2, atol=5e-3, rtol=0)
         with pytest.raises(KeyError):
             draw("orthogonal")
+
+    def test_an_a_matrix_starts_the_same_however_it_is_split(self):
+        """Megatron seeds every TP and EP rank's default generator alike: a draw of the local shape repeated each
+        shard's values and sized the fan by the shard (a stack of experts by torch's conv rule)."""
+        reference, rank, fan_in, experts = torch.empty(0), 4, 64, 6
+        whole = new_lora_parameter(reference, (rank, fan_in), init="xavier", draw=LoRADraw("o.lora_A"), seed=7)
+        shards = [
+            new_lora_parameter(
+                reference, (rank, fan_in // 2), init="xavier", draw=LoRADraw("o.lora_A", shard=i, shards=2), seed=7
+            )
+            for i in range(2)
+        ]
+        torch.testing.assert_close(torch.cat(shards, dim=1), whole, rtol=0, atol=0)
+
+        stack = new_lora_parameter(reference, (experts, rank, fan_in), init="xavier", draw=LoRADraw("w2_A"), seed=7)
+        per_rank = [
+            new_lora_parameter(
+                reference,
+                (experts // 2, rank, fan_in),
+                init="xavier",
+                draw=LoRADraw("w2_A", first_index=3 * i),
+                seed=7,
+            )
+            for i in range(2)
+        ]
+        torch.testing.assert_close(torch.cat(per_rank), stack, rtol=0, atol=0)
+        assert len({bytes(expert.detach().numpy().tobytes()) for expert in stack}) == experts
+        assert stack.abs().max() <= math.sqrt(6 / (rank + fan_in))
+
+        served = new_lora_parameter(reference, (rank, 2 * fan_in), init="xavier", draw=LoRADraw("w2s"), seed=7)
+        sub_experts = [
+            new_lora_parameter(
+                reference,
+                (2, rank, fan_in // 2),
+                init="xavier",
+                draw=LoRADraw("w2s", shard=i, shards=2, column_blocks=True),
+                seed=7,
+            )
+            for i in range(2)
+        ]
+        blocks = [torch.cat([shard[block] for shard in sub_experts], dim=1) for block in range(2)]
+        torch.testing.assert_close(torch.cat(blocks, dim=1), served, rtol=0, atol=0)
 
 
 class _TELayerNormLinear(nn.Module):
