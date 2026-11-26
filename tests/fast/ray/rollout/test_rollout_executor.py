@@ -272,6 +272,7 @@ class TestSetEvalFleetInfo:
             wandb_always_use_train_step=False,
         )
         executor._inference_controller_provider = provider
+        executor._reward_pools = {}
         executor._eval_fleet = None
         executor._eval_lock = asyncio.Lock()
         executor.eval_generate_rollout = eval_function

@@ -70,7 +70,9 @@ def _args(engine, scorer, **overrides) -> SimpleNamespace:
         pe_num_inference_steps=9,
         pe_guidance_scale=0.0,
         pe_seed_per_sample=False,
+        pe_scorer_pool=None,
         pe_scorer_urls=scorer.url,
+        pe_image_weight=0.25,
     )
     return SimpleNamespace(**(values | overrides))
 
@@ -102,7 +104,7 @@ def test_the_rewrite_is_rendered_and_the_image_is_scored_against_the_original_pr
     assert base64.b64decode(scored["image_b64"]) == png(512, 256)
     assert value == pytest.approx(0.5 * 0.8 / 2.0 + 1.0 + 1.0)
     parts = sample.metadata[REWARD_KEY]
-    assert (parts["image_reward"], parts["format"], parts["length"]) == (0.8, 1.0, 1.0)
+    assert (parts["image_score"], parts["format"], parts["length"]) == (0.8, 1.0, 1.0)
     assert parts["t2i_prompt"] == _ANSWER_20 and parts["seed"] == request["seed"]
 
 
@@ -188,9 +190,64 @@ def test_the_log_hook_logs_the_terms_and_writes_each_scored_sample(monkeypatch, 
     assert log_rollout_data(7, log_args, [sample, unscored], {}, 0.0) is False
 
     (metrics,) = logged
-    assert metrics["rollout/step"] == 7 and metrics["rollout/pe/image_reward"] == 0.8
+    assert metrics["rollout/step"] == 7 and metrics["rollout/pe/image_score"] == 0.8
     assert metrics["rollout/pe/reward"] == pytest.approx(2.2)
     assert metrics["rollout/pe/unscored"] == 1.0 and metrics["rollout/pe/render_secs_p95"] >= 0.0
     (row,) = [json.loads(line) for line in (tmp_path / "rollout_00007.jsonl").read_text().splitlines()]
     assert row["prompt"] == "a cat" and row["group"] == 3
     assert row["completion"].startswith(ASSISTANT_PREFIX) and row["format"] == 1.0
+
+
+class _Pool:
+    def __init__(self, score: float | None = 9.5) -> None:
+        self.calls: list[tuple[list[bytes], list[str]]] = []
+        self._score = score
+
+    async def score(self, images, prompts):
+        self.calls.append((images, prompts))
+        return [self._score] * len(images)
+
+
+def _pool_args(engine, scorer):
+    return _args(engine, scorer, pe_scorer_pool="hpsv3", pe_scorer_urls=None, pe_image_weight=0.08)
+
+
+def test_the_named_pool_scores_the_png_against_the_original_prompt(engine, scorer):
+    pool, sample = _Pool(), _sample()
+
+    value = asyncio.run(prompt_enhancer_rm(_pool_args(engine, scorer), sample, hpsv3_pool=pool))
+
+    assert pool.calls == [([png(512, 256)], ["a cat"])]
+    assert scorer.requests == []
+    assert value == pytest.approx(0.08 * 9.5 + 1.0 + 1.0)
+    assert sample.metadata[REWARD_KEY]["image_score"] == 9.5
+
+
+def test_an_image_the_pool_cannot_score_drops_the_sample(engine, scorer):
+    assert asyncio.run(prompt_enhancer_rm(_pool_args(engine, scorer), _sample(), hpsv3_pool=_Pool(None))) is None
+
+
+def test_a_scorer_pool_the_run_did_not_declare_stops_the_run(engine, scorer):
+    with pytest.raises(NonRetryableError, match="names no pool"):
+        asyncio.run(prompt_enhancer_rm(_pool_args(engine, scorer), _sample(), judge_pool=_Pool()))
+
+
+@pytest.mark.parametrize("pool, urls", [(None, None), ("hpsv3", "http://a:1")])
+def test_the_image_is_scored_by_exactly_one_of_a_pool_and_scorer_servers(engine, scorer, pool, urls):
+    args = _args(engine, scorer, pe_scorer_pool=pool, pe_scorer_urls=urls)
+
+    with pytest.raises(NonRetryableError, match="one of --pe-scorer-pool and --pe-scorer-urls"):
+        asyncio.run(prompt_enhancer_rm(args, _sample(), hpsv3_pool=_Pool()))
+
+
+def test_the_log_hook_reads_samples_saved_before_the_pool(monkeypatch):
+    logged = []
+    monkeypatch.setattr(reward.tracking, "log", lambda args, metrics, step_key: logged.append(metrics))
+    sample = _sample()
+    sample.metadata[REWARD_KEY] = dict(t2i=0.2, format=1.0, length=1.0, image_reward=0.8, render_secs=1, score_secs=1)
+    sample.reward = 2.2
+    log_args = SimpleNamespace(pe_sample_log=None, reward_key=None, wandb_always_use_train_step=False)
+
+    log_rollout_data(3, log_args, [sample], {}, 0.0)
+
+    assert logged[0]["rollout/pe/image_score"] == 0.8

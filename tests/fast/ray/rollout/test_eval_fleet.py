@@ -371,7 +371,11 @@ class FakeControllerProvider:
 @pytest.fixture
 def fleet_states(monkeypatch):
     built = []
-    monkeypatch.setattr(eval_fleet_mod, "GenerateState", lambda args: built.append(args) or SimpleNamespace(args=args))
+    monkeypatch.setattr(
+        eval_fleet_mod,
+        "GenerateState",
+        lambda args, reward_pools=None: built.append(args) or SimpleNamespace(args=args),
+    )
     return built
 
 

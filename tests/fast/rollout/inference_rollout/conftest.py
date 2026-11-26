@@ -28,6 +28,7 @@ class FakeGenerateState(GenerateState):
         self.aborted = False
         self.generate_function = generate_function
         self.sample_generate_functions = {}
+        self.reward_kwargs = {}
 
 
 def make_state(generate_function: Callable, *, args: Any = None) -> FakeGenerateState:

@@ -78,6 +78,7 @@ class TestRolloutExecutorSpec:
         assert sorted(kwargs) == [
             "args",
             "inference_controller_provider",
+            "reward_pools",
             "router_providers",
             "session_server_provider",
         ]

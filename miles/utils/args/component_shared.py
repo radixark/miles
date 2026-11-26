@@ -1,7 +1,9 @@
 import argparse
 
 from miles.backends.sglang_utils.sglang_config import SglangConfig
+from miles.utils.args.configs.reward_pool import RewardPoolConfig
 from miles.utils.args.configs.sglang_client import SglangClientConfig
+from miles.utils.args.schema import BaseConfig
 
 
 class SglangFieldsConfig(SglangClientConfig):
@@ -13,3 +15,7 @@ class SglangFieldsConfig(SglangClientConfig):
         # required whenever expert projections are LoRA targets, inert otherwise
         # (sglang's own default is False)
         parser.set_defaults(sglang_lora_use_virtual_experts=True)
+
+
+class RewardPoolFieldsConfig(BaseConfig):
+    reward_pools: list[RewardPoolConfig] = []

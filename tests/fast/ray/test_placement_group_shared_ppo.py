@@ -14,6 +14,7 @@ from miles.ray import placement_group as placement_group_module
 from miles.ray.placement_group import _assert_external_trainer_in_run, _get_placement_group_layout
 from miles.ray.specs.train import TrainerControllerSpec
 from miles.ray.train.init_request import TrainerControllerInitRequest
+from miles.utils.args.configs.reward_pool import RewardScalingConfig
 from miles.utils.args.runtime import AllConfig
 from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.workers.types import DeploymentIdentity
@@ -41,6 +42,7 @@ def _layout_args(**overrides):
         "deploy_instance_id": None,
         "critic_num_nodes": 1,
         "critic_num_gpus_per_node": 3,
+        "reward_scaling": RewardScalingConfig(),
     }
     values.update(overrides)
     args = Namespace(**values)

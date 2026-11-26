@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import abc
 from argparse import Namespace
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -19,6 +20,8 @@ class RolloutFnConstructorInput:
     args: Namespace
     # TODO may refactor DataSource API
     data_source: DataSource
+    # The run's reward pools by name, owned by the rollout executor; rm_hub reaches each as its `<name>_pool` kwarg.
+    reward_pools: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
