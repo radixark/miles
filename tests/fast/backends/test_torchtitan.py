@@ -167,8 +167,9 @@ def test_tpu_context_parallelism_needs_a_sequence_length_that_shards_evenly(monk
         validate_torchtitan_args(_tpu_args(context_parallel_size=3, seq_length=4096, max_seq_len=4096))
 
 
-def test_true_on_policy_refuses_lora_and_losses_off_the_padded_rows(monkeypatch, on_tpu):
-    """Only the padded-row losses score with the engine's log-prob kernel, and the installed forward skips adapters."""
+def test_true_on_policy_refuses_lora_routing_replay_and_losses_off_the_padded_rows(monkeypatch, on_tpu):
+    """Only the padded-row losses score with the engine's log-prob kernel, the installed forward skips adapters, and
+    the MoE value routes on current weights, never replayed ids."""
     monkeypatch.setattr(torch, "__version__", "2.14.0")
     monkeypatch.setattr(platforms.current_platform, "device_type", "tpu")
     mode = dict(true_on_policy_mode=True, rollout_num_gpus_per_engine=1, rollout_top_p=1.0, rollout_top_k=-1)
@@ -177,6 +178,10 @@ def test_true_on_policy_refuses_lora_and_losses_off_the_padded_rows(monkeypatch,
         validate_torchtitan_args(_tpu_args(**mode, loss_type="sft_loss"))
     with pytest.raises(ValueError, match="LoRA"):
         validate_torchtitan_args(_tpu_args(**mode, lora_rank=8))
+    with pytest.raises(ValueError, match="routing replay"):
+        validate_torchtitan_args(_tpu_args(**mode, use_routing_replay=True, use_rollout_routing_replay=True))
+    with pytest.raises(ValueError, match="routing replay"):
+        validate_torchtitan_args(_tpu_args(**mode, use_routing_replay=True))
 
 
 def test_tpu_refuses_expert_parallelism(monkeypatch, on_tpu):
