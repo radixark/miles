@@ -74,7 +74,13 @@ checkpoint it serves, and the Qwen3.5 launcher's adds dapo-math's "Answer:" inst
    python3 scripts/tpu/run_qwen3_4b_torchtitan.py prepare
    ```
 
-2. Start sglang on devices 4-7, in its own shell. It waits for the trainer to join the slice before it
+2. Export one admin key in both shells below; the engine refuses weight updates without it:
+
+   ```bash
+   export SGLANG_ADMIN_API_KEY=<the same random string in both shells>
+   ```
+
+3. Start sglang on devices 4-7, in its own shell. It waits for the trainer to join the slice before it
    compiles, so `/health` returns 200 only after `train` has started; start `train` a minute or two after
    sglang, without waiting for it:
 
@@ -82,7 +88,7 @@ checkpoint it serves, and the Qwen3.5 launcher's adds dapo-math's "Answer:" inst
    python3 scripts/tpu/run_qwen3_4b_torchtitan.py sglang
    ```
 
-3. Train on devices 0-3:
+4. Train on devices 0-3:
 
    ```bash
    python3 scripts/tpu/run_qwen3_4b_torchtitan.py train --recipe full
