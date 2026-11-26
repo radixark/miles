@@ -104,6 +104,11 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
         cp_mesh = self.trainer.parallelism.get_optional_mesh("cp")
         cp_rank0 = cp_mesh is None or dist.get_rank(cp_mesh.get_group()) == 0
         self.dumps_train_data = cp_rank0
+        if args.true_on_policy_mode:
+            from miles.backends.torchtitan_utils import true_on_policy
+
+            # the trainer pads each microbatch's tail, which is one more sequence
+            self.max_samples_per_microbatch = true_on_policy.MAX_SEQUENCES - 1
         if cp_rank0 and get_parallel_state().is_metrics_rank:
             init_tracking(args, primary=False)
 

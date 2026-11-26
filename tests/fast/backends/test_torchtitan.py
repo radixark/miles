@@ -167,6 +167,18 @@ def test_tpu_context_parallelism_needs_a_sequence_length_that_shards_evenly(monk
         validate_torchtitan_args(_tpu_args(context_parallel_size=3, seq_length=4096, max_seq_len=4096))
 
 
+def test_true_on_policy_refuses_lora_and_losses_off_the_padded_rows(monkeypatch, on_tpu):
+    """Only the padded-row losses score with the engine's log-prob kernel, and the installed forward skips adapters."""
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    monkeypatch.setattr(platforms.current_platform, "device_type", "tpu")
+    mode = dict(true_on_policy_mode=True, rollout_num_gpus_per_engine=1, rollout_top_p=1.0, rollout_top_k=-1)
+    validate_torchtitan_args(_tpu_args(**mode))
+    with pytest.raises(ValueError, match="padded-row losses"):
+        validate_torchtitan_args(_tpu_args(**mode, loss_type="sft_loss"))
+    with pytest.raises(ValueError, match="LoRA"):
+        validate_torchtitan_args(_tpu_args(**mode, lora_rank=8))
+
+
 def test_tpu_refuses_expert_parallelism(monkeypatch, on_tpu):
     monkeypatch.setattr(torch, "__version__", "2.14.0")
     with pytest.raises(ValueError, match="expert-model-parallel-size 2"):
@@ -239,7 +251,9 @@ def test_a_static_shape_platform_compiles_static_graphs_for_every_pass_and_bucke
     pytest.importorskip("torchtitan")
     from miles.backends.torchtitan_utils.trainer import TitanTrainer
 
-    trainer = SimpleNamespace(config=SimpleNamespace(training=SimpleNamespace(max_context_length=8192)))
+    trainer = SimpleNamespace(
+        config=SimpleNamespace(training=SimpleNamespace(max_context_length=8192), true_on_policy=False)
+    )
 
     def configure_fixed_shape_compile(*, num_passes):
         TitanTrainer.configure_fixed_shape_compile(trainer, num_passes=num_passes)
@@ -257,6 +271,10 @@ def test_a_static_shape_platform_compiles_static_graphs_for_every_pass_and_bucke
         assert not torch._dynamo.config.automatic_dynamic_shapes
         configure_fixed_shape_compile(num_passes=3)
         assert torch._dynamo.config.recompile_limit == 2 * 3
+        # true on-policy blocks share one forward over three graphs: the first block, gated delta net, attention
+        trainer.config.true_on_policy = True
+        configure_fixed_shape_compile(num_passes=3)
+        assert torch._dynamo.config.recompile_limit == 3 * 3
 
 
 def test_context_parallelism_is_rejected_for_qwen3_5(monkeypatch):
@@ -418,7 +436,7 @@ def _config_args(**overrides: object) -> Namespace:
         save=None,
         load=None,
     )
-    return Namespace(backend=TorchtitanArgsNamespace(**{**base, **overrides}))
+    return Namespace(backend=TorchtitanArgsNamespace(**{**base, **overrides}), true_on_policy_mode=False)
 
 
 def _checkpoint_dir(tmp_path, **config) -> str:
