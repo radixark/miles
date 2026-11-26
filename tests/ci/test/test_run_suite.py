@@ -155,6 +155,106 @@ class TestRunCpuTests:
         assert calls == [self.BOUNDED_BENCH]
         assert f"TIMEOUT: {self.BENCH} after 500 seconds" in capsys.readouterr().out
 
+    def test_slow_stage_a_files_emit_github_warning_without_failing(self, monkeypatch, capsys):
+        slow_implicit = CIRegistry(
+            backend=HWBackend.CPU,
+            filename="tests/fast/test_slow_implicit.py",
+            est_time=1.0,
+            suite="stage-a-cpu",
+            labels=[],
+            implicit=True,
+        )
+        slow_explicit = _make(
+            "tests/fast/test_slow_explicit.py",
+            backend=HWBackend.CPU,
+            suite="stage-a-cpu",
+            labels=[],
+            est_time=20.0,
+        )
+        fast = _make(
+            "tests/fast/test_ok.py",
+            backend=HWBackend.CPU,
+            suite="stage-a-cpu",
+            labels=[],
+            est_time=1.0,
+        )
+        recorded_cmds: list[list[str]] = []
+
+        def fake_call(cmd):
+            recorded_cmds.append(cmd)
+            junit_arg = next(arg for arg in cmd if arg.startswith("--junitxml="))
+            xml_path = Path(junit_arg.split("=", 1)[1])
+            xml_path.write_text(
+                '<?xml version="1.0" encoding="utf-8"?>'
+                '<testsuites><testsuite name="pytest">'
+                '<testcase file="tests/fast/test_slow_implicit.py" name="a" time="20.5" />'
+                '<testcase file="tests/fast/test_slow_implicit.py" name="b" time="15.0" />'
+                '<testcase file="tests/fast/test_slow_explicit.py" name="a" time="42.2" />'
+                '<testcase file="tests/fast/test_ok.py" name="a" time="30.0" />'
+                "</testsuite></testsuites>",
+                encoding="utf-8",
+            )
+            return 0
+
+        monkeypatch.setattr(run_suite_module.subprocess, "call", fake_call)
+        rc = run_suite_module.run_cpu_tests(
+            [slow_implicit, slow_explicit, fast],
+            1800,
+            continue_on_error=False,
+            warn_slow_threshold_s=30,
+        )
+        assert rc == 0
+        assert len(recorded_cmds) == 1
+        assert "-o" in recorded_cmds[0] and "junit_family=xunit1" in recorded_cmds[0]
+        warning_lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("::warning ")]
+        assert len(warning_lines) == 2
+        assert "file=tests/fast/test_slow_explicit.py::" in warning_lines[0]
+        assert "42.2s in stage-a-cpu (budget: 30s, est_time=20s)" in warning_lines[0]
+        assert "file=tests/fast/test_slow_implicit.py::" in warning_lines[1]
+        assert "35.5s in stage-a-cpu (budget: 30s, est_time=1s (implicit))" in warning_lines[1]
+
+    def test_missing_junit_xml_does_not_mask_pytest_result(self, monkeypatch, capsys):
+        monkeypatch.setattr(run_suite_module.subprocess, "call", lambda cmd: 2)
+        fast = _make("tests/fast/test_ok.py", backend=HWBackend.CPU, suite="stage-a-cpu", labels=[], est_time=1.0)
+        rc = run_suite_module.run_cpu_tests([fast], 1800, continue_on_error=False, warn_slow_threshold_s=30)
+        assert rc == 2
+        assert "::warning " not in capsys.readouterr().out
+
+    @pytest.mark.parametrize(("suite", "expected_threshold"), [("stage-a-cpu", 30), ("stage-b-cpu", None)])
+    def test_run_a_suite_enables_slow_warning_only_for_stage_a_cpu(self, monkeypatch, suite, expected_threshold):
+        reg = _make(
+            "tests/fast/test_sample.py",
+            backend=HWBackend.CPU,
+            suite=suite,
+            labels=[] if suite == "stage-a-cpu" else ["algorithm"],
+            est_time=10.0 if suite == "stage-a-cpu" else 60.0,
+        )
+        seen: dict[str, object] = {}
+
+        def fake_run_cpu_tests(ci_tests, timeout_per_file, continue_on_error, *, warn_slow_threshold_s=None):
+            seen["warn_slow_threshold_s"] = warn_slow_threshold_s
+            return 0
+
+        monkeypatch.setattr(run_suite_module, "discover_ci_files", lambda: [reg.filename])
+        monkeypatch.setattr(run_suite_module, "collect_tests", lambda files, sanity_check=True: [reg])
+        monkeypatch.setattr(run_suite_module, "run_cpu_tests", fake_run_cpu_tests)
+        args = SimpleNamespace(
+            hw="cpu",
+            suite=suite,
+            cadence=REGULAR_CADENCE,
+            labels=[] if suite == "stage-a-cpu" else ["run-ci-algorithm"],
+            match_all_labels=False,
+            continue_on_error=False,
+            test_file=None,
+            auto_partition_id=None,
+            auto_partition_size=None,
+            github_output=None,
+            list_only=False,
+            timeout_per_file=1800,
+        )
+        assert run_suite_module.run_a_suite(args) == 0
+        assert seen["warn_slow_threshold_s"] == expected_threshold
+
 
 # --- CI_SUITES locked to the stage taxonomy ---------------------------------
 
@@ -589,6 +689,25 @@ class TestWorkflowScopeSeam:
         ]
         assert all(load > 0 for load in loads)
         assert max(loads) <= 7200 if cadence == REGULAR_CADENCE else max(loads) < 7200
+
+    @pytest.mark.parametrize("cadence", [REGULAR_CADENCE, NIGHTLY_CADENCE])
+    def test_stage_b_cpu_shards_fit_runtime_budget(self, cadence):
+        workflow = self._workflow()
+        job = workflow.split("\n  stage-b-cpu:", 1)[1].split("\n  stage-", 1)[0]
+        assert "partition_id: [0, 1, 2, 3]" in job
+        policy = resolve_policy(cadence, {"run-ci-image"} if cadence == REGULAR_CADENCE else set())
+        tests, _ = filter_tests(
+            collect_tests(discover_ci_files()),
+            HWBackend.CPU,
+            "stage-b-cpu",
+            policy.admit_nightly_tests,
+            labels=set(policy.include_labels),
+            dispatch_arches=policy.dispatch_arches,
+            absorb=policy.absorb,
+        )
+        loads = [sum(test.est_time for test in run_suite_module.auto_partition(tests, rank, 4)) for rank in range(4)]
+        assert all(load > 0 for load in loads)
+        assert max(loads) <= 1800
 
     def test_b200_jobs_share_one_cross_pr_host_lease(self):
         workflow = self._workflow()
