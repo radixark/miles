@@ -1,6 +1,6 @@
 import functools
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -112,3 +112,30 @@ def get_param_name_remap_for_checkpoint(checkpoint_dir: str | Path) -> Callable[
     """Resolve the checkpoint-to-HF name mapping straight from a checkpoint directory."""
     checkpoint = Path(checkpoint_dir)
     return get_param_name_remap(str(checkpoint / "config.json"), get_checkpoint_weight_map(checkpoint))
+
+
+def missing_base_tensors(exported_names: Collection[str], base_checkpoint: str | Path) -> dict[str, str]:
+    """The base-checkpoint tensors missing from an export, as ``{HF export name: base name}``.
+
+    Base names are remapped to the export's naming scheme (:func:`get_param_name_remap`) before the
+    comparison. Raises ``ValueError`` when the remap collides or the two namespaces share no name
+    even after remapping, since a diff between unrelated namespaces would be meaningless.
+    """
+    base_checkpoint = Path(base_checkpoint)
+    base_map = get_checkpoint_weight_map(base_checkpoint)
+    remap = get_param_name_remap(str(base_checkpoint / "config.json"), base_map)
+    base_name_by_hf_name: dict[str, str] = {}
+    for base_name in base_map:
+        hf_name = remap(base_name)
+        if hf_name in base_name_by_hf_name:
+            raise ValueError(
+                f"Remapped tensor name collision: {hf_name} from {base_name} and {base_name_by_hf_name[hf_name]}"
+            )
+        base_name_by_hf_name[hf_name] = base_name
+    exported = set(exported_names)
+    if not exported & base_name_by_hf_name.keys():
+        raise ValueError(
+            f"The export and {base_checkpoint} share no tensor names, even after remapping; the namespaces "
+            "are unrelated (e.g. different storage formats), so the missing tensors cannot be determined."
+        )
+    return {name: base_name for name, base_name in base_name_by_hf_name.items() if name not in exported}

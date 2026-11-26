@@ -1,7 +1,7 @@
 import json
 import logging
 import shutil
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Hashable, Mapping
 from pathlib import Path
 
 import safetensors.torch
@@ -9,7 +9,7 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.weight_update.hf_weight_iterator import HfWeightIteratorBase
-from miles.utils.hf_utils.weight_mapping import get_checkpoint_weight_map
+from miles.utils.hf_utils.weight_mapping import missing_base_tensors
 
 logger = logging.getLogger(__name__)
 
@@ -22,26 +22,39 @@ def _is_hf_metadata_file(path: Path) -> bool:
     return path.is_file() and path.suffix not in HF_WEIGHT_SUFFIXES and not path.name.endswith(".index.json")
 
 
-def _partial_export_warning(path: Path, exported_names: Collection[str], hf_checkpoint: str) -> str | None:
-    """The warning for an export that holds fewer tensors than its base checkpoint, or ``None``."""
-    base_checkpoint = Path(hf_checkpoint)
-    if not base_checkpoint.is_dir():
-        return None
+# Keyed by the missing-tensor set (or the failure), so one run warns once, not per save and eval snapshot.
+_partial_export_warnings_issued: set[Hashable] = set()
+
+
+def _log_partial_export_warning(path: Path, exported_names: Collection[str], hf_checkpoint: str) -> None:
+    """Warn once per process when the export holds fewer tensors than its base checkpoint.
+
+    Advisory only: any failure is logged, never raised, so it cannot fail a finished export.
+    """
+    key: Hashable
     try:
-        base_names = get_checkpoint_weight_map(base_checkpoint).keys()
-    except (OSError, ValueError, KeyError):
-        return None
-    missing = sorted(set(base_names) - set(exported_names))
-    if not missing:
-        return None
-    examples = ", ".join(missing[:3])
-    return (
-        f"The export to {path} holds {len(exported_names)} of the {len(base_names)} tensors in "
-        f"{hf_checkpoint}; {len(missing)} base tensors were not exported (e.g. {examples}). "
-        f"The export loads correctly only on top of the base checkpoint. "
-        f"To make it a standalone checkpoint, run: python tools/complete_hf_export.py "
-        f"--export-dir {path} --hf-checkpoint {hf_checkpoint}"
-    )
+        base_checkpoint = Path(hf_checkpoint)
+        if not base_checkpoint.is_dir():
+            return
+        missing_by_name = missing_base_tensors(exported_names, base_checkpoint)
+        if not missing_by_name:
+            return
+        missing = sorted(missing_by_name)
+        key = frozenset(missing)
+        examples = ", ".join(missing[:3])
+        message = (
+            f"The export to {path} holds {len(exported_names)} tensors, but {len(missing)} tensors of "
+            f"{hf_checkpoint} were not exported (e.g. {examples}). The export loads correctly only on "
+            f"top of the base checkpoint. To make it a standalone checkpoint, run: "
+            f'python tools/complete_hf_export.py --export-dir "{path}" --hf-checkpoint "{hf_checkpoint}"'
+        )
+    except Exception as exc:
+        key = repr(exc)
+        message = f"Could not check the export to {path} for missing base tensors: {exc!r}"
+    if key in _partial_export_warnings_issued:
+        return
+    _partial_export_warnings_issued.add(key)
+    logger.warning(message)
 
 
 class SnapshotPublisher:
@@ -88,6 +101,4 @@ class SnapshotPublisher:
                 logger.warning(f"hf_checkpoint {hf_checkpoint} is not a local dir; metadata not copied to {path}")
             index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
             (path / "model.safetensors.index.json").write_text(json.dumps(index, indent=2))
-            warning = _partial_export_warning(path, weight_map.keys(), hf_checkpoint)
-            if warning is not None:
-                logger.warning(warning)
+            _log_partial_export_warning(path, weight_map.keys(), hf_checkpoint)
