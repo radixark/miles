@@ -1,5 +1,5 @@
 import { api } from "./api.js";
-import { el, fmtNum, setViewCleanup, statBox } from "./app.js";
+import { el, fmtNum, poll, statBox } from "./app.js";
 import { createCarpet } from "./carpet.js";
 import { createFleet } from "./fleet.js";
 import { extent, hideTooltip, showTooltip } from "./charts.js";
@@ -74,7 +74,7 @@ function formatElapsed(seconds) {
   return `+${mins}:${pad(secs)}`;
 }
 
-export async function renderTimeline(view, meta, route) {
+export async function renderTimeline(view, meta, route, signal) {
   // mutable data state, reloaded on every follow-mode refresh
   let selection = route?.lanes || null; // lane-selection grammar string
   let autoDefault = !selection; // seed the spaced default once topology is known
@@ -625,7 +625,7 @@ export async function renderTimeline(view, meta, route) {
   let dragFrom = null;
   canvas.onmousedown = (ev) => (dragFrom = { x: ev.clientX, v0, v1 });
   const onMouseUp = () => (dragFrom = null);
-  window.addEventListener("mouseup", onMouseUp);
+  window.addEventListener("mouseup", onMouseUp, { signal });
   canvas.ondblclick = () => ((v1 = T1), (v0 = Math.max(T0, T1 - MAXW)), afterViewChange());
   canvas.onmousemove = (ev) => {
     if (!haveData) return;
@@ -768,6 +768,11 @@ export async function renderTimeline(view, meta, route) {
     mfuPanel,
     advisoryPanel,
   );
+  signal.addEventListener("abort", () => {
+    clearTimeout(carpetTimer);
+    clearTimeout(reloadTimer);
+    carpet.destroy();
+  });
   renderToolbar();
   applyRange(meta.time_range);
   loadAdvisories();
@@ -779,37 +784,21 @@ export async function renderTimeline(view, meta, route) {
     draw();
     manyLanes() ? fleet.redraw() : carpet.redraw();
   };
-  window.addEventListener("resize", onResize);
+  window.addEventListener("resize", onResize, { signal });
 
   // ------------------------- follow-mode auto refresh -----------------------
-  let refreshing = false;
-  let intervalId = null;
-  let advisoryIntervalId = null;
   if (meta.mode === "follow") {
-    advisoryIntervalId = setInterval(loadAdvisories, ADVISORY_REFRESH_MS);
-    intervalId = setInterval(async () => {
-      if (refreshing) return;
-      refreshing = true;
-      try {
+    poll(loadAdvisories, ADVISORY_REFRESH_MS, signal);
+    poll(
+      async () => {
         // fresh global range (cheap edge-stamp read); getMeta() is cached
         applyRange((await api("/api/meta")).time_range);
         await loadData();
         renderAll();
         await carpet.refresh(carpetRange());
-      } catch {
-        // transient fetch failure (server restart, network blip): keep polling
-      } finally {
-        refreshing = false;
-      }
-    }, FOLLOW_REDRAW_MS);
+      },
+      FOLLOW_REDRAW_MS,
+      signal,
+    );
   }
-  setViewCleanup(() => {
-    if (intervalId !== null) clearInterval(intervalId);
-    if (advisoryIntervalId !== null) clearInterval(advisoryIntervalId);
-    clearTimeout(carpetTimer);
-    clearTimeout(reloadTimer);
-    carpet.destroy();
-    window.removeEventListener("resize", onResize);
-    window.removeEventListener("mouseup", onMouseUp);
-  });
 }
