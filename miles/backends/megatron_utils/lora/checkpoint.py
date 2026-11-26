@@ -120,9 +120,7 @@ class LayerWiseSlotMembers:
         for weight, (index, offsets) in zip(weights, sources, strict=True):
             bf16 = cut(params[index], offsets)
             # NaN-safe: a slot that diverged still saves what it holds
-            assert torch.allclose(
-                weight.to(bf16.dtype), bf16.reshape(weight.shape), rtol=0, atol=0, equal_nan=True
-            ), "a bf16 adapter parameter is not its master"
+            assert matches_master(bf16.reshape(weight.shape), weight), "a bf16 adapter parameter is not its master"
         steps = {group.get("step", 0) for _, _, group in owned.values()}
         assert len(steps) <= 1, f"a slot's param groups disagree on the Adam step: {steps}"
         return AdapterState(

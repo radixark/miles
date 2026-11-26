@@ -18,6 +18,11 @@ from megatron.core.optimizer.layer_wise_optimizer import LayerWiseDistributedOpt
 from megatron.core.optimizer.optimizer_config import OptimizerConfig
 from megatron.core.process_groups_config import ProcessGroupCollection
 
+from miles.utils.bf16_stochastic_rounding import (
+    is_bf16_stochastic_rounding_enabled,
+    validate_bf16_stochastic_rounding_optimizer,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +143,8 @@ class SlotOptimizer:
         # params are scattered whole across DP ranks; per-child norm/clip reductions must span the world
         for child in self._inner.chained_optimizers:
             child.grad_stats_parallel_group = None
+        if is_bf16_stochastic_rounding_enabled():
+            validate_bf16_stochastic_rounding_optimizer(self._inner)
 
     @property
     def chained_optimizers(self) -> list:

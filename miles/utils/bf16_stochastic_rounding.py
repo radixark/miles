@@ -8,8 +8,9 @@ instead, which rounds every BF16 shard stochastically on the GPU
 the next step:
 
 - ``DistributedOptimizer._copy_main_params_to_model_params`` (FP32 main shards held by the
-  distributed optimizer, with the optimizer on the GPU or on the host) calls
-  :func:`stochastic_round_main_param`;
+  distributed optimizer, with the optimizer on the GPU or on the host) and a LayerWise child's
+  ``Float16OptimizerWithFloat16Params._copy_main_params_to_model_params`` (multi-LoRA slots: whole
+  parameters, all-gathered from their owner after the step) call :func:`stochastic_round_main_param`;
 - ``HybridDeviceOptimizer``'s copy-back hooks (``--optimizer-cpu-offload
   --use-precision-aware-optimizer``, masters held by the offloaded optimizer) call
   :func:`stochastic_round_copy_back`. A master on the host is staged on the GPU one shard at a
@@ -161,9 +162,11 @@ def replay_stochastic_round_copy_back(hdo) -> None:
 
 
 @torch.no_grad()
-def stochastic_round_main_param(dist_opt, main_param: torch.Tensor, model_shard: torch.Tensor) -> None:
-    """``DistributedOptimizer``'s main-to-model copy of one shard, rounding BF16 shards stochastically."""
-    optimizer = dist_opt.optimizer
+def stochastic_round_main_param(
+    mixed_precision_optimizer, main_param: torch.Tensor, model_shard: torch.Tensor
+) -> None:
+    """A mixed-precision optimizer's main-to-model copy of one shard, rounding BF16 shards stochastically."""
+    optimizer = mixed_precision_optimizer.optimizer
 
     def philox_key() -> tuple[int, int]:
         shard_index, group_index = _shard_index(optimizer)[main_param]
@@ -178,9 +181,11 @@ def validate_bf16_stochastic_rounding_optimizer(optimizer) -> None:
     # Imported here: tests import this module without Megatron.
     from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
     from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer
-    from megatron.core.optimizer.optimizer import ChainedOptimizer
+    from megatron.core.optimizer.optimizer import ChainedOptimizer, Float16OptimizerWithFloat16Params
 
     for dist_opt in optimizer.chained_optimizers if isinstance(optimizer, ChainedOptimizer) else [optimizer]:
+        if isinstance(dist_opt, Float16OptimizerWithFloat16Params) and dist_opt._layer_wise_non_distopt_child:
+            continue
         if not isinstance(dist_opt, DistributedOptimizer):
             raise ValueError(
                 f"{BF16_STOCHASTIC_ROUNDING_FLAG}=1 requires --use-distributed-optimizer, got {type(dist_opt).__name__}"
