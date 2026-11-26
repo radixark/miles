@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from miles.platforms import current_platform
 from miles.utils.memory_utils import print_memory
 
 if TYPE_CHECKING:
@@ -66,9 +67,14 @@ def _profile_simple_loop(iterator, args: "TrainerConfig", name: str):
     for item in iterator:
         yield item
         torch_profiler.step()
+    if isinstance(torch_profiler, _XprofProfiler):
+        # a loop shorter than the window still gets its trace; libtpu's session must not outlive the loop either
+        torch_profiler.stop()
 
 
-def _create_torch_profiler(args: "TrainerConfig", name: str) -> torch.profiler.profile:
+def _create_torch_profiler(args: "TrainerConfig", name: str) -> "torch.profiler.profile | _XprofProfiler":
+    if current_platform.trace_backend == "xprof":
+        return _XprofProfiler(args, name=name)
     return torch.profiler.profile(
         schedule=torch.profiler.schedule(
             # TODO the train_actor and train_log_probs ones may need to have different args to control step
@@ -87,6 +93,59 @@ def _create_torch_profiler(args: "TrainerConfig", name: str) -> torch.profiler.p
         record_shapes=args.backend.pytorch_profiler_collect_shapes,
         with_stack=args.backend.pytorch_profiler_collect_callstack,
     )
+
+
+class _XprofProfiler:
+    """libtpu's tracer through torch_tpu, on torch.profiler's schedule: the trace covers steps
+    --profile-step-start .. --profile-step-end - 1 (a step is the work between two step() calls, counted from
+    start()) and is written under --tensorboard-dir/<name>_rank_<rank> as an XProf xplane, which TensorBoard's
+    profile plugin opens. The device plane is always on; --pytorch-profiler-collect-callstack turns on the Python
+    tracer (the expensive one); --pytorch-profiler-collect-shapes has no XProf equivalent.
+    """
+
+    def __init__(self, args: "TrainerConfig", name: str) -> None:
+        self._first_step = args.backend.profile_step_start
+        self._end_step = args.backend.profile_step_end
+        self._directory = Path(args.backend.tensorboard_dir) / f"{name}_rank_{torch.distributed.get_rank()}"
+        self._python_tracer = args.backend.pytorch_profiler_collect_callstack
+        self._steps = 0
+        self._active = False
+
+    def start(self) -> None:
+        self._steps = 0
+        self._on_step_boundary()
+
+    def step(self) -> None:
+        self._steps += 1
+        self._on_step_boundary()
+
+    def stop(self) -> None:
+        if not self._active:
+            return
+        from torch_tpu._internal.profiler import _impl as tpu_profiler
+
+        # the trace ends with the device's work of the last step, not with the host's dispatch of it
+        torch.accelerator.synchronize()
+        tpu_profiler.stop_trace()
+        self._active = False
+        logger.info(f"XProf trace of steps {self._first_step}..{self._steps - 1} written to {self._directory}")
+
+    def _on_step_boundary(self) -> None:
+        if self._steps == self._first_step and self._first_step < self._end_step:
+            self._start_trace()
+        elif self._steps == self._end_step:
+            self.stop()
+
+    def _start_trace(self) -> None:
+        # start_trace/stop_trace live in _impl; torch_tpu's own profile() context manager takes no options
+        from torch_tpu._internal.profiler import _impl as tpu_profiler
+
+        self._directory.mkdir(parents=True, exist_ok=True)
+        options = tpu_profiler.ProfileOptions(
+            device_tracer_level=1, host_tracer_level=2, python_tracer_level=1 if self._python_tracer else 0
+        )
+        tpu_profiler.start_trace(str(self._directory), options)
+        self._active = True
 
 
 class _BaseMemoryProfiler:

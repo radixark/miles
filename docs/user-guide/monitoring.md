@@ -89,6 +89,8 @@ The PyTorch profiler is wired into Miles via `miles/utils/profile_utils.py`. It 
 
 `--profile-target train_overall` (the default) traces whole training steps on every backend. `train_actor` and `train_log_probs` trace the microbatch loop of each optimizer step, so their window counts microbatches and restarts at every step; the Megatron backend rejects them.
 
+On TPU (`MILES_ACCELERATOR=tpu`) the same flags drive libtpu's tracer through torch_tpu instead of `torch.profiler`, which sees no TPU activity: the window is the same `--profile-step-start .. --profile-step-end - 1`, and each traced rank writes an XProf xplane (device and host planes) under `--tensorboard-dir/<target>_rank_<rank>`, which TensorBoard's profile plugin or `xprof` opens. `--pytorch-profiler-collect-callstack` turns on the Python tracer there; `--pytorch-profiler-collect-shapes` has no XProf equivalent and is ignored.
+
 `--record-memory-history` records a memory snapshot instead (CUDA with the default `--memory-recorder torch`, host memory with `memray`; it needs `train_overall` in `--profile-target`). It is written under `--memory-snapshot-dir` once rollout id `--memory-snapshot-num-steps` - 1 has trained, and the torch recorder also writes one on a CUDA OOM.
 
 Open the trace in `chrome://tracing` or [Perfetto](https://ui.perfetto.dev/).
