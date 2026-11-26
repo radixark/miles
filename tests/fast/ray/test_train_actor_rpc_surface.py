@@ -21,6 +21,7 @@ DRIVEN_METHODS = (
     "clear_memory",
     "save_model",
     "export_hf",
+    "export_eval_snapshot",
     "update_weights",
     "get_train_parallel_config",
     "get_heartbeat_status",

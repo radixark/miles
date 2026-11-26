@@ -1474,17 +1474,18 @@ class TestSaveModel:
 
 
 class TestExportHf:
-    async def test_a_failed_first_cell_hands_the_same_export_to_the_next_alive_cell(self):
+    @pytest.mark.parametrize("method", ["export_hf", "export_eval_snapshot"])
+    async def test_a_failed_first_cell_hands_the_same_export_to_the_next_alive_cell(self, method):
         """The exported checkpoint must land at the requested path even when the first cell dies mid-export."""
         group = await _make_alive_controller(num_cells=2)
         for handle in get_raw_actor_handles(_cell(group, 0)):
-            ray.get(handle.set_fail_methods.remote(["export_hf"]))
+            ray.get(handle.set_fail_methods.remote([method]))
 
-        await group.export_hf(rollout_id=4, path="/ckpt/hf-4")
+        await getattr(group, method)(rollout_id=4, path="/ckpt/hf-4")
 
         assert _was_killed(group, 0)
         for handle in get_raw_actor_handles(_cell(group, 1)):
-            export_calls = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "export_hf"]
+            export_calls = [c for c in ray.get(handle.get_calls.remote()) if c[0] == method]
             assert [c[2] for c in export_calls] == [{"rollout_id": 4, "path": "/ckpt/hf-4"}]
 
 
