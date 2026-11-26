@@ -56,6 +56,7 @@ from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSour
 from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError, require_fields
 from miles.backends.training_utils.model_companion import ModelCompanionWeightVersionUtils
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.bf16_stochastic_rounding import matches_master
 from miles.utils.hf_utils.config import load_hf_config
 
 _WEIGHTS_KEY = "adapter_weights"
@@ -250,9 +251,7 @@ class DistributedOptimizerMembers:
         for weight, (index, offsets) in zip(weights, sources, strict=True):
             bf16 = cut(params[index], offsets)
             # NaN-safe: a slot that diverged still saves what it holds
-            assert torch.allclose(
-                weight.to(bf16), bf16.reshape(weight.shape), rtol=0, atol=0, equal_nan=True
-            ), "a bf16 adapter parameter is not its master"
+            assert matches_master(bf16.reshape(weight.shape), weight), "a bf16 adapter parameter is not its master"
         if not self._save_moments:
             return AdapterState(specs, weights, [], [], step=step, has_optimizer_state=False)
         return AdapterState(specs, weights, pieces("exp_avg"), pieces("exp_avg_sq"), step=step)

@@ -49,6 +49,17 @@ def is_bf16_stochastic_rounding_enabled() -> bool:
     return os.getenv(BF16_STOCHASTIC_ROUNDING_FLAG, "0") == "1"
 
 
+def matches_master(param: torch.Tensor, master: torch.Tensor) -> bool:
+    """Whether ``param`` holds FP32 ``master`` as the cast in force writes it; NaN matches NaN."""
+    master = master.to(param.device)
+    if param.dtype != torch.bfloat16 or not is_bf16_stochastic_rounding_enabled():
+        return torch.allclose(master.to(param.dtype), param, rtol=0, atol=0, equal_nan=True)
+    # stochastic_round_to_bf16 adds random bits to the 16 it drops and truncates: the kept bits carry 0 or 1
+    carry = param.contiguous().view(torch.int16).int() - (master.contiguous().view(torch.int32) >> 16)
+    nan = master.isnan()
+    return bool(torch.equal(param.isnan(), nan) and ((carry == 0) | (carry == 1) | nan).all())
+
+
 def philox_offset(*, step: int, shard_index: int) -> int:
     """Fresh bits for every optimizer step and shard, and the same bits whenever both repeat."""
     return (step << 32) | shard_index
@@ -193,6 +204,7 @@ def validate_bf16_stochastic_rounding_optimizer(optimizer) -> None:
 __all__ = [
     "BF16_STOCHASTIC_ROUNDING_FLAG",
     "is_bf16_stochastic_rounding_enabled",
+    "matches_master",
     "philox_offset",
     "philox_seed",
     "replay_stochastic_round_copy_back",
