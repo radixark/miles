@@ -17,10 +17,15 @@ backends, which need none of the patched kernels.
 
     docker run --rm \
       --gpus all --ipc=host --shm-size=32g \
+      --cap-add SYS_PTRACE \
       --ulimit memlock=-1 --ulimit stack=67108864 \
       --network=host \
       -it radixark/miles:latest /bin/bash
     ```
+
+    `SYS_PTRACE` lets a colocated SGLang engine import the trainer's CUDA IPC weight handles when
+    `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`; Docker's default seccomp profile otherwise
+    denies `pidfd_getfd` and the first weight update fails with `Operation not permitted`.
 
   </Tab>
   <Tab title="AMD">
