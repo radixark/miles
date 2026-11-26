@@ -23,6 +23,7 @@ def _sparse_attention_fwd_kernel(
     has_sink=False,
     block_I=64,
     threads=256,
+    max_block_H=64,
 ):
     assert dim == tilelang.math.next_power_of_2(dim), f"haven't check padding correctness yet, dim={dim}"
     assert tail_dim == 0 or tail_dim == tilelang.math.next_power_of_2(
@@ -63,11 +64,9 @@ def _sparse_attention_fwd_kernel(
 
     if head_kv > 64:
         assert head_kv % 64 == 0, "head_kv should be a multiple of 64"
-        REPLICATE_H = head_kv // 64
-    else:
-        REPLICATE_H = 1
-
-    H_per_block = padded_H if REPLICATE_H == 1 else 64
+    H_per_block = min(padded_H, max_block_H)
+    assert padded_H % H_per_block == 0
+    REPLICATE_H = tilelang.cdiv(head_kv, H_per_block)
 
     @T.prim_func
     def main(
@@ -106,7 +105,7 @@ def _sparse_attention_fwd_kernel(
 
             b_i, g_i = by, bz
             s_i = bx if REPLICATE_H == 1 else (bx // REPLICATE_H)
-            H0 = g_i * padded_H + (0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * 64)
+            H0 = g_i * padded_H + (0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * max_block_H)
             H1 = H0 + H_per_block
 
             T.copy(Q[b_i, s_i, H0:H1, :D], Q_shared)
@@ -179,7 +178,7 @@ def _sparse_attention_fwd_kernel(
     return main
 
 
-def sparse_attention_fwd(q, kv, indices, sink, d_v, *, sm_scale, threads, block_I=64):
+def sparse_attention_fwd(q, kv, indices, sink, d_v, *, sm_scale, threads, block_I=64, max_block_H=64):
     """q [B, S, H, d_v + d_tail], kv [B, S_kv, G, d_v + d_tail], indices [B, S, G, topk] (-1 = padding),
     sink [H] fp32 or None.
     Returns out [B, S, H, d_v] and lse [B, S, H] in log2 space."""
@@ -202,6 +201,7 @@ def sparse_attention_fwd(q, kv, indices, sink, d_v, *, sm_scale, threads, block_
         has_sink=sink is not None,
         block_I=block_I,
         threads=threads,
+        max_block_H=max_block_H,
     )
     if sink is None:
         sink = torch.zeros(heads, device=q.device, dtype=torch.float32)
