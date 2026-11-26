@@ -97,6 +97,7 @@ jobs:
       bypass_fastfail: ${{ steps.resolve.outputs.bypass_fastfail }}
       skipped_stages: ${{ steps.resolve.outputs.skipped_stages }}
       needs_cuda_image: ${{ steps.resolve.outputs.needs_cuda_image }}
+      needs_stage_b_cpu: ${{ steps.resolve.outputs.needs_stage_b_cpu }}
     steps:
       - name: Checkout repository
         # Deliberately not inputs.ref: this job executes ci_policy.py, so it
@@ -231,9 +232,11 @@ jobs:
     secrets: inherit
 
   # Stage B: CPU-only bucket for slower CPU tests that don't fit stage-a-cpu's
-  # fast budget. Waits for Stage A; an empty suite still exits 0 in run_suite.py.
+  # fast budget. Waits for Stage A; skipped when resolve-ci-policy selects no
+  # Stage B CPU tests (e.g. an unlabeled PR).
   stage-b-cpu:
     needs: [resolve-ci-policy, stage-a-cpu]
+    if: needs.resolve-ci-policy.outputs.needs_stage_b_cpu == 'true'
     strategy:
       fail-fast: false
       matrix:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.utils.workers.conformance import (
     CHECK_IDS,
     CHECKS,
@@ -15,6 +16,8 @@ from tests.fast.utils.workers.e2e.harness import ServerProcess, reserve_port, sp
 
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.worker_handle import BaseWorkerHandle
+
+register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 
 
 # spawning the server costs a fresh interpreter that imports miles, and every check below

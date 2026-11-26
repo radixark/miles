@@ -20,7 +20,7 @@ from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResu
 from miles.utils.test_utils.mock_tools import SAMPLE_TOOLS, ThreeTurnStub, TwoTurnStub
 from miles.utils.types import Sample, WeightVersionSpan
 
-register_cpu_ci(est_time=130, suite="stage-b-cpu", labels=["rollout"])
+register_cpu_ci(est_time=70, suite="stage-b-cpu", labels=["rollout"])
 
 _ = generation_env, SAMPLE_TOOLS, TwoTurnStub, ThreeTurnStub
 

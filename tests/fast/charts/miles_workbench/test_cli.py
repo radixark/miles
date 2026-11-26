@@ -4,11 +4,14 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.charts.utils import CHART_DIR, REPO_ROOT, run_workbench
 
 from miles.utils.external_utils.miles_workbench import __main__ as workbench_main
 from miles.utils.external_utils.miles_workbench.naming import DEFAULT_RELEASE, PACKAGE, object_name, run_release_name
 from miles.utils.workers.types import DeployComponent
+
+register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 
 
 @pytest.fixture

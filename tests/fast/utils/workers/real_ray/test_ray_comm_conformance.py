@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator, Iterator
 
 import pytest
 import ray
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.utils.workers.conformance import (
     POOL_ID,
     READY_TIMEOUT_SECONDS,
@@ -25,6 +26,8 @@ from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.types import WorkerCommBackend
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+
+register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["rpc-comm"])
 
 CELL_ID = compute_cell_id(pool_id=POOL_ID, cell_index=0)
 

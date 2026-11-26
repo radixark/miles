@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch.distributed as dist
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.training_utils.parallel import GroupInfo
@@ -16,6 +17,8 @@ from miles.backends.training_utils.weight_update.protocols.utils.rollout_engine_
     assign_rollout_engine_ranks,
     assign_rollout_engine_ranks_for_data_replica,
 )
+
+register_cpu_ci(est_time=40, suite="stage-b-cpu", labels=["weight-update"])
 
 
 def _targets_of(assignments: list[RolloutEngineRankAssignment]) -> list[tuple[int, int]]:

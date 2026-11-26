@@ -25,7 +25,7 @@ import pytest
 from tests.ci.ci_register import register_cpu_ci
 from tests.ci.ci_utils import TestFile, _gha_emit_endgroup, _gha_emit_group, _gha_emit_summary, run_unittest_files
 
-register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
+register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 
 # ---------------------------------------------------------------------------
 # Helpers used by integration tests

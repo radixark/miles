@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 import ray
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell, make_cell
 
 from miles.backends.training_utils.types import TrainStepOutcome
@@ -12,6 +13,8 @@ from miles.utils.data import RolloutDataPack
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.retry_utils import NonRetryableError
+
+register_cpu_ci(est_time=100, suite="stage-b-cpu", labels=["algorithm", "ft-short"])
 
 
 async def _noop_run_after_step(**kwargs) -> None:

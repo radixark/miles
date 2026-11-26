@@ -1,8 +1,11 @@
 import pytest
 from huggingface_hub import snapshot_download
+from tests.ci.ci_register import register_cpu_ci
 
 from miles.rollout.generate_utils.tool_call_utils import _DUMMY_USER, _build_dummy_assistant, tokenize_tool_responses
 from miles.utils.processing_utils import load_tokenizer
+
+register_cpu_ci(est_time=40, suite="stage-b-cpu", labels=["rollout"])
 
 TOOL_CALL_TEST_MODELS = [
     "Qwen/Qwen2.5-0.5B-Instruct",

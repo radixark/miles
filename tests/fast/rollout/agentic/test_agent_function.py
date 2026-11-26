@@ -9,11 +9,14 @@ import time
 from pathlib import Path
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 
 from miles.rollout.agentic import agent_function
 from miles.rollout.agentic.agent_function import call_agent_function
 from miles.rollout.agentic.rollout_limits import current_scope
 from miles.utils.test_utils import agent_function_stubs as stubs
+
+register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["rollout"])
 
 
 def _wait_for(path: Path, timeout_s: float = 60.0) -> bool:

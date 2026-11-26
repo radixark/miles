@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 import ray
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell
 
 from miles.ray.train import group as group_module
@@ -10,6 +11,8 @@ from miles.utils import object_store
 from miles.utils.data import RolloutDataPack
 from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.retry_utils import NonRetryableError, retry
+
+register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["algorithm"])
 
 
 async def _noop_run_after_step(**kwargs) -> None:

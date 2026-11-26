@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import torch
 import torch.distributed as dist
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
@@ -17,6 +18,8 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     read_adapter_state_keys,
 )
 from miles.utils.distributed_utils import init_gloo_group
+
+register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 
 FULL = torch.arange(6 * 4, dtype=torch.float32).reshape(6, 4)
 

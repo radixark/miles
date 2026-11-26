@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 import ray
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell
 
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
@@ -10,6 +11,8 @@ from miles.ray.train import group as group_module
 from miles.ray.train.group import TrainerController
 from miles.ray.train.init_request import TrainerControllerInitRequest
 from miles.utils.init_once import InitOnce
+
+register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 
 pytestmark = pytest.mark.asyncio
 

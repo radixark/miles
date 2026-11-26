@@ -1,6 +1,6 @@
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["replay"])
+register_cpu_ci(est_time=10, suite="stage-b-cpu", labels=["replay"])
 
 from types import SimpleNamespace
 

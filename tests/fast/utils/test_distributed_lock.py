@@ -13,11 +13,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch.distributed as dist
 import torch.multiprocessing as mp
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.dist_utils import find_free_port, init_gloo
 from torch.distributed import HashStore, Store, TCPStore
 
 from miles.utils.distributed_lock import StoreTicketLock, create_world_ticket_lock
 from miles.utils.distributed_utils import init_gloo_group
+
+register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["algorithm", "weight-update"])
 
 PREFIX = "test/lock"
 NEXT_KEY = f"{PREFIX}/next"

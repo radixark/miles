@@ -72,11 +72,15 @@ def _stub_network(monkeypatch, *, ready: bool = True) -> None:
     async def _probe(server_url: str, api_key, timeout: float = 5.0) -> bool:
         return ready
 
+    async def _report_env(*args, **kwargs) -> None:
+        pass
+
     monkeypatch.setattr(server_cell_module, "activate_launch_gate", _activate)
     monkeypatch.setattr(server_cell_module, "probe_server_healthy", _probe)
+    monkeypatch.setattr(server_cell_module.EngineEnvReporter, "report_if_due", _report_env)
 
 
-async def _noop_add_worker(**kwargs) -> None:
+async def _noop_router_call(**kwargs) -> None:
     pass
 
 
@@ -109,7 +113,10 @@ class TestHealthCheckerActiveness:
     async def test_a_cell_that_skips_pending_weights_is_probed(self, monkeypatch):
         """A frozen model goes straight to serving, and an unwatched serving cell is a hole in FT."""
         _stub_network(monkeypatch)
-        cell = _make_cell(router=SimpleNamespace(add_worker=_noop_add_worker), update_weights=False)
+        cell = _make_cell(
+            router=SimpleNamespace(add_worker=_noop_router_call, remove_worker=_noop_router_call),
+            update_weights=False,
+        )
 
         await cell.init()
         await cell.tick()

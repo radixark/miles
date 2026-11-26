@@ -27,6 +27,7 @@ from types import SimpleNamespace
 
 import pytest
 import tests.ci.run_suite as run_suite_module
+import yaml
 from tests.ci.ci_policy import (
     NIGHTLY_CADENCE,
     REGULAR_CADENCE,
@@ -41,7 +42,7 @@ from tests.ci.labels import KNOWN_LABELS
 from tests.ci.run_suite import CI_SUITES, build_cpu_pytest_cmd, filter_tests
 from tests.ci.stage_selection import PR_GPU_STAGES
 
-register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
+register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 
 
 def _make(
@@ -153,6 +154,106 @@ class TestRunCpuTests:
         assert run_suite_module.run_cpu_tests(tests, 1800, continue_on_error=False) == 124
         assert calls == [self.BOUNDED_BENCH]
         assert f"TIMEOUT: {self.BENCH} after 500 seconds" in capsys.readouterr().out
+
+    def test_slow_stage_a_files_emit_github_warning_without_failing(self, monkeypatch, capsys):
+        slow_implicit = CIRegistry(
+            backend=HWBackend.CPU,
+            filename="tests/fast/test_slow_implicit.py",
+            est_time=1.0,
+            suite="stage-a-cpu",
+            labels=[],
+            implicit=True,
+        )
+        slow_explicit = _make(
+            "tests/fast/test_slow_explicit.py",
+            backend=HWBackend.CPU,
+            suite="stage-a-cpu",
+            labels=[],
+            est_time=20.0,
+        )
+        fast = _make(
+            "tests/fast/test_ok.py",
+            backend=HWBackend.CPU,
+            suite="stage-a-cpu",
+            labels=[],
+            est_time=1.0,
+        )
+        recorded_cmds: list[list[str]] = []
+
+        def fake_call(cmd):
+            recorded_cmds.append(cmd)
+            junit_arg = next(arg for arg in cmd if arg.startswith("--junitxml="))
+            xml_path = Path(junit_arg.split("=", 1)[1])
+            xml_path.write_text(
+                '<?xml version="1.0" encoding="utf-8"?>'
+                '<testsuites><testsuite name="pytest">'
+                '<testcase file="tests/fast/test_slow_implicit.py" name="a" time="20.5" />'
+                '<testcase file="tests/fast/test_slow_implicit.py" name="b" time="15.0" />'
+                '<testcase file="tests/fast/test_slow_explicit.py" name="a" time="42.2" />'
+                '<testcase file="tests/fast/test_ok.py" name="a" time="30.0" />'
+                "</testsuite></testsuites>",
+                encoding="utf-8",
+            )
+            return 0
+
+        monkeypatch.setattr(run_suite_module.subprocess, "call", fake_call)
+        rc = run_suite_module.run_cpu_tests(
+            [slow_implicit, slow_explicit, fast],
+            1800,
+            continue_on_error=False,
+            warn_slow_threshold_s=30,
+        )
+        assert rc == 0
+        assert len(recorded_cmds) == 1
+        assert "-o" in recorded_cmds[0] and "junit_family=xunit1" in recorded_cmds[0]
+        warning_lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("::warning ")]
+        assert len(warning_lines) == 2
+        assert "file=tests/fast/test_slow_explicit.py::" in warning_lines[0]
+        assert "42.2s in stage-a-cpu (budget: 30s, est_time=20s)" in warning_lines[0]
+        assert "file=tests/fast/test_slow_implicit.py::" in warning_lines[1]
+        assert "35.5s in stage-a-cpu (budget: 30s, est_time=1s (implicit))" in warning_lines[1]
+
+    def test_missing_junit_xml_does_not_mask_pytest_result(self, monkeypatch, capsys):
+        monkeypatch.setattr(run_suite_module.subprocess, "call", lambda cmd: 2)
+        fast = _make("tests/fast/test_ok.py", backend=HWBackend.CPU, suite="stage-a-cpu", labels=[], est_time=1.0)
+        rc = run_suite_module.run_cpu_tests([fast], 1800, continue_on_error=False, warn_slow_threshold_s=30)
+        assert rc == 2
+        assert "::warning " not in capsys.readouterr().out
+
+    @pytest.mark.parametrize(("suite", "expected_threshold"), [("stage-a-cpu", 30), ("stage-b-cpu", None)])
+    def test_run_a_suite_enables_slow_warning_only_for_stage_a_cpu(self, monkeypatch, suite, expected_threshold):
+        reg = _make(
+            "tests/fast/test_sample.py",
+            backend=HWBackend.CPU,
+            suite=suite,
+            labels=[] if suite == "stage-a-cpu" else ["algorithm"],
+            est_time=10.0 if suite == "stage-a-cpu" else 60.0,
+        )
+        seen: dict[str, object] = {}
+
+        def fake_run_cpu_tests(ci_tests, timeout_per_file, continue_on_error, *, warn_slow_threshold_s=None):
+            seen["warn_slow_threshold_s"] = warn_slow_threshold_s
+            return 0
+
+        monkeypatch.setattr(run_suite_module, "discover_ci_files", lambda: [reg.filename])
+        monkeypatch.setattr(run_suite_module, "collect_tests", lambda files, sanity_check=True: [reg])
+        monkeypatch.setattr(run_suite_module, "run_cpu_tests", fake_run_cpu_tests)
+        args = SimpleNamespace(
+            hw="cpu",
+            suite=suite,
+            cadence=REGULAR_CADENCE,
+            labels=[] if suite == "stage-a-cpu" else ["run-ci-algorithm"],
+            match_all_labels=False,
+            continue_on_error=False,
+            test_file=None,
+            auto_partition_id=None,
+            auto_partition_size=None,
+            github_output=None,
+            list_only=False,
+            timeout_per_file=1800,
+        )
+        assert run_suite_module.run_a_suite(args) == 0
+        assert seen["warn_slow_threshold_s"] == expected_threshold
 
 
 # --- CI_SUITES locked to the stage taxonomy ---------------------------------
@@ -401,9 +502,33 @@ class TestWorkflowScopeSeam:
 
         assert "needs: [resolve-ci-policy]" in stage_a
         assert "needs: [resolve-ci-policy, stage-a-cpu]" in stage_b
-        assert "    if:" not in stage_b
+        assert "if: needs.resolve-ci-policy.outputs.needs_stage_b_cpu == 'true'" in stage_b
+        # Without always(), GitHub still skips stage-b-cpu when stage-a-cpu fails.
+        assert "always()" not in stage_b
+        assert "bypass_fastfail" not in stage_b
         assert "resolve-ci-image" not in stage_a
         assert "resolve-ci-image" not in stage_b
+
+    def test_cpu_reusable_workflow_plans_before_heavy_setup_and_guards_disk_cleanup(self):
+        cpu_workflow = yaml.safe_load(self._reusable_workflow("_run-cpu-ci.yml"))
+        steps = cpu_workflow["jobs"]["run-cpu"]["steps"]
+        names = [step["name"] for step in steps]
+        plan_idx = names.index("Resolve suite plan")
+        for heavy in (
+            "Free disk space",
+            "Checkout sglang",
+            "Checkout Megatron-LM",
+            "Install dependencies",
+            "Run tests",
+        ):
+            heavy_idx = names.index(heavy)
+            assert plan_idx < heavy_idx, f"{heavy} should run after Resolve suite plan"
+            assert "steps.plan.outputs.has_tests == 'true'" in steps[heavy_idx]["if"]
+        plan_step = steps[plan_idx]
+        assert plan_step["id"] == "plan"
+        assert '--list-only --github-output "$GITHUB_OUTPUT"' in plan_step["run"]
+        free_disk = steps[names.index("Free disk space")]
+        assert 'if [ "$avail_gb" -lt 40 ]; then' in free_disk["run"]
 
     def test_non_default_base_pr_needs_run_ci_label(self):
         policy_gate = self._workflow().split("  resolve-ci-policy:", 1)[1].split("    runs-on:", 1)[0]
@@ -564,6 +689,25 @@ class TestWorkflowScopeSeam:
         ]
         assert all(load > 0 for load in loads)
         assert max(loads) <= 7200 if cadence == REGULAR_CADENCE else max(loads) < 7200
+
+    @pytest.mark.parametrize("cadence", [REGULAR_CADENCE, NIGHTLY_CADENCE])
+    def test_stage_b_cpu_shards_fit_runtime_budget(self, cadence):
+        workflow = self._workflow()
+        job = workflow.split("\n  stage-b-cpu:", 1)[1].split("\n  stage-", 1)[0]
+        assert "partition_id: [0, 1, 2, 3]" in job
+        policy = resolve_policy(cadence, {"run-ci-image"} if cadence == REGULAR_CADENCE else set())
+        tests, _ = filter_tests(
+            collect_tests(discover_ci_files()),
+            HWBackend.CPU,
+            "stage-b-cpu",
+            policy.admit_nightly_tests,
+            labels=set(policy.include_labels),
+            dispatch_arches=policy.dispatch_arches,
+            absorb=policy.absorb,
+        )
+        loads = [sum(test.est_time for test in run_suite_module.auto_partition(tests, rank, 4)) for rank in range(4)]
+        assert all(load > 0 for load in loads)
+        assert max(loads) <= 1800
 
     def test_b200_jobs_share_one_cross_pr_host_lease(self):
         workflow = self._workflow()

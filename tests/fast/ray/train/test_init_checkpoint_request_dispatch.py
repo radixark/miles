@@ -1,8 +1,11 @@
 import pytest
 import ray
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.ray.train.conftest import get_raw_actor_handles, make_cell, make_indep_dp_info
 
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
+
+register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 
 
 class TestCellInitializationCheckpointDispatch:

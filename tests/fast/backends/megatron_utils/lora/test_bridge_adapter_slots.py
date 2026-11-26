@@ -9,6 +9,7 @@ import torch.distributed as dist
 from megatron.core import dist_checkpointing
 from megatron.core.dist_checkpointing.mapping import ShardedTensor
 from safetensors.torch import save_file
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.megatron_utils.lora import bridge_checkpoint_loader
@@ -27,6 +28,8 @@ from miles.tinker.core.utils import build_parametrization_fields
 from miles.utils import distributed_utils
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.lora.hf_lora_targets import get_hf_lora_targets
+
+register_cpu_ci(est_time=140, suite="stage-b-cpu", labels=["lora", "ckpt"])
 
 Q, K = "model.layers.0.self_attn.q_proj", "model.layers.0.self_attn.k_proj"
 TARGETS = get_hf_lora_targets({"model_type": "qwen3", "num_hidden_layers": 1})

@@ -25,7 +25,7 @@ from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set
 
 from .loss_test_utils import make_args
 
-register_cpu_ci(est_time=290, suite="stage-b-cpu", labels=["multi-lora"])
+register_cpu_ci(est_time=190, suite="stage-b-cpu", labels=["multi-lora"])
 
 VOCAB_SIZE = 64
 
