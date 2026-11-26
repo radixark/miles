@@ -2583,6 +2583,33 @@ class TestPartitionRadixCacheByRolloutCallResolution:
 
         assert args.namespaced_radix_cache is False
 
+    def test_fully_async_in_place_with_a_v1_session_server_leaves_it_off_and_warns(self, caplog):
+        """The v1 session server cannot carry the cache key, so the default must not turn on a partition that
+        validation then rejects; the run starts and the user is told the cache is shared."""
+        args = self._parse(["--fully-async", "--pause-generation-mode", "in_place", "--use-session-server"])
+
+        with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+            miles_validate_args(args)
+
+        assert args.namespaced_radix_cache is False
+        assert any(
+            record.levelno == logging.WARNING and "--use-session-server v1" in record.message
+            for record in caplog.records
+        )
+
+    def test_fully_async_in_place_with_a_v2_session_server_turns_it_on(self):
+        args = self._parse(["--fully-async", "--pause-generation-mode", "in_place", "--use-session-server", "v2"])
+
+        miles_validate_args(args)
+
+        assert args.namespaced_radix_cache is True
+
+    def test_an_explicit_yes_with_a_v1_session_server_is_still_rejected(self):
+        args = self._parse(["--namespaced-radix-cache", "--use-session-server"])
+
+        with pytest.raises(AssertionError, match="requires --use-session-server v2"):
+            miles_validate_args(args)
+
     @pytest.mark.parametrize("namespaced", [False, True])
     def test_legacy_rollout_rejects_only_enabled_namespaced_caches(
         self, monkeypatch: pytest.MonkeyPatch, namespaced: bool

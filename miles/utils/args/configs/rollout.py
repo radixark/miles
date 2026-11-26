@@ -395,7 +395,8 @@ class RolloutRelatedRolloutOnlyConfig(BaseConfig):
                 "the sample started under, so prefix KV computed under old weights cannot serve "
                 "samples of a later call. Defaults to true when --fully-async is combined with "
                 "--pause-generation-mode in_place, where the engine never flushes the cache and the "
-                "staleness of a shared prompt is otherwise unbounded; an explicit "
+                "staleness of a shared prompt is otherwise unbounded (but stays off, with a warning, "
+                "under the v1 --use-session-server, which cannot carry the key); an explicit "
                 "--no-namespaced-radix-cache is respected."
             ),
         ),

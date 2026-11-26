@@ -191,7 +191,7 @@ class AlgoConfig(BaseConfig):
     ] = False
     get_mismatch_metrics: A[
         bool,
-        Arg(help="Whether to calculate the mismatch metrics."),
+        Arg(help="Whether to calculate the mismatch metrics. Requires --custom-tis-function-path."),
     ] = False
     reset_optimizer_states: A[
         bool,
