@@ -1,0 +1,417 @@
+{
+  "default_layout": [
+    {
+      "launch_command": "python3 -m sglang.launch_server --trust-remote-code --model-path /models/policy --host 10.0.0.5 --port 30000 --device cuda --random-seed 42 --nccl-port 10000 --dist-init-addr 10.0.0.5:9000 --base-gpu-id 1 --gated-launch-port 13000 --tp-size 2 --skip-server-warmup --enable-draft-weights-cpu-backup --enable-metrics --no-enable-decoder-swa-bounded-replay --engine-info-bootstrap-port 12000 --lora-use-virtual-experts",
+      "name": "inference-engine-all-0-0",
+      "port_infos": [
+        {
+          "allow_dynamic": true,
+          "mode": "per_worker",
+          "name": "primary",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 8000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "master",
+          "name": "dist_init",
+          "num_consecutive": 31,
+          "offset_by_cell": false,
+          "static_port": 9000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "per_worker",
+          "name": "nccl",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 10000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "master",
+          "name": "engine_info_bootstrap",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 12000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "master",
+          "name": "gate",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 13000
+        }
+      ],
+      "static_meta": {
+        "gpu_offset": 0,
+        "health_check_timeout_seconds": 20,
+        "model_id": "default",
+        "needs_offload": false,
+        "num_gpus_per_engine": 2,
+        "sglang_admin_api_key": null,
+        "sglang_api_key": null,
+        "update_weights": true,
+        "worker_type": "regular"
+      }
+    }
+  ],
+  "offload_rollout_resident": [
+    {
+      "launch_command": "python3 -m sglang.launch_server --trust-remote-code --model-path /models/policy --host 10.0.0.5 --port 30000 --device cuda --random-seed 42 --nccl-port 10000 --dist-init-addr 10.0.0.5:9000 --base-gpu-id 1 --gated-launch-port 13000 --skip-server-warmup --enable-draft-weights-cpu-backup --enable-metrics --no-enable-decoder-swa-bounded-replay --engine-info-bootstrap-port 12000 --lora-use-virtual-experts",
+      "name": "inference-engine-all-0-0",
+      "port_infos": [
+        {
+          "allow_dynamic": true,
+          "mode": "per_worker",
+          "name": "primary",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 8000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "master",
+          "name": "dist_init",
+          "num_consecutive": 31,
+          "offset_by_cell": false,
+          "static_port": 9000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "per_worker",
+          "name": "nccl",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 10000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "master",
+          "name": "engine_info_bootstrap",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 12000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "master",
+          "name": "gate",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 13000
+        }
+      ],
+      "static_meta": {
+        "gpu_offset": 0,
+        "health_check_timeout_seconds": 20,
+        "model_id": "default",
+        "needs_offload": false,
+        "num_gpus_per_engine": 1,
+        "sglang_admin_api_key": null,
+        "sglang_api_key": null,
+        "update_weights": true,
+        "worker_type": "regular"
+      }
+    },
+    {
+      "launch_command": "python3 -m sglang.launch_server --trust-remote-code --model-path /models/ref --host 10.0.0.5 --port 30000 --device cuda --random-seed 44 --nccl-port 10000 --dist-init-addr 10.0.0.5:9000 --base-gpu-id 1 --gated-launch-port 13000 --skip-server-warmup --enable-draft-weights-cpu-backup --enable-metrics --no-enable-decoder-swa-bounded-replay --engine-info-bootstrap-port 12000 --lora-use-virtual-experts",
+      "name": "inference-engine-all-1-0",
+      "port_infos": [
+        {
+          "allow_dynamic": true,
+          "mode": "per_worker",
+          "name": "primary",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 8000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "master",
+          "name": "dist_init",
+          "num_consecutive": 31,
+          "offset_by_cell": false,
+          "static_port": 9000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "per_worker",
+          "name": "nccl",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 10000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "master",
+          "name": "engine_info_bootstrap",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 12000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "master",
+          "name": "gate",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 13000
+        }
+      ],
+      "static_meta": {
+        "gpu_offset": 2,
+        "health_check_timeout_seconds": 20,
+        "model_id": "ref",
+        "needs_offload": false,
+        "num_gpus_per_engine": 1,
+        "sglang_admin_api_key": null,
+        "sglang_api_key": null,
+        "update_weights": false,
+        "worker_type": "regular"
+      }
+    }
+  ],
+  "pd_disaggregation": [
+    {
+      "launch_command": "python3 -m sglang.launch_server --trust-remote-code --model-path /models/policy --host 10.0.0.5 --port 30000 --device cuda --random-seed 42 --nccl-port 10000 --dist-init-addr 10.0.0.5:9000 --base-gpu-id 1 --gated-launch-port 13000 --skip-server-warmup --enable-draft-weights-cpu-backup --enable-metrics --disaggregation-mode prefill --load-balance-method round_robin --disaggregation-bootstrap-port 11000 --no-enable-decoder-swa-bounded-replay --engine-info-bootstrap-port 12000 --lora-use-virtual-experts",
+      "name": "inference-engine-all-0-0",
+      "port_infos": [
+        {
+          "allow_dynamic": true,
+          "mode": "per_worker",
+          "name": "primary",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 8000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "master",
+          "name": "dist_init",
+          "num_consecutive": 31,
+          "offset_by_cell": false,
+          "static_port": 9000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "per_worker",
+          "name": "nccl",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 10000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "per_worker",
+          "name": "disaggregation_bootstrap",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 11000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "master",
+          "name": "engine_info_bootstrap",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 12000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "master",
+          "name": "gate",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 13000
+        }
+      ],
+      "static_meta": {
+        "gpu_offset": 0,
+        "health_check_timeout_seconds": 20,
+        "model_id": "default",
+        "needs_offload": false,
+        "num_gpus_per_engine": 1,
+        "sglang_admin_api_key": null,
+        "sglang_api_key": null,
+        "update_weights": true,
+        "worker_type": "prefill"
+      }
+    },
+    {
+      "launch_command": "python3 -m sglang.launch_server --trust-remote-code --model-path /models/policy --host 10.0.0.5 --port 30000 --device cuda --random-seed 44 --nccl-port 10000 --dist-init-addr 10.0.0.5:9000 --base-gpu-id 1 --gated-launch-port 13000 --skip-server-warmup --enable-draft-weights-cpu-backup --enable-metrics --disaggregation-mode decode --no-enable-decoder-swa-bounded-replay --engine-info-bootstrap-port 12000 --lora-use-virtual-experts",
+      "name": "inference-engine-all-0-1",
+      "port_infos": [
+        {
+          "allow_dynamic": true,
+          "mode": "per_worker",
+          "name": "primary",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 8000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "master",
+          "name": "dist_init",
+          "num_consecutive": 31,
+          "offset_by_cell": false,
+          "static_port": 9000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "per_worker",
+          "name": "nccl",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 10000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "master",
+          "name": "engine_info_bootstrap",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 12000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "master",
+          "name": "gate",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 13000
+        }
+      ],
+      "static_meta": {
+        "gpu_offset": 2,
+        "health_check_timeout_seconds": 20,
+        "model_id": "default",
+        "needs_offload": false,
+        "num_gpus_per_engine": 1,
+        "sglang_admin_api_key": null,
+        "sglang_api_key": null,
+        "update_weights": true,
+        "worker_type": "decode"
+      }
+    }
+  ],
+  "policy_and_frozen_ref": [
+    {
+      "launch_command": "python3 -m sglang.launch_server --trust-remote-code --model-path /models/policy --host 10.0.0.5 --port 30000 --device cuda --random-seed 42 --nccl-port 10000 --dist-init-addr 10.0.0.5:9000 --base-gpu-id 1 --gated-launch-port 13000 --skip-server-warmup --enable-draft-weights-cpu-backup --enable-metrics --no-enable-decoder-swa-bounded-replay --engine-info-bootstrap-port 12000 --lora-use-virtual-experts",
+      "name": "inference-engine-all-0-0",
+      "port_infos": [
+        {
+          "allow_dynamic": true,
+          "mode": "per_worker",
+          "name": "primary",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 8000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "master",
+          "name": "dist_init",
+          "num_consecutive": 31,
+          "offset_by_cell": false,
+          "static_port": 9000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "per_worker",
+          "name": "nccl",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 10000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "master",
+          "name": "engine_info_bootstrap",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 12000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "master",
+          "name": "gate",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 13000
+        }
+      ],
+      "static_meta": {
+        "gpu_offset": 0,
+        "health_check_timeout_seconds": 20,
+        "model_id": "policy",
+        "needs_offload": false,
+        "num_gpus_per_engine": 1,
+        "sglang_admin_api_key": null,
+        "sglang_api_key": null,
+        "update_weights": true,
+        "worker_type": "regular"
+      }
+    },
+    {
+      "launch_command": "python3 -m sglang.launch_server --trust-remote-code --model-path /models/ref --host 10.0.0.5 --port 30000 --device cuda --random-seed 44 --nccl-port 10000 --dist-init-addr 10.0.0.5:9000 --base-gpu-id 1 --gated-launch-port 13000 --tp-size 2 --skip-server-warmup --enable-draft-weights-cpu-backup --enable-metrics --no-enable-decoder-swa-bounded-replay --engine-info-bootstrap-port 12000 --mem-fraction-static 0.5 --lora-use-virtual-experts",
+      "name": "inference-engine-all-1-0",
+      "port_infos": [
+        {
+          "allow_dynamic": true,
+          "mode": "per_worker",
+          "name": "primary",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 8000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "master",
+          "name": "dist_init",
+          "num_consecutive": 31,
+          "offset_by_cell": false,
+          "static_port": 9000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "per_worker",
+          "name": "nccl",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 10000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "master",
+          "name": "engine_info_bootstrap",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 12000
+        },
+        {
+          "allow_dynamic": true,
+          "mode": "master",
+          "name": "gate",
+          "num_consecutive": 1,
+          "offset_by_cell": false,
+          "static_port": 13000
+        }
+      ],
+      "static_meta": {
+        "gpu_offset": 2,
+        "health_check_timeout_seconds": 20,
+        "model_id": "ref",
+        "needs_offload": false,
+        "num_gpus_per_engine": 2,
+        "sglang_admin_api_key": null,
+        "sglang_api_key": null,
+        "update_weights": false,
+        "worker_type": "regular"
+      }
+    }
+  ]
+}
