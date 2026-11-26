@@ -90,31 +90,37 @@ def _nested_sample_count(group) -> int:
 def _compute_dynamic_global_batch_size(
     args: Any, train_parallel_config: TrainParallelConfig | None, num_samples: int
 ) -> int:
-    """Calculate dynamic global_batch_size to ensure only one training step.
+    """Calculate a dynamic global_batch_size that gives ``--dynamic-global-batch-steps`` training steps.
 
-    Strategy: global_batch_size = num_samples rounded down to a multiple of dp_size
-    This ensures num_steps_per_rollout = num_samples // global_batch_size = 1
+    Strategy: global_batch_size = num_samples // steps, rounded down to a multiple of dp_size, so
+    num_steps_per_rollout = num_samples // global_batch_size = steps and at most steps * dp_size - 1
+    samples are trimmed. With fewer than steps * dp_size samples, every step takes one sample per DP rank.
     """
     assert train_parallel_config is not None
     dp_size = train_parallel_config.dp_size
+    steps = args.dynamic_global_batch_steps
     original_gbs = args.global_batch_size
 
-    # Round down to a multiple of dp_size to ensure only one training step
-    dynamic_gbs = (num_samples // dp_size) * dp_size
+    dynamic_gbs = compute_dynamic_global_batch_size(num_samples=num_samples, dp_size=dp_size, steps=steps)
+    if num_samples < steps * dp_size:
+        logger.warning(
+            f"num_samples={num_samples} < steps * dp_size={steps * dp_size}, using dp_size as global_batch_size"
+        )
 
-    if dynamic_gbs == 0:
-        # Too few samples, use at least dp_size
-        dynamic_gbs = dp_size
-        logger.warning(f"num_samples={num_samples} < dp_size={dp_size}, using dp_size as global_batch_size")
-
-    # Calculate how many samples will be discarded
-    wasted = num_samples - dynamic_gbs
+    num_steps = num_samples // dynamic_gbs
+    wasted = num_samples - num_steps * dynamic_gbs
 
     if dynamic_gbs != original_gbs or wasted > 0:
         logger.info(
             f"Dynamic global_batch_size: {original_gbs} -> {dynamic_gbs} "
             f"(num_samples={num_samples}, dp_size={dp_size}, "
-            f"num_steps=1, wasted={wasted})"
+            f"num_steps={num_steps}, wasted={wasted})"
         )
 
     return dynamic_gbs
+
+
+def compute_dynamic_global_batch_size(*, num_samples: int, dp_size: int, steps: int) -> int:
+    """Samples per optimizer step so that ``num_samples`` gives ``steps`` steps, never below ``dp_size``."""
+    assert num_samples >= 1 and dp_size >= 1 and steps >= 1, (num_samples, dp_size, steps)
+    return max((num_samples // (steps * dp_size)) * dp_size, dp_size)

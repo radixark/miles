@@ -1523,6 +1523,16 @@ def miles_validate_args(args):
     # 2. multi-LoRA (auto-enabled, no compaction/subagent): the per-round sample count is
     #    a config-shaped multiple of dp_size trained as exactly one step on the legacy
     #    training-side schedule; static micro-batching stays valid there.
+    assert (
+        args.dynamic_global_batch_steps >= 1
+    ), f"--dynamic-global-batch-steps must be at least 1, got {args.dynamic_global_batch_steps}"
+    if args.dynamic_global_batch_steps != 1:
+        assert args.use_dynamic_global_batch_size, (
+            "--dynamic-global-batch-steps only applies with --use-dynamic-global-batch-size; "
+            "a fixed --global-batch-size already sets the number of steps per rollout"
+        )
+        assert not args.multi_lora, "--dynamic-global-batch-steps is not supported with multi-LoRA"
+
     if args.use_dynamic_global_batch_size and not args.multi_lora:
         assert args.use_dynamic_batch_size, (
             "--use-dynamic-global-batch-size requires --use-dynamic-batch-size (with --max-tokens-per-gpu): "
@@ -1951,7 +1961,7 @@ def miles_validate_args(args):
             args.fully_async and args.max_weight_staleness is not None and args.max_weight_staleness >= 0
         ), "--async-submit-within-staleness requires --fully-async and --max-weight-staleness >= 0"
         assert args.update_weights_interval == 1 and (
-            args.use_dynamic_global_batch_size
+            (args.use_dynamic_global_batch_size and args.dynamic_global_batch_steps == 1)
             or args.global_batch_size == args.rollout_batch_size * args.n_samples_per_prompt
         ), (
             "--async-submit-within-staleness requires one weight version per step: --update-weights-interval 1 and "

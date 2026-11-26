@@ -188,6 +188,7 @@ Sections mirror the launch-script argument groups.
 | `--n-samples-per-prompt` | int | `1` | Responses per prompt. |
 | `--global-batch-size` | int | derived | Samples per optimizer step. |
 | `--num-steps-per-rollout` | int | – | Optimizer steps per rollout. Alternative to `--global-batch-size`; setting one derives the other. |
+| `--dynamic-global-batch-steps` | int | `1` | Optimizer steps per rollout with `--use-dynamic-global-batch-size`. Each step takes the rollout's sample count divided by this value, rounded down to a multiple of the DP size, so at most `steps × DP size − 1` samples are dropped. Above 1 it is refused with multi-LoRA and with `--async-submit-within-staleness`. |
 | `--over-sampling-batch-size` | int | – | Oversample size for dynamic sampling (DAPO). |
 | `--balance-data` | flag | off | Balance per-rank token count. |
 

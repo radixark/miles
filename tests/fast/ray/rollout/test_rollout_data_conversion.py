@@ -36,6 +36,30 @@ class TestComputeDynamicGlobalBatchSize:
         )
         assert gbs == 4
 
+    @pytest.mark.parametrize(
+        ("num_samples", "dp_size", "steps", "expected_gbs", "trained"),
+        [
+            (80, 1, 1, 80, 80),  # one step over everything (the default)
+            (63, 1, 2, 31, 62),  # 2 steps, 1 sample dropped
+            (64, 1, 2, 32, 64),
+            (80, 1, 2, 40, 80),
+            (73, 1, 4, 18, 72),  # 4 steps, 1 sample dropped
+            (73, 2, 2, 36, 72),  # rounded down to a multiple of dp_size
+            (3, 2, 2, 2, 2),  # too few samples: one sample per DP rank, one step
+        ],
+    )
+    def test_splits_samples_into_the_requested_steps(self, num_samples, dp_size, steps, expected_gbs, trained):
+        args = make_args(global_batch_size=64, dynamic_global_batch_steps=steps)
+        gbs = _compute_dynamic_global_batch_size(
+            args=args, train_parallel_config=make_train_parallel_config(dp_size=dp_size), num_samples=num_samples
+        )
+        assert gbs == expected_gbs
+        # the trainer runs samples // gbs steps over the trimmed samples
+        assert (num_samples // gbs) * gbs == trained
+        if num_samples >= steps * dp_size:
+            assert num_samples // gbs == steps
+            assert num_samples - trained < steps * dp_size
+
 
 class TestPostprocessRolloutData:
     def test_aligned_input_passes_through_unchanged(self):
@@ -86,6 +110,21 @@ class TestPostprocessRolloutData:
         # Dynamic gbs = floor(10/2)*2 = 10
         assert meta["dynamic_global_batch_size"] == 10
         assert len(out) == 10
+
+    def test_dynamic_batch_size_with_two_steps_trims_to_two_global_batches(self):
+        args = make_args(
+            global_batch_size=64,
+            disable_rollout_trim_samples=False,
+            use_dynamic_global_batch_size=True,
+            dynamic_global_batch_steps=2,
+        )
+        data = [make_sample(index=i) for i in range(11)]
+        out, meta = postprocess_rollout_data(
+            args=args, data=data, train_parallel_config=make_train_parallel_config(dp_size=2)
+        )
+        # gbs = floor(11 / (2 * 2)) * 2 = 4; two steps of 4, 3 samples trimmed
+        assert meta["dynamic_global_batch_size"] == 4
+        assert len(out) == 8
 
     def test_flattens_nested_list_of_lists(self):
         """The function supports list[list[Sample]] input by flattening."""
