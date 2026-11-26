@@ -39,6 +39,8 @@ _ATTENTION_LAYER_KINDS = {
     "sliding_attention": "sliding",
     "linear_attention": "linear",
     "deepseek_sparse_attention": "full",
+    # transformers renames GLM-5.3-Flash's deepseek_sparse_attention layers to indexed_attention when it loads the config
+    "indexed_attention": "full",
 }
 _MOE_MLP_LAYER_TYPES = {"dense": False, "sparse": True, "moe": True, "hash_moe": True}
 
