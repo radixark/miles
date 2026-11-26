@@ -15,6 +15,18 @@ from miles_plugins.models.glm5_next.ops.kpool_indexer import kpool_select_topk
 _SPARSE_MLA_TAIL_DIM = 64
 
 
+def local_query_token_ids(num_local: int, *, cp_rank: int, cp_size: int, device) -> torch.Tensor | None:
+    """Global token ids of this rank's queries; None without context parallelism.
+
+    Under --allgather-cp (which the GLM-5.3 spec requires for CP) every rank holds one contiguous,
+    equal-length chunk of the packed stream, in rank order: the order the key gathers concatenate in.
+    """
+    if cp_size == 1:
+        return None
+    start = cp_rank * num_local
+    return torch.arange(start, start + num_local, device=device)
+
+
 class Glm5NextDSAAttention(DSAMLASelfAttention):
 
     def __init__(
@@ -144,8 +156,7 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
         return query, key, w_vc, index_q, index_k, head_weights, gate_score
 
     def _kpool_select(self, index_q, index_k, head_weights, gate_score, packed_seq_params):
-        if parallel_state.get_context_parallel_world_size() > 1:
-            raise NotImplementedError("GLM-5.3 kpool indexer selection does not support context parallelism yet.")
+        # Keys, gates and cu_seqlens cover the whole packed stream (gathered over CP); the queries are this rank's.
         cu_seqlens = packed_seq_params.cu_seqlens_kv
         pool_cu_seqlens = pool_boundaries(cu_seqlens, self.index_kpool)
         pooled_k = build_pooled_keys(
@@ -163,6 +174,12 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
             pool_cu_seqlens=pool_cu_seqlens,
             index_topk=self.index_topk,
             kpool=self.index_kpool,
+            query_token_ids=local_query_token_ids(
+                index_q.shape[0],
+                cp_rank=parallel_state.get_context_parallel_rank(),
+                cp_size=parallel_state.get_context_parallel_world_size(),
+                device=index_q.device,
+            ),
         )
 
     def forward(

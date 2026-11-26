@@ -48,6 +48,8 @@ class HuggingfaceAttention(MegatronModule, ABC):
     # Subclasses set this to True when the underlying module handles CP natively
     # (e.g. via fla's state-passing CP for DeltaNet), bypassing the all-gather.
     hybrid_cp: bool = False
+    # The child module that runs fla's native CP; detect_and_setup_hybrid_cp gives it the CP group.
+    linear_attn_attr: str = "linear_attn"
 
     def __init__(
         self,
@@ -187,8 +189,8 @@ def detect_and_setup_hybrid_cp(model: nn.Module, cp_group: dist.ProcessGroup, cp
     for module in model.modules():
         if isinstance(module, HuggingfaceAttention):
             linear_attn = getattr(
-                module, "linear_attn", None
-            )  # config-access-exempt: only linear-attention modules expose a linear_attn child
+                module, module.linear_attn_attr, None
+            )  # config-access-exempt: only linear-attention modules expose their linear_attn_attr child
             if linear_attn is not None:
                 linear_attn.cp_group = cp_group
                 linear_attn.cp_rank = cp_rank
