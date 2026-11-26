@@ -46,6 +46,9 @@ CELLS_READY_TIMEOUT_SECONDS = 3600.0
 
 @enforce_lock_discipline
 class InferenceController:
+    # cells that died while nothing would restart them; the next rollout or weight update fails the run
+    _lost_cell_ids: tuple[str, ...] = ()
+
     @lock_exempt
     def __init__(
         self,
@@ -98,7 +101,12 @@ class InferenceController:
 
     @lock_exempt
     async def wait_expected_num_cells(self, timeout: float = CELLS_READY_TIMEOUT_SECONDS) -> None:
-        await asyncio.gather(*[srv.wait_init_expected_num_cells(timeout=timeout) for srv in self.servers.values()])
+        await asyncio.gather(
+            *[
+                srv.wait_init_expected_num_cells(timeout=timeout, check_abort=self._raise_if_cells_lost)
+                for srv in self.servers.values()
+            ]
+        )
 
     @with_lock
     async def abort_all(self) -> None:
@@ -129,11 +137,13 @@ class InferenceController:
 
     @with_lock
     async def prepare_rollout(self, rollout_id: int, model_id: str | None = None) -> None:
+        self._raise_if_cells_lost()
         await self._health_monitoring_resume(model_id)
         await self._engine_topology_reporter.report_if_changed(self.servers, provider=self._engine_provider)
 
     @with_lock
     async def prepare_eval(self, model_id: str | None = None) -> None:
+        self._raise_if_cells_lost()
         await self._health_monitoring_resume(model_id)
 
     @with_lock
@@ -301,6 +311,7 @@ class InferenceController:
     async def _ensure_cells_ready(self, model_id: str | None = None) -> None:
         deadline = time.monotonic() + CELLS_READY_TIMEOUT_SECONDS
         while True:
+            self._raise_if_cells_lost()
             cells = [
                 cell for srv in self._get_servers_of_model_id(model_id) for cell in srv.normal_server_cells.values()
             ]
@@ -443,6 +454,7 @@ class InferenceController:
             await self.servers[observed_cell_meta.model_id].add_cell(observed_cell_meta)
 
         async def _remove(remove_cell_id: str) -> None:
+            self._record_lost_cell(remove_cell_id, srv=actual_srv)
             await actual_srv.remove_cell(remove_cell_id)
 
         await apply_cell_observation(
@@ -452,6 +464,32 @@ class InferenceController:
             add=_add,
             remove=_remove,
         )
+
+    @requires_lock
+    def _record_lost_cell(self, cell_id: str, *, srv: RolloutServer) -> None:
+        """Record a tracked cell lost while rollout fault tolerance is off so the run stops loudly."""
+        if "rollout" in self.args.ft_components:
+            return
+        if srv is self.servers.get("eval") and not self.args.ci_test:
+            # Dedicated eval pool degrades to skipped eval points outside --ci-test.
+            return
+        if cell_id in self._lost_cell_ids:
+            return
+        logger.error(
+            f"Rollout engine cell {cell_id} died and rollout fault tolerance is off, so nothing will restart it; "
+            f"the run fails at its next rollout or weight update"
+        )
+        self._lost_cell_ids = (*self._lost_cell_ids, cell_id)
+
+    @lock_exempt
+    def _raise_if_cells_lost(self) -> None:
+        if lost := list(self._lost_cell_ids):
+            raise RuntimeError(
+                f"Rollout engine cell(s) {lost} died during the run. Without rollout fault tolerance nothing "
+                f"restarts them, so the run stops instead of continuing on the remaining engines. Check the "
+                f"engine logs for the cause; disaggregated p2p runs can pass --use-fault-tolerance "
+                f"(with 'rollout' in --ft-components) to restart dead engines."
+            )
 
     # -------------------------- utils -----------------------------
 
