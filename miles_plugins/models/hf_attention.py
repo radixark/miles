@@ -9,6 +9,7 @@ from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.transformer.module import MegatronModule
 
+from miles.backends.megatron_utils.parallel import PackedSeqParamsWithHostCuSeqlens
 from miles.utils.hf_utils.config import load_hf_config
 from miles_plugins.models.cp_utils import packed_shard_to_zigzag, zigzag_to_packed_shard
 
@@ -86,6 +87,11 @@ class HuggingfaceAttention(MegatronModule, ABC):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         assert packed_seq_params is not None
         cu_seqlens = packed_seq_params.cu_seqlens_q
+        cu_seqlens_host = (
+            packed_seq_params.cu_seqlens_host
+            if isinstance(packed_seq_params, PackedSeqParamsWithHostCuSeqlens)
+            else None
+        )
 
         if self.args.backend.sequence_parallel:
             # tensor_parallel_output_grad=False: the linear attention after this
@@ -110,6 +116,7 @@ class HuggingfaceAttention(MegatronModule, ABC):
                     mpu.get_context_parallel_group(),
                     mpu.get_context_parallel_rank(),
                     cp_size,
+                    cu_seqlens_host=cu_seqlens_host,
                 )
 
         elif mpu.get_context_parallel_world_size() > 1:
@@ -155,6 +162,7 @@ class HuggingfaceAttention(MegatronModule, ABC):
                     mpu.get_context_parallel_group(),
                     mpu.get_context_parallel_rank(),
                     cp_size,
+                    cu_seqlens_host=cu_seqlens_host,
                 )
 
         elif mpu.get_context_parallel_world_size() > 1:
