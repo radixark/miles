@@ -127,6 +127,7 @@ def wandb_capture_args(capture_args: Namespace, wandb_capture_client: Namespace)
         wandb_key=None,
         wandb_random_suffix=False,
         wandb_group="test",
+        wandb_exp_name=None,
         wandb_team=None,
         wandb_project="test",
         wandb_run_id=None,

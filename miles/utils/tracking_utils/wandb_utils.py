@@ -51,13 +51,10 @@ def init_wandb_primary(args):
         wandb.login(key=args.wandb_key, host=args.wandb_host)
 
     # Prepare wandb init parameters
-    # add random 6 length string with characters
-    if args.wandb_random_suffix:
-        group = args.wandb_group + "_" + generate_id()
-        run_name = f"{group}-RANK_0"
-    else:
-        group = args.wandb_group
-        run_name = args.wandb_group
+    # add random 6 length string with characters; without a group there is nothing to suffix
+    suffixed = args.wandb_random_suffix and args.wandb_group is not None
+    group = f"{args.wandb_group}_{generate_id()}" if suffixed else args.wandb_group
+    run_name = args.wandb_exp_name or (f"{group}-RANK_0" if suffixed else group)
 
     # Prepare wandb init parameters
     init_kwargs = {

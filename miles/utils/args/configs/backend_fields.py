@@ -52,6 +52,16 @@ class TrainerBackendTraitConfig(BaseConfig):
 
     # from WandbConfig
     wandb_project: A[str | None, Arg(reset=True)] = None
+    wandb_exp_name: A[
+        str | None,
+        Arg(
+            reset=True,
+            help=(
+                "W&B run name. Defaults to <group>_<id>-RANK_0, or <group> when "
+                "--disable-wandb-random-suffix is set (required to share one group across runs)."
+            ),
+        ),
+    ] = None
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
