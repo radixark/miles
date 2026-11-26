@@ -360,3 +360,36 @@ class TestOutputStoreRelease:
         await with_disposer(train_async_driver.train, _startup_info(args))
 
         assert trained_at_release == [(0, [0]), (1, [0, 1]), (2, [0, 1, 2])]
+
+    async def test_the_release_overlaps_the_weight_update_and_lands_before_the_next_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Deleting a trained rollout's objects is bookkeeping the weight update need not wait for, but the
+        executor must never hold two outstanding releases, and a save sees the trained rollout released."""
+        events: list[str] = []
+        args = _make_args(num_rollout=3, save_interval=2, save="/ckpt")
+        components = _install_driver_fakes(monkeypatch, args, events)
+        release_gates = {rollout_id: asyncio.Event() for rollout_id in range(3)}
+
+        async def release(rollout_id: int) -> None:
+            events.append(f"release_start:{rollout_id}")
+            await release_gates[rollout_id].wait()
+            events.append(f"release_done:{rollout_id}")
+
+        components.rollout_executor.release = FakeRemoteMethod(release)
+
+        driver = asyncio.create_task(with_disposer(train_async_driver.train, _startup_info(args)))
+        await asyncio.wait_for(components.actor_model.train_started[1].wait(), timeout=10)
+
+        # step 0's release is still pending while its weight update and step 1's training went ahead
+        assert events.index("release_start:0") < events.index("update_weights:0") < events.index("actor_train:1")
+        assert "release_done:0" not in events and "release_start:1" not in events
+
+        for gate in release_gates.values():
+            gate.set()
+        await asyncio.wait_for(driver, timeout=10)
+
+        assert events.index("release_done:0") < events.index("release_start:1")
+        # the save at rollout 1 waited for rollout 1's release; the last release landed before disposal
+        assert events.index("release_done:1") < events.index("executor_save:1")
+        assert events.index("release_done:2") < events.index("executor_dispose")

@@ -87,6 +87,24 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
         await inference_controller.prepare_rollout(rollout_id)
         return await rollout_executor.get(rollout_id)
 
+    # The executor answers a release only when its event loop gets to it, which under a fully-async producer
+    # with thousands of streams in flight can take tens of seconds; nothing after the training step reads the
+    # released objects, so the call runs in the background and the step moves on to the weight update. One
+    # release is outstanding at most: the next step's is issued only after this one has landed.
+    pending_release: asyncio.Task | None = None
+
+    async def release_rollout(rollout_id: int) -> None:
+        await rollout_executor.release(rollout_id)
+
+    async def settle_release() -> None:
+        nonlocal pending_release
+        if pending_release is not None:
+            pending_release, task = None, pending_release
+            await task
+
+    # on every exit path the outstanding release lands before the executor's final audit and disposal
+    disposer.add(settle_release)
+
     # async train loop.
     rollout_data_next_future = await eager_create_task(prepare_and_generate(args.start_rollout_id))
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
@@ -123,7 +141,8 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
         else:
             await actor_model.train(rollout_id, rollout_data_curr_ref)
         remove_rollout_data_refs(args, rollout_data_curr_ref)
-        await rollout_executor.release(rollout_id)
+        await settle_release()
+        pending_release = await eager_create_task(release_rollout(rollout_id))
 
         external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
         if external_save or should_run_periodic_action(
@@ -133,6 +152,8 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
             await save_training_model(actor_model, rollout_id, force_sync)
             if args.use_critic:
                 await save_training_model(critic_model, rollout_id, force_sync)
+            # the executor's save records what it still holds: the trained rollout must be gone by then
+            await settle_release()
             await rollout_executor.save(rollout_id)
             if args.keep_recent_checkpoints is not None:
                 await asyncio.to_thread(
@@ -179,6 +200,7 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
                 rollout_id,
             )
             break
+    await settle_release()
 
 
 if __name__ == "__main__":
