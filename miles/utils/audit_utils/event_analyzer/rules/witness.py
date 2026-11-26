@@ -53,9 +53,11 @@ def check(events: list[Event]) -> list[WitnessIssue]:
       all values in `WitnessSnapshotParamEvent.stale_id_ranges`
     """
 
-    allocated_witness_ids_by_rollout = _compute_allocated_witness_ids_by_rollout(
-        _filter_by_type(events, WitnessAllocateIdEvent)
-    )
+    allocate_events = _filter_by_type(events, WitnessAllocateIdEvent)
+    # Without --enable-witness nothing allocates ids or takes snapshots, so there is nothing to check.
+    if not allocate_events:
+        return []
+    allocated_witness_ids_by_rollout = _compute_allocated_witness_ids_by_rollout(allocate_events)
 
     return list(
         _find_mismatches(
