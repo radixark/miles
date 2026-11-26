@@ -498,6 +498,11 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         )
         self.weights_proj.weight._skip_gather = True
 
+        # The indexer only picks top-k indices, which carry no gradient, and this DSA has no
+        # indexer loss. Freeze it so DDP and the optimizer's weight decay skip it, as native DSA does.
+        for name in _INDEXER_SUBMODULE_NAMES:
+            self.get_submodule(name).requires_grad_(False)
+
         # Index-share skip layers carry no indexer weights -- drop the modules built
         # above so the parameter set matches the checkpoint (which only stores indexer
         # weights on computing layers) and weight export to HF omits them on skip layers.
