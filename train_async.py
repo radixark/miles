@@ -130,10 +130,11 @@ async def train(startup_info: OrchestratorStartupInfo, *, disposer: Disposer):
             rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
         ):
             force_sync = external_save or rollout_id == args.num_rollout - 1
+            # Persist data progress before model saving publishes the latest checkpoint.
+            await rollout_executor.save(rollout_id)
             await save_training_model(actor_model, rollout_id, force_sync)
             if args.use_critic:
                 await save_training_model(critic_model, rollout_id, force_sync)
-            await rollout_executor.save(rollout_id)
             if args.keep_recent_checkpoints is not None:
                 await asyncio.to_thread(
                     checkpoint_decay.prune_checkpoints,

@@ -224,6 +224,24 @@ class TestPipelinedGeneration:
         assert components.actor_model.trained == [0, 1, 2]
 
 
+class TestCheckpointPublication:
+    async def test_rollout_save_failure_does_not_publish_a_model_checkpoint(self, monkeypatch: pytest.MonkeyPatch):
+        """A resumable model checkpoint must not precede its matching data progress."""
+        events: list[str] = []
+        args = _make_args(num_rollout=1, save_interval=20)
+        components = _install_driver_fakes(monkeypatch, args, events)
+
+        async def fail_rollout_save(rollout_id):
+            raise OSError("rollout state write failed")
+
+        components.rollout_executor.save = fail_rollout_save
+
+        with pytest.raises(OSError, match="rollout state write failed"):
+            await with_disposer(train_async_driver.train, _startup_info(args))
+
+        assert components.actor_model.saved == []
+
+
 class TestCriticValuesHandoff:
     async def test_async_critic_outputs_reach_the_actor_and_are_released_after_training(
         self, monkeypatch: pytest.MonkeyPatch
