@@ -30,6 +30,10 @@ fi
 # the engine serves the checkpoint, so it must be on disk before sglang starts
 python3 "$script" prepare "${args[@]}" || { echo "FAIL: ${script} prepare"; exit 1; }
 
+# the engine refuses weight updates without an admin key; engine and trainer read this one
+SGLANG_ADMIN_API_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(16))') || exit 1
+export SGLANG_ADMIN_API_KEY
+
 python3 "$script" sglang "${args[@]}" > >(sed -u 's/^/[sglang] /') 2>&1 &
 engine=$!
 # the engine compiles only after the trainer joins, so train starts without waiting for /health
