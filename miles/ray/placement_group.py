@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import socket
 from argparse import Namespace
 from typing import NamedTuple
@@ -58,10 +59,27 @@ from miles.utils.workers.worker_provider.static import wait_static_addrs_ready
 logger = logging.getLogger(__name__)
 
 
+# A launcher that needs the nodes in a fixed order (the hosts of one TPU slice take trainer ranks in the slice
+# builders' host order, which is not their IP order) exports this on every node before `ray start`; the raylet's
+# workers inherit it. Unset, the nodes sort by IP as before.
+NODE_RANK_ENV_VAR = "MILES_RAY_NODE_RANK"
+
+
 @ray.remote(num_gpus=1)
 class InfoActor:
     def get_ip_and_gpu_id(self):
-        return ray.util.get_node_ip_address(), ray.get_gpu_ids()[0]
+        # sort_key reads a bare integer as a one-field address, so a node rank orders the nodes as given
+        return os.environ.get(NODE_RANK_ENV_VAR) or ray.util.get_node_ip_address(), ray.get_gpu_ids()[0]
+
+
+def _check_node_order(node_identifiers) -> None:
+    """Every node carries a node rank or none does: a mix would sort ranks and IPs against each other."""
+    identifiers = set(node_identifiers)
+    ranked = {node for node in identifiers if node.isdigit()}
+    if ranked and ranked != identifiers:
+        raise RuntimeError(
+            f"{NODE_RANK_ENV_VAR} is set on Ray nodes {sorted(ranked)} but not on {sorted(identifiers - ranked)}"
+        )
 
 
 def sort_key(x):
@@ -116,6 +134,7 @@ def _create_placement_group(num_gpus) -> PlacementGroupInfo:
     for actor in info_actors:
         ray.kill(actor)
 
+    _check_node_order(node for node, _ in gpu_ids)
     bundle_infos = [(i, gpu_ids[i][0], gpu_ids[i][1]) for i in range(num_bundles)]
     sorted_bundle_infos = sorted(bundle_infos, key=sort_key)
     pg_reordered_bundle_indices = [info[0] for info in sorted_bundle_infos]

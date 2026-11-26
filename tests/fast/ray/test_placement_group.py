@@ -1200,3 +1200,26 @@ class TestCreateComponents:
             await driver
 
         assert sorted(cancelled) == ["rollout", "trainers"]
+
+
+class TestNodeOrder:
+    """A launcher that sets MILES_RAY_NODE_RANK on every node orders the bundles by it; IPs sort as before."""
+
+    def test_node_ranks_sort_numerically_then_by_device(self):
+        nodes = [(1, 7), (0, 3), (1, 0), (0, 0), (7, 2), (10, 1)]
+        bundles = [(index, str(node), gpu) for index, (node, gpu) in enumerate(nodes)]
+        ordered = sorted(bundles, key=placement_group_module.sort_key)
+        assert [(int(node), gpu) for _, node, gpu in ordered] == [(0, 0), (0, 3), (1, 0), (1, 7), (7, 2), (10, 1)]
+
+    def test_ips_sort_by_address_then_by_device(self):
+        bundles = [(0, "10.0.0.9", 1), (1, "10.0.0.2", 0), (2, "10.0.0.9", 0)]
+        ordered = sorted(bundles, key=placement_group_module.sort_key)
+        assert [bundle[1:] for bundle in ordered] == [("10.0.0.2", 0), ("10.0.0.9", 0), ("10.0.0.9", 1)]
+
+    def test_a_node_rank_on_some_nodes_only_is_refused(self):
+        placement_group_module._check_node_order(["1", "0", "1"])
+        placement_group_module._check_node_order(["10.0.0.9", "10.0.0.2"])
+        with pytest.raises(
+            RuntimeError, match="MILES_RAY_NODE_RANK is set on Ray nodes \\['0', '1'\\] but not on \\['10.0.0.9'\\]"
+        ):
+            placement_group_module._check_node_order(["0", "10.0.0.9", "1"])
