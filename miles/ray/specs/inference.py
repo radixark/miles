@@ -442,6 +442,7 @@ def _compute_spec_inference_engine(
                 worker_type=server_group_config.worker_type.value,
                 num_gpus_per_engine=server_group_config.num_gpus_per_engine,
                 sglang_api_key=args.sglang.get_value("api_key", group=server_group_config),
+                sglang_admin_api_key=args.sglang.get_value("admin_api_key", group=server_group_config),
                 needs_offload=server_group_config.needs_offload,
                 update_weights=model_cfg.update_weights,
                 health_check_timeout_seconds=compute_health_check_timeout_seconds(pp_size=server_group_config.pp_size),

@@ -136,3 +136,35 @@ def test_rollout_kv_cache_dtype_defaults_to_the_platform_choice(
     validate_args(args)
 
     assert args.sglang_kv_cache_dtype == expected
+
+
+@pytest.mark.parametrize(("prefix", "inherit"), [("sglang", False), ("eval-sglang", True)])
+def test_deprecated_choice_to_flag_action_prefixes_targets_without_duplicate_default(
+    monkeypatch: pytest.MonkeyPatch, prefix: str, inherit: bool
+) -> None:
+    """SGLang's DeprecatedChoiceToFlagAction passes its own default and writes the dests named in `flags`."""
+
+    class DeprecatedChoiceToFlagAction(argparse.Action):
+        def __init__(self, option_strings, dest, flags, **kwargs):
+            self.flags = flags
+            super().__init__(
+                option_strings, dest, nargs=None, choices=list(flags), default=argparse.SUPPRESS, **kwargs
+            )
+
+        def __call__(self, parser, namespace, values, option_string=None):
+            setattr(namespace, self.flags[values][0], True)
+
+    def fake_add_cli_args(parser):
+        parser.add_argument("--enable-foo", action="store_true")
+        parser.add_argument(
+            "--legacy-mode", action=DeprecatedChoiceToFlagAction, flags={"foo": ("enable_foo", "--enable-foo")}
+        )
+
+    monkeypatch.setattr(ServerArgs, "add_cli_args", staticmethod(fake_add_cli_args))
+    parser = argparse.ArgumentParser()
+    dest_prefix = prefix.replace("-", "_") + "_"
+    sglang_arguments._add_prefixed_server_args(
+        parser, flag_prefix=prefix, dest_prefix=dest_prefix, skipped_args=[], inherit=inherit
+    )
+
+    assert vars(parser.parse_args([f"--{prefix}-legacy-mode", "foo"])) == {f"{dest_prefix}enable_foo": True}

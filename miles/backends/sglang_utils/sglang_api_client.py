@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import logging
+import os
 from enum import Enum
 from typing import Any
 
@@ -24,6 +25,15 @@ class WorkerType(Enum):
         if mode == "null":
             mode = "regular"
         return cls(mode)
+
+
+def resolve_admin_api_key(flag: str | None) -> str | None:
+    """``--admin-api-key``, else ``SGLANG_ADMIN_API_KEY``: the order SGLang's server and its admin clients use.
+
+    Only for engines miles does not launch: an engine miles launches may not see this environment (sglang-miles
+    never reads it), so its cells use the flag it is launched with. Not stored in args, which W&B and manifests record.
+    """
+    return os.environ.get("SGLANG_ADMIN_API_KEY") if flag is None else flag
 
 
 def _compute_headers(api_key: str | None) -> dict[str, str]:
@@ -108,11 +118,20 @@ def encode_update_weights_from_tensor_body(
 @dataclasses.dataclass(frozen=True)
 class SGLangApiClient:
     server_url: str
-    api_key: str | None = None
+    # kept out of repr, which tracebacks and logs print
+    api_key: str | None = dataclasses.field(default=None, repr=False)
+    admin_api_key: str | None = dataclasses.field(default=None, repr=False)
+
+    @property
+    def _normal_headers(self) -> dict[str, str]:
+        # SGLang's NORMAL routes check only api_key, and admit any request on a server without one
+        # (sglang/srt/utils/auth.py:decide_request_auth).
+        return _compute_headers(self.api_key)
 
     @property
     def _headers(self) -> dict[str, str]:
-        return _compute_headers(self.api_key)
+        # SGLang's ADMIN_FORCE / ADMIN_OPTIONAL routes take admin_api_key whenever the server has one, else api_key.
+        return _compute_headers(self.admin_api_key or self.api_key)
 
     async def _make_request(
         self,
@@ -168,7 +187,7 @@ class SGLangApiClient:
         """
         response = await GeneralHttpClientProvider.client().get(
             f"{self.server_url}/health_generate",
-            headers=self._headers,
+            headers=self._normal_headers,
             timeout=timeout,
         )
         response.raise_for_status()
@@ -223,7 +242,7 @@ class SGLangApiClient:
     async def get_server_info(self):
         response = await GeneralHttpClientProvider.client().get(
             f"{self.server_url}/server_info",
-            headers=self._headers,
+            headers=self._normal_headers,
             timeout=5.0,
         )
         response.raise_for_status()
@@ -326,7 +345,7 @@ class SGLangApiClient:
         # new sglang change api from /get_weight_version to /model_info
         for endpoint in ("/model_info", "/get_weight_version"):
             response = await GeneralHttpClientProvider.client().get(
-                f"{self.server_url}{endpoint}", headers=self._headers
+                f"{self.server_url}{endpoint}", headers=self._normal_headers
             )
             if response.status_code == 200:
                 return response.json()["weight_version"]

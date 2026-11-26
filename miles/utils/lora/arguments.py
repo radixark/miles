@@ -392,7 +392,9 @@ def validate_multi_lora_args(args: Any) -> None:
     )
     assert not sglang_attention_dp_enabled(
         attn_dp_size=args.sglang_attn_dp_size,
-        enable_dp_attention=args.sglang_enable_dp_attention,
+        enable_dp_attention=getattr(
+            args, "sglang_enable_dp_attention", False
+        ),  # config-access-exempt: absent on SGLang builds that dropped --enable-dp-attention
         dp_size=args.sglang_dp_size,
     ), (
         "Multi-LoRA cannot run on SGLang attention DP: SGLang serves only pinned adapters there, and a pinned "
