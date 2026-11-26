@@ -15,7 +15,7 @@ import torch
 
 from miles.backends.training_utils.data.context_parallel import all_gather_with_cp, slice_log_prob_with_cp
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.types import RolloutBatch
+from miles.utils.types import RolloutBatch, WeightVersionSpan, WeightVersionsPerCall
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,74 @@ KIMI_VL_MEDIA_TOKEN_ID = 163605
 # Kimi-VL tpool_patch_merger collapses a 2x2 spatial patch into one token.
 _KIMI_VL_MERGE_H = 2
 _KIMI_VL_MERGE_W = 2
+
+
+def _shifted_token_index(index: int, expansions: Sequence[tuple[int, int]]) -> int:
+    """Map a pre-expansion token boundary ``index`` to its post-expansion position.
+
+    Each entry ``(pos, delta)`` represents replacing a single token at ``pos``
+    with ``1 + delta`` tokens. Any boundary strictly after ``pos`` shifts by
+    ``delta``; a boundary at ``pos`` stays at the start of the replacement run.
+    """
+    offset = 0
+    for pos, delta in expansions:
+        if pos < index:
+            offset += delta
+    return index + offset
+
+
+def _remap_weight_version_call(
+    call: WeightVersionsPerCall | dict | list[dict],
+    expansions: Sequence[tuple[int, int]],
+) -> WeightVersionsPerCall | dict | list[dict]:
+    """Shift output span positions and ``output_start`` for a single call after media expansion.
+
+    ``prefill_spans`` and ``prompt_tokens`` stay untouched because the engine already
+    reports them in expanded engine-token coordinates (see ``WeightVersionsPerCall``).
+    Preserves the caller's representation (``WeightVersionsPerCall``, dict, or legacy span list).
+    """
+    if not expansions:
+        return call
+
+    def _remap_span_dict(span: dict) -> dict:
+        return {
+            **span,
+            "abs_start": _shifted_token_index(span["abs_start"], expansions),
+            "abs_end": _shifted_token_index(span["abs_end"], expansions),
+        }
+
+    if isinstance(call, WeightVersionsPerCall):
+        return WeightVersionsPerCall(
+            spans=[
+                WeightVersionSpan(
+                    version=span.version,
+                    abs_start=_shifted_token_index(span.abs_start, expansions),
+                    abs_end=_shifted_token_index(span.abs_end, expansions),
+                )
+                for span in call.spans
+            ],
+            prefill_spans=list(call.prefill_spans),
+            output_start=(None if call.output_start is None else _shifted_token_index(call.output_start, expansions)),
+            prompt_tokens=call.prompt_tokens,
+        )
+
+    if isinstance(call, list):
+        return [_remap_span_dict(span) for span in call]
+
+    remapped_call = dict(call)
+    remapped_call["spans"] = [_remap_span_dict(span) for span in call["spans"]]
+    if call.get("output_start") is not None:
+        remapped_call["output_start"] = _shifted_token_index(call["output_start"], expansions)
+    return remapped_call
+
+
+def _remap_weight_versions_for_sample(
+    weight_versions: Sequence[WeightVersionsPerCall | dict | list[dict]] | None,
+    expansions: Sequence[tuple[int, int]],
+) -> list[WeightVersionsPerCall | dict | list[dict]] | None:
+    if weight_versions is None or not expansions:
+        return weight_versions
+    return [_remap_weight_version_call(call, expansions) for call in weight_versions]
 
 
 def _num_image_tokens_from_grid(
@@ -35,19 +103,18 @@ def _num_image_tokens_from_grid(
     return (h // merge_h) * (w // merge_w)
 
 
-def _expand_image_tokens_for_sample(
+def _expand_image_tokens_and_record_shifts(
     tokens: torch.Tensor,
     loss_mask: torch.Tensor,
     grid_thws: torch.Tensor,
     media_token_id: int = KIMI_VL_MEDIA_TOKEN_ID,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    # TODO: expansion shifts token indices, so Sample.weight_versions span positions are not remapped and misalign here.
+) -> tuple[torch.Tensor, torch.Tensor, list[tuple[int, int]]]:
     if grid_thws is None or len(grid_thws) == 0:
-        return tokens, loss_mask
+        return tokens, loss_mask, []
 
     placeholder_positions = (tokens == media_token_id).nonzero(as_tuple=True)[0]
     if len(placeholder_positions) == 0:
-        return tokens, loss_mask
+        return tokens, loss_mask, []
 
     num_placeholders = len(placeholder_positions)
     num_grids = len(grid_thws)
@@ -55,7 +122,7 @@ def _expand_image_tokens_for_sample(
     if num_placeholders == expected_total_image_tokens:
         # Already pre-expanded. Keep this helper idempotent because the same
         # rollout batch may pass through multiple normalization paths.
-        return tokens, loss_mask
+        return tokens, loss_mask, []
     if num_placeholders != num_grids:
         logger.warning(
             "K25 multimodal token mismatch before training: placeholders=%s, grids=%s",
@@ -68,6 +135,7 @@ def _expand_image_tokens_for_sample(
 
     expanded_tokens = tokens.clone()
     expanded_mask = loss_mask.clone()
+    expansions: list[tuple[int, int]] = []
 
     for i, pos in enumerate(reversed(placeholder_positions)):
         pos = pos.item()
@@ -77,6 +145,8 @@ def _expand_image_tokens_for_sample(
 
         _, h, w = grid_thws[grid_idx].tolist()
         num_image_tokens = (h // merge_h) * (w // merge_w)
+        if num_image_tokens != 1:
+            expansions.append((pos, num_image_tokens - 1))
 
         expanded_placeholder = torch.full(
             (num_image_tokens,), media_token_id, dtype=expanded_tokens.dtype, device=expanded_tokens.device
@@ -90,6 +160,22 @@ def _expand_image_tokens_for_sample(
             )
             expanded_mask = torch.cat([expanded_mask[:mask_pos], expanded_mask_tokens, expanded_mask[mask_pos + 1 :]])
 
+    expansions.reverse()
+    return expanded_tokens, expanded_mask, expansions
+
+
+def _expand_image_tokens_for_sample(
+    tokens: torch.Tensor,
+    loss_mask: torch.Tensor,
+    grid_thws: torch.Tensor,
+    media_token_id: int = KIMI_VL_MEDIA_TOKEN_ID,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    expanded_tokens, expanded_mask, _ = _expand_image_tokens_and_record_shifts(
+        tokens,
+        loss_mask,
+        grid_thws,
+        media_token_id=media_token_id,
+    )
     return expanded_tokens, expanded_mask
 
 
@@ -121,8 +207,10 @@ INKLING_MM_PLACEHOLDER_TOKEN_ID = 200023
 INKLING_MM_AUDIO_PLACEHOLDER_TOKEN_ID = 200025
 
 
-def _expand_inkling_sample(token_tensor, loss_mask, mm, sample_idx: int):
-    """Replace media sentinels with placeholder runs, recording their sample-local positions into mm; idempotent."""
+def _expand_inkling_sample_and_record_shifts(
+    token_tensor, loss_mask, mm, sample_idx: int
+) -> tuple[torch.Tensor, list[tuple[int, int]]]:
+    """Replace media sentinels with placeholder runs, recording positions into mm and token shifts; idempotent."""
     spec = (
         (INKLING_IMAGE_SENTINEL_ID, INKLING_MM_PLACEHOLDER_TOKEN_ID, "mm_vision_num_patches", "mm_vision_positions"),
         (
@@ -145,7 +233,7 @@ def _expand_inkling_sample(token_tensor, loss_mask, mm, sample_idx: int):
         splices.append((positions.tolist(), [int(c) for c in counts], placeholder, positions_key))
 
     if not splices:
-        return token_tensor
+        return token_tensor, []
 
     prompt_len = len(token_tensor) - len(loss_mask)
     flat = sorted(
@@ -159,17 +247,26 @@ def _expand_inkling_sample(token_tensor, loss_mask, mm, sample_idx: int):
 
     pieces, prev, shift = [], 0, 0
     out_positions: dict[str, list[int]] = {}
+    expansions: list[tuple[int, int]] = []
     for pos, n, placeholder, positions_key in flat:
         pieces.append(token_tensor[prev:pos])
         pieces.append(torch.full((n,), placeholder, dtype=token_tensor.dtype, device=token_tensor.device))
         start = pos + shift
         out_positions.setdefault(positions_key, []).extend(range(start, start + n))
+        if n != 1:
+            expansions.append((pos, n - 1))
         shift += n - 1
         prev = pos + 1
     pieces.append(token_tensor[prev:])
     for positions_key, plist in out_positions.items():
         mm[positions_key] = torch.tensor(plist, dtype=torch.long, device=token_tensor.device)
-    return torch.cat(pieces)
+    return torch.cat(pieces), expansions
+
+
+def _expand_inkling_sample(token_tensor, loss_mask, mm, sample_idx: int):
+    """Replace media sentinels with placeholder runs, recording their sample-local positions into mm; idempotent."""
+    expanded, _ = _expand_inkling_sample_and_record_shifts(token_tensor, loss_mask, mm, sample_idx)
+    return expanded
 
 
 def _expand_inkling_rollout_data_in_place(rollout_data: RolloutBatch) -> None:
@@ -177,13 +274,18 @@ def _expand_inkling_rollout_data_in_place(rollout_data: RolloutBatch) -> None:
     tokens = rollout_data["tokens"]
     loss_masks = rollout_data["loss_masks"]
     old_total_lengths = list(rollout_data["total_lengths"])
+    weight_versions = rollout_data.get("weight_versions")
 
     new_tokens_list, new_total_lengths = [], []
+    remapped_weight_versions = [] if weight_versions is not None else None
     for i, (token_tensor, loss_mask) in enumerate(zip(tokens, loss_masks, strict=False)):
         mm = mm_list[i] if i < len(mm_list) else None
-        expanded = _expand_inkling_sample(token_tensor, loss_mask, mm, i)
+        expanded, expansions = _expand_inkling_sample_and_record_shifts(token_tensor, loss_mask, mm, i)
         new_tokens_list.append(expanded)
         new_total_lengths.append(expanded.size(0))
+        if remapped_weight_versions is not None:
+            sample_wv = weight_versions[i] if i < len(weight_versions) else None
+            remapped_weight_versions.append(_remap_weight_versions_for_sample(sample_wv, expansions))
 
     if new_total_lengths != old_total_lengths:
         try:
@@ -193,6 +295,8 @@ def _expand_inkling_rollout_data_in_place(rollout_data: RolloutBatch) -> None:
         assert cp_size == 1, "Inkling multimodal expansion does not support CP>1 yet"
         rollout_data["tokens"] = new_tokens_list
         rollout_data["total_lengths"] = new_total_lengths
+        if remapped_weight_versions is not None:
+            rollout_data["weight_versions"] = remapped_weight_versions
         logger.info(
             "Expanded Inkling image sentinels: total_lengths %s -> %s",
             old_total_lengths,
@@ -223,16 +327,19 @@ def expand_multimodal_rollout_data_in_place(
     loss_masks = rollout_data["loss_masks"]
     old_total_lengths = list(rollout_data["total_lengths"])
     old_response_lengths = list(rollout_data["response_lengths"])
+    weight_versions = rollout_data.get("weight_versions")
 
     token_or_mask_changed = False
     expanded_tokens = []
     expanded_loss_masks = []
     expanded_total_lengths = []
     expanded_response_lengths = []
+    remapped_weight_versions = [] if weight_versions is not None else None
 
     for i, (token_tensor, loss_mask_tensor) in enumerate(zip(tokens, loss_masks, strict=False)):
+        expansions: list[tuple[int, int]] = []
         if mm_inputs_list[i] is not None:
-            new_tokens, new_loss_mask = _expand_image_tokens_for_sample(
+            new_tokens, new_loss_mask, expansions = _expand_image_tokens_and_record_shifts(
                 token_tensor,
                 loss_mask_tensor,
                 mm_inputs_list[i]["grid_thws"],
@@ -250,11 +357,16 @@ def expand_multimodal_rollout_data_in_place(
             expanded_loss_masks.append(loss_mask_tensor)
             expanded_total_lengths.append(old_total_lengths[i])
             expanded_response_lengths.append(old_response_lengths[i])
+        if remapped_weight_versions is not None:
+            sample_wv = weight_versions[i] if i < len(weight_versions) else None
+            remapped_weight_versions.append(_remap_weight_versions_for_sample(sample_wv, expansions))
 
     rollout_data["tokens"] = expanded_tokens
     rollout_data["loss_masks"] = expanded_loss_masks
     rollout_data["total_lengths"] = expanded_total_lengths
     rollout_data["response_lengths"] = expanded_response_lengths
+    if remapped_weight_versions is not None:
+        rollout_data["weight_versions"] = remapped_weight_versions
 
     metadata_changed = (expanded_total_lengths != old_total_lengths) or (
         expanded_response_lengths != old_response_lengths
