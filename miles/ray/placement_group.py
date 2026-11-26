@@ -2,6 +2,7 @@ import asyncio
 import logging
 import socket
 from argparse import Namespace
+from pathlib import Path
 from typing import NamedTuple
 
 import ray
@@ -299,7 +300,15 @@ async def attach_trainers_to_rollout(
 ) -> None:
     await rollout_executor.set_train_parallel_config(await actor_model.get_train_parallel_config())
     if args.start_rollout_id > 0:
-        await rollout_executor.load(args.start_rollout_id - 1, load=args.load)
+        await rollout_executor.load(args.start_rollout_id - 1, load=_resumed_checkpoint_root(args))
+
+
+def _resumed_checkpoint_root(args: OrchestratorConfig) -> str | None:
+    # a LoRA run's --load is its frozen base; a step resumed from {save}/iter_N/adapter has its rollout side in {save}
+    adapter = args.lora_adapter_path
+    if adapter is not None and Path(adapter).match("iter_*/adapter"):
+        return str(Path(adapter).parent.parent)
+    return args.load
 
 
 # TODO: move (when reorganizing files)
