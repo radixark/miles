@@ -1070,6 +1070,80 @@ def test_grouped_experts_go_out_only_under_an_even_split_in_torchtitans_layout(m
         export(Shard(0), num_experts=8, gpt_oss=True)
 
 
+@pytest.fixture
+def rank_9_of_2x8_mesh():
+    """An HSDP trainer of 16 ranks: 2 replicas of 8 shards; rank 9 is shard 1 of replica 1."""
+    dist.init_process_group("fake", rank=9, world_size=16, store=FakeStore())
+    try:
+        yield init_device_mesh("cpu", (2, 8), mesh_dim_names=("dp_replicate", "dp_shard"))
+    finally:
+        dist.destroy_process_group()
+
+
+def test_hsdp_grouped_experts_split_over_the_shard_group_not_the_world(monkeypatch, rank_9_of_2x8_mesh):
+    """Under HSDP the experts are Shard(0) along the shard axis and replicated along the other, so shard s of every
+    replica holds experts [s * E / 8, (s + 1) * E / 8): the EP shard of the engine TP rank it pairs with. Splitting
+    over the 16-rank world would send each engine rank half of the experts it owns."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils import hf_weight_iterator
+
+    monkeypatch.setattr(
+        hf_weight_iterator, "current_platform", SimpleNamespace(current_device=lambda: torch.device("cpu"))
+    )
+    key = "layers.1.feed_forward.routed_experts.w13.weight"
+    local = torch.arange(4 * 2 * 2 * 3, dtype=torch.float32).reshape(4, 2, 2, 3)  # 4 local experts of w13 [F=2, D=3]
+
+    def export(placements, num_experts=32):
+        shape = (num_experts, 2, 2, 3)
+        w13 = DTensor.from_local(
+            local, rank_9_of_2x8_mesh, placements, shape=shape, stride=torch.empty(shape).stride(), run_check=False
+        )
+        return dict(hf_weight_iterator._local_experts(_GroupedExpertAdapter(), {key: w13}, [key]))
+
+    prefix = "model.language_model.layers.1.mlp.experts"
+    exported = export([Replicate(), Shard(0)])
+    assert list(exported) == [
+        f"{prefix}.{expert}.{projection}.weight" for expert in range(4, 8) for projection in ("gate_proj", "up_proj")
+    ]
+    assert torch.equal(exported[f"{prefix}.7.up_proj.weight"], local[3, 1])
+    # a plain tensor (no mesh to read) keeps the world's split
+    assert hf_weight_iterator._expert_split(torch.zeros(2), key) == (9, 16)
+    for placements in ([Shard(0), Shard(0)], [Replicate(), Replicate()], [Replicate(), Shard(1)]):
+        with pytest.raises(AssertionError, match="grouped experts need trainer EP = 1"):
+            export(placements)
+    with pytest.raises(AssertionError, match="do not split evenly"):
+        export([Replicate(), Shard(0)], num_experts=30)
+
+
+def test_hsdp_split_experts_find_the_shard_groups_range(monkeypatch, rank_9_of_2x8_mesh):
+    """An adapter that splits the grouped tensor per expert (GLM-4.7-Flash) is checked against the same split."""
+    pytest.importorskip("torchtitan")
+    from miles.backends.torchtitan_utils import hf_weight_iterator
+
+    monkeypatch.setattr(
+        hf_weight_iterator, "current_platform", SimpleNamespace(current_device=lambda: torch.device("cpu"))
+    )
+    key = "layers.1.feed_forward.routed_experts.w13.weight"
+    shape = (16, 2, 3)
+    w13 = DTensor.from_local(
+        torch.zeros(2, 2, 3),
+        rank_9_of_2x8_mesh,
+        [Replicate(), Shard(0)],
+        shape=shape,
+        stride=torch.empty(shape).stride(),
+        run_check=False,
+    )
+
+    class _LocalSplittingExpertAdapter(_SplittingExpertAdapter):
+        def to_hf(self, state):
+            return super().to_hf({key: value.to_local() for key, value in state.items()})
+
+    exported = dict(hf_weight_iterator._local_experts(_LocalSplittingExpertAdapter(2, 4), {key: w13}, [key]))
+    assert set(exported) == {"model.layers.1.mlp.experts.2.w1_EFD", "model.layers.1.mlp.experts.2.w3_EFD"}
+    with pytest.raises(AssertionError, match="not the engine's even split"):
+        list(hf_weight_iterator._local_experts(_LocalSplittingExpertAdapter(9, 10), {key: w13}, [key]))
+
+
 @pytest.mark.parametrize(
     ("name", "grouped"),
     [
