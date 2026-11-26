@@ -153,6 +153,23 @@ def test_native_base_names_are_remapped(tmp_path: Path, export: Path, monkeypatc
     torch.testing.assert_close(completed["model.layers.0.weight"], torch.full((4, 3), 1.0))
 
 
+def test_base_without_config_is_completed_under_its_own_names(tmp_path: Path, export: Path) -> None:
+    # A weights-only base (no config.json) cannot resolve a name remap; its names are used as is.
+    bare_base = tmp_path / "bare-base"
+    extra = torch.randn(2)
+    size = _write_shard(
+        bare_base, "model.safetensors", {"model.layers.0.weight": torch.randn(4, 3), "model.extra.weight": extra}
+    )
+    _write_index(
+        bare_base, {"model.layers.0.weight": "model.safetensors", "model.extra.weight": "model.safetensors"}, size
+    )
+
+    copied = complete_export(export, bare_base)
+
+    assert copied == ["model.extra.weight"]
+    torch.testing.assert_close(_read_all(export)["model.extra.weight"], extra)
+
+
 def test_export_without_index_is_refused(tmp_path: Path, base: Path) -> None:
     export_dir = tmp_path / "not-an-export"
     _write_shard(export_dir, "model.safetensors", {"model.layers.0.weight": torch.randn(4, 3)})

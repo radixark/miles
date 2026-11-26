@@ -123,7 +123,9 @@ def missing_base_tensors(exported_names: Collection[str], base_checkpoint: str |
     """
     base_checkpoint = Path(base_checkpoint)
     base_map = get_checkpoint_weight_map(base_checkpoint)
-    remap = get_param_name_remap(str(base_checkpoint / "config.json"), base_map)
+    config_path = base_checkpoint / "config.json"
+    # A weights-only base has no config to resolve a remap from; its names are compared as they are.
+    remap = get_param_name_remap(str(config_path), base_map) if config_path.is_file() else (lambda name: name)
     base_name_by_hf_name: dict[str, str] = {}
     for base_name in base_map:
         hf_name = remap(base_name)
