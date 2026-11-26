@@ -8,9 +8,23 @@ import zlib
 
 import numpy as np
 
+_CPU_MAX_PATH = "/sys/fs/cgroup/cpu.max"
+
+
+def get_available_cpus() -> int:
+    """CPUs this process may use: the cgroup v2 quota if set, else the affinity mask."""
+    quota, period = "max", "1"
+    if os.path.exists(_CPU_MAX_PATH):  # cgroup v2 only
+        with open(_CPU_MAX_PATH) as f:
+            quota, period = f.read().split()
+    if quota != "max":
+        return max(1, int(quota) // int(period))
+    return len(os.sched_getaffinity(0))
+
+
 # The delta phases (diff, zstd, checksum) are memory-bandwidth bound and release the GIL,
 # so a thread pool over tensors recovers the bandwidth one thread leaves idle.
-NUM_WORKERS = min(32, (os.cpu_count() or 8))
+NUM_WORKERS = min(32, get_available_cpus())
 
 # Trainer-side (publish) helpers for disk-level delta weight sync. The receive side —
 # materializing the host-local checkpoint and applying published deltas in place — lives in
