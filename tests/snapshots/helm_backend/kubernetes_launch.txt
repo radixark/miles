@@ -32,6 +32,7 @@ run:
     meta:
       gpu_ids: '0,1,2,3,4,5,6,7'
     name: 'inference-engine-0-0'
+    needsGpuRuntime: true
     objectName: 'miles-run-26-98cf6da492ec-inference-engine-0-0'
     poolId: 'inference-engine-0-0'
     ports:
@@ -96,6 +97,7 @@ run:
     meta:
       gpu_ids: '0,1,2,3,4,5,6,7'
     name: 'trainer-engine-actor'
+    needsGpuRuntime: true
     objectName: 'miles-run-26-98cf6da492ec-trainer-engine-actor'
     poolId: 'trainer-engine-actor'
     ports:

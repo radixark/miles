@@ -419,6 +419,11 @@ spec:
               readOnly: true
             - name: "scratch"
               mountPath: "/scratch"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           command:
             - python
             - -m
@@ -524,6 +529,11 @@ spec:
             - name: uninstall-manifest
               mountPath: "/etc/miles-uninstall"
               readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           command:
             - python
             - -m
@@ -640,6 +650,11 @@ spec:
               readOnly: true
             - name: "scratch"
               mountPath: "/scratch"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           command:
             - "<PYTHON>"
             - "-m"
@@ -757,6 +772,11 @@ spec:
               readOnly: true
             - name: "scratch"
               mountPath: "/scratch"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           command:
             - "<PYTHON>"
             - "-m"
@@ -873,6 +893,11 @@ spec:
               readOnly: true
             - name: "scratch"
               mountPath: "/scratch"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           command:
             - "<PYTHON>"
             - "-m"
@@ -1002,6 +1027,11 @@ spec:
               readOnly: true
             - name: "scratch"
               mountPath: "/scratch"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           command:
             - "<PYTHON>"
             - "-m"
@@ -1119,6 +1149,11 @@ spec:
               readOnly: true
             - name: "scratch"
               mountPath: "/scratch"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           command:
             - "<PYTHON>"
             - "-m"
@@ -1239,6 +1274,12 @@ spec:
                 mountPath: "/scratch"
               - name: dev-shm
                 mountPath: "/dev/shm"
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                add:
+                  - SYS_PTRACE
+                  - SYS_NICE
             command:
               - "<PYTHON>"
               - "-m"
@@ -1464,6 +1505,12 @@ spec:
                 mountPath: "/scratch"
               - name: dev-shm
                 mountPath: "/dev/shm"
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                add:
+                  - SYS_PTRACE
+                  - SYS_NICE
             command:
               - "<PYTHON>"
               - "-m"
@@ -1680,6 +1727,12 @@ spec:
                 mountPath: "/scratch"
               - name: dev-shm
                 mountPath: "/dev/shm"
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                add:
+                  - SYS_PTRACE
+                  - SYS_NICE
             command:
               - "bash"
               - "-c"

@@ -90,6 +90,7 @@ def build_entry(
         replicas=scheduling.num_cells,
         size=pods_per_cell if pods_per_cell > 1 else None,
         resources={"limits": {"nvidia.com/gpu": gpus_per_pod}} if gpus_per_pod else None,
+        needs_gpu_runtime=True if (gpus_per_pod > 0 or pairing_layout is not None) else None,
         restart_at=plan.rendered_restart_at(spec.name),
     )
 
