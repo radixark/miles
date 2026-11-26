@@ -50,11 +50,16 @@ def _decode_payload(*, num_gpus: int = 1) -> dict[str, Any]:
     return {**_regular_payload(num_gpus=num_gpus), "disaggregation_mode": "decode"}
 
 
-def _install_payloads(monkeypatch, payloads: dict[str, dict[str, Any]]) -> None:
-    async def _fetch(url: str, *, api_key: str | None) -> dict[str, Any]:
+def _install_payloads(monkeypatch, payloads: dict[str, dict[str, Any]]) -> list[float]:
+    """Answer each url's probe from `payloads`; returns the timeouts the probes were given."""
+    timeouts: list[float] = []
+
+    async def _fetch(url: str, *, api_key: str | None, timeout_seconds: float) -> dict[str, Any]:
+        timeouts.append(timeout_seconds)
         return payloads[url]
 
     monkeypatch.setattr(external_engine_provider_module, "_fetch_server_info_with_retry", _fetch)
+    return timeouts
 
 
 async def _collect_watched_cells(provider: StaticInferenceEngineWorkerProvider) -> list[CellInfo]:
@@ -222,6 +227,17 @@ class TestStaticInferenceEngineWorkerProvider:
         await provider.init()
         return provider
 
+    async def test_every_probe_gets_the_configured_discovery_timeout(self, monkeypatch):
+        """Engines loading a large checkpoint over a network mount need more than the 600 s default."""
+        urls = ["http://host1:8000", "http://host2:8000"]
+        timeouts = _install_payloads(monkeypatch, {url: _regular_payload() for url in urls})
+
+        await StaticInferenceEngineWorkerProvider(
+            args=_make_args(urls, rollout_external_engine_discovery_timeout=3600.0)
+        ).init()
+
+        assert timeouts == [3600.0, 3600.0]
+
     async def test_an_empty_external_engine_address_list_is_rejected(self):
         """An external rollout must name at least one engine before discovery starts."""
         provider = StaticInferenceEngineWorkerProvider(args=_make_args([]))
@@ -234,7 +250,7 @@ class TestStaticInferenceEngineWorkerProvider:
         on ranks the missing engine was supposed to claim."""
         args = _make_args(["host1:8000", "host2:8000"])
 
-        async def _fetch(url: str, *, api_key: str | None) -> dict[str, Any]:
+        async def _fetch(url: str, *, api_key: str | None, timeout_seconds: float) -> dict[str, Any]:
             if url == "http://host2:8000":
                 raise TimeoutError(f"External engine {url} did not answer /server_info")
             return _regular_payload()
