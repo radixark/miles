@@ -72,6 +72,26 @@ TRAIN_KEYS = FORWARD_ONLY_KEYS + [
 SAMPLING_MASK_KEYS = ["rollout_sampling_mask_ids", "rollout_sampling_mask_offsets"]
 
 
+def scores_actor_log_probs(args) -> bool:
+    """Whether the step runs the actor's forward-only log-prob pass.
+
+    Under --use-rollout-logprobs the loss takes the engine's log-probs as the old-policy baseline, so the pass only
+    feeds the rollout/log_probs and rollout/entropy metrics and the diagnostics that compare the two policies. It is
+    skipped when nothing reads it, as the Megatron backend does; it stays for the mismatch metrics and built-in
+    TIS (which score the trainer against the engine), the CI log-prob checks, the correct-sample entropy and a
+    routing replay that records the routing in this pass for the backward.
+    """
+    if not args.use_rollout_logprobs:
+        return True
+    return bool(
+        args.get_mismatch_metrics
+        or args.use_tis
+        or args.ci_test
+        or args.log_correct_samples
+        or routing_replay.log_prob_stage(args) == routing_replay.RECORD
+    )
+
+
 class TorchNativeTrainRayActor(TrainRayActor):
     backend_name: ClassVar[str]
     model_parts: Sequence[torch.nn.Module]
@@ -248,8 +268,9 @@ class TorchNativeTrainRayActor(TrainRayActor):
         if self.ref_runner is not None:
             with routing_replay.stage(routing_replay.FALLTHROUGH), self._ref_context():
                 rollout_data.update(self._log_probs(self.ref_runner, data_iterator, num_microbatches, "ref_"))
-        with routing_replay.stage(routing_replay.log_prob_stage(self.args)):
-            rollout_data.update(self._log_probs(runner, data_iterator, num_microbatches))
+        if scores_actor_log_probs(self.args):
+            with routing_replay.stage(routing_replay.log_prob_stage(self.args)):
+                rollout_data.update(self._log_probs(runner, data_iterator, num_microbatches))
         routing_replay.rewind()
 
         # PaddedRows keeps the per-sample tensors on the host, so their whitening reduces over the gloo group
