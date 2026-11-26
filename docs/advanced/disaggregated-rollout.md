@@ -154,6 +154,30 @@ changed positions and their new values; it is larger but idempotent. Both
 encodings are byte-oriented: the base and exported policy must agree on tensor
 names, dtypes, shapes, and byte layout.
 
+`sparse-xor` keeps the published layout but moves the work to the GPUs. The
+trainer keeps the previous sync on its GPU and publishes, per tensor, the gaps
+between changed elements and their XOR, as byte planes under zstd. Each engine
+applies a version to its live weights inside a weight-update session, through
+`--sglang-custom-weight-loader miles.utils.sparse_delta.apply_delta`: it loads
+the delta through the model's own `load_weights` into zeroed weights, a group
+of tensors at a time, and XORs the old weights back, so there is no host-local
+checkpoint, no CPU apply, and no reload. It costs one extra copy of each source
+rank's gathered weights in trainer GPU memory, and the engines stay paused for
+the whole sync. It is exact for a model whose loader only copies bytes;
+`--update-weight-delta-verify` proves a model by also publishing the full
+weights and failing the sync unless a full load leaves the same bits.
+
+```bash
+--update-weight-transfer-mode disk-delta \
+--update-weight-delta-encoding sparse-xor \
+--update-weight-disk-dir /shared/miles/weight-updates \
+--sglang-custom-weight-loader miles.utils.sparse_delta.apply_delta
+```
+
+A post-write hook that serves the files itself, instead of copying them to
+shared storage, returns where from; with `sparse-xor` the engines' pre-read
+hook receives those sources as a third argument.
+
 Each published tensor carries a checksum of its complete target state.
 `xxh3-128` is the default; `blake3` and `adler32` are also accepted. A lineage,
 layout, or checksum mismatch fails the update instead of activating a partially

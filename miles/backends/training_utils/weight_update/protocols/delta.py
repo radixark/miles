@@ -368,10 +368,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         """Commit the published files, have each engine pull the delta onto every host it spans
         (checksum-verified), then reload the engines. The pull is disk-only, so it runs before
         pause and overlaps generation."""
-        if self._post_write_hook is not None:
-            fn_args = compute_custom_function_config(self.args, self.args.custom_update_weight_post_write_path)
-            self._post_write_hook(fn_args, self._version_dir, list(self.rollout_engines))
-        dist.barrier(group=get_gloo_group())
+        self._publish_version()
         if dist.get_rank() == 0:
             pulls = async_utils.wait_futures(
                 [
@@ -408,6 +405,15 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
                 [async_utils.submit(client.continue_generation()) for client in self.rollout_engines]
             )
         dist.barrier(group=get_gloo_group())
+
+    def _publish_version(self) -> str | None:
+        """Run the post-write hook and wait for every rank. Returns the hook's source, if any."""
+        source = None
+        if self._post_write_hook is not None:
+            fn_args = compute_custom_function_config(self.args, self.args.custom_update_weight_post_write_path)
+            source = self._post_write_hook(fn_args, self._version_dir, list(self.rollout_engines))
+        dist.barrier(group=get_gloo_group())
+        return source
 
     def _record_metrics(self, *, weight_version: int) -> None:
         """All-reduce the byte counts and record changed-fraction / wire size; the actor drains
