@@ -202,6 +202,9 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_gatherer.on_aborted_trajectories_drop(aborted)
         # Nothing reads them; their ownership drop waits for consumption, as a stale group still retries whole.
         record_dropped_samples(aborted)
+        for sample in iter_samples(aborted):
+            # Handed over: the prompt group still holds them, and a later drop of it must not hand them over again.
+            sample.rollout_store_plan = None
         input = replace(input, group=group)
         if not self._preput_filter(input):
             return
