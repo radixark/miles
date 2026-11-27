@@ -417,6 +417,19 @@ rebuild the same weights. See
 and
 [`miles/utils/bf16_stochastic_rounding.py`](https://github.com/radixark/miles/blob/main/miles/utils/bf16_stochastic_rounding.py).
 
+## FP8 primary weights in RL
+
+With `--fp8-param-gather`, the FP8 weights are the model's only weights. After each step the distributed optimizer rounds the FP32 master to them. An RL step moves a weight by about 1e-6, far less than an E4M3 cell (about 2e-3 for a typical weight), so the rounding matters.
+
+- **Stall.** If the FP32 master is built from the FP8 checkpoint, every weight starts on a grid point and round to nearest discards each update until the weight has moved half a cell.
+- **First-step jump.** If the master is built from BF16 values with power-of-two block scales, 1/16 of the weights sit on rounding ties. The first update breaks all of them toward its own sign at once. This needs power-of-two scales, as with `NVTE_FP8_BLOCK_SCALING_FP32_SCALES=0`.
+
+`--fp8-param-rounding fixed_threshold` gives each weight a fixed rounding threshold. The cast stays unbiased and deterministic, small updates reach the FP8 weights in proportion to their size, and no weight sits on a tie.
+
+In GRPO on Qwen2.5-0.5B from a K2.6-style INT4 checkpoint, starting from the FP8 grid, mean reward over 250 steps was 0.194 with round to nearest and 0.341 with the fixed threshold, against 0.342 in BF16 (3 seeds each). Details and the GPU checks are in [NVIDIA/Megatron-LM#9845](https://github.com/NVIDIA/Megatron-LM/pull/9845).
+
+To see which case a checkpoint is in, run `fp8_master_census` from `megatron.core.fp8_param_rounding` on the FP32 master after load. A grid fraction near 1 means the stall, and a tie fraction near 1/16 means the jump.
+
 ## Hardware support
 
 | GPU | BF16 | FP8 block-wise | MXFP8 | NVFP4 |
