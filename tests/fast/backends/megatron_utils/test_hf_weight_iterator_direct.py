@@ -133,6 +133,14 @@ class _GatherLog:
             buffer.copy_(tensor)
         return _Done()
 
+    def all_gather_into_tensor(
+        self, output: torch.Tensor, tensor: torch.Tensor, *, group: str, async_op: bool
+    ) -> "_Done":
+        self.log.append(("gather", group))
+        for chunk in output.view(-1, *tensor.shape):
+            chunk.copy_(tensor)
+        return _Done()
+
     def get_rank(self) -> int:
         return 0
 
@@ -159,6 +167,97 @@ def gather_log(direct_module, monkeypatch) -> _GatherLog:
     fake = _GatherLog()
     monkeypatch.setattr(direct_module, "dist", fake)
     return fake
+
+
+@pytest.mark.parametrize(
+    "name,partition_dim,partition_stride,expected,direct",
+    [
+        (
+            "self_attention.linear_qkv.weight",
+            0,
+            1,
+            [[0, 1], [2, 3], [4, 5], [6, 7], [10, 11], [12, 13], [14, 15], [16, 17]],
+            True,
+        ),
+        ("mlp.linear_fc2.weight", 1, 1, [[0, 1, 10, 11], [2, 3, 12, 13], [4, 5, 14, 15], [6, 7, 16, 17]], False),
+        ("mlp.linear_fc2.weight", 0, 1, [[0, 1, 10, 11], [2, 3, 12, 13], [4, 5, 14, 15], [6, 7, 16, 17]], False),
+        (
+            "mlp.linear_fc1.weight",
+            0,
+            2,
+            [[0, 1], [2, 3], [10, 11], [12, 13], [4, 5], [6, 7], [14, 15], [16, 17]],
+            False,
+        ),
+        (
+            "mlp.linear_fc1.weight",
+            -1,
+            1,
+            [[0, 1], [2, 3], [10, 11], [12, 13], [4, 5], [6, 7], [14, 15], [16, 17]],
+            False,
+        ),
+    ],
+)
+def test_tp_gather_layout_and_storage_after_all_handles_complete(
+    direct_module, gather_log, monkeypatch, name, partition_dim, partition_stride, expected, direct
+):
+    monkeypatch.setattr(
+        direct_module,
+        "get_parallel_state",
+        lambda: SimpleNamespace(tp=SimpleNamespace(size=2, group="tp"), etp=SimpleNamespace(size=1, group="etp")),
+    )
+    gather_buffers = []
+
+    def all_gather(buffers, tensor, *, group, async_op):
+        assert group == "tp" and async_op
+        index = len(gather_buffers)
+        gather_buffers.append(buffers)
+        gather_log.log.append(("gather", index))
+
+        def wait():
+            gather_log.log.append(("wait", index))
+            for rank, buffer in enumerate(buffers):
+                buffer.copy_(tensor + rank * 10)
+
+        return SimpleNamespace(wait=wait)
+
+    def all_gather_into_tensor(output, tensor, *, group, async_op):
+        # Rank r's shard lands in the r-th dim-0 block of the one output tensor.
+        handle = all_gather(list(output.view(-1, *tensor.shape)), tensor, group=group, async_op=async_op)
+        gather_buffers[-1] = [output]
+        return handle
+
+    original_cat = torch.cat
+
+    def cat(*args, **kwargs):
+        gather_log.log.append("cat")
+        return original_cat(*args, **kwargs)
+
+    monkeypatch.setattr(gather_log, "all_gather", all_gather)
+    monkeypatch.setattr(gather_log, "all_gather_into_tensor", all_gather_into_tensor)
+    monkeypatch.setattr(torch, "cat", cat)
+    params = []
+    for index in range(2):
+        param = (torch.arange(8, dtype=torch.float32) + index * 100).reshape(4, 2)
+        param.tensor_model_parallel = True
+        param.partition_dim = partition_dim
+        param.partition_stride = partition_stride
+        params.append((_param(f"decoder.layers.{index}.{name}", param.numel()), param))
+
+    gathered = direct_module.all_gather_params_async(
+        Namespace(backend=Namespace(swiglu=True, quick_geglu=False)), params
+    )
+
+    assert gather_log.log == [("gather", 0), ("gather", 1), ("wait", 0), ("wait", 1)] + (
+        [] if direct else ["cat", "cat"]
+    )
+    for index, (result, buffers) in enumerate(zip(gathered, gather_buffers, strict=True)):
+        torch.testing.assert_close(result, torch.tensor(expected, dtype=torch.float32) + index * 100)
+        assert result.is_contiguous()
+        if direct:
+            # One in-place gather into the result itself; per-rank receive buffers would make NCCL stage a copy.
+            assert len(buffers) == 1 and buffers[0] is result
+        for buffer in buffers:
+            assert (result.untyped_storage().data_ptr() == buffer.untyped_storage().data_ptr()) == direct
 
 
 class TestTensorParallelGatherFaultHook:
