@@ -9,7 +9,6 @@ from tests.fast.backends.sglang_utils.conftest import make_engine_args, tiny_mod
 
 pytest.importorskip("sglang")
 
-from miles.backends.sglang_utils import sglang_engine
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_engine import _assert_launch_gate_served, compute_engine_launch_cmd
@@ -164,7 +163,7 @@ class _SglangWithoutTheGate:
 class TestTheLaunchGateSglangMustServe:
     @staticmethod
     def _pretend_sglang_is(monkeypatch, server_args: type) -> None:
-        monkeypatch.setattr(sglang_engine, "ServerArgs", server_args)
+        monkeypatch.setattr("sglang.srt.server_args.ServerArgs", server_args)
         _assert_launch_gate_served.cache_clear()
 
     def test_an_sglang_that_serves_the_gate_is_accepted(self, monkeypatch) -> None:

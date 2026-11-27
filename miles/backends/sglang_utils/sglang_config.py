@@ -1,6 +1,7 @@
 """Configuration models for SGLang engine deployment."""
 
 import argparse
+import enum
 import logging
 from argparse import Namespace
 from dataclasses import dataclass
@@ -16,7 +17,9 @@ from miles.backends.sglang_utils.arguments import (
     collect_eval_sglang_overrides,
 )
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
+from miles.backends.sglang_utils.sglang_engine import MILES_OWNED_DIFFUSION_ARGS
 from miles.backends.sglang_utils.sglang_scaling_config import ServerGroupScalingConfig, SglangScalingConfig
+from miles.router.backend import RouterKind
 from miles.utils.args.configs.sglang_client import SglangClientConfig
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.hf_utils.config import load_hf_config
@@ -25,6 +28,11 @@ from miles.utils.output_store.config import SGLANG_OUTPUT_STORE_FIELDS
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 logger = logging.getLogger(__name__)
+
+
+class EngineKind(str, enum.Enum):
+    TEXT = "text"
+    DIFFUSION = "diffusion"
 
 
 # ---------------------------- raw config -----------------------------
@@ -42,12 +50,15 @@ class _RawServerGroupConfig(FrozenStrictBaseModel):
         overrides: Optional dict of SGLang ``ServerArgs`` field overrides.
                    These are applied on top of the base CLI ``--sglang-*``
                    arguments in ``_compute_server_args``.
+        engine_kind: ``text`` (``sglang.launch_server``) or ``diffusion``
+                     (``sglang.multimodal_gen``, a frozen image generator).
     """
 
     worker_type: WorkerType
     num_gpus: int
     num_gpus_per_engine: int | None = None
     overrides: dict = {}
+    engine_kind: EngineKind = EngineKind.TEXT
 
 
 class _RawModelConfig(FrozenStrictBaseModel):
@@ -159,6 +170,7 @@ class ServerGroupConfig(FrozenStrictBaseModel):
     pp_size: int = pydantic.Field(gt=0)
     overrides: dict = pydantic.Field(default_factory=dict)
     needs_offload: bool
+    engine_kind: EngineKind = EngineKind.TEXT
 
     @property
     def model_path(self) -> str:
@@ -197,12 +209,15 @@ class ServerGroupConfig(FrozenStrictBaseModel):
         needs_offload = args.offload_rollout and group_abs_start < megatron_num_gpus
 
         num_gpus_per_engine = x if (x := raw.num_gpus_per_engine) is not None else default_gpus_per_engine
+        # enable_memory_saver is a text-server arg; sglang.multimodal_gen would reject it.
+        disables_memory_saver = args.offload_rollout and not needs_offload and raw.engine_kind == EngineKind.TEXT
         overrides = {
             "model_path": default_model_path,
-            **({"enable_memory_saver": False} if args.offload_rollout and not needs_offload else {}),
+            **({"enable_memory_saver": False} if disables_memory_saver else {}),
             **raw.overrides,
         }
-        pp_size = overrides.get("pp_size", args.sglang_pp_size)
+        # A diffusion engine is one stage on one GPU; the run-wide --sglang-pp-size is a text-server arg.
+        pp_size = 1 if raw.engine_kind == EngineKind.DIFFUSION else overrides.get("pp_size", args.sglang_pp_size)
         assert num_gpus_per_engine % pp_size == 0, (
             f"{num_gpus_per_engine} GPUs per engine do not split into pp_size {pp_size} pipeline stages; "
             f"each stage needs the same number of GPUs"
@@ -214,6 +229,7 @@ class ServerGroupConfig(FrozenStrictBaseModel):
             pp_size=pp_size,
             overrides=overrides,
             needs_offload=needs_offload,
+            engine_kind=raw.engine_kind,
         )
         scaling = ServerGroupScalingConfig(
             num_gpus=raw.num_gpus, gpu_offset=gpu_offset, engine_offset=offset_cursor.engine
@@ -288,6 +304,13 @@ class ModelConfig(FrozenStrictBaseModel):
     def has_pd_disaggregation(self) -> bool:
         return any(g.worker_type in (WorkerType.PREFILL, WorkerType.DECODE) for g in self.server_groups)
 
+    @property
+    def engine_kind(self) -> EngineKind:
+        """``diffusion`` when any group is; ``_validate_diffusion_models`` makes that every group."""
+        if any(g.engine_kind == EngineKind.DIFFUSION for g in self.server_groups):
+            return EngineKind.DIFFUSION
+        return EngineKind.TEXT
+
     def num_server_cells(self, scaling: SglangScalingConfig) -> int:
         return sum(
             group_scaling.num_gpus // group.num_gpus_per_engine
@@ -315,7 +338,8 @@ class SglangConfig(FrozenStrictBaseModel):
             self.base_args | group.overrides
             for model in self.models
             for group in model.server_groups
-            if group.worker_type != WorkerType.PLACEHOLDER
+            # A diffusion group's overrides are sglang.multimodal_gen args, not text-server ones.
+            if group.worker_type != WorkerType.PLACEHOLDER and group.engine_kind == EngineKind.TEXT
         ]
         return _list_of_dicts_get(values or [self.base_args], name)
 
@@ -358,6 +382,8 @@ class SglangConfig(FrozenStrictBaseModel):
                 "num_gpus per group, and optional per-group 'overrides' dict of "
                 "ServerArgs field names that override the base --sglang-* CLI args. "
                 "Placeholder groups reserve GPU slots without creating engines. "
+                "A group with 'engine_kind: diffusion' serves a frozen sglang.multimodal_gen image generator, "
+                "which must be a later, update_weights: false model on one GPU per engine with --router miles. "
                 "A 'name: eval' model is filled in from the --eval-* args (model_path, "
                 "num_gpus_per_engine, --eval-sglang-* overrides) wherever the YAML leaves them unset. "
                 "Mutually exclusive with --prefill-num-servers."
@@ -409,6 +435,52 @@ def _validate_pp_layer_partition(partition: str, models: list[ModelConfig]) -> N
             )
 
 
+def _validate_diffusion_models(raw: _RawSglangConfig, args: Namespace) -> None:
+    """A diffusion model is a frozen generator beside the text policy; reject every rule it breaks at once.
+
+    Reads the YAML as written, before anything resolves it, so no generic check can preempt these rules.
+    """
+    for index, model in enumerate(raw.models):
+        groups = model.server_groups
+        if not any(g.engine_kind == EngineKind.DIFFUSION for g in groups):
+            continue
+        gpus_per_engine = [
+            next(
+                n
+                for n in (g.num_gpus_per_engine, model.num_gpus_per_engine, args.rollout_num_gpus_per_engine)
+                if n is not None
+            )
+            for g in groups
+        ]
+        owned_overrides = sorted({key for g in groups for key in g.overrides if key in MILES_OWNED_DIFFUSION_ARGS})
+        broken = [
+            rule
+            for rule, holds in [
+                ("update_weights must be set to false", model.update_weights is False),
+                ("it must not be the first model, whose router serves the policy", index > 0),
+                ("it must not be named eval, the name of the text eval fleet", model.name != "eval"),
+                (
+                    "every server group must set engine_kind: diffusion",
+                    all(g.engine_kind == EngineKind.DIFFUSION for g in groups),
+                ),
+                (
+                    "--router miles is required, since sgl-router has no image route",
+                    RouterKind(args.router) == RouterKind.MILES,
+                ),
+                (
+                    "every server group must be worker_type: regular",
+                    all(g.worker_type == WorkerType.REGULAR for g in groups),
+                ),
+                ("num_gpus_per_engine must be 1", all(n == 1 for n in gpus_per_engine)),
+                (f"overrides must not set what Miles sets for the engine: {owned_overrides}", not owned_overrides),
+                ("--colocate is not supported", not args.colocate),
+            ]
+            if not holds
+        ]
+        if broken:
+            raise ValueError(f"Diffusion model '{model.name}' breaks these rules: " + "; ".join(broken))
+
+
 def _extract_base_args(args: Namespace) -> dict[str, Any]:
     parser = argparse.ArgumentParser(add_help=False)
     _add_prefixed_primary_server_args(parser)
@@ -450,6 +522,7 @@ def _compute_raw_sglang_config(args) -> _RawSglangConfig:
 
     if args.sglang_config is not None:
         config = _RawSglangConfig.from_file_arg(args.sglang_config)
+        _validate_diffusion_models(config, args)
         expected = rollout_num_gpus + eval_num_gpus
         actual = config.total_num_gpus
         assert (

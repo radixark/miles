@@ -8,6 +8,7 @@ from typing import Any
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.sglang_utils.sglang_config import EngineKind
 from miles.ray.rollout.engine_topology_reporter import EngineTopologyReporter
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin, InferenceControllerEvalFleet
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
@@ -374,8 +375,13 @@ class InferenceController:
 
     @with_lock
     async def get_inference_runtime_immut_state(self) -> InferenceRuntimeImmutState:
+        # LLM engines only: the counts size the policy's request cap, HTTP pool and tokens-per-GPU metric, and a
+        # diffusion engine serves no policy request; a frozen text model still counts.
         engine_gpu_counts = [
-            count for name, srv in self.servers.items() if name != "eval" for count in srv.engine_gpu_counts
+            count
+            for name, srv in self.servers.items()
+            if name != "eval" and srv.engine_kind == EngineKind.TEXT
+            for count in srv.engine_gpu_counts
         ]
         eval_srv = self.servers.get("eval")
         return InferenceRuntimeImmutState(

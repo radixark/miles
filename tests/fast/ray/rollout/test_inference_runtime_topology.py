@@ -8,6 +8,7 @@ import pytest
 from tests.fast.fixtures.args_fixtures import parse_megatron_test_config
 from tests.fast.ray.rollout.inference_runtime_fixtures import _ControllerProvider, _SnapshotController
 
+from miles.backends.sglang_utils.sglang_config import EngineKind
 from miles.ray.rollout import rollout_executor as rollout_executor_module
 from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.rollout.rollout_executor import RolloutExecutor
@@ -25,11 +26,11 @@ async def test_runtime_topology_waits_for_changes_and_excludes_the_eval_fleet(in
     controller = object.__new__(InferenceController)
     controller.context_lock = ContextLock("runtime-topology-test")
     controller.servers = {
-        "primary": SimpleNamespace(engine_gpu_counts=primary_counts),
-        "reference": SimpleNamespace(engine_gpu_counts=[8]),
+        "primary": SimpleNamespace(engine_gpu_counts=primary_counts, engine_kind=EngineKind.TEXT),
+        "reference": SimpleNamespace(engine_gpu_counts=[8], engine_kind=EngineKind.TEXT),
     }
     if include_eval:
-        controller.servers["eval"] = SimpleNamespace(engine_gpu_counts=[1, 1])
+        controller.servers["eval"] = SimpleNamespace(engine_gpu_counts=[1, 1], engine_kind=EngineKind.TEXT)
     before = await controller.get_inference_runtime_immut_state()
 
     async with controller.context_lock:

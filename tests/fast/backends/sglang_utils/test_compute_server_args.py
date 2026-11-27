@@ -72,9 +72,10 @@ def test_server_args_representation_preserves_launch_values(monkeypatch, record_
         "ServerArgs",
         [("gated_launch_port", int), ("mem_fraction_static", float), ("random_seed", int)],
     )
-    monkeypatch.setattr(sglang_engine, "ServerArgs", server_args_type)
+    args = make_args()
+    monkeypatch.setattr("sglang.srt.server_args.ServerArgs", server_args_type)
 
-    result = compute(make_args(), random_seed=7, sglang_overrides={"random_seed": 99, "unknown_field": True})
+    result = compute(args, random_seed=7, sglang_overrides={"random_seed": 99, "unknown_field": True})
 
     assert result == {"gated_launch_port": 30001, "mem_fraction_static": 0.7, "random_seed": 99, "device": "cuda"}
 
@@ -193,7 +194,7 @@ class TestOutputStore:
             hosts.append(local_hostname)
             return {"output_store_backend": "mooncake"}
 
-        monkeypatch.setattr(sglang_engine, "sglang_output_store_server_args", server_args)
+        monkeypatch.setattr("miles.utils.output_store.config.sglang_output_store_server_args", server_args)
         monkeypatch.setattr(sglang_engine, "_record_field_names", lambda record: ("output_store_backend",))
 
         kwargs = compute(make_args(use_output_store=True), host="[::1]")
