@@ -36,7 +36,7 @@ from miles.kernels.tpu.flash_attention import _forward_op as _splash_forward
 # Sequence slots of the packed attention, a static count: a micro-batch's samples and its padding tail must fit
 # (check_microbatch). Arbitrary; each slot adds a page-table row and one scratch KV page to every attention call.
 MAX_SEQUENCES = 128
-# The epsilon of the engine's top-k renormalization (sglang's fused_topk_torch_native)
+# sglang's fused_topk_torch_native renormalization epsilon
 _ROUTE_NORM_EPSILON = 1e-20
 
 
@@ -104,8 +104,7 @@ def _check_supported(blocks) -> None:
 
 def _check_moe(moe) -> None:
     router = moe.router
-    # the engine's TopK for Qwen: softmax scores, the top-k renormalized to sum to 1, no scaling; a router subclass
-    # (round-robin, quantile-balanced) picks the experts another way
+    # a router subclass (round-robin, quantile-balanced) picks its experts another way
     softmax_top_k = isinstance(router.score_func, Softmax) and router.route_norm and router.route_scale == 1.0
     if type(router) is not TokenChoiceTopKRouter or not softmax_top_k:
         raise ValueError("true on-policy MoE covers softmax top-k routing, renormalized, without scaling")
@@ -262,7 +261,7 @@ def _moe(moe, x, padding_mask, aux_loss_denominator):
     with torch.no_grad():
         engine = _engine_routed_experts(moe, x)
         if moe.shared_experts is not None:
-            engine = engine + _engine_shared_expert(moe.shared_experts, x)  # the engine adds it to the routed output
+            engine = engine + _engine_shared_expert(moe.shared_experts, x)
     own = moe(x, padding_mask_T=padding_mask, aux_loss_denominator=aux_loss_denominator)
     return engine + (own - own.detach())
 
@@ -278,7 +277,7 @@ def _engine_routed_experts(moe, x):
     return ops.moe_experts(
         x,
         w13.flatten(1, 2).transpose(1, 2),  # [E, D, 2F]: gate || up, as the engine lays them out
-        w2.transpose(1, 2),  # [E, F, D]
+        w2.transpose(1, 2),
         weights.to(x.dtype),
         expert_ids.to(torch.int32),
     )
