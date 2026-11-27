@@ -99,6 +99,7 @@ def _make_args(tmp_path, **overrides) -> Namespace:
         fully_async=False,
         colocate=False,
         pause_generation_mode="retract",
+        p2p_staged_update=False,
         ft_components=[],
         update_weight_engine_request_timeout=10.0,
     )

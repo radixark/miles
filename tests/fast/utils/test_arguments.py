@@ -4050,6 +4050,44 @@ class TestP2PMoriTransferBuffer:
         assert args.p2p_mori_transfer_buffer == buffer
 
 
+class TestP2PStagedUpdate:
+    """--p2p-staged-update leaves the engines generating, which only the MoRI staging region and the in_place
+    contract (in-flight requests keep their KV cache) make correct."""
+
+    _STAGED = [*_P2P_ARGS, "--p2p-transport", "mori", "--pause-generation-mode", "in_place", "--p2p-staged-update"]
+
+    def _validate(self, extra):
+        args = get_megatron_arg_parser().parse_args(["--num-rollout", "1", *extra, *REQUIRED_ARGS])
+        _set_megatron_parallel_sizes(args)
+        miles_validate_args(args)
+        return args
+
+    def test_it_is_accepted_over_mori_with_in_place(self):
+        assert self._validate(self._STAGED).p2p_staged_update
+
+    @pytest.mark.parametrize(
+        "extra,error",
+        [
+            (
+                ["--p2p-staged-update", "--pause-generation-mode", "in_place"],
+                "needs --update-weight-transfer-mode p2p",
+            ),
+            (
+                [*_P2P_ARGS, "--p2p-transport", "nixl", "--pause-generation-mode", "in_place", "--p2p-staged-update"],
+                "needs --update-weight-transfer-mode p2p --p2p-transport mori",
+            ),
+            (
+                [*_P2P_ARGS, "--p2p-transport", "mori", "--pause-generation-mode", "retract", "--p2p-staged-update"],
+                "--pause-generation-mode in_place",
+            ),
+            ([*_STAGED, "--check-weight-transfer-checksum"], "use --check-weight-update-equal"),
+        ],
+    )
+    def test_it_is_refused_where_an_unpaused_engine_would_be_wrong(self, extra, error):
+        with pytest.raises(AssertionError, match=error):
+            self._validate(extra)
+
+
 def test_fully_async_warns_that_over_sampling_batch_size_is_ignored(caplog):
     """Fully-async never reads --over-sampling-batch-size; passing it silently does nothing."""
     args = _fully_async_candidate_args(fully_async=True, over_sampling_batch_size=32)

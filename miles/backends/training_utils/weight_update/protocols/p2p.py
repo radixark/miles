@@ -260,6 +260,15 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 continue
             model_replica = model_replicas.get_or_build(configs_by_rollout_engine_rank[rollout_engine_rank])
             for remote_shard in remote_shards:
+                # staged, the engines are not paused, so a write must not land in their live weights; not
+                # staged, a write into a staging region would never be installed
+                assert remote_shard.is_staging == self.args.p2p_staged_update, (
+                    f"the {runner_role} of rollout engine {remote_shard.rollout_engine_ind} rank "
+                    f"{rollout_engine_rank} publishes its "
+                    f"{'staging region' if remote_shard.is_staging else 'live weights'} for writes, but "
+                    f"--p2p-staged-update is {self.args.p2p_staged_update}: it and "
+                    "--sglang-weight-update-staging must be set together"
+                )
                 assert_replica_matches_shard(
                     model_replica,
                     remote_shard.published_nbytes_by_name,

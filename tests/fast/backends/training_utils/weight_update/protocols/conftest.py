@@ -373,9 +373,11 @@ class _FakeRolloutApi:
         speculative_args: dict | None = None,
         draft_shares_target_weights: bool = True,
         unreachable: bool = False,
+        weight_update_staging: bool = False,
         transport: str = "mooncake",
     ) -> None:
         self.unreachable = unreachable
+        self.weight_update_staging = weight_update_staging
         self.request_failures: dict[str, Exception] = {}
         self.hanging_requests: set[str] = set()
         self.corrupted_roles: set[str] = set()
@@ -423,6 +425,7 @@ class _FakeRolloutApi:
                     for nbytes in [numel * element_size]
                 ],
                 "weights_info_dict": weights,
+                "weight_update_staging": self.weight_update_staging,
             }
         if self.transport == "nixl":
             return {
@@ -547,6 +550,7 @@ class _P2PSenderHarness:
         p2p_transfer_timeout: float = _FAILURE_BOUND,
         update_weight_buffer_size: int = 1024,
         check_weight_transfer_checksum: bool = False,
+        p2p_staged_update: bool = False,
     ) -> Any:
         args = Namespace(
             ft_components=["weight_update"],
@@ -559,6 +563,7 @@ class _P2PSenderHarness:
             p2p_transport=self.p2p_transport,
             # CPU CI: MoRI's default GPU transfer buffers need a GPU
             p2p_mori_transfer_buffer="cpu" if self.p2p_transport == "mori" else None,
+            p2p_staged_update=p2p_staged_update,
         )
         protocol = self._p2p_protocol.UpdateWeightP2P(args)
         self._protocols.append(protocol)

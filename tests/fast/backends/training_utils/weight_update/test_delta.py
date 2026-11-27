@@ -50,6 +50,7 @@ class TestReloadEnginesFailureTransitions:
             update_weight_local_checkpoint_dir="/local/ckpt",
             update_weight_disk_dir="/shared/delta",
             pause_generation_mode="retract",
+            p2p_staged_update=False,
             check_weight_update_equal=False,
         )
         protocol.rollout_engines = [_RejectingApiClient(calls, failing_method)]
@@ -141,6 +142,7 @@ class TestDeltaPublicationLifecycle:
                 update_weight_delta_checksum="adler32",
                 custom_update_weight_post_write_path=None,
                 pause_generation_mode="in_place",
+                p2p_staged_update=False,
             )
         )
         receiver = _DeltaReceiver(bytes(baseline.tolist()))

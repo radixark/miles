@@ -394,6 +394,18 @@ class RolloutRelatedConfig(BaseConfig):
             ),
         ),
     ] = None
+    p2p_staged_update: A[
+        bool,
+        Arg(
+            help=(
+                "Write a P2P weight update into the rollout engines' staging region instead of their live weights, "
+                "without pausing them: they keep generating with the old weights during the transfer and install "
+                "the new ones between two forward steps. In-flight requests keep their KV cache, as with "
+                "--pause-generation-mode in_place. Needs --p2p-transport mori and engines started with "
+                "--sglang-weight-update-staging, which hold a second copy of the weights in device memory."
+            )
+        ),
+    ] = False
 
 
 class RolloutRelatedRolloutOnlyConfig(BaseConfig):
