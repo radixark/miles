@@ -24,6 +24,12 @@ class AlgoConfig(BaseConfig):
             help=(
                 "Path to save the model in HuggingFace format when using Megatron backend. "
                 "The model will be saved to `save_hf.format(rollout_id)`. "
+                "With --megatron-to-hf-mode raw, the export holds only the tensors the trainer "
+                "has; base-checkpoint tensors the trainer never holds (e.g. a frozen vision tower "
+                "or an untrained MTP layer) are left out, and the export loads correctly only on "
+                "top of --hf-checkpoint. Make it a standalone checkpoint with "
+                "tools/complete_hf_export.py. A partial export is reported in the log when "
+                "--hf-checkpoint is a local directory. "
             )
         ),
     ] = None
