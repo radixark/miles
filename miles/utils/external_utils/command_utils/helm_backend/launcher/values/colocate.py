@@ -33,7 +33,15 @@ def pairing_config(specs: list[BaseSpec], plan: LaunchPlan, *, scaling: ScalingC
     )
 
     pairing_layouts = [
-        (inference.name, _compute_pairing_layout(inference=inference, trainer=trainer, scaling=scaling))
+        (
+            inference.name,
+            _compute_pairing_layout(
+                inference=inference,
+                trainer=trainer,
+                scaling=scaling,
+                has_pairing_dir=plan.colocate_pairing_dir is not None,
+            ),
+        )
         for inference in colocated_inference_specs
     ]
 
@@ -44,16 +52,21 @@ def pairing_config(specs: list[BaseSpec], plan: LaunchPlan, *, scaling: ScalingC
         inference_pools=[
             InferencePool(pool_id=pool_id, layout=pairing_layout) for pool_id, pairing_layout in pairing_layouts
         ],
+        pairing_dir=plan.colocate_pairing_dir,
     )
 
 
-def _compute_pairing_layout(*, inference: BaseSpec, trainer: BaseSpec, scaling: ScalingConfig) -> PairingLayout:
+def _compute_pairing_layout(
+    *, inference: BaseSpec, trainer: BaseSpec, scaling: ScalingConfig, has_pairing_dir: bool = False
+) -> PairingLayout:
     inference_scheduling = inference.scheduling(scaling)
     trainer_scheduling = trainer.scheduling(scaling)
+    gpus_per_trainer_pod = trainer_scheduling.gpus_per_pod()
     _assert_colocate_supported(
         num_gpus_per_node=trainer_scheduling.num_gpus_per_node,
         gpus_per_inference_pod=inference_scheduling.gpus_per_pod(),
-        gpus_per_trainer_pod=trainer_scheduling.gpus_per_pod(),
+        gpus_per_trainer_pod=gpus_per_trainer_pod,
+        has_pairing_dir=has_pairing_dir,
     )
     return PairingLayout(
         num_inference_cells=inference_scheduling.num_cells,
@@ -61,20 +74,32 @@ def _compute_pairing_layout(*, inference: BaseSpec, trainer: BaseSpec, scaling: 
         num_pods_per_inference_cell=inference_scheduling.pods_per_cell(),
         num_pods_per_trainer_cell=trainer_scheduling.pods_per_cell(),
         num_gpus_per_node=trainer_scheduling.num_gpus_per_node,
+        num_gpus_per_trainer_pod=(
+            gpus_per_trainer_pod if gpus_per_trainer_pod < trainer_scheduling.num_gpus_per_node else None
+        ),
         num_gpus_per_inference_pod=inference_scheduling.gpus_per_pod(),
         gpu_offset=inference_scheduling.pg_slot_offset,
     )
 
 
 def _assert_colocate_supported(
-    *, num_gpus_per_node: int, gpus_per_inference_pod: int, gpus_per_trainer_pod: int
+    *,
+    num_gpus_per_node: int,
+    gpus_per_inference_pod: int,
+    gpus_per_trainer_pod: int,
+    has_pairing_dir: bool = False,
 ) -> None:
     assert gpus_per_inference_pod <= num_gpus_per_node, (
         f"An inference pod holding {gpus_per_inference_pod} of a node's {num_gpus_per_node} gpus reaches past the "
         f"node it is pinned to; colocate gives it the trainer's node, not a share of the next one as well"
     )
-    assert gpus_per_trainer_pod == num_gpus_per_node, (
-        f"A trainer pod holding {gpus_per_trainer_pod} of a node's {num_gpus_per_node} gpus is a sub-node pod, which "
-        f"colocate does not support: the device plugin picks its cards at runtime, so a computed card index is the "
-        f"trainer pod's only when it holds every card, and the 0-gpu inference pod leaves the rest free to be given away"
+    if not has_pairing_dir:
+        assert gpus_per_trainer_pod == num_gpus_per_node, (
+            f"A trainer pod holding {gpus_per_trainer_pod} of a node's {num_gpus_per_node} gpus is a sub-node pod, "
+            f"which colocate does not support without a shared pairing_dir: the device plugin picks its cards at "
+            f"runtime, so physical GPU UUID publishing is required to pair inference pods safely"
+        )
+    assert gpus_per_inference_pod <= gpus_per_trainer_pod, (
+        f"An inference pod holding {gpus_per_inference_pod} gpus cannot fit inside a {gpus_per_trainer_pod}-gpu "
+        f"trainer pod"
     )

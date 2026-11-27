@@ -123,6 +123,25 @@ class TestTheValuesCarryAWholePairingConfig:
         with pytest.raises(AssertionError, match="sub-node"):
             build_values_as_launched(specs, COLOCATE_LAYOUT, scaling=SCALING).as_values()
 
+    def test_allows_sub_node_trainer_and_wraps_trainer_with_device_publisher_when_pairing_dir_is_set(self):
+        """With a shared pairing_dir, a 4-GPU trainer on an 8-GPU node publishes its physical GPU UUIDs."""
+        specs = [engine(num_cells=2, gpus_per_engine=2), trainer(num_cells=1, gpus_per_cell=4)]
+        plan = COLOCATE_LAYOUT.model_copy(update={"colocate_pairing_dir": "/shared/runs/r/pairing"})
+
+        built = build_values_as_launched(specs, plan, scaling=SCALING).as_values()["run"]
+
+        assert built["colocate"]["pairing_dir"] == "/shared/runs/r/pairing"
+        [pool] = built["colocate"]["inference_pools"]
+        assert pool["layout"]["num_gpus_per_node"] == 8
+        assert pool["layout"]["num_gpus_per_trainer_pod"] == 4
+        assert pool["layout"]["num_gpus_per_inference_pod"] == 2
+        trainer_cmd = built["trainerEngines"][0]["command"]
+        assert "miles.utils.external_utils.colocate_pairing.publish_devices" in trainer_cmd
+        assert "--pairing-dir" in trainer_cmd
+        assert "/shared/runs/r/pairing" in trainer_cmd
+        assert "--expected-gpus" in trainer_cmd
+        assert trainer_cmd[trainer_cmd.index("--expected-gpus") + 1] == "4"
+
     def test_places_one_engine_per_gpu_of_a_single_trainer_node(self):
         """The shape a user reaches for first: eight engines sharing the eight cards of one trainer node."""
         specs = [engine(num_cells=8, gpus_per_engine=1), trainer(num_cells=1, gpus_per_cell=8)]

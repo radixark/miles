@@ -165,6 +165,7 @@ def execute_train(
             worker_argv=worker_argv,
             env=env,
             colocate=bool(args.colocate),
+            colocate_pairing_dir=str(RunFiles.pairing_dir(run_directory=run_directory)) if args.colocate else None,
             mooncake_plan=_compute_mooncake_plan(args),
             prepare_cmd=request.prepare_cmd,
             extra_manifests=request.extra_manifests,

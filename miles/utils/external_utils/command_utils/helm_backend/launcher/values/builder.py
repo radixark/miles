@@ -61,6 +61,7 @@ def _build_run_values(
 
     colocate = _pairing_config(specs, plan, scaling=scaling)
     layout_of_pool = {pool.pool_id: pool.layout for pool in colocate.inference_pools} if colocate else {}
+    colocate_pairing_dir = colocate.pairing_dir if colocate is not None else None
 
     entries: dict[str, list[PoolEntry]] = {
         STATIC_WORKERS_SECTION: [],
@@ -74,6 +75,7 @@ def _build_run_values(
             plan=plan,
             addresses=addresses,
             pairing_layout=layout_of_pool.get(spec.name),
+            colocate_pairing_dir=colocate_pairing_dir,
             static_connections=static_connections,
             scaling=scaling,
         )

@@ -18,9 +18,15 @@ from miles.utils.external_utils.colocate_pairing.config import InferencePool, Pa
 from miles.utils.external_utils.colocate_pairing.controller import (
     InferencePlacement,
     PairingController,
+    TrainerDevicesPendingError,
     _place_inference_pod,
 )
-from miles.utils.external_utils.colocate_pairing.pods import PodCoordinate
+from miles.utils.external_utils.colocate_pairing.devices import TrainerDevices, publish_trainer_devices
+from miles.utils.external_utils.colocate_pairing.pods import (
+    NVIDIA_VISIBLE_DEVICES_ANNOTATION,
+    PAIRED_TRAINER_UID_ANNOTATION,
+    PodCoordinate,
+)
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.colocate import _assert_colocate_supported
 from miles.utils.test_utils.clock import FakeClock
 from miles.utils.workers.connection_config import WORKER_METADATA_ANNOTATION, WorkerPodMetadata
@@ -719,6 +725,8 @@ class TestPoolsClaimDistinctGpus:
 
 BASE_GPU_ID_ANNOTATION = DEFAULT_LABEL_KEYS.base_gpu_id_annotation
 _ESCAPED_BASE_GPU_ID_ANNOTATION = "miles.radixark.io~1base-gpu-id"
+_ESCAPED_VISIBLE_DEVICES_ANNOTATION = "miles.radixark.io~1nvidia-visible-devices"
+_ESCAPED_PAIRED_TRAINER_UID_ANNOTATION = "miles.radixark.io~1paired-trainer-uid"
 _CHART_META_ANNOTATION = f"{DEFAULT_LABEL_KEYS.meta_annotation_prefix}{DEFAULT_LABEL_KEYS.gpu_ids_meta}"
 _POD_ANNOTATIONS = {_CHART_META_ANNOTATION: "0", "leaderworkerset.sigs.k8s.io/size": "2"}
 
@@ -729,12 +737,16 @@ def _release_patch(
     base_gpu_id: int = 0,
     gates: list[str] | None = None,
     annotations: dict[str, str] | None = None,
+    nvidia_visible_devices: str = "all",
+    paired_trainer_uid: str | None = None,
 ) -> list[dict[str, Any]]:
     return pairing_pods.release_patch(
         node_name=node_name,
         base_gpu_id=base_gpu_id,
         gates=[pairing_pods._GATE_NAME] if gates is None else gates,
         annotations=_POD_ANNOTATIONS if annotations is None else annotations,
+        nvidia_visible_devices=nvidia_visible_devices,
+        paired_trainer_uid=paired_trainer_uid,
     )
 
 
@@ -756,7 +768,7 @@ class TestReleasePatch:
                 }
             },
         }
-        assert patch[2:] == [
+        assert patch[-2:] == [
             {"op": "test", "path": "/spec/schedulingGates/0/name", "value": pairing_pods._GATE_NAME},
             {"op": "remove", "path": "/spec/schedulingGates/0"},
         ]
@@ -770,12 +782,20 @@ class TestReleasePatch:
             "path": f"/metadata/annotations/{_ESCAPED_BASE_GPU_ID_ANNOTATION}",
             "value": "5",
         }
+        assert patch[2] == {
+            "op": "add",
+            "path": f"/metadata/annotations/{_ESCAPED_VISIBLE_DEVICES_ANNOTATION}",
+            "value": "all",
+        }
 
     def test_writes_the_card_as_a_string_the_downward_api_can_serve(self):
         """A fieldRef reads an annotation, and an annotation value that is not a string is not valid."""
-        [operation] = [op for op in _release_patch(base_gpu_id=7) if str(op["path"]).startswith("/metadata")]
+        operations = [op for op in _release_patch(base_gpu_id=7) if str(op["path"]).startswith("/metadata")]
 
-        assert operation["value"] == "7"
+        assert operations == [
+            {"op": "add", "path": f"/metadata/annotations/{_ESCAPED_BASE_GPU_ID_ANNOTATION}", "value": "7"},
+            {"op": "add", "path": f"/metadata/annotations/{_ESCAPED_VISIBLE_DEVICES_ANNOTATION}", "value": "all"},
+        ]
 
     def test_never_replaces_the_map_of_a_pod_that_carries_annotations(self):
         """A whole-map add replaces it, dropping the chart's gpu meta and the platform's own bookkeeping."""
@@ -803,7 +823,7 @@ class TestReleasePatch:
 
         patch = _release_patch(gates=gates)
 
-        assert patch[2:] == [
+        assert patch[-2:] == [
             {"op": "test", "path": "/spec/schedulingGates/1/name", "value": pairing_pods._GATE_NAME},
             {"op": "remove", "path": "/spec/schedulingGates/1"},
         ]
@@ -816,9 +836,9 @@ class TestReleasePatch:
 
     def test_hands_over_the_card_only_if_the_gate_is_still_there(self):
         """A test op guards the whole patch, so a pod another pass released is never re-annotated."""
-        patch = _release_patch(base_gpu_id=5)
+        patch = _release_patch(base_gpu_id=5, paired_trainer_uid="uid-t0")
 
-        assert [operation["op"] for operation in patch] == ["add", "add", "test", "remove"]
+        assert [operation["op"] for operation in patch] == ["add", "add", "add", "add", "test", "remove"]
 
 
 class TestCoordinateOf:
@@ -912,33 +932,38 @@ def _controller(core_v1: Any, layout: PairingLayout | None = None) -> PairingCon
 
 
 def _base_gpu_id_written(body: list[dict[str, Any]]) -> str:
-    [operation] = [op for op in body if str(op["path"]).startswith("/metadata/annotations")]
-    value = operation["value"]
-    return value if isinstance(value, str) else value[BASE_GPU_ID_ANNOTATION]
+    return _annotation_written(body, _ESCAPED_BASE_GPU_ID_ANNOTATION)
+
+
+def _annotation_written(body: list[dict[str, Any]], escaped_key: str) -> str:
+    [operation] = [op for op in body if op["path"] == f"/metadata/annotations/{escaped_key}"]
+    return str(operation["value"])
 
 
 class TestReconcile:
     def test_releases_a_gated_inference_onto_its_trainer_node(self):
         """This is the whole point: the inference ends up where the trainer that feeds it already runs."""
         core_v1 = FakeCoreV1()
-        pods = [_pod(INFERENCE_POOL_ID, 0), _pod(TRAINER_POOL_ID, 0, node_name="gpu-3", gated=False)]
+        trainer = _pod(TRAINER_POOL_ID, 0, node_name="gpu-3", gated=False)
+        pods = [_pod(INFERENCE_POOL_ID, 0), trainer]
 
         asyncio.run(_attached(_controller(core_v1), pods).reconcile(_key(TRAINER_POOL_ID, 0)))
 
         assert core_v1.patched == [
             (
                 _pod_name(INFERENCE_POOL_ID, 0),
-                _release_patch(node_name="gpu-3"),
+                _release_patch(node_name="gpu-3", paired_trainer_uid=trainer.metadata.uid),
             )
         ]
 
     def test_releases_every_sub_node_inference_the_trainer_seats_in_one_pass(self):
         """One trainer node wakes both half-node inference pods, and one reconcile has to place them both."""
         core_v1 = FakeCoreV1()
+        trainer = _pod(TRAINER_POOL_ID, 0, 0, node_name="gpu-3", gated=False)
         pods = [
             _pod(INFERENCE_POOL_ID, 0),
             _pod(INFERENCE_POOL_ID, 1),
-            _pod(TRAINER_POOL_ID, 0, 0, node_name="gpu-3", gated=False),
+            trainer,
         ]
 
         asyncio.run(_attached(_controller(core_v1, _sub_node_layout()), pods).reconcile(_key(TRAINER_POOL_ID, 0, 0)))
@@ -946,7 +971,7 @@ class TestReconcile:
         assert core_v1.patched == [
             (
                 _pod_name(INFERENCE_POOL_ID, index),
-                _release_patch(node_name="gpu-3", base_gpu_id=index * 4),
+                _release_patch(node_name="gpu-3", base_gpu_id=index * 4, paired_trainer_uid=trainer.metadata.uid),
             )
             for index in (0, 1)
         ]
@@ -1177,14 +1202,15 @@ class TestSeveralInferencePools:
     def test_releases_a_pod_of_the_second_pool_onto_its_own_trainer(self):
         """A prefill/decode run has two gated pool_ids, and reconcile has to know which layout a pod follows."""
         core_v1 = FakeCoreV1()
-        pods = [_pod(DECODE_POOL_ID, 1), _pod(TRAINER_POOL_ID, 0, 3, node_name="gpu-4", gated=False)]
+        trainer = _pod(TRAINER_POOL_ID, 0, 3, node_name="gpu-4", gated=False)
+        pods = [_pod(DECODE_POOL_ID, 1), trainer]
 
         asyncio.run(_attached(_two_pool_controller(core_v1), pods).reconcile(_key(TRAINER_POOL_ID, 0, 3)))
 
         assert core_v1.patched == [
             (
                 _pod_name(DECODE_POOL_ID, 1),
-                _release_patch(node_name="gpu-4"),
+                _release_patch(node_name="gpu-4", paired_trainer_uid=trainer.metadata.uid),
             )
         ]
 
@@ -1291,6 +1317,7 @@ class TestPairingConfig:
 class FakeCoreV1:
     def __init__(self, *, rejects: dict[str, int] | None = None) -> None:
         self.patched: list[tuple[str, list[dict[str, Any]]]] = []
+        self.deleted: list[str] = []
         self._rejects = rejects or {}
 
     async def patch_namespaced_pod(self, *, name: str, namespace: str, body: list[dict[str, Any]]) -> None:
@@ -1298,14 +1325,32 @@ class FakeCoreV1:
             raise client.ApiException(status=status, reason="rejected by the fake apiserver")
         self.patched.append((name, body))
 
+    async def delete_namespaced_pod(self, *, name: str, namespace: str) -> None:
+        if (status := self._rejects.get(name)) is not None:
+            raise client.ApiException(status=status, reason="rejected by the fake apiserver")
+        self.deleted.append(name)
+
 
 class PairingHarness:
-    def __init__(self, *, layout: PairingLayout | None = None, rejects: dict[str, int] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        layout: PairingLayout | None = None,
+        rejects: dict[str, int] | None = None,
+        pairing_dir: str | None = None,
+    ) -> None:
         self.core_v1 = FakeCoreV1(rejects=rejects)
         self.source = FakeSource()
         self.clock = FakeClock()
         pools = [_inference_pool(layout or _layout(num_inference_cells=2, num_trainer_cells=2))]
-        self.controller = PairingController(config=_config(pools), core_v1=self.core_v1)
+        config = PairingConfig(
+            namespace="rl",
+            release="r",
+            trainer_pool_id=TRAINER_POOL_ID,
+            inference_pools=pools,
+            pairing_dir=pairing_dir,
+        )
+        self.controller = PairingController(config=config, core_v1=self.core_v1)
         self.loop = ReconcileLoop(
             source=self.source,
             reconcile=self.controller.reconcile,
@@ -1343,30 +1388,32 @@ class TestEventSequences:
     async def test_releases_the_inference_when_its_trainer_lands_afterwards(self):
         """Inference first: nothing happens until the trainer's own event brings the reconcile back."""
         harness = PairingHarness()
+        trainer = _pod(TRAINER_POOL_ID, 0, node_name="gpu-3", gated=False)
 
         async with harness.running(_pod(INFERENCE_POOL_ID, 0), _pod(TRAINER_POOL_ID, 0)):
             assert harness.core_v1.patched == []
 
-            await harness.upsert(_pod(TRAINER_POOL_ID, 0, node_name="gpu-3", gated=False))
+            await harness.upsert(trainer)
 
             assert harness.core_v1.patched == [
                 (
                     _pod_name(INFERENCE_POOL_ID, 0),
-                    _release_patch(node_name="gpu-3"),
+                    _release_patch(node_name="gpu-3", paired_trainer_uid=trainer.metadata.uid),
                 ),
             ]
 
     async def test_releases_the_inference_when_the_trainer_was_there_first(self):
         """Trainer first: the inference's own arrival finds a placed trainer and releases immediately."""
         harness = PairingHarness()
+        trainer = _pod(TRAINER_POOL_ID, 1, node_name="gpu-9", gated=False)
 
-        async with harness.running(_pod(TRAINER_POOL_ID, 1, node_name="gpu-9", gated=False)):
+        async with harness.running(trainer):
             await harness.upsert(_pod(INFERENCE_POOL_ID, 1))
 
             assert harness.core_v1.patched == [
                 (
                     _pod_name(INFERENCE_POOL_ID, 1),
-                    _release_patch(node_name="gpu-9"),
+                    _release_patch(node_name="gpu-9", paired_trainer_uid=trainer.metadata.uid),
                 ),
             ]
 
@@ -1465,3 +1512,179 @@ class TestEventSequences:
             _pod(TRAINER_POOL_ID, 0, 0, node_name="gpu-3", gated=False),
         ):
             assert harness.patched_names() == [_pod_name(INFERENCE_POOL_ID, 1)]
+
+
+class TestSubNodePhysicalUuidPairing:
+    def test_refuses_sub_node_trainer_layout_without_pairing_dir(self):
+        """Sub-node trainers receive arbitrary cards from the device plugin, so pairing_dir is mandatory."""
+        layout = PairingLayout(
+            num_inference_cells=1,
+            num_trainer_cells=1,
+            num_pods_per_inference_cell=1,
+            num_pods_per_trainer_cell=1,
+            num_gpus_per_node=8,
+            num_gpus_per_trainer_pod=4,
+            num_gpus_per_inference_pod=4,
+            gpu_offset=0,
+        )
+
+        with pytest.raises(pydantic.ValidationError, match="require pairing_dir"):
+            PairingConfig(
+                namespace="rl",
+                release="r",
+                trainer_pool_id=TRAINER_POOL_ID,
+                inference_pools=[_inference_pool(layout)],
+            )
+
+    def test_slices_non_contiguous_uuids_across_multiple_inferences_with_zero_base_gpu(self, tmp_path):
+        """Each inference receives its exact disjoint physical GPU UUID slice and container-local base_gpu_id=0."""
+        pairing_dir = tmp_path / "pairing"
+        layout = PairingLayout(
+            num_inference_cells=2,
+            num_trainer_cells=1,
+            num_pods_per_inference_cell=1,
+            num_pods_per_trainer_cell=1,
+            num_gpus_per_node=8,
+            num_gpus_per_trainer_pod=4,
+            num_gpus_per_inference_pod=2,
+            gpu_offset=0,
+        )
+        trainer = _pod(TRAINER_POOL_ID, 0, 0, node_name="gpu-71-29", gated=False)
+        publish_trainer_devices(
+            pairing_dir=pairing_dir,
+            coord=_coordinate(0, 0),
+            devices=TrainerDevices(
+                pod_uid=trainer.metadata.uid,
+                node_name="gpu-71-29",
+                gpu_uuids=("GPU-b", "GPU-e", "GPU-f", "GPU-h"),
+            ),
+        )
+        core_v1 = FakeCoreV1()
+        config = PairingConfig(
+            namespace="rl",
+            release="r",
+            trainer_pool_id=TRAINER_POOL_ID,
+            inference_pools=[_inference_pool(layout)],
+            pairing_dir=str(pairing_dir),
+        )
+        pods = [_pod(INFERENCE_POOL_ID, 0), _pod(INFERENCE_POOL_ID, 1), trainer]
+
+        asyncio.run(
+            _attached(PairingController(config=config, core_v1=core_v1), pods).reconcile(_key(TRAINER_POOL_ID, 0, 0))
+        )
+
+        assert len(core_v1.patched) == 2
+        assert [_base_gpu_id_written(body) for _, body in core_v1.patched] == ["0", "0"]
+        assert [_annotation_written(body, _ESCAPED_VISIBLE_DEVICES_ANNOTATION) for _, body in core_v1.patched] == [
+            "GPU-b,GPU-e",
+            "GPU-f,GPU-h",
+        ]
+        assert [_annotation_written(body, _ESCAPED_PAIRED_TRAINER_UID_ANNOTATION) for _, body in core_v1.patched] == [
+            trainer.metadata.uid,
+            trainer.metadata.uid,
+        ]
+
+    def test_retries_until_trainer_publishes_matching_uid_and_node(self, tmp_path):
+        """Missing or stale pairing files keep inference pods gated instead of guessing card indices."""
+        pairing_dir = tmp_path / "pairing"
+        layout = PairingLayout(
+            num_inference_cells=1,
+            num_trainer_cells=1,
+            num_pods_per_inference_cell=1,
+            num_pods_per_trainer_cell=1,
+            num_gpus_per_node=8,
+            num_gpus_per_trainer_pod=4,
+            num_gpus_per_inference_pod=4,
+            gpu_offset=0,
+        )
+        trainer = _pod(TRAINER_POOL_ID, 0, 0, node_name="gpu-71-29", gated=False)
+        core_v1 = FakeCoreV1()
+        config = PairingConfig(
+            namespace="rl",
+            release="r",
+            trainer_pool_id=TRAINER_POOL_ID,
+            inference_pools=[_inference_pool(layout)],
+            pairing_dir=str(pairing_dir),
+        )
+        controller = _attached(
+            PairingController(config=config, core_v1=core_v1), [_pod(INFERENCE_POOL_ID, 0), trainer]
+        )
+
+        with pytest.raises(TrainerDevicesPendingError):
+            asyncio.run(controller.reconcile(_key(TRAINER_POOL_ID, 0, 0)))
+        assert core_v1.patched == []
+
+        publish_trainer_devices(
+            pairing_dir=pairing_dir,
+            coord=_coordinate(0, 0),
+            devices=TrainerDevices(
+                pod_uid="stale-uid",
+                node_name="gpu-71-29",
+                gpu_uuids=("GPU-0", "GPU-1", "GPU-2", "GPU-3"),
+            ),
+        )
+        with pytest.raises(TrainerDevicesPendingError):
+            asyncio.run(controller.reconcile(_key(TRAINER_POOL_ID, 0, 0)))
+        assert core_v1.patched == []
+
+    async def test_deletes_stale_inference_when_trainer_restarts_with_new_uid_and_repairs(self, tmp_path):
+        """A restarted trainer gets new physical cards; the stale inference pod must be recreated and re-paired."""
+        pairing_dir = tmp_path / "pairing"
+        layout = PairingLayout(
+            num_inference_cells=1,
+            num_trainer_cells=1,
+            num_pods_per_inference_cell=1,
+            num_pods_per_trainer_cell=1,
+            num_gpus_per_node=8,
+            num_gpus_per_trainer_pod=4,
+            num_gpus_per_inference_pod=4,
+            gpu_offset=0,
+        )
+        harness = PairingHarness(layout=layout, pairing_dir=str(pairing_dir))
+
+        trainer_v1 = _pod(TRAINER_POOL_ID, 0, 0, node_name="gpu-71-29", gated=False)
+        trainer_v1.metadata.uid = "trainer-uid-v1"
+        publish_trainer_devices(
+            pairing_dir=pairing_dir,
+            coord=_coordinate(0, 0),
+            devices=TrainerDevices(
+                pod_uid="trainer-uid-v1",
+                node_name="gpu-71-29",
+                gpu_uuids=("GPU-0", "GPU-1", "GPU-2", "GPU-3"),
+            ),
+        )
+        stale_inference = _pod(INFERENCE_POOL_ID, 0, node_name="gpu-71-29", gated=False)
+        stale_inference.metadata.annotations[PAIRED_TRAINER_UID_ANNOTATION] = "trainer-uid-v1"
+        stale_inference.metadata.annotations[NVIDIA_VISIBLE_DEVICES_ANNOTATION] = "GPU-0,GPU-1,GPU-2,GPU-3"
+
+        async with harness.running(stale_inference, trainer_v1):
+            assert harness.core_v1.deleted == []
+
+            trainer_v2 = _pod(TRAINER_POOL_ID, 0, 0, node_name="gpu-71-36", gated=False)
+            trainer_v2.metadata.uid = "trainer-uid-v2"
+            await harness.upsert(trainer_v2)
+
+            assert harness.core_v1.deleted == [_pod_name(INFERENCE_POOL_ID, 0)]
+
+            recreated_inference = _pod(INFERENCE_POOL_ID, 0)
+            recreated_inference.metadata.uid = "inference-uid-v2"
+            await harness.upsert(recreated_inference)
+            assert harness.core_v1.patched == []
+
+            publish_trainer_devices(
+                pairing_dir=pairing_dir,
+                coord=_coordinate(0, 0),
+                devices=TrainerDevices(
+                    pod_uid="trainer-uid-v2",
+                    node_name="gpu-71-36",
+                    gpu_uuids=("GPU-4", "GPU-5", "GPU-6", "GPU-7"),
+                ),
+            )
+            await harness.clock.elapse(1.0)
+            await settle()
+
+            assert len(harness.core_v1.patched) == 1
+            _, body = harness.core_v1.patched[0]
+            assert _annotation_written(body, _ESCAPED_VISIBLE_DEVICES_ANNOTATION) == "GPU-4,GPU-5,GPU-6,GPU-7"
+            assert _annotation_written(body, _ESCAPED_PAIRED_TRAINER_UID_ANNOTATION) == "trainer-uid-v2"
+            assert _base_gpu_id_written(body) == "0"

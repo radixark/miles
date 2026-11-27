@@ -51,6 +51,7 @@ class LaunchPlan(FrozenStrictBaseModel):
     env: dict[str, str] = {}
     launch_record: str | None = None
     colocate: bool = False
+    colocate_pairing_dir: str | None = None
     mooncake_plan: MooncakePlan | None = None
     prepare_cmd: dict[str, str] = {}
     extra_manifests: list[str] = []

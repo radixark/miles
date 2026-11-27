@@ -94,6 +94,10 @@ affinity:
   valueFrom:
     fieldRef:
       fieldPath: metadata.uid
+- name: MILES_NODE_NAME
+  valueFrom:
+    fieldRef:
+      fieldPath: spec.nodeName
 {{- end }}
 
 {{- define "miles-run.labelEnv" -}}

@@ -109,7 +109,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "watch", "patch", "update"]
+    verbs: ["get", "list", "watch", "patch", "update", "delete"]
 ---
 # Source: miles-run/templates/platform-rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -675,6 +675,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.uid
+            - name: MILES_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
           ports:
             - name: "rpc"
               containerPort: 8000
@@ -792,6 +796,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.uid
+            - name: MILES_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
           ports:
             - name: "rpc"
               containerPort: 8000
@@ -919,6 +927,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.uid
+            - name: MILES_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
           ports:
             - name: "primary"
               containerPort: 8000
@@ -1037,6 +1049,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.uid
+            - name: MILES_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
           ports:
             - name: "primary"
               containerPort: 8000
@@ -1154,6 +1170,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.uid
+            - name: MILES_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
           ports:
             - name: "rpc"
               containerPort: 8000
@@ -1303,6 +1323,10 @@ spec:
                 valueFrom:
                   fieldRef:
                     fieldPath: metadata.annotations['miles.radixark.io/base-gpu-id']
+              - name: NVIDIA_VISIBLE_DEVICES
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.annotations['miles.radixark.io/nvidia-visible-devices']
               - name: "CUDA_DEVICE_MAX_CONNECTIONS"
                 value: "1"
               - name: "HF_ENDPOINT"
@@ -1315,8 +1339,6 @@ spec:
                 value: "mlx5_0,mlx5_1"
               - name: "NCCL_SOCKET_IFNAME"
                 value: "bond0"
-              - name: "NVIDIA_VISIBLE_DEVICES"
-                value: "all"
               - name: "NVSHMEM_DISABLE_NCCL"
                 value: "1"
               - name: "PYTHONPATH"
@@ -1365,6 +1387,10 @@ spec:
                 valueFrom:
                   fieldRef:
                     fieldPath: metadata.uid
+              - name: MILES_NODE_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: spec.nodeName
             ports:
               - name: "primary"
                 containerPort: 8000
@@ -1522,6 +1548,10 @@ spec:
                 valueFrom:
                   fieldRef:
                     fieldPath: metadata.annotations['miles.radixark.io/base-gpu-id']
+              - name: NVIDIA_VISIBLE_DEVICES
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.annotations['miles.radixark.io/nvidia-visible-devices']
               - name: "CUDA_DEVICE_MAX_CONNECTIONS"
                 value: "1"
               - name: "HF_ENDPOINT"
@@ -1534,8 +1564,6 @@ spec:
                 value: "mlx5_0,mlx5_1"
               - name: "NCCL_SOCKET_IFNAME"
                 value: "bond0"
-              - name: "NVIDIA_VISIBLE_DEVICES"
-                value: "all"
               - name: "NVSHMEM_DISABLE_NCCL"
                 value: "1"
               - name: "PYTHONPATH"
@@ -1584,6 +1612,10 @@ spec:
                 valueFrom:
                   fieldRef:
                     fieldPath: metadata.uid
+              - name: MILES_NODE_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: spec.nodeName
             ports:
               - name: "primary"
                 containerPort: 8000
@@ -1717,6 +1749,10 @@ spec:
                 valueFrom:
                   fieldRef:
                     fieldPath: metadata.uid
+              - name: MILES_NODE_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: spec.nodeName
             ports:
               - name: "master"
                 containerPort: 9000

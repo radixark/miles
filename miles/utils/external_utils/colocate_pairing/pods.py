@@ -11,6 +11,9 @@ _GATE_NAME = "miles.radixark.io/colocate-pairing"
 
 _NODE_NAME_FIELD = "metadata.name"
 
+NVIDIA_VISIBLE_DEVICES_ANNOTATION = "miles.radixark.io/nvidia-visible-devices"
+PAIRED_TRAINER_UID_ANNOTATION = "miles.radixark.io/paired-trainer-uid"
+
 
 class PodCoordinate(FrozenStrictBaseModel):
     pool_id: str
@@ -31,18 +34,25 @@ def coordinate_of(pod: Pod) -> PodCoordinate | None:
     )
 
 
+def paired_trainer_uid_of(pod: Pod) -> str | None:
+    return pod.metadata.annotations.get(PAIRED_TRAINER_UID_ANNOTATION)
+
+
 def release_patch(
     *,
     node_name: str,
     base_gpu_id: int,
     gates: list[str],
     annotations: Mapping[str, str],
+    nvidia_visible_devices: str = "all",
+    paired_trainer_uid: str | None = None,
 ) -> list[dict[str, object]]:
     key = DEFAULT_LABEL_KEYS.base_gpu_id_annotation
     assert annotations, (
         f"the pod carries no annotations, so adding {key} under a map that does not exist is a patch "
         f"the apiserver refuses"
     )
+    assert nvidia_visible_devices, "nvidia_visible_devices must be non-empty when releasing a colocated inference pod"
 
     index = gates.index(_GATE_NAME)
     pin = {
@@ -58,12 +68,30 @@ def release_patch(
             }
         },
     }
-    return [
+    patch: list[dict[str, object]] = [
         pin,
         {"op": "add", "path": f"/metadata/annotations/{_escape_pointer(key)}", "value": str(base_gpu_id)},
-        {"op": "test", "path": f"/spec/schedulingGates/{index}/name", "value": _GATE_NAME},
-        {"op": "remove", "path": f"/spec/schedulingGates/{index}"},
+        {
+            "op": "add",
+            "path": f"/metadata/annotations/{_escape_pointer(NVIDIA_VISIBLE_DEVICES_ANNOTATION)}",
+            "value": nvidia_visible_devices,
+        },
     ]
+    if paired_trainer_uid is not None:
+        patch.append(
+            {
+                "op": "add",
+                "path": f"/metadata/annotations/{_escape_pointer(PAIRED_TRAINER_UID_ANNOTATION)}",
+                "value": paired_trainer_uid,
+            }
+        )
+    patch.extend(
+        [
+            {"op": "test", "path": f"/spec/schedulingGates/{index}/name", "value": _GATE_NAME},
+            {"op": "remove", "path": f"/spec/schedulingGates/{index}"},
+        ]
+    )
+    return patch
 
 
 def gate_names(pod: Pod) -> list[str]:
