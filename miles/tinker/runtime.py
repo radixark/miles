@@ -36,14 +36,13 @@ from tinker.types.topk_logprobs import MASK_LOGPROB
 DATUM_TO_BATCH_KEYS = {"weights": "loss_weights", "advantages": "advantages", "sampling_logprobs": "rollout_log_probs"}
 
 
-def _pad_to_dp_multiple(slot_datums: list, dp_size: int) -> list:
-    """Equalize DP shares with zero-mask datums; their outputs are dropped after the loss pass."""
-    remainder = len(slot_datums) % dp_size
-    if remainder == 0:
+def _pad_to_dp_minimum(slot_datums: list, dp_size: int) -> list:
+    """Give every rank a datum for tiny work units; scheduled ranks may have unequal sample counts."""
+    if len(slot_datums) >= dp_size:
         return slot_datums
     slot, datum = slot_datums[-1]
     filler = dict(datum) | {"padding": True}
-    return slot_datums + [(slot, filler)] * (dp_size - remainder)
+    return slot_datums + [(slot, filler)] * (dp_size - len(slot_datums))
 
 
 def _build_train_data(slot_datums: list) -> dict:
@@ -198,7 +197,7 @@ class MilesBackend:
     async def _execute_batch(
         self, method: str, batch_id: int, slot_datums: list, loss_fn: str, loss_fn_config: dict
     ) -> list[dict] | dict:
-        train_data = _build_train_data(_pad_to_dp_multiple(slot_datums, self.dp_size))
+        train_data = _build_train_data(_pad_to_dp_minimum(slot_datums, self.dp_size))
         train_data["loss_fn"] = loss_fn
         train_data["loss_fn_config"] = loss_fn_config
         worker_results = await self._call_trainer(method, batch_id, train_data)

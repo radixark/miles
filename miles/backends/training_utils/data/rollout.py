@@ -587,6 +587,11 @@ def get_data_iterator(
     if "micro_batch_indices" in rollout_data:
         assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in rollout_data)
         micro_batch_indices = rollout_data["micro_batch_indices"]
+        if "adapter_slots" in rollout_data:
+            # Grouped GEMM needs contiguous slots inside each microbatch. A stable
+            # sort leaves a single adapter's sample order and rank assignment intact.
+            slots = rollout_data["adapter_slots"]
+            micro_batch_indices = [sorted(indices, key=lambda index: slots[index]) for indices in micro_batch_indices]
         data_iterator = [
             DataIterator(rollout_data, micro_batch_indices=micro_batch_indices) for _ in range(parallel_state.vpp_size)
         ]
