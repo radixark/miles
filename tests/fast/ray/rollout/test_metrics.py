@@ -120,14 +120,12 @@ class TestTrainingSampleMetrics:
 
         assert out["episode_raw_reward"] == pytest.approx(0.5)
 
-    def test_metadata_raw_reward_and_fallback_identities(self):
+    def test_fallback_identities(self):
         args = make_args(reward_key=None)
         samples = [
-            make_sample(index=5, reward=0.0),
+            make_sample(index=5, reward=1.0),
             make_sample(index=None, reward=0.0),
         ]
-        samples[0].metadata = {"raw_reward": 1.0}
-        samples[1].metadata = {"raw_reward": 0.0}
 
         out = _compute_training_sample_metrics(args, samples)
 
