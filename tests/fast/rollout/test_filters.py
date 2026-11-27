@@ -14,6 +14,7 @@ from miles.rollout.filter_hub.common_filters import (
     apply_missing_reward_filter,
     apply_preput_filters,
     apply_reward_nonzero_std_filter,
+    drop_aborted_trajectories,
     group_staleness,
     group_weight_version_stats,
 )
@@ -279,6 +280,32 @@ def test_preput_propagates_dynamic_filter_exception():
             dynamic_filter,
             [make_sample()],
         )
+
+
+@pytest.mark.parametrize(
+    ("trajectories", "ratio", "dropped"),
+    [
+        (["C"] * 7 + ["A"] * 3, None, []),
+        # 7 / 10 meets 0.7, though 0.7 * 10 is above 7 in floating point
+        (["C"] * 7 + ["A"] * 3, 0.7, [7, 8, 9]),
+        (["C"] * 6 + ["A"] * 4, 0.7, []),
+        # a list is one trajectory, so an aborted chunk leaves out its completed sibling too
+        (["CC", "CC", "CC", "CA"], 0.75, [3]),
+    ],
+)
+def test_partial_groups_keep_the_completed_trajectories_at_or_above_the_ratio(trajectories, ratio, dropped):
+    """Below the ratio, or without the flag, the whole group goes on to the aborted filter."""
+    args = Namespace(use_partial_groups_on_abort=ratio is not None, partial_groups_on_abort_min_ratio=ratio)
+    status = {"C": Sample.Status.COMPLETED, "A": Sample.Status.ABORTED}
+    group = [
+        make_sample(status=status[chunks]) if len(chunks) == 1 else [make_sample(status=status[one]) for one in chunks]
+        for chunks in trajectories
+    ]
+
+    kept, left_out = drop_aborted_trajectories(args, group)
+
+    assert kept == [trajectory for i, trajectory in enumerate(group) if i not in dropped]
+    assert left_out == [group[i] for i in dropped]
 
 
 def test_group_staleness_uses_oldest_version_across_nested_samples():

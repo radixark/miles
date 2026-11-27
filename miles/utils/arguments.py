@@ -1530,6 +1530,12 @@ def miles_validate_args(args):
             "is data-dependent; this configuration is not supported."
         )
 
+    if args.use_partial_groups_on_abort:
+        assert 0 < args.partial_groups_on_abort_min_ratio <= 1, "--partial-groups-on-abort-min-ratio must be in (0, 1]"
+        assert (
+            args.use_dynamic_global_batch_size
+        ), "--use-partial-groups-on-abort varies the sample count, so it requires --use-dynamic-global-batch-size"
+
     if args.balance_by_flops:
         assert args.use_dynamic_batch_size, "--balance-by-flops requires --use-dynamic-batch-size"
 

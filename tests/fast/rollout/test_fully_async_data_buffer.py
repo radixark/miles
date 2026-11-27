@@ -108,6 +108,7 @@ def _make_args() -> Namespace:
             rollout_batch_size=1,
             rollout_seed=0,
             use_output_store=False,
+            use_partial_groups_on_abort=False,
         )
     )
 
@@ -167,6 +168,7 @@ def _make_single_policy_args(**overrides) -> Namespace:
         rollout_batch_size=1,
         rollout_seed=0,
         use_output_store=False,
+        use_partial_groups_on_abort=False,
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -733,6 +735,20 @@ class TestDroppedGroupsHandOverTheirOutputStoreRefs:
 
         assert (await _get_one(under_test.buffer, current_version=10)).group is fresh
         assert sorted(take_dropped_refs()) == ["key-10", "key-11"]
+
+    async def test_a_partial_groups_aborted_refs_are_handed_over_once(self) -> None:
+        under_test = _recycling_buffer(
+            max_weight_staleness=2, use_partial_groups_on_abort=True, partial_groups_on_abort_min_ratio=0.5
+        )
+        group = _with_store_refs(_make_finished_group(1, weight_version=7))
+        group[1].status = Sample.Status.ABORTED
+
+        await _put(under_test.buffer, group)
+        assert sorted(take_dropped_refs()) == ["key-11"]
+
+        await _put(under_test.buffer, fresh := _make_finished_group(2, weight_version=10))
+        assert (await _get_one(under_test.buffer, current_version=10)).group == fresh
+        assert sorted(take_dropped_refs()) == ["key-10"]
 
     async def test_a_filtered_group_hands_its_refs_over(self) -> None:
         under_test = _make_buffer(dynamic_sampling_filter_path=f"{__name__}._reject_group_1")

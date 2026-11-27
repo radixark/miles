@@ -3722,6 +3722,22 @@ class TestValidateSkipActorForwardOnly:
         )
 
 
+class TestPartialGroupsOnAbort:
+    @pytest.mark.parametrize(
+        ("extra", "message"),
+        [
+            (["--partial-groups-on-abort-min-ratio", "0"], r"must be in \(0, 1\]"),
+            ([], "requires --use-dynamic-global-batch-size"),
+        ],
+    )
+    def test_an_unusable_setting_is_rejected(self, extra, message):
+        parser = get_megatron_arg_parser()
+        args = parser.parse_args(["--num-rollout", "1", "--use-partial-groups-on-abort", *extra, *REQUIRED_ARGS])
+
+        with pytest.raises(AssertionError, match=message):
+            miles_validate_args(args)
+
+
 class TestRunUuidResolution:
     def _parse(self, extra: list[str]):
         parser = get_megatron_arg_parser()

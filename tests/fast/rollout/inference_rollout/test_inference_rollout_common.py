@@ -163,3 +163,28 @@ class TestFailedGenerationHandsOverItsOutputStoreRefs:
             )
 
         assert list(take_dropped_refs()) == ["returned"]
+
+
+class TestGroupRewardModel:
+    async def test_a_partial_group_scores_only_its_completed_samples(self, monkeypatch):
+        """An aborted sample cannot train, so the group reward model never sees it."""
+
+        async def generate(input: GenerateFnInput) -> GenerateFnOutput:
+            input.sample.status = Sample.Status.ABORTED if input.sample.index == 3 else Sample.Status.COMPLETED
+            return GenerateFnOutput(samples=input.sample)
+
+        scored = []
+
+        async def batched_async_rm(args, samples, **kwargs):
+            scored.extend(sample.index for sample in samples)
+
+        monkeypatch.setattr(inference_rollout_common, "batched_async_rm", batched_async_rm)
+        state = make_state(generate)
+        state.args.use_partial_groups_on_abort = True
+        state.args.partial_groups_on_abort_min_ratio = 0.75
+
+        await inference_rollout_common.generate_and_rm_group(
+            state, [Sample(index=index) for index in range(4)], sampling_params={}
+        )
+
+        assert scored == [0, 1, 2]

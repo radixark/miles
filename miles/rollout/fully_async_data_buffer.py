@@ -14,7 +14,7 @@ import time
 from abc import ABC, abstractmethod
 from argparse import ArgumentParser, Namespace
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
@@ -23,6 +23,7 @@ from miles.rollout.filter_hub.common_filters import (
     GroupWeightVersionStats,
     apply_aborted_filter,
     apply_missing_reward_filter,
+    drop_aborted_trajectories,
     group_staleness,
     group_weight_version_stats,
 )
@@ -144,7 +145,8 @@ class DefaultDataBuffer(DataBuffer):
 
     Rejected on put, because the verdict is fixed once the group is generated:
 
-    - aborted groups (the generate function gave up, e.g. an agentic collect timeout)
+    - aborted groups (the generate function gave up, e.g. an agentic collect timeout); with
+      ``--use-partial-groups-on-abort`` a group at or above the ratio keeps its completed trajectories
     - groups with a missing reward
     - groups ``--dynamic-sampling-filter-path`` does not keep
 
@@ -196,6 +198,14 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_selected_versioned_samples = 0
 
     async def put(self, input: DataBufferInput) -> None:
+        group, aborted = drop_aborted_trajectories(self._args, input.group)
+        self._metric_gatherer.on_aborted_trajectories_drop(aborted)
+        # Nothing reads them; their ownership drop waits for consumption, as a stale group still retries whole.
+        record_dropped_samples(aborted)
+        for sample in iter_samples(aborted):
+            # Handed over: the prompt group still holds them, and a later drop of it must not hand them over again.
+            sample.rollout_store_plan = None
+        input = replace(input, group=group)
         if not self._preput_filter(input):
             return
 
@@ -269,6 +279,10 @@ class DefaultDataBuffer(DataBuffer):
                 del self._buffer[:num_groups]
             self._cond.notify_all()  # wake producers blocked on a full buffer
             for entry in entries:
+                if self._args.use_partial_groups_on_abort:
+                    SampleOwnershipRecorder.log_dropped_groups(
+                        args=self._args, before=entry.prompt_group, after=entry.group, reason="aborted"
+                    )
                 version_stats = group_weight_version_stats(entry.group)
                 if (staleness := version_stats.oldest_lag(current_version)) is not None:
                     self._metric_consumed_staleness.append(staleness)

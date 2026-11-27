@@ -187,7 +187,10 @@ If a sample cancels itself (for example, a sandbox client raises `CancelledError
 its group is marked aborted after the sibling samples settle. The default buffer
 discards the entire group from training, counts it in
 `rollout/fully_async/aborted_groups_filtered`, and applies
-`--async-unused-samples-handler` to the original prompts. Other groups keep running.
+`--async-unused-samples-handler` to the original prompts. With `--use-partial-groups-on-abort`, a group in
+which at least `--partial-groups-on-abort-min-ratio` of the trajectories completed keeps and trains those, and
+only its aborted trajectories are left out, counted in `rollout/aborted_trajectories_dropped`. Other groups
+keep running.
 Cancelling the producer itself still propagates, and unexpected non-cancellation
 exceptions still fail the worker rather than being silently discarded.
 
@@ -367,6 +370,7 @@ rollout/fully_async/token_weighted_staleness
 rollout/fully_async/weight_version_sample_coverage
 rollout/fully_async/buffer_avg_staleness, rollout/fully_async/buffer_max_staleness
 rollout/dynamic_filter/drop_<reason>
+rollout/aborted_trajectories_dropped
 ```
 
 Staleness is measured in published rollout weight versions: with

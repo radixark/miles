@@ -289,6 +289,8 @@ Sections mirror the launch-script argument groups.
 | `--group-rm` | flag | off | Batched reward computation. |
 | `--custom-rm-path` | str | – | Custom reward function (see [Customization](/user-guide/customization)). |
 | `--dynamic-sampling-filter-path` | str | – | Group filter (DAPO-style). |
+| `--use-partial-groups-on-abort` | flag | off | Train the completed trajectories of a partly aborted group. Needs `--use-dynamic-global-batch-size`. |
+| `--partial-groups-on-abort-min-ratio` | float | 0.75 | Share of a group that must complete for it to train, in (0, 1]. |
 | `--rollout-submission-granularity` | enum | driver | `group` or `sample`: what frees rollout submission capacity. Unset means `sample` under `--fully-async`, `group` otherwise. |
 | `--buffer-filter-path` | str | – | Buffer dequeue filter. |
 | `--rollout-sample-filter-path` | str | – | Per-sample filter. |
