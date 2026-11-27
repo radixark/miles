@@ -1,10 +1,11 @@
 """OPEN_TRAINING_BF16_STOCHASTIC_ROUNDING_FLAG=1 through Megatron's cast sites: HybridDeviceOptimizer's
-copy-back hooks (host and device masters) and DistributedOptimizer's main-to-model copy (GPU and
-CPU-offloaded optimizers). The BF16 shards are the stochastically rounded masters, rebuilding them
+copy-back hooks (host and device masters), DistributedOptimizer's main-to-model copy (GPU and
+CPU-offloaded optimizers) and a multi-LoRA slot's LayerWise child copy. The BF16 shards are the stochastically rounded masters, rebuilding them
 reproduces the same bits, and the startup check refuses optimizers whose casts no hook reaches.
 Needs the paired Megatron hooks."""
 
 import socket
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -26,6 +27,7 @@ from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer  # n
 from megatron.core.optimizer.cpu_offloading import HybridDeviceOptimizer  # noqa: E402
 from megatron.core.transformer import TransformerConfig  # noqa: E402
 
+from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer, step_slot_optimizers  # noqa: E402
 from miles.backends.megatron_utils.rematerialize_utils import _replay_hybrid_device_copy_back  # noqa: E402
 from miles.kernels.quant.stochastic_round import stochastic_round_to_bf16  # noqa: E402
 from miles.utils.bf16_stochastic_rounding import (  # noqa: E402
@@ -242,6 +244,38 @@ def test_distributed_optimizer_flag_off_keeps_round_to_nearest(model_parallel, n
     _train_step(model, chained)
     weight = model.module.weight
     _assert_bitwise_equal(weight, weight.main_param.to(torch.bfloat16))
+
+
+def _slot_optimizer():
+    torch.cuda.manual_seed(SEED)
+    linear = torch.nn.Linear(256, 512, bias=False, dtype=torch.bfloat16, device="cuda")
+    with torch.no_grad():
+        linear.weight.copy_(1 + 0.25 * torch.rand(linear.weight.shape, device="cuda"))
+    model = DistributedDataParallel(
+        TransformerConfig(num_attention_heads=1, num_layers=1), DistributedDataParallelConfig(), linear
+    )
+    backend = SimpleNamespace(optimizer="adam", lr=LR, weight_decay=0.0, bf16=True, use_gloo_process_groups=False)
+    return model, SlotOptimizer(SimpleNamespace(backend=backend), [model], 0, [linear.weight])
+
+
+def test_a_multi_lora_slot_writes_stochastically_rounded_masters(model_parallel, flag):
+    model, slot_optimizer = _slot_optimizer()
+    weight = model.module.weight
+    (child,) = slot_optimizer.chained_optimizers
+    (master,) = shards = [p for group in child.optimizer.param_groups for p in group["params"]]
+    adam = {"learning_rate": LR, "beta1": 0.9, "beta2": 0.999, "eps": 1e-8, "weight_decay": 0.0, "grad_clip_norm": 0}
+    for step in (1, 2):
+        model.zero_grad_buffer()
+        model(torch.randn(8, 256, dtype=torch.bfloat16, device="cuda")).float().sum().backward()
+        assert "grad_norm" in step_slot_optimizers({0: slot_optimizer}, {0: adam})[0]
+        torch.cuda.synchronize()
+        _assert_bitwise_equal(weight, _rounded(master, shards=shards, step=step, shard_index=0))
+    # A resumed slot rebuilds its parameters through this same copy.
+    written = weight.detach().clone()
+    weight.data.zero_()
+    child._copy_main_params_to_model_params()
+    torch.cuda.synchronize()
+    _assert_bitwise_equal(weight, written)
 
 
 def test_optimizers_with_other_shards_draw_other_bits():

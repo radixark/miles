@@ -8,8 +8,9 @@ instead, which rounds every BF16 shard stochastically on the GPU
 the next step:
 
 - ``DistributedOptimizer._copy_main_params_to_model_params`` (FP32 main shards held by the
-  distributed optimizer, with the optimizer on the GPU or on the host) calls
-  :func:`stochastic_round_main_param`;
+  distributed optimizer, with the optimizer on the GPU or on the host) and a LayerWise child's
+  ``Float16OptimizerWithFloat16Params._copy_main_params_to_model_params`` (multi-LoRA slots: whole
+  parameters, all-gathered from their owner after the step) call :func:`stochastic_round_main_param`;
 - ``HybridDeviceOptimizer``'s copy-back hooks (``--optimizer-cpu-offload
   --use-precision-aware-optimizer``, masters held by the offloaded optimizer) call
   :func:`stochastic_round_copy_back`. A master on the host is staged on the GPU one shard at a
@@ -47,6 +48,17 @@ _philox_seeds: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 def is_bf16_stochastic_rounding_enabled() -> bool:
     return os.getenv(BF16_STOCHASTIC_ROUNDING_FLAG, "0") == "1"
+
+
+def matches_master(param: torch.Tensor, master: torch.Tensor) -> bool:
+    """Whether ``param`` holds FP32 ``master`` as the cast in force writes it; NaN matches NaN."""
+    master = master.to(param.device)
+    if param.dtype != torch.bfloat16 or not is_bf16_stochastic_rounding_enabled():
+        return torch.allclose(master.to(param.dtype), param, rtol=0, atol=0, equal_nan=True)
+    # stochastic_round_to_bf16 adds random bits to the 16 it drops and truncates: the kept bits carry 0 or 1
+    carry = param.contiguous().view(torch.int16).int() - (master.contiguous().view(torch.int32) >> 16)
+    nan = master.isnan()
+    return bool(torch.equal(param.isnan(), nan) and ((carry == 0) | (carry == 1) | nan).all())
 
 
 def philox_offset(*, step: int, shard_index: int) -> int:
@@ -150,9 +162,11 @@ def replay_stochastic_round_copy_back(hdo) -> None:
 
 
 @torch.no_grad()
-def stochastic_round_main_param(dist_opt, main_param: torch.Tensor, model_shard: torch.Tensor) -> None:
-    """``DistributedOptimizer``'s main-to-model copy of one shard, rounding BF16 shards stochastically."""
-    optimizer = dist_opt.optimizer
+def stochastic_round_main_param(
+    mixed_precision_optimizer, main_param: torch.Tensor, model_shard: torch.Tensor
+) -> None:
+    """A mixed-precision optimizer's main-to-model copy of one shard, rounding BF16 shards stochastically."""
+    optimizer = mixed_precision_optimizer.optimizer
 
     def philox_key() -> tuple[int, int]:
         shard_index, group_index = _shard_index(optimizer)[main_param]
@@ -167,9 +181,11 @@ def validate_bf16_stochastic_rounding_optimizer(optimizer) -> None:
     # Imported here: tests import this module without Megatron.
     from megatron.core.optimizer.cpu_offloading.hybrid_optimizer import HybridDeviceOptimizer
     from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer
-    from megatron.core.optimizer.optimizer import ChainedOptimizer
+    from megatron.core.optimizer.optimizer import ChainedOptimizer, Float16OptimizerWithFloat16Params
 
     for dist_opt in optimizer.chained_optimizers if isinstance(optimizer, ChainedOptimizer) else [optimizer]:
+        if isinstance(dist_opt, Float16OptimizerWithFloat16Params) and dist_opt._layer_wise_non_distopt_child:
+            continue
         if not isinstance(dist_opt, DistributedOptimizer):
             raise ValueError(
                 f"{BF16_STOCHASTIC_ROUNDING_FLAG}=1 requires --use-distributed-optimizer, got {type(dist_opt).__name__}"
@@ -193,6 +209,7 @@ def validate_bf16_stochastic_rounding_optimizer(optimizer) -> None:
 __all__ = [
     "BF16_STOCHASTIC_ROUNDING_FLAG",
     "is_bf16_stochastic_rounding_enabled",
+    "matches_master",
     "philox_offset",
     "philox_seed",
     "replay_stochastic_round_copy_back",

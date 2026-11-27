@@ -35,6 +35,7 @@ from miles.backends.training_utils.checkpoint.adapter.parametrization_conversion
 from miles.backends.training_utils.checkpoint.adapter.readers import AdapterSourceKind
 from miles.backends.training_utils.checkpoint.adapter.source_error import AdapterSourceError
 from miles.backends.training_utils.model_companion import ModelCompanion, ModelCompanionWeightVersionUtils
+from miles.utils.bf16_stochastic_rounding import BF16_STOCHASTIC_ROUNDING_FLAG
 
 register_cpu_ci(est_time=50, suite="stage-b-cpu", labels=["lora", "ckpt"])
 
@@ -598,6 +599,36 @@ def test_an_export_of_masters_holding_nan_saves_them(monkeypatch):
     )
     state = members.export_adapter_state(0)
     assert torch.equal(state.weights[0].isnan(), master.isnan())
+
+
+def test_under_stochastic_rounding_an_export_accepts_either_rounding_of_a_master(monkeypatch):
+    """Stochastic rounding writes the BF16 value toward zero or the next one away from it, not only the nearest."""
+    spacing = 2.0**-7
+    master = torch.tensor([[1 + spacing / 8, -1 - spacing / 8]])
+    param = torch.nn.Parameter(torch.tensor([[1 + spacing, -1 - spacing]], dtype=torch.bfloat16))
+    monkeypatch.setattr(
+        lora_checkpoint,
+        "get_parallel_state",
+        lambda: SimpleNamespace(intra_dp_cp=SimpleNamespace(rank=0), edp=SimpleNamespace(rank=0)),
+    )
+    dense = _DpZeroOptimizer(param, master, SimpleNamespace(rank=lambda: 0))
+    slots = SimpleNamespace(
+        bf16_adapter_key_style="peft",
+        slot_parameters=lambda slot: [param],
+        local_shard_specs=lambda slot, holds: [SimpleNamespace(local_shape=param.shape)],
+        piece_parameter=lambda slot, holds: [(0, torch.arange(2))],
+    )
+    members = lora_checkpoint.DistributedOptimizerMembers(
+        slots, SimpleNamespace(chained_optimizers=[dense]), [], precision_aware=False
+    )
+
+    with pytest.raises(AssertionError, match="not its master"):
+        members.export_adapter_state(0)
+    monkeypatch.setenv(BF16_STOCHASTIC_ROUNDING_FLAG, "1")
+    assert torch.equal(members.export_adapter_state(0).weights[0], master)
+    param.data = torch.tensor([[1 + 2 * spacing, -1 - 2 * spacing]], dtype=torch.bfloat16)
+    with pytest.raises(AssertionError, match="not its master"):
+        members.export_adapter_state(0)
 
 
 def test_without_an_optimizer_an_adapter_path_loads_the_weights_and_starts_over(tmp_path, monkeypatch):
