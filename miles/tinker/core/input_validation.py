@@ -1,7 +1,14 @@
 import math
 import re
 
-from miles.tinker.core.types import LOSS_FN_INPUTS, LOSS_INPUT_KEYS, CommandOp, GatewayConfig, UserInputError
+from miles.tinker.core.types import (
+    LOSS_FN_INPUTS,
+    LOSS_INPUT_KEYS,
+    MTP_MASK_KEY,
+    CommandOp,
+    GatewayConfig,
+    UserInputError,
+)
 
 
 def validate_model_config(lora_config: dict, config: GatewayConfig) -> None:
@@ -54,6 +61,7 @@ def validate_batch_payload(op: CommandOp, payload: dict, config: GatewayConfig) 
     for index, datum in enumerate(datums):
         validate_token_ids(datum["tokens"], config.vocab_size, f"datum {index}: model_input")
         validate_token_ids(datum["target_tokens"], config.vocab_size, f"datum {index}: target_tokens")
+        _validate_mtp_datum(datum, config.trains_mtp, index)
         if len(datum["tokens"]) > config.max_tokens_per_datum:
             raise UserInputError(f"datum {index}: {len(datum['tokens'])} tokens exceeds {config.max_tokens_per_datum}")
         total_tokens += len(datum["tokens"])
@@ -79,6 +87,20 @@ def validate_batch_payload(op: CommandOp, payload: dict, config: GatewayConfig) 
             )
     if total_tokens > config.max_tokens_per_request:
         raise UserInputError(f"{total_tokens} tokens exceeds max_tokens_per_request={config.max_tokens_per_request}")
+    if config.trains_mtp and total_tokens > config.batch_token_budget:
+        raise UserInputError(f"MTP request exceeds its indivisible {config.batch_token_budget}-token batch budget")
+
+
+def _validate_mtp_datum(datum: dict, trains_mtp: bool, index: int) -> None:
+    mask = datum.get(MTP_MASK_KEY)
+    if not trains_mtp:
+        if mask is not None:
+            raise UserInputError(f"datum {index}: mtp_mask requires MTP training")
+        return
+    if mask is None or len(mask) != datum["target_len"] or any(value not in (0, 1) for value in mask):
+        raise UserInputError(f"datum {index}: mtp_mask must contain one binary value per target token")
+    if not datum["target_tokens"] or datum["target_tokens"] != datum["tokens"][1:]:
+        raise UserInputError(f"datum {index}: MTP requires the natural next-token targets of model_input")
 
 
 def validate_sample_payload(payload: dict, config: GatewayConfig) -> None:

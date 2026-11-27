@@ -279,6 +279,7 @@ def _bridge_args_without_layout(monkeypatch, *, multi_lora=False, **overrides):
     fields = dict(
         train_backend="megatron",
         megatron_to_hf_mode="bridge",
+        enable_mtp_training=False,
         hf_checkpoint="/hf",
         lora_rank=8,
         lora_alpha=16.0,

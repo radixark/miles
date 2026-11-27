@@ -4,7 +4,9 @@ import pytest
 
 tinker = pytest.importorskip("tinker")
 
-from miles.tinker.server.encoding import decode_command  # noqa: E402
+from miles.tinker.core.input_validation import validate_batch_payload  # noqa: E402
+from miles.tinker.core.types import CommandOp, GatewayConfig, UserInputError  # noqa: E402
+from miles.tinker.server.encoding import decode_command, render_result  # noqa: E402
 from miles.tinker.server.proto_codec import (  # noqa: E402
     decode_forward_backward_request,
     encode_forward_backward_output,
@@ -12,6 +14,7 @@ from miles.tinker.server.proto_codec import (  # noqa: E402
     maybe_decompress,
 )
 from tinker import types  # noqa: E402
+from tinker.lib.chunked_fwdbwd_helpers import combine_fwd_bwd_output_results  # noqa: E402
 from tinker.proto.request_conv import forward_backward_request_to_proto  # noqa: E402
 from tinker.proto.response_conv import deserialize_forward_backward_output, deserialize_sample_response  # noqa: E402
 
@@ -64,6 +67,18 @@ def test_both_wire_halves_produce_the_same_datums():
     assert proto_datums == json_decoded["datums"]
 
 
+def test_mtp_mask_has_its_own_supervision_and_preserves_natural_targets():
+    mask = types.TensorData(dtype="int64", shape=[4], data=[0, 1, 1, 1])
+    _, payload = decode_forward_backward_request(_sdk_request({"weights": [0.0] * 4, "mtp_mask": mask}))
+    config = GatewayConfig("base", 1, "/checkpoints", 10, False, trains_mtp=True)
+    validate_batch_payload(CommandOp.FORWARD_BACKWARD, payload, config)
+    assert payload["datums"][0]["mtp_mask"] == [0, 1, 1, 1]
+
+    payload["datums"][0]["target_tokens"][0] = 2
+    with pytest.raises(UserInputError, match="natural next-token targets"):
+        validate_batch_payload(CommandOp.FORWARD_BACKWARD, payload, config)
+
+
 def test_a_sparse_tensor_decodes_dense():
     sparse = types.TensorData(
         dtype="float32", shape=[4], data=[2.0], sparse_crow_indices=[0, 1], sparse_col_indices=[2]
@@ -93,6 +108,23 @@ def test_the_sdk_parses_our_forward_backward_output():
     assert parsed.metrics["loss:sum"] == pytest.approx(3.5)
     assert [list(record["loss:sum"].data) for record in parsed.loss_fn_outputs] == [[2.5], [1.0]]
     assert list(parsed.loss_fn_outputs[0]["logprobs"].data) == pytest.approx([-0.1, -0.2])
+
+
+def test_mtp_statistics_are_preserved_in_both_response_formats():
+    result = {
+        "op": "forward_backward",
+        "outputs": [{"loss": 0.0, "logprobs": [-0.1]}],
+        "metrics": {
+            "mtp_loss_microbatch_sum:sum": 0.75,
+            "mtp_microbatches:sum": 3,
+            "policy_scoring_temperature:mean": 0.9,
+        },
+    }
+    parsed = deserialize_forward_backward_output(encode_forward_backward_output(result))
+    assert dict(parsed.metrics) == pytest.approx(render_result(result)["metrics"])
+    combined = combine_fwd_bwd_output_results([parsed, parsed])
+    assert combined.metrics["policy_scoring_temperature:mean"] == pytest.approx(0.9)
+    assert combined.metrics["mtp_microbatches:sum"] == 6
 
 
 def test_the_sdk_parses_our_sample_response():

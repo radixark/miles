@@ -26,6 +26,7 @@ from miles.utils.lora.hf_lora_targets import (
     has_hf_lora_targets,
     parse_lora_targets,
     resolve_hf_lora_targets,
+    unembed_lora_targets,
 )
 from miles.utils.lora.utils import (
     engine_loads_adapter_from_disk,
@@ -91,6 +92,8 @@ def validate_lora_args(args):
             args.lora_adapter_targets = gdn_in_proj_served_targets(
                 modules or args.hf_lora_targets, args.hf_lora_targets
             )
+    if args.enable_mtp_training:
+        _configure_mtp_lora_targets(args, hf_config.to_dict())
 
     # Training and serving must agree on shared-outer grouped-expert LoRA (expert_dim=1).
     if args.experts_shared_outer_loras and hasattr(
@@ -121,6 +124,19 @@ def _resolve_lora_alpha(args) -> float:
         source,
     ), f"--lora-alpha {args.lora_alpha} differs from {args.lora_adapter_path}'s {source}; drop the flag to use it"
     return source
+
+
+def _configure_mtp_lora_targets(args, hf_config: dict) -> None:
+    """Add draft projections to training while keeping the sampler's target layout."""
+    assert (
+        args.train_backend == "megatron" and args.megatron_to_hf_mode == "bridge"
+    ), "MTP LoRA requires the Megatron Bridge backend"
+    layout = get_hf_lora_targets(hf_config)
+    assert layout.mtp and args.mtp_num_layers == 1, "MTP LoRA requires a supported model and exactly one draft layer"
+    assert args.mtp_detach_heads, "MTP LoRA requires --mtp-detach-heads"
+    assert not unembed_lora_targets(args.hf_lora_targets, hf_config), "MTP LoRA shares a frozen output head"
+    assert args.exclude_modules is None, "MTP LoRA requires the full draft projection layout"
+    args.hf_lora_targets = [*args.hf_lora_targets, *layout.mtp]
 
 
 def _validate_megatron_bridge_source(args) -> None:

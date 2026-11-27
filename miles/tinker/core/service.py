@@ -76,7 +76,7 @@ class TinkerService:
         self.backend = backend
         self.config = config
         self.futures = RequestFutureStore()
-        self.scheduler = RequestScheduler(config.batch_token_budget)
+        self.scheduler = RequestScheduler(config.batch_token_budget, isolate_requests=config.trains_mtp)
         self.models: dict[str, ModelRecord] = {}
         self.sessions: dict[str, SessionRecord] = {}
         self.sampling_sessions: dict[str, SamplingSessionRecord] = {}
@@ -312,13 +312,19 @@ class TinkerService:
         if isinstance(outputs, dict) and "error" in outputs:
             await self._fail_batch(batch, outputs["error"], "server")
             return
+        metrics_for_batch = {}
+        if isinstance(outputs, dict):
+            metrics_for_batch = {"metrics": outputs["metrics"]}
+            outputs = outputs["outputs"]
 
         assert len(outputs) == len(refs), f"unit returned {len(outputs)} outputs for {len(refs)} datums"
         for ref, output in zip(refs, outputs, strict=True):
             request = ref.request
             if request.record_output(ref.local_index, output):
                 await self._finish_request(
-                    ref.model_queue, request, {"op": request.command.op, "outputs": request.outputs}
+                    ref.model_queue,
+                    request,
+                    {"op": request.command.op, "outputs": request.outputs, **metrics_for_batch},
                 )
 
     async def _fail_batch(self, batch: BatchUnit, error: str, category: str) -> None:

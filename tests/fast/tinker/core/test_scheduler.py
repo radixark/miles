@@ -6,8 +6,10 @@ from miles.tinker.core.model_queue import ModelRequestQueue
 from miles.tinker.core.scheduler import BarrierUnit, BatchUnit, RequestScheduler
 
 
-def _scheduler_with_model_queues(n: int, budget: int = 1_000_000) -> tuple[RequestScheduler, list[ModelRequestQueue]]:
-    scheduler = RequestScheduler(budget)
+def _scheduler_with_model_queues(
+    n: int, budget: int = 1_000_000, *, isolate_requests: bool = False
+) -> tuple[RequestScheduler, list[ModelRequestQueue]]:
+    scheduler = RequestScheduler(budget, isolate_requests=isolate_requests)
     model_queues = [ModelRequestQueue(f"model-{i}", f"tenant-{i}", slot=i) for i in range(n)]
     for model_queue in model_queues:
         scheduler.add_model_queue(model_queue)
@@ -49,6 +51,17 @@ def test_different_loss_functions_do_not_pack():
 
     unit = scheduler.schedule_next()
     assert [ref.model_queue.model_id for ref in unit.datums] == ["model-0"]
+
+
+def test_mtp_scheduling_preserves_each_requests_normalization():
+    scheduler, (a, b) = _scheduler_with_model_queues(2, isolate_requests=True)
+    _submit_fb(a, 1, arrival=1, datums=[datum(), datum()])
+    _submit_fb(b, 1, arrival=2, datums=[datum()])
+    _submit_fb(a, 2, arrival=3, datums=[datum()])
+
+    for expected_models in ([a.model_id, a.model_id], [b.model_id], [a.model_id]):
+        unit = scheduler.schedule_next()
+        assert [ref.model_queue.model_id for ref in unit.datums] == expected_models
 
 
 def test_the_token_budget_splits_a_large_request():

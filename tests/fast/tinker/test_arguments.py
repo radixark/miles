@@ -12,6 +12,12 @@ def _tinker_args(**overrides) -> Namespace:
         target_modules=["attn"],
         use_dynamic_global_batch_size=False,
         delay_split_train_data_by_dp=False,
+        enable_mtp_training=False,
+        megatron_to_hf_mode="bridge",
+        actor_num_nodes=1,
+        actor_num_gpus_per_node=1,
+        use_dynamic_batch_size=True,
+        balance_by_flops=False,
         save=None,
         save_hf=None,
         tinker_checkpoint_root="/checkpoints/tinker",
@@ -32,6 +38,12 @@ class TestTinkerBatchOwnership:
         assert args.delay_split_train_data_by_dp is True
         assert args.tinker_lora_groups == ["attn"]
         assert args.target_modules == ["attn"]
+
+
+def test_mtp_training_requires_one_training_gpu() -> None:
+    validate_tinker_args(_tinker_args(enable_mtp_training=True))
+    with pytest.raises(AssertionError, match="one training GPU"):
+        validate_tinker_args(_tinker_args(enable_mtp_training=True, actor_num_gpus_per_node=2))
 
 
 class TestTinkerCheckpointOwnership:

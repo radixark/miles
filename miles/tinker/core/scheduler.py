@@ -42,8 +42,9 @@ class BarrierUnit:
 
 
 class RequestScheduler:
-    def __init__(self, batch_token_budget: int) -> None:
+    def __init__(self, batch_token_budget: int, *, isolate_requests: bool = False) -> None:
         self.batch_token_budget = batch_token_budget
+        self.isolate_requests = isolate_requests
         self._model_queues: dict[str, ModelRequestQueue] = {}
 
     def add_model_queue(self, model_queue: ModelRequestQueue) -> None:
@@ -95,7 +96,11 @@ class RequestScheduler:
     def _pack_batch(self, seed: DatumRef, datums: list[DatumRef]) -> BatchUnit:
         pack_key = seed.request.pack_key()
         compatible = sorted(
-            (ref for ref in datums if ref.request.pack_key() == pack_key),
+            (
+                ref
+                for ref in datums
+                if ref.request.pack_key() == pack_key and (not self.isolate_requests or ref.request is seed.request)
+            ),
             key=lambda ref: (ref.arrival, ref.local_index),
         )
         picked: list[DatumRef] = []

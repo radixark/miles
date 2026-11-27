@@ -9,7 +9,7 @@ import pydantic
 
 import tinker
 from miles.tinker.core.input_validation import validate_save_options, validate_ttl_seconds
-from miles.tinker.core.types import LOSS_INPUT_KEYS, UserInputError
+from miles.tinker.core.types import LOSS_INPUT_KEYS, MTP_MASK_KEY, UserInputError
 from tinker import types as tinker_types
 from tinker.types.topk_logprobs import MASK_LOGPROB
 
@@ -180,7 +180,7 @@ def model_input_tokens(model_input: dict) -> list[int]:
 
 def build_datum(input_tokens: list[int], inputs: dict[str, list], index: int) -> dict:
     """One decoded datum (token list + loss_fn_inputs lists) -> internal datum."""
-    unknown = set(inputs) - set(LOSS_INPUT_KEYS) - {"target_tokens"}
+    unknown = set(inputs) - set(LOSS_INPUT_KEYS) - {"target_tokens", MTP_MASK_KEY}
     if unknown:
         raise UserInputError(f"datum {index}: unknown loss_fn_inputs {sorted(unknown)}")
     for name, values in inputs.items():
@@ -197,6 +197,8 @@ def build_datum(input_tokens: list[int], inputs: dict[str, list], index: int) ->
     for wire_key, datum_key in LOSS_INPUT_KEYS.items():
         if wire_key in inputs:
             datum[datum_key] = [float(value) for value in inputs[wire_key]]
+    if MTP_MASK_KEY in inputs:
+        datum[MTP_MASK_KEY] = inputs[MTP_MASK_KEY]
     return datum
 
 
@@ -248,6 +250,10 @@ def decode_sample_request(payload: dict) -> dict:
 # -------- result rendering (JSON; proto_codec renders the binary forms) --------
 
 
+def forward_metrics(result: dict) -> dict:
+    return {"loss:sum": float(sum(output["loss"] for output in result["outputs"])), **result.get("metrics", {})}
+
+
 def render_result(result: dict) -> dict:
     op = result["op"]
     if op in ("forward_backward", "forward_only"):
@@ -259,7 +265,7 @@ def render_result(result: dict) -> dict:
                 {"loss:sum": _tensor_json([output["loss"]]), "logprobs": _tensor_json(output["logprobs"])}
                 for output in outputs
             ],
-            "metrics": {"loss:sum": float(sum(output["loss"] for output in outputs))},
+            "metrics": forward_metrics(result),
         }
     if op == "sample":
         rendered = {"type": "sample", "sequences": result["sequences"]}

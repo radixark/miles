@@ -27,6 +27,7 @@ from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses
 from miles.backends.megatron_utils.lm_head import check_model_takes_output_processor, lm_head_forward_kwargs
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.backends.megatron_utils.lora.native import wrap_model_provider_with_lora
+from miles.backends.megatron_utils.mtp import consume_mtp_loss
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
 from miles.backends.training_utils.data.rollout import DataIterator, get_batch
 from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
@@ -878,25 +879,14 @@ def train(
 
         mtp_losses = None
         if args.enable_mtp_training:
-            from megatron.core.transformer.multi_token_prediction import MTPLossLoggingHelper
+            mtp_losses = consume_mtp_loss(
+                num_microbatches=num_microbatches[step_id],
+                calculate_per_token_loss=args.backend.calculate_per_token_loss,
+            )
+            if mtp_losses is not None and args.ci_test:
+                from miles.backends.megatron_utils.ci_utils import check_mtp_loss
 
-            mtp_loss_scale = 1.0 if args.backend.calculate_per_token_loss else 1 / num_microbatches[step_id]
-            MTPLossLoggingHelper.reduce_loss_in_tracker()
-            tracker = MTPLossLoggingHelper.tracker
-            # here we assume only one mtp layer
-            if "values" in tracker:
-                mtp_losses = (tracker["values"] * mtp_loss_scale).item()
-            elif "loss_values" in tracker:
-                mtp_losses = (tracker["loss_values"] * mtp_loss_scale).item()
-
-            if mtp_losses is not None:
-                MTPLossLoggingHelper.clean_loss_in_tracker()
-
-                # CI check: verify MTP loss is within expected bounds
-                if args.ci_test:
-                    from miles.backends.megatron_utils.ci_utils import check_mtp_loss
-
-                    check_mtp_loss(mtp_losses)
+                check_mtp_loss(mtp_losses)
 
         # per train step log.
         if (train_step_outcome == TrainStepOutcome.NORMAL) and is_first_replica_megatron_main_rank():

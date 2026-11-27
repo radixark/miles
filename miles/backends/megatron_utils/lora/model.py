@@ -9,6 +9,7 @@ from megatron.core.distributed import DistributedDataParallel as DDP
 from miles.backends.megatron_utils.lora.bridge_adapter_slots import BridgeAdapterSlots
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer, accumulate_gradients, step_slot_optimizers
 from miles.backends.megatron_utils.model import run_forward_backward_pass, setup_train_iteration_config
+from miles.backends.megatron_utils.mtp import consume_mtp_loss
 from miles.backends.training_utils.data.rollout import get_data_iterator
 from miles.backends.training_utils.metrics.log_utils import aggregate_train_losses
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -51,7 +52,17 @@ def run_forward_backward(
     dumper_phase_util.finalize(model)
 
     if get_parallel_state().is_pp_last_stage:
-        return {"metrics": aggregate_train_losses(losses_reduced, None), "per_datum": per_datum_outputs}
+        result = {"metrics": aggregate_train_losses(losses_reduced, None), "per_datum": per_datum_outputs}
+        if "mtp_loss_masks" in rollout_data and not forward_only:
+            count = num_microbatches[0]
+            loss = consume_mtp_loss(num_microbatches=count, calculate_per_token_loss=False)
+            assert loss is not None, "MTP backward produced no loss"
+            result["mtp_metrics"] = {
+                "mtp_loss_microbatch_sum:sum": loss * count,
+                "mtp_microbatches:sum": count,
+                "policy_scoring_temperature:mean": args.rollout_temperature,
+            }
+        return result
     return {"metrics": {}, "per_datum": per_datum_outputs}
 
 

@@ -1,5 +1,7 @@
 from argparse import Namespace
+from unittest.mock import Mock
 
+from miles.backends.megatron_utils.lora import optimizer as slot_optimizer
 from miles.backends.megatron_utils.lora.optimizer import SlotOptimizer
 
 
@@ -38,3 +40,23 @@ class TestSlotOptimizerBackendConfiguration:
         }
         assert [parameter.requires_grad for parameter in model.parameters()] == original_trainability
         assert child.grad_stats_parallel_group is None
+
+    def test_mtp_clipping_uses_an_independent_norm(self, monkeypatch) -> None:
+        target = Namespace()
+        draft = Namespace(grad_norm_group="mtp")
+        child = Mock()
+        child.get_parameters.return_value = [target, draft]
+        child.get_grads_for_grad_norm.side_effect = [[3.0], [0.5]]
+        clip = Mock()
+        monkeypatch.setattr(slot_optimizer, "clip_grad_by_total_norm_fp32", clip)
+        monkeypatch.setattr(slot_optimizer, "get_grad_norm_fp32", lambda grads, **kwargs: grads[0])
+        optimizer = SlotOptimizer.__new__(SlotOptimizer)
+        optimizer._trains_mtp = True
+        optimizer._inner = Namespace(chained_optimizers=[child])
+
+        assert optimizer.clip_and_step(1.0) == {"grad_norm": 3.0, "mtp_grad_norm": 0.5}
+        assert [call.args for call in clip.call_args_list] == [
+            ([target], 1.0, 3.0, False),
+            ([draft], 1.0, 0.5, False),
+        ]
+        child.step_with_ready_grads.assert_called_once_with()

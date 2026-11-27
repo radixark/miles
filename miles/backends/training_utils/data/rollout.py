@@ -30,7 +30,7 @@ from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
 from miles.utils.object_store import ObjectStoreGetResult
 from miles.utils.output_store.plan import is_segments_column
 from miles.utils.ray_utils import Box
-from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
+from miles.utils.seqlen_balancing import first_fit_decreasing_pack, get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
 
 if TYPE_CHECKING:
@@ -93,6 +93,10 @@ def prepare_rollout_data(
     rollout_data["loss_masks"] = [
         torch.tensor(t, dtype=torch.int, device=sample_device) for t in rollout_data["loss_masks"]
     ]
+    if "mtp_loss_masks" in rollout_data:
+        rollout_data["mtp_loss_masks"] = [
+            torch.tensor(t, dtype=torch.int, device=sample_device) for t in rollout_data["mtp_loss_masks"]
+        ]
     if "rollout_mask_sums" in rollout_data:
         rollout_data["rollout_mask_sums"] = torch.tensor(
             rollout_data["rollout_mask_sums"], dtype=torch.float32, device=sample_device
@@ -262,6 +266,8 @@ def get_batch(
     # fetch it here so callers don't have to know. None for non-multi-LoRA runs.
     if "adapter_slots" not in keys:
         keys = [*keys, "adapter_slots"]
+    if "mtp_loss_masks" in data_iterator.rollout_data:
+        keys = [*keys, "mtp_loss_masks"]
     batch = data_iterator.get_next(keys)
 
     if "dynamic_global_batch_size" in data_iterator.rollout_data:
@@ -409,7 +415,7 @@ def get_batch(
         batch["witness_ids"] = _compute_transform_like_token_ids(witness_ids)
 
     input_loss_masks = _prepare_loss_masks(
-        batch["loss_masks"],
+        batch.get("mtp_loss_masks", batch["loss_masks"]),
         batch["total_lengths"],
         batch["response_lengths"],
         qkv_format=qkv_format,
@@ -583,6 +589,12 @@ def get_data_iterator(
         expand_multimodal_rollout_data_in_place(rollout_data, qkv_format=args.qkv_format)
 
     parallel_state = get_parallel_state()
+
+    if "mtp_loss_masks" in rollout_data:
+        # An indivisible Tinker request is one rollout step on a single training rank.
+        # Match the direct trainer's rollout-side token-budget packing.
+        schedule = first_fit_decreasing_pack(rollout_data["total_lengths"], args.max_tokens_per_gpu)
+        return [DataIterator(rollout_data, micro_batch_indices=schedule)], [len(schedule)]
 
     if "micro_batch_indices" in rollout_data:
         assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in rollout_data)
