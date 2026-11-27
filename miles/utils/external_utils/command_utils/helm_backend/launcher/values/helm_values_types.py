@@ -162,6 +162,7 @@ class CommandJobValues(ValuesModel):
     command: list[str] | None = None
     completions: Annotated[int, Field(ge=1)] | None = None
     gpus_per_pod: Annotated[int, Field(ge=0)] | None = None
+    labels: dict[str, str] | None = None
     active_deadline_seconds: Annotated[int, Field(ge=1)] | None = None
     ttl_seconds_after_finished: Annotated[int, Field(ge=0)] | None = None
 

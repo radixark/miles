@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shlex
 from pathlib import Path
@@ -59,11 +60,17 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
     MooncakePlan,
 )
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName, RunFiles, RunNames
-from miles.utils.external_utils.command_utils.helm_backend.orchestrator.observer import wait_for_run
+from miles.utils.external_utils.command_utils.helm_backend.orchestrator.observer import (
+    ADMISSION_TIMEOUT_ENV_VAR,
+    EXECUTION_TIMEOUT_ENV_VAR,
+    timeout_from_env,
+    wait_for_run,
+)
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.file_utils import atomic_write_text
 from miles.utils.object_store_config import ObjectStoreBackend
 from miles.utils.run_uuid import generate_run_uuid, validate_run_uuid
+from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 from miles.utils.workers.argv_utils import ORCHESTRATOR_CONFIG_FLAG, config_json_for_argv
 from miles.utils.workers.connection_config import StaticConnConfig
 from miles.utils.workers.naming import DNS_LABEL_PATTERN
@@ -106,6 +113,8 @@ def execute_train(
     installed_payload = _installed_orchestrator_payload(installed_manifest, release=release)
     run_uuid = _resolve_run_uuid(config, installed_payload=installed_payload)
     env = train_env_vars(request, {}, config=config)
+    if (ci_gate_record_dir := os.environ.get(RECORD_DIR_ENV)) and RECORD_DIR_ENV not in env:
+        env[RECORD_DIR_ENV] = ci_gate_record_dir
     chart = chart_dir(repo_base_dir=repo_base_dir)
     shared_root = InfraInfo.shared_root(InfraInfo.load(chart, list(config.helm_values)), namespace=namespace)
     worker_argv, args = _compute_train_argv(
@@ -304,6 +313,8 @@ def _follow_until_finished(*, release: str, namespace: str, state_file: Path) ->
                 state_file=state_file,
                 read_pod=lambda: observed_pod(namespace, orchestrator_workload),
                 read_active_state_file=lambda: _active_state_file(release=release, namespace=namespace),
+                admission_timeout_seconds=timeout_from_env(ADMISSION_TIMEOUT_ENV_VAR),
+                execution_timeout_seconds=timeout_from_env(EXECUTION_TIMEOUT_ENV_VAR),
             )
 
         if outcome.exit_code != 0:

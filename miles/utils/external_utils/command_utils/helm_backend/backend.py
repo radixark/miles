@@ -11,9 +11,14 @@ from miles.utils.external_utils.command_utils.base_backend import (
 from miles.utils.external_utils.command_utils.common import chart_dir, repo_base_dir
 from miles.utils.external_utils.command_utils.helm_backend import command_job
 from miles.utils.external_utils.command_utils.helm_backend.launcher import entrypoint
+from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import current_ci_job_id
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import Scheduling
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import InfraInfo
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName, RunNames
+from miles.utils.external_utils.command_utils.helm_backend.orchestrator.observer import (
+    ADMISSION_TIMEOUT_ENV_VAR,
+    timeout_from_env,
+)
 
 _HOSTNAME_LABEL = "kubernetes.io/hostname"
 
@@ -50,6 +55,8 @@ class KubernetesCommandBackend(BaseCommandBackend):
                 chart_dir=chart,
                 helm_values_files=tuple(self.config.helm_values),
                 gpus_per_node=num_gpus_per_node if num_gpus_per_node is not None else 1,
+                admission_timeout_seconds=timeout_from_env(ADMISSION_TIMEOUT_ENV_VAR),
+                ci_job_id=current_ci_job_id(),
             ),
             cmd,
             capture_output=capture_output,

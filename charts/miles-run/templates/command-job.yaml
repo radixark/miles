@@ -7,6 +7,9 @@ metadata:
   namespace: {{ .Release.Namespace | quote }}
   labels:
     {{- include "miles-run.labels" (dict "context" . "component" .Values.commandJob.name) | nindent 4 }}
+    {{- range $key, $value := (.Values.commandJob.labels | default dict) }}
+    {{ $key }}: {{ $value | quote }}
+    {{- end }}
 spec:
   clusterIP: None
   selector:
@@ -22,6 +25,9 @@ metadata:
   namespace: {{ .Release.Namespace | quote }}
   labels:
     {{- include "miles-run.labels" (dict "context" . "component" .Values.commandJob.name) | nindent 4 }}
+    {{- range $key, $value := (.Values.commandJob.labels | default dict) }}
+    {{ $key }}: {{ $value | quote }}
+    {{- end }}
 spec:
   backoffLimit: 0
   podReplacementPolicy: Failed
@@ -34,6 +40,9 @@ spec:
     metadata:
       labels:
         {{- include "miles-run.labels" (dict "context" . "component" .Values.commandJob.name) | nindent 8 }}
+        {{- range $key, $value := (.Values.commandJob.labels | default dict) }}
+        {{ $key }}: {{ $value | quote }}
+        {{- end }}
     spec:
       {{- $spread := dict "requiredDuringSchedulingIgnoredDuringExecution" (list (dict
             "topologyKey" "kubernetes.io/hostname"

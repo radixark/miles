@@ -113,6 +113,12 @@
           "minimum": 0,
           "type": "integer"
         },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
         "activeDeadlineSeconds": {
           "minimum": 1,
           "type": "integer"
