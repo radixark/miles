@@ -381,6 +381,20 @@ class RolloutRelatedConfig(BaseConfig):
             ),
         ),
     ] = "mooncake"
+    p2p_transfer_buffer_device: A[
+        str | None,
+        Arg(
+            type_parser=None,
+            choices=["cpu", "gpu"],
+            help=(
+                "Where P2P weight updates stage outgoing weights before the RDMA write. Defaults to the transport's "
+                "default (cpu for mooncake and nixl, using page-locked host memory). gpu stages in each sender rank's "
+                "GPU memory for GPUDirect RDMA, keeping two transfer buffers (2x the larger of "
+                "--update-weight-buffer-size and the largest parameter group) resident in HBM for the run and "
+                "requiring expandable_segments to be disabled on the trainer."
+            ),
+        ),
+    ] = None
 
 
 class RolloutRelatedRolloutOnlyConfig(BaseConfig):
