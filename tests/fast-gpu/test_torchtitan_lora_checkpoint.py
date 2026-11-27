@@ -657,6 +657,7 @@ def test_the_actor_starts_after_the_restored_rollout_and_saves_lora_as_adapter_d
         global_batch_size=8,
         use_dynamic_global_batch_size=False,
         debug_rollout_only=False,
+        true_on_policy_mode=False,
         lora_rank=8,
         lora_adapter_path=lora_adapter_path,
         start_rollout_id=start_rollout_id,
