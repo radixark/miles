@@ -324,27 +324,25 @@ def test_chat_retries_length_with_distinct_seed(monkeypatch):
     assert [kwargs["seed"] for kwargs in attempts] == [7, 1_000_007]
 
 
-def test_chat_fails_when_length_cuts_exhaust_the_resamples(monkeypatch):
-    """Only a turn that needs a tool call leaves a sample unfinished; a turn cut every time fails."""
-
+def test_chat_leaves_the_sample_unfinished_when_length_cuts_exhaust_the_resamples(monkeypatch):
     async def fake_chat(client, base_url, messages, request_kwargs, *, label):
         return {"choices": [{"finish_reason": "length", "message": {"role": "assistant", "content": "cut"}}]}
 
     monkeypatch.setattr(session_verify_agent, "_chat", fake_chat)
     driver = session_verify_agent._Driver(client=None, base_url="http://session", request_kwargs={})
 
-    with pytest.raises(AssertionError, match="turn exhausted 4 resamples"):
+    with pytest.raises(session_verify_agent._ModelBehaviorError, match="turn exhausted 4 resamples"):
         asyncio.run(driver.chat([], label="turn"))
 
 
-def test_chat_fails_when_a_turn_that_needs_a_tool_call_is_cut_every_time(monkeypatch):
+def test_chat_leaves_the_sample_unfinished_when_a_turn_that_needs_a_tool_call_is_cut_every_time(monkeypatch):
     async def fake_chat(client, base_url, messages, request_kwargs, *, label):
         return {"choices": [{"finish_reason": "length", "message": {"role": "assistant", "content": "cut"}}]}
 
     monkeypatch.setattr(session_verify_agent, "_chat", fake_chat)
     driver = session_verify_agent._Driver(client=None, base_url="http://session", request_kwargs={})
 
-    with pytest.raises(AssertionError, match="Initial exhausted 4 resamples"):
+    with pytest.raises(session_verify_agent._ModelBehaviorError, match="Initial exhausted 4 resamples"):
         asyncio.run(driver.chat([], label="Initial", need_tool_call=True))
 
 

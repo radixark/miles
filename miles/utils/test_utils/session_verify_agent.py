@@ -289,7 +289,7 @@ async def _session_records(client, base_url) -> list[dict]:
 
 
 class _ModelBehaviorError(Exception):
-    """The model did not do what a rollout step needs: call the tool, stop calling it, or reply with what is to be cut.
+    """The model did not do what a rollout step needs: end its reply, call the tool, stop calling it, or reply with what is to be cut.
 
     The server did nothing wrong, so the sample stops at that step and stays valid.
     """
@@ -337,19 +337,16 @@ class _Driver:
         """Generate the next assistant message, resampling a length cut or, if asked, a reply without calls."""
         kwargs = {**self.request_kwargs, **(extra_kwargs or {})}
         rejected = []
-        complete_without_call = False
         for retry in range(_MAX_RESAMPLES + 1):
             response = await _chat(self.client, self.base_url, messages, _with_retry_seed(kwargs, retry), label=label)
             choice = response["choices"][0]
             message = choice["message"]
-            if choice.get("finish_reason") != "length":
-                if message.get("tool_calls") or not need_tool_call:
-                    return self._accept(message)
-                complete_without_call = True
+            if choice.get("finish_reason") != "length" and (message.get("tool_calls") or not need_tool_call):
+                return self._accept(message)
             rejected.append(f"{choice.get('finish_reason')}: {_reply_head(message)!r}")
-        # A turn cut on every resample is no model choice; it fails the run like any other turn.
-        error = _ModelBehaviorError if complete_without_call else AssertionError
-        raise error(
+        # A model can reason past max_tokens on every resample (Qwen3.6 after a tool result that answers no call);
+        # a server that cuts every turn still fails the unfinished-sample ratio.
+        raise _ModelBehaviorError(
             f"{label} exhausted {_MAX_RESAMPLES} resamples (finish_reason='length' or no tool call when one is "
             f"needed); replies: {rejected}"
         )
