@@ -39,6 +39,10 @@ python3 scripts/tpu/run_qwen3_4b_torchtitan.py sglang               # devices 4-
 python3 scripts/tpu/run_qwen3_4b_torchtitan.py train --recipe full  # devices 0-3
 ```
 
+Pass `--rollout-fp8` to both `sglang` and `train` to serve rollouts in channelwise W8A8 FP8 from the same BF16
+checkpoint, and add `--train-fp8` (`--titan-fp8-recipe rowwise_with_gw_hp` or `rowwise`) to run matching rowwise W8A8
+FP8 GEMMs in the TorchTitan trainer; see [Low Precision RL](/advanced/low-precision#6-channelwise-w8a8-fp8-on-tpu-v7x).
+
 The first step of a cold run compiles the trainer's programs, and sglang has to be restarted with
 every training run. The
 [README](https://github.com/radixark/miles/blob/main/scripts/tpu/README.md) covers both, along with

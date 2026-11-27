@@ -16,6 +16,7 @@ Args:
   --kv-cache-dtype: the engine's KV cache dtype; bfloat16 (default) or fp8_e4m3 for capacity.
   --sglang-env-script: sglang-torchtpu's environment script, sourced before the server starts.
   --slice-port-base: first of the 9 local ports the shared slice uses (8 slice builders, 1 store).
+  --rollout-fp8 / --train-fp8 / --titan-fp8-recipe: channelwise W8A8 FP8 on sglang and/or the trainer.
   --extra-args: more train.py flags, appended last.
 
 Examples:
@@ -43,6 +44,10 @@ from miles.utils.external_utils import command_utils
 _ENGINE_ARGS = "--tpu-compile-tokens 128 256 512 1024 2048 "
 # an empty ladder skips the vision tower's precompile (~14 of ~17 startup minutes); rollouts are text only
 _ENGINE_ENV = "SGLANG_TPU_VIT_PRECOMPILE_SIZES='' "
+# 27B has 48 linear-attention value heads, so GDN in_proj_ba has 2 * 48 / 4 = 24 rows per TP4 rank (% 16 != 0)
+_27B_FP8_ENGINE_ENV = "SGLANG_FP8_IGNORED_LAYERS=in_proj_ba,in_proj_b,in_proj_a "
+# the trainer keeps the same GDN gate projections in BF16 (torchtitan's layers.N.attention.in_proj_a / in_proj_b)
+_27B_TITAN_FP8_FILTER = "in_proj_a in_proj_b"
 # true on-policy serves the language model alone: the vision tower's linears have a bias, which the engine's
 # batch-invariant matmul does not take. The engine then compiles token-id extend programs only, and its warmup
 # request, which carries an image, is skipped.
@@ -74,6 +79,8 @@ _MODELS: dict[str, TitanTpuModel] = {
         titan_model_flavor="27B",
         sglang_args=_ENGINE_ARGS,
         sglang_env=_ENGINE_ENV,
+        sglang_fp8_env=_27B_FP8_ENGINE_ENV,
+        titan_fp8_filter_fqns=_27B_TITAN_FP8_FILTER,
         rollout_args=_ROLLOUT_ARGS,
         eval_data=_EVAL_DATA,
         train_args=_HOST_OPTIMIZER,
@@ -97,6 +104,8 @@ _MODELS: dict[str, TitanTpuModel] = {
         titan_model_flavor="27B",
         sglang_args=_ENGINE_ARGS,
         sglang_env=_ENGINE_ENV,
+        sglang_fp8_env=_27B_FP8_ENGINE_ENV,
+        titan_fp8_filter_fqns=_27B_TITAN_FP8_FILTER,
         rollout_args=_ROLLOUT_ARGS,
         eval_data=_EVAL_DATA,
         train_args=_HOST_OPTIMIZER,

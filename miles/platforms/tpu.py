@@ -31,6 +31,7 @@ class TpuPlatform(Platform):
     # sglang-torchtpu turns "auto" into an fp8 KV cache without scales, which skews rollout logprobs against the
     # bf16 trainer; fp8 stays available through --sglang-kv-cache-dtype fp8_e4m3
     rollout_kv_cache_dtype = "bfloat16"
+    titan_fp8_rowwise = True
 
     def bind_device_before_process_group(self, local_rank: int) -> None:
         # touching the device before init_process_group breaks the multi-process rendezvous
@@ -42,3 +43,8 @@ class TpuPlatform(Platform):
 
     def device_name(self) -> str | None:
         return None
+
+    def optimization_barrier(self, tensor: torch.Tensor) -> torch.Tensor:
+        if tensor.device.type == "tpu" and torch.compiler.is_compiling():
+            return torch.tpu.ops.optimization_barrier([tensor])[0]
+        return tensor

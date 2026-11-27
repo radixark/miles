@@ -63,6 +63,8 @@ def _args(**overrides) -> Namespace:
         lora_train_only=False,
         colocate_memory_peak_device="cpu",
         titan_fsdp_reduce_dtype="float32",
+        titan_fp8_recipe=None,
+        titan_fp8_filter_fqns=[],
         # read by the padded-rows loss layout's startup check on a static-shape platform
         train_backend="torchtitan",
         loss_type="policy_loss",
@@ -120,6 +122,7 @@ _TPU_FACTS = (
     "rooted_reduce",
     "premul_sum_reduce",
     "weight_transfer_modes",
+    "titan_fp8_rowwise",
 )
 
 
@@ -167,8 +170,8 @@ def test_tpu_context_parallelism_needs_a_sequence_length_that_shards_evenly(monk
         validate_torchtitan_args(_tpu_args(context_parallel_size=3, seq_length=4096, max_seq_len=4096))
 
 
-def test_true_on_policy_refuses_lora_and_losses_off_the_padded_rows(monkeypatch, on_tpu):
-    """Only the padded-row losses score with the engine's log-prob kernel, and the installed forward skips adapters."""
+def test_true_on_policy_refuses_lora_fp8_and_losses_off_the_padded_rows(monkeypatch, on_tpu):
+    """Only the padded-row losses score with the engine's log-prob kernel; the installed forward skips adapters and FP8."""
     monkeypatch.setattr(torch, "__version__", "2.14.0")
     monkeypatch.setattr(platforms.current_platform, "device_type", "tpu")
     mode = dict(true_on_policy_mode=True, rollout_num_gpus_per_engine=1, rollout_top_p=1.0, rollout_top_k=-1)
@@ -177,6 +180,8 @@ def test_true_on_policy_refuses_lora_and_losses_off_the_padded_rows(monkeypatch,
         validate_torchtitan_args(_tpu_args(**mode, loss_type="sft_loss"))
     with pytest.raises(ValueError, match="LoRA"):
         validate_torchtitan_args(_tpu_args(**mode, lora_rank=8))
+    with pytest.raises(ValueError, match="titan-fp8-recipe"):
+        validate_torchtitan_args(_tpu_args(**mode, titan_fp8_recipe="rowwise_with_gw_hp"))
 
 
 def test_tpu_refuses_expert_parallelism(monkeypatch, on_tpu):
@@ -433,6 +438,8 @@ def _config_args(**overrides: object) -> Namespace:
         optimizer_cpu_offload=False,
         titan_fsdp_gather_once=False,
         titan_fsdp_reduce_dtype="float32",
+        titan_fp8_recipe=None,
+        titan_fp8_filter_fqns=[],
         save=None,
         load=None,
     )
@@ -1173,3 +1180,21 @@ def test_the_fsdp_reduce_dtype_reaches_torchtitans_training_config(monkeypatch, 
         dump_subdir="x",
     )
     assert config.training.mixed_precision_reduce == "bfloat16"
+
+
+def test_titan_fp8_recipe_validates_choices_and_platform(monkeypatch, request):
+    monkeypatch.setattr(torch, "__version__", "2.14.0")
+    with pytest.raises(ValueError, match="expected one of"):
+        validate_torchtitan_args(_args(titan_fp8_recipe="blockwise"))
+    with pytest.raises(ValueError, match="--titan-fp8-filter-fqns requires --titan-fp8-recipe"):
+        validate_torchtitan_args(_args(titan_fp8_filter_fqns=["attention.wo"]))
+    with pytest.raises(ValueError, match="not supported on cuda"):
+        validate_torchtitan_args(_args(titan_fp8_recipe="rowwise"))
+
+    request.getfixturevalue("on_tpu")
+    validate_torchtitan_args(_tpu_args(titan_fp8_recipe="rowwise"))
+    validate_torchtitan_args(_tpu_args(titan_fp8_recipe="rowwise_with_gw_hp", titan_fp8_filter_fqns=["attention.wo"]))
+    with pytest.raises(ValueError, match="multiple of 16"):
+        validate_torchtitan_args(
+            _tpu_args(seq_length=1024, max_seq_len=1024, context_parallel_size=128, titan_fp8_recipe="rowwise")
+        )

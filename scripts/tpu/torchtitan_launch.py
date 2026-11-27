@@ -10,9 +10,11 @@ scripts/tpu/README.md describes the environment both expect.
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, get_args
 
 from miles.utils.external_utils import command_utils
+
+TitanFp8Recipe = Literal["rowwise", "rowwise_with_gw_hp"]
 
 SEQ_LEN = 8192
 
@@ -55,6 +57,10 @@ class TitanTpuModel:
     sglang_args: str = ""
     # environment assignments for the sglang server, e.g. "NAME=value "
     sglang_env: str = ""
+    # environment assignments added when --rollout-fp8 is set, e.g. "SGLANG_FP8_IGNORED_LAYERS=... "
+    sglang_fp8_env: str = ""
+    # trainer module-name substrings kept in BF16 under --train-fp8, the layers sglang_fp8_env keeps BF16 on the engine
+    titan_fp8_filter_fqns: str = ""
     # how rollouts are prompted and scored; math grades the last \boxed{}, deepscaler only after </think>, which a
     # thinking-off response lacks
     rollout_args: str = "--rm-type math "
@@ -103,6 +109,26 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     compile_cache_dir: str = ""
     # compiles the first step's programs while the engine starts; off for a run whose options the warmup refuses
     compile_warmup: bool = True
+    # channelwise W8A8 FP8 on sglang-torchtpu (--quantization fp8 --tpu-fp8-runtime channelwise)
+    rollout_fp8: bool = False
+    # matching dynamic rowwise W8A8 FP8 GEMMs on the torchtitan trainer (--titan-fp8-recipe)
+    train_fp8: bool = False
+    titan_fp8_recipe: TitanFp8Recipe | None = None
+
+    def __post_init__(self) -> None:
+        if self.titan_fp8_recipe is not None and not self.train_fp8:
+            raise ValueError("--titan-fp8-recipe requires --train-fp8")
+        if self.titan_fp8_recipe is not None and self.titan_fp8_recipe not in get_args(TitanFp8Recipe):
+            raise ValueError(
+                f"--titan-fp8-recipe {self.titan_fp8_recipe!r}: expected one of {get_args(TitanFp8Recipe)}"
+            )
+        if self.true_on_policy and (self.rollout_fp8 or self.train_fp8):
+            raise ValueError("--true-on-policy serves and trains unquantized; drop --rollout-fp8 / --train-fp8")
+        if self.train_fp8 and not self.rollout_fp8:
+            raise ValueError(
+                "--train-fp8 requires --rollout-fp8 (on both the sglang and train commands) so rollout and training "
+                "share channelwise W8A8 FP8 forward numerics"
+            )
 
 
 # the associative-scan emitter off: libtpu >= 0.0.44 miscompiles cumulative ops for lengths not a multiple of 1024
@@ -174,6 +200,7 @@ def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
         # the batched ragged paged attention reads this KV layout fastest; the cache stays bf16
         "SGLANG_TPU_USE_SEQ_ALONG_LANE_KV=1 "
         f"{model.sglang_env}"
+        f"{model.sglang_fp8_env if args.rollout_fp8 else ''}"
         "python3 -m sglang.launch_server "
         f"--model-path {args.model_dir}/{model.name} "
         "--device tpu "
@@ -198,6 +225,7 @@ def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
         "--max-running-requests 128 "
         "--torch-compile-max-bs 128 "
         f"{model.sglang_args}"
+        f"{'--quantization fp8 --tpu-fp8-runtime channelwise ' if args.rollout_fp8 else ''}"
         f"{'--enable-return-routed-experts ' if model.routing_replay else ''}"
         f"--host 0.0.0.0 --port {args.sglang_port}"
     )
@@ -224,6 +252,9 @@ def _trainer_env(args: ScriptArgs) -> dict[str, str]:
     compile_cache = (
         {"TORCH_TPU_TIER3_COMPILATION_CACHE_ROOT": args.compile_cache_dir} if args.compile_cache_dir else {}
     )
+    sglang_admin_key = (
+        {"SGLANG_ADMIN_API_KEY": admin_api_key} if (admin_api_key := os.environ.get("SGLANG_ADMIN_API_KEY")) else {}
+    )
     return {
         **_slice_env(args, _TRAINER_LIBTPU_ARGS),
         # one rank compiles each program and the others load it; torch_tpu's tier-3 cache needs this tier on
@@ -233,6 +264,7 @@ def _trainer_env(args: ScriptArgs) -> dict[str, str]:
         "MILES_TPU_SHARED_SLICE": _shared_slice(args, rank_offset=0),
         # wandb's system-stats sampler polls the node's TPU device plugin, whose restarts kill TPU sessions
         "WANDB_X_DISABLE_STATS": "true",
+        **sglang_admin_key,
     }
 
 
@@ -295,6 +327,8 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
         f"--update-weight-transfer-mode {WEIGHT_TRANSFER_MODE} "
     )
 
+    fp8_filter = f"--titan-fp8-filter-fqns {model.titan_fp8_filter_fqns} " if model.titan_fp8_filter_fqns else ""
+    fp8_args = f"--titan-fp8-recipe {args.titan_fp8_recipe or 'rowwise_with_gw_hp'} {fp8_filter}"
     train_backend_args = (
         "--train-backend torchtitan "
         f"--titan-model-name {model.titan_model_name} "
@@ -307,6 +341,7 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
         f"{'--use-rollout-routing-replay ' if model.routing_replay else ''}"
         "--use-dynamic-batch-size "
         f"--max-tokens-per-gpu {SEQ_LEN} "
+        f"{fp8_args if args.train_fp8 else ''}"
         f"{model.train_args}"
     )
 

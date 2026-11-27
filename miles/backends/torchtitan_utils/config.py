@@ -30,7 +30,7 @@ from torchtitan.models.common.moe import MoE
 from torchtitan.models.common.multimodal import MultimodalModel
 
 from miles import platforms
-from miles.backends.torchtitan_utils import lora
+from miles.backends.torchtitan_utils import float8, lora
 from miles.backends.torchtitan_utils.components import TiedCheckpointManager
 from miles.backends.torchtitan_utils.loss import RLLossAdapter
 from miles.backends.torchtitan_utils.trainer import TitanTrainer
@@ -430,19 +430,36 @@ def build_trainer_config(
     if args.backend.optimizer != "adam":
         raise ValueError(f"torchtitan backend supports --optimizer adam, got {args.backend.optimizer!r}")
 
-    ties_embeddings = load_hf_config(hf_assets_path).tie_word_embeddings
+    hf_config = load_hf_config(hf_assets_path)
+    ties_embeddings = hf_config.tie_word_embeddings
     if ties_embeddings and args.backend.pipeline_model_parallel_size > 1:
         raise ValueError(
             "the checkpoint ties lm_head to the embedding, which torchtitan cannot do across pipeline "
             "stages: it would train a separate lm_head that the HF export then has no tensor to ship "
             "into. Use --pipeline-model-parallel-size 1 or an untied checkpoint."
         )
+    if args.backend.titan_fp8_recipe is not None:
+        quant_config = hf_config.to_dict().get("quantization_config")
+        if isinstance(quant_config, dict):
+            raise ValueError(
+                f"--hf-checkpoint {hf_assets_path} is pre-quantized "
+                f"(quant_method={quant_config.get('quant_method')!r}); --titan-fp8-recipe trains BF16 weights with "
+                "dynamic rowwise FP8 GEMMs and exports BF16 weights over ICI, so pass an unquantized BF16 checkpoint "
+                "(and serve it with --quantization fp8 --tpu-fp8-runtime channelwise)"
+            )
 
     parallelism = _parallelism_config(args)
     model = build_model_config(args, parallelism=parallelism, hf_assets_path=hf_assets_path)
     model.enable_weight_tying = ties_embeddings
     if ties_embeddings:
         logger.info("Checkpoint ties lm_head to the embedding; excluding lm_head.weight from the HF export")
+    if args.backend.titan_fp8_recipe is not None:
+        float8.apply_float8_to_model_config(
+            model,
+            recipe_name=args.backend.titan_fp8_recipe,
+            filter_fqns=args.backend.titan_fp8_filter_fqns,
+            tp_degree=parallelism.tensor_parallel_degree,
+        )
     if with_lora:
         model = lora.convert_model_config(
             model, hf_targets=args.hf_lora_targets, rank=args.lora_rank, alpha=args.lora_alpha

@@ -17,8 +17,9 @@ up a new model architecture.
 
 | Format | Block layout | Hardware | Models tested | Maturity |
 |---|---|---|---|---|
-| **BF16** | — | All NVIDIA + AMD MI300X / MI325X / MI350X / MI355X | All | Baseline |
+| **BF16** | — | All NVIDIA + AMD MI300X / MI325X / MI350X / MI355X + TPU v7x | All | Baseline |
 | **FP8 block-wise** (DeepSeek-style) | 128×128, FP32 scales | Hopper (H100 / H200), Blackwell (B200+), AMD MI350X / MI355X | Qwen3-4B, Qwen3-30B-A3B, DeepSeek-V4-Flash | Generally available |
+| **FP8 channelwise** (rowwise W8A8) | 1×K token × 1×K channel, FP32 scales | Google Cloud TPU v7x | Qwen3-4B, Qwen3-30B-A3B | Beta |
 | **MXFP8** | 1×32, UE8M0 scales | Blackwell only (B200, B300, GB200, GB300) | Qwen3-30B-A3B, DeepSeek-V3.2 | Beta |
 | **NVFP4** (E2M1) | 1×16, two-level (FP8 + FP32) scales | Blackwell only (B200, B300, GB200, GB300) | Qwen3-30B-A3B | Beta |
 | **MXFP4** (E2M1) | 1×32, UE8M0 scales | Blackwell only (B200, B300, GB200, GB300) | DeepSeek-V4-Flash (routed experts, inference only) | Experimental |
@@ -374,6 +375,55 @@ Megatron FSDP, the Transformer Engine op fuser, or CUDA graphs.
 
 See [Training and rollout precision](/models/deepseek/deepseek-v4-flash#35-training-and-rollout-precision)
 for the option values and their constraints.
+
+### 6. Channelwise W8A8 FP8 on TPU v7x
+
+On Google Cloud TPU v7x (`torch_tpu` + TorchTitan trainer + `sglang-torchtpu`),
+splitting the contraction axis `K` into 128-wide blocks breaks MXU dot
+reductions into short partial sums. Instead, `sglang-torchtpu`'s default
+`--tpu-fp8-runtime channelwise` path and Miles' TorchTitan `--titan-fp8-recipe`
+share a **channelwise / rowwise W8A8** forward contract from a single
+**unquantized BF16 Hugging Face checkpoint**:
+
+* **Forward (`fprop`)**: Activations are dynamically quantized per token row
+  (`amax / 448.0` in `float8_e4m3fn`) and weights per output channel
+  (`amax / 448.0` in `float8_e4m3fn`), executed on the TPU MXU via
+  `torch._scaled_mm` (dense projections) and `torch._scaled_grouped_mm` (MoE
+  routed experts).
+* **Backward (`dgrad` + `wgrad`)**: Activation gradients (`dgrad`) run in FP8
+  (`float8_e5m2` `grad_output` × `float8_e4m3fn` column-scaled weights).
+  `--titan-fp8-recipe rowwise_with_gw_hp` (default, required for MoE) keeps
+  weight gradients (`wgrad`) in BF16; `--titan-fp8-recipe rowwise` runs dense
+  `wgrad` in FP8 as well.
+* **Weights, optimizer, and ICI sync**: Model parameters stay in BF16 with FP32
+  AdamW master states (`--hf-checkpoint` is an unquantized BF16 directory).
+  Trainer-to-engine weight updates stream BF16 tensors over ICI
+  (`--update-weight-transfer-mode ici`), and `sglang-torchtpu` re-quantizes each
+  updated projection in place to channelwise FP8 without double-quantization or
+  `direct_compile` recompilation.
+* **High-precision exclusions**: `tok_embeddings`, `lm_head`, multimodal
+  encoders, MTP layers, and `HiMidLoLinear` projections (`router.gate`) stay in
+  high precision automatically. Pass `--titan-fp8-filter-fqns <substr> ...` to
+  keep additional module FQNs in BF16.
+* **Where rollout and training still differ**: the recipe is the same, but some
+  scales are not bit-identical, so expect a higher `train/train_rollout_kl` than
+  BF16. At engine TP > 1, row-parallel projections (`o_proj`, `down_proj`, GDN
+  `out_proj`) shard `K`, so the engine computes each scale over `K / TP` values
+  while the trainer uses the full row. The engine stores MoE weight scales in
+  BF16 unless `SGLANG_TPU_FP8_MOE_FP32_SCALES=1`; the trainer keeps them in FP32.
+  Layers a launcher keeps in BF16 on the engine (`SGLANG_FP8_IGNORED_LAYERS`) are
+  kept in BF16 on the trainer through `--titan-fp8-filter-fqns`.
+
+Launch unified FP8 rollout and training on TPU v7x:
+
+```bash
+python3 scripts/tpu/run_qwen3_4b_torchtitan.py prepare
+python3 scripts/tpu/run_qwen3_4b_torchtitan.py sglang --rollout-fp8
+python3 scripts/tpu/run_qwen3_4b_torchtitan.py train --rollout-fp8 --train-fp8 --recipe full
+```
+
+Drop `--train-fp8` (keeping `--rollout-fp8` on both commands) to run BF16
+training against channelwise FP8 rollout.
 
 ## Fine-grained BF16 exceptions
 

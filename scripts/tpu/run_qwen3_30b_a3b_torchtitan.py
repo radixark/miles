@@ -16,6 +16,7 @@ Args:
   --kv-cache-dtype: the engine's KV cache dtype; bfloat16 (default) or fp8_e4m3 for capacity.
   --sglang-env-script: sglang-torchtpu's environment script, sourced before the server starts.
   --slice-port-base: first of the 9 local ports the shared slice uses (8 slice builders, 1 store).
+  --rollout-fp8 / --train-fp8 / --titan-fp8-recipe: channelwise W8A8 FP8 on sglang and/or the trainer.
   --extra-args: more train.py flags, appended last.
 
 Examples:
