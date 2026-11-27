@@ -116,6 +116,7 @@ class SessionServer:
                 "response_body": error_body,
                 "status_code": 502,
                 "headers": {"content-type": "application/json"},
+                "transport_error": not isinstance(exc, ValueError),
             }
         return {
             "request_body": body,
