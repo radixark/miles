@@ -707,8 +707,10 @@ def test_current_nvfp4_qdq_config_rejects_non_numeric_bool_flags(
         current_nvfp4_qdq_config()
 
 
+@pytest.mark.parametrize("fuse_wgrad", [False, True], ids=["unfused", "fused"])
 def test_te_grouped_linear_real_discrete_weight_qdq_and_backward(
     monkeypatch: pytest.MonkeyPatch,
+    fuse_wgrad: bool,
 ) -> None:
     from megatron.core.extensions import transformer_engine as te_extension
     from megatron.core.process_groups_config import ProcessGroupCollection
@@ -725,7 +727,7 @@ def test_te_grouped_linear_real_discrete_weight_qdq_and_backward(
         hidden_size=columns,
         num_attention_heads=1,
         params_dtype=torch.bfloat16,
-        gradient_accumulation_fusion=False,
+        gradient_accumulation_fusion=fuse_wgrad,
         moe_single_grouped_weight=False,
     )
     pg_collection = ProcessGroupCollection()
@@ -743,7 +745,7 @@ def test_te_grouped_linear_real_discrete_weight_qdq_and_backward(
         pg_collection=pg_collection,
     )
 
-    assert layer.fuse_wgrad_accumulation is False
+    assert layer.fuse_wgrad_accumulation is fuse_wgrad
     assert not getattr(layer, "single_grouped_weight", False)
     assert getattr(layer, "weight", None) is None
     weights = [getattr(layer, f"weight{group_idx}") for group_idx in range(group_count)]
@@ -760,17 +762,57 @@ def test_te_grouped_linear_real_discrete_weight_qdq_and_backward(
         for actual, expected in zip(actual_weights, expected_weights, strict=False)
     )
 
-    m_splits = [2, 1, 3]
-    inp = torch.ones((sum(m_splits), columns), dtype=torch.bfloat16, device="cuda", requires_grad=True)
-    output, bias = layer(inp, m_splits)
-    output.backward(torch.ones_like(output))
+    # Native TE operating on the same rounded weights is the fused/unfused reference.
+    reference = te.GroupedLinear(
+        group_count, columns, rows, bias=False, params_dtype=torch.bfloat16, fuse_wgrad_accumulation=fuse_wgrad
+    )
+    reference_weights = list(reference.parameters())
+    with torch.no_grad():
+        for param, rounded in zip(reference_weights, expected_weights, strict=True):
+            param.copy_(rounded)
+    original_weights = [weight.detach().clone() for weight in weights]
 
-    assert bias is None
-    assert tuple(output.shape) == (sum(m_splits), rows)
-    assert inp.grad is not None and torch.isfinite(inp.grad).all()
-    for weight, m_split in zip(weights, m_splits, strict=False):
-        assert weight.grad is not None
-        torch.testing.assert_close(weight.grad, torch.full_like(weight.grad, m_split), rtol=0, atol=0)
+    ready = []
+
+    def ddp_post_hook(param):
+        # Match Megatron's post-accumulate hook, including its overlap readiness requirement.
+        assert param.grad is not None
+        if not param.grad_added_to_main_grad or param.zero_out_wgrad:
+            param.main_grad.add_(param.grad)
+        param.grad = None
+        ready.append(id(param))
+
+    for index, (weight, ref_weight) in enumerate(zip(weights, reference_weights, strict=True)):
+        for param in (weight, ref_weight):
+            param.main_grad = torch.zeros_like(param, dtype=torch.float32)
+            param.grad_added_to_main_grad = False
+            param.zero_out_wgrad = index == 0
+            param.register_post_accumulate_grad_hook(ddp_post_hook)
+
+    expected_ready = sorted(id(param) for param in weights + reference_weights)
+    for microbatch, m_splits in enumerate(([2, 1, 3], [1, 3, 2])):
+        ready.clear()
+        # Each BF16 product (129/128)^2 has bits below BF16 precision.
+        inp = torch.full((sum(m_splits), columns), 129 / 128, dtype=torch.bfloat16, device="cuda", requires_grad=True)
+        ref_inp = inp.detach().clone().requires_grad_()
+        output, bias = layer(inp, m_splits)
+        ref_output = reference(ref_inp, m_splits, is_first_microbatch=(microbatch == 0))
+        assert bias is None
+        assert torch.equal(output, ref_output)
+        grad_output = torch.full_like(output, 129 / 128)
+        output.backward(grad_output)
+        ref_output.backward(grad_output)
+
+        assert sorted(ready) == expected_ready
+        assert torch.equal(inp.grad, ref_inp.grad)
+        for weight, ref_weight, original in zip(weights, reference_weights, original_weights, strict=True):
+            assert torch.equal(weight, original)
+            assert torch.equal(weight.main_grad, ref_weight.main_grad)
+        if microbatch == 0:
+            expected = (129 / 128) ** 2
+            if not fuse_wgrad:
+                expected = torch.tensor(expected, dtype=torch.bfloat16).item()
+            assert torch.all(weights[1].main_grad == expected)
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
