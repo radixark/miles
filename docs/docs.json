@@ -255,6 +255,12 @@
       ]
      },
      {
+      "group": "Image Generation",
+      "pages": [
+       "advanced/prompt-enhancement"
+      ]
+     },
+     {
       "group": "Cluster & Deployment",
       "pages": [
        "advanced/cluster-backend"

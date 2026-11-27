@@ -122,13 +122,14 @@ async def prompt_enhancer_rm(args, sample: Sample, **kwargs) -> float | None:
         num_inference_steps=args.pe_num_inference_steps,
         guidance_scale=args.pe_guidance_scale,
     )
-    started = time.monotonic()
+    # Wall clock, so the log hook can place each sample within the rollout.
+    started = time.time()
     try:
         png = await _client(args).generate_image(request)
     except ImageGenerationUnavailable as e:
         logger.warning(f"no image for sample {sample.index}: {e}")
         return None
-    rendered = time.monotonic()
+    rendered = time.time()
     image_score = await _score_image(args, png=png, prompt=ori_prompt, kwargs=kwargs)
     if image_score is None:
         return None
@@ -139,8 +140,9 @@ async def prompt_enhancer_rm(args, sample: Sample, **kwargs) -> float | None:
         "image_score": image_score,
         "t2i_prompt": request.prompt,
         "seed": request.seed,
+        "render_start": started,
         "render_secs": rendered - started,
-        "score_secs": time.monotonic() - rendered,
+        "score_secs": time.time() - rendered,
     }
     sample.metadata[REWARD_KEY] = parts
     return parts["t2i"] + parts["format"] + parts["length"]
@@ -187,7 +189,8 @@ async def _score_on_servers(urls: list[str], *, png: bytes, prompt: str) -> floa
 
 
 def log_rollout_data(rollout_id, args, samples: list[Sample], rollout_extra_metrics, rollout_time) -> bool:
-    """`--custom-rollout-log-function-path`: reward terms, render and score latencies, and the scored samples."""
+    """`--custom-rollout-log-function-path`: reward terms, render and score latencies, the rollout's time split, and the
+    scored samples."""
     scored = [s for s in samples if REWARD_KEY in s.metadata]
     if not scored:
         return False
@@ -201,6 +204,8 @@ def log_rollout_data(rollout_id, args, samples: list[Sample], rollout_extra_metr
         values = [p[key] for p in parts]
         metrics[f"rollout/pe/{key}_p50"] = float(np.percentile(values, 50))
         metrics[f"rollout/pe/{key}_p95"] = float(np.percentile(values, 95))
+        metrics[f"rollout/pe/{key}_max"] = float(max(values))
+    metrics |= rollout_time_split(parts, rollout_start=time.time() - rollout_time, rollout_time=rollout_time)
     metrics["rollout/pe/unscored"] = float(len(samples) - len(scored))
     metrics["rollout/step"] = compute_rollout_step(args, rollout_id)
     logger.info(f"prompt_enhancer {rollout_id}: {json.dumps(metrics)}")
@@ -215,3 +220,31 @@ def log_rollout_data(rollout_id, args, samples: list[Sample], rollout_extra_metr
 
 
 log_rollout_data.config_class = PromptEnhancerLogConfig
+
+
+def rollout_time_split(parts: list[dict], *, rollout_start: float, rollout_time: float) -> dict[str, float]:
+    """Split a rollout's wall time by what it waited on last, from each scored sample's render start and latencies.
+
+    The reward stamps a sample's render start once it has the completion and has built its image request, so the
+    latest render start stands in for the last scored completion: the policy phase runs from `rollout_start` to it;
+    rendering and scoring add the tails after it, and whatever the rollout did after the last score (filtering,
+    waiting for dropped groups' replacements) comes last; the four add up to `rollout_time`. Only scored samples count,
+    and images per second are theirs over the window from the first render start to the last image. Empty unless
+    every render start is at or after `rollout_start`, which the caller estimates as its own time minus
+    `rollout_time`; that lower bound rejects samples rendered before it, such as replayed or injected ones, but not
+    one rendered outside this rollout after it.
+    """
+    if not all(p.get("render_start", -1.0) >= rollout_start for p in parts):
+        return {}
+    render_starts = [p["render_start"] for p in parts]
+    rendered = [start + p["render_secs"] for start, p in zip(render_starts, parts, strict=True)]
+    scored = [end + p["score_secs"] for end, p in zip(rendered, parts, strict=True)]
+    render_window = max(rendered) - min(render_starts)
+    return {
+        "rollout/pe/policy_secs": max(render_starts) - rollout_start,
+        "rollout/pe/render_tail_secs": max(rendered) - max(render_starts),
+        "rollout/pe/score_tail_secs": max(scored) - max(rendered),
+        "rollout/pe/after_score_secs": rollout_start + rollout_time - max(scored),
+        "rollout/pe/render_window_secs": render_window,
+        "rollout/pe/images_per_sec": len(parts) / render_window if render_window > 0 else 0.0,
+    }
