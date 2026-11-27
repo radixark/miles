@@ -18,6 +18,7 @@ from the registry below.
 """
 
 KNOWN_LABELS: dict[str, str] = {
+    "algorithm": "Long-running RL algorithm and trainer orchestration tests",
     "megatron": "Megatron-LM training tests",
     "model-scripts": "Model launch script smoke tests",
     "sglang": "SGLang patch / equivalence tests",
@@ -40,10 +41,12 @@ KNOWN_LABELS: dict[str, str] = {
     "multi-policy": "Multi policy training tests (several policy models in one run)",
     "replay": "Routing / indexer replay tests",
     "qwen35": "Qwen3.5-35B-A3B MTP / spec-v2 e2e tests",
+    "multimodal": "Multimodal RL e2e tests (image, video, audio)",
     "mooncake": "Mooncake object-store rollout transfer tests",
     "miles-plugin": "miles_plugins extension tests (optimizers, model plugins)",
     "agentic": "Agentic sandbox e2e tests (need a sandbox-service route and key on the runner)",
-    "amd": "AMD MI350 ROCm tests (stage-c-4-gpu-mi350)",
+    "amd": "AMD MI350 ROCm tests (stage-c-{2,4,8}-gpu-mi350)",
+    "tpu": "TPU v7x launcher smoke runs (pr-test-tpu.yml)",
     "rpc-comm": "Ray cluster backend driving its workers over the rpc worker comm backend",
 }
 

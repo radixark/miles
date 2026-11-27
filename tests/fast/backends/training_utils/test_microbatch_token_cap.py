@@ -1,0 +1,59 @@
+from types import SimpleNamespace
+
+import torch
+
+from miles.backends.training_utils.data import rollout
+from miles.utils.data import get_minimum_num_micro_batch_size
+from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
+
+# per-rank sample lengths where first-fit packs 4 bins under 8192 but the balanced 4-way partition has a 9088 bin
+_LENGTHS = [4992, 7296, 3840, 2688, 4224, 2432, 2560, 2816]
+
+
+def _largest(lengths, num):
+    return max(sum(lengths[i] for i in p) for p in get_seqlen_balanced_partitions(lengths, num, equal_size=False))
+
+
+def test_the_balanced_microbatches_stay_within_the_token_cap():
+    """A fixed-shape trainer (TPU) cannot run a microbatch above --max-tokens-per-gpu."""
+    assert get_minimum_num_micro_batch_size(_LENGTHS, 8192) == 4 and _largest(_LENGTHS, 4) > 8192
+    num = rollout._num_microbatches_within_cap(_LENGTHS, 8192)
+    assert _largest(_LENGTHS, num) <= 8192
+
+
+def test_a_sample_above_the_cap_keeps_a_microbatch_of_its_own():
+    lengths = [9000, 1000, 1000]
+    num = rollout._num_microbatches_within_cap(lengths, 8192)
+    assert num == 2 and _largest(lengths, num) == 9000
+
+
+def test_samples_that_fit_together_share_one_microbatch():
+    assert rollout._num_microbatches_within_cap([8192], 8192) == 1
+    assert rollout._num_microbatches_within_cap([100, 200, 300], 8192) == 1
+
+
+def test_the_sample_cap_splits_many_short_samples():
+    """True on-policy attention on TPU holds a fixed number of sequences per microbatch: 128 two-token samples (the
+    compile-warmup shard at global batch 128) fit one microbatch by tokens, but not under a 127-sample cap."""
+    lengths = [2] * 128
+    assert rollout._num_microbatches_within_cap(lengths, 8192) == 1
+    num = rollout._num_microbatches_within_cap(lengths, 8192, max_samples=127)
+    assert num == 2
+    assert max(len(p) for p in get_seqlen_balanced_partitions(lengths, num, equal_size=False)) <= 127
+
+
+def test_dp_ranks_raise_the_count_until_every_rank_fits_the_sample_cap(monkeypatch):
+    """DP ranks run each step's largest count, and a rank's balanced partition at a count above its own must still
+    fit the sample cap: the ranks raise the count until every rank fits at it."""
+    lengths = [100] * 8
+    assert rollout._num_microbatches_within_cap(lengths, 8192, max_samples=4) == 2
+    real_fit = rollout._partitions_fit
+    # this rank's partition breaks the cap at 3, the count another rank needs
+    monkeypatch.setattr(rollout, "_partitions_fit", lambda ls, n, cap, ms: n != 3 and real_fit(ls, n, cap, ms))
+    other_rank = iter([torch.tensor([3]), torch.tensor([4])])
+    all_reduce = lambda t, group, op: t.copy_(torch.maximum(t, next(other_rank)))  # noqa: E731
+    monkeypatch.setattr(
+        rollout, "GeneralPGUtil", SimpleNamespace(create=lambda g: SimpleNamespace(all_reduce=all_reduce))
+    )
+    counts = rollout._agree_on_counts_within_sample_cap(torch.tensor([3]), [lengths], 8192, 4, dp_group=None)
+    assert counts.tolist() == [4]

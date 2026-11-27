@@ -24,6 +24,12 @@ _CONNECT_ATTEMPT_TIMEOUT_SECONDS = 1.0
 _CONNECT_RETRY_INTERVAL_SECONDS = 0.5
 
 
+class ResponseDecodeError(ValueError):
+    """Decoder failures are permanent unless the decoder explicitly allows retry."""
+
+    retryable = False
+
+
 def find_available_port(base_port: int):
     port = base_port + random.randint(100, 1000)
     while True:
@@ -216,10 +222,22 @@ def _next_actor():
     return actor
 
 
-async def _post(client, url, payload, max_retries=60, action="post", headers=None):
+async def _post(
+    client, url, payload, max_retries=60, action="post", headers=None, response_decoder=None, response_timeout=None
+):
+    if response_decoder is not None and action != "post":
+        raise ResponseDecodeError("response_decoder supports only action='post'")
     retry_count = 0
     while retry_count < max_retries:
         try:
+            if response_decoder is not None:
+                async with asyncio.timeout(response_timeout):
+                    async with client.stream(action.upper(), url, json=payload or {}, headers=headers) as response:
+                        if not response.is_success:
+                            # Buffer error bodies within the attempt deadline for the existing HTTP diagnostics.
+                            await response.aread()
+                        response.raise_for_status()
+                        return await response_decoder(response)
             if action in ("delete", "get"):
                 assert not payload
                 response = await getattr(client, action)(
@@ -235,12 +253,18 @@ async def _post(client, url, payload, max_retries=60, action="post", headers=Non
             except json.JSONDecodeError:
                 output = response.text
         except Exception as e:
+            if isinstance(e, ResponseDecodeError) and not e.retryable:
+                raise
             retry_count += 1
 
             if isinstance(e, httpx.HTTPStatusError):
                 response_text = e.response.text
                 if 400 <= e.response.status_code < 500 and e.response.status_code not in (408, 429):
-                    raise
+                    # The server's reply says what was wrong with the request (e.g. an expanded multimodal prompt
+                    # past the engine's context length); the status line alone does not.
+                    raise httpx.HTTPStatusError(
+                        f"{e}: {response_text[:2000]}", request=e.request, response=e.response
+                    ) from None
             else:
                 response_text = None
 
@@ -392,8 +416,26 @@ def _init_ray_distributed_post(args):
                 timeout=httpx.Timeout(None),
             )
 
-        async def do_post(self, url, payload, max_retries=60, action="post", headers=None):
-            return await _post(self._client, url, payload, max_retries, action=action, headers=headers)
+        async def do_post(
+            self,
+            url,
+            payload,
+            max_retries=60,
+            action="post",
+            headers=None,
+            response_decoder=None,
+            response_timeout=None,
+        ):
+            return await _post(
+                self._client,
+                url,
+                payload,
+                max_retries,
+                action=action,
+                headers=headers,
+                response_decoder=response_decoder,
+                response_timeout=response_timeout,
+            )
 
     # Create actors per node
     created = []
@@ -433,18 +475,43 @@ def _rollout_client() -> httpx.AsyncClient:
 
 
 # TODO may generalize the name since it now contains http DELETE/GET etc (with retries and remote-execution)
-async def post(url, payload, max_retries=60, action="post", headers=None):
+async def post(
+    url, payload, max_retries=60, action="post", headers=None, response_decoder=None, response_timeout=None
+):
     # If distributed mode is enabled and actors exist, dispatch via Ray.
     if _distributed_post_enabled and _post_actors:
         try:
             actor = _next_actor()
             if actor is not None:
-                return await actor.do_post.remote(url, payload, max_retries, action=action, headers=headers)
+                return await actor.do_post.remote(
+                    url,
+                    payload,
+                    max_retries,
+                    action=action,
+                    headers=headers,
+                    response_decoder=response_decoder,
+                    response_timeout=response_timeout,
+                )
+        except ResponseDecodeError:
+            # A completed decoder failure is not an actor outage; do not replay it locally.
+            raise
         except Exception as e:
+            if response_decoder is not None and isinstance(e, (TimeoutError, httpx.HTTPError)):
+                # The actor already exhausted this streamed HTTP attempt budget.
+                raise
             logger.info(f"[http_utils] Distributed POST failed, falling back to local: {e} (url={url})")
             # fall through to local
 
-    return await _post(_rollout_client(), url, payload, max_retries, action=action, headers=headers)
+    return await _post(
+        _rollout_client(),
+        url,
+        payload,
+        max_retries,
+        action=action,
+        headers=headers,
+        response_decoder=response_decoder,
+        response_timeout=response_timeout,
+    )
 
 
 # TODO unify w/ `post` to add retries and remote-execution

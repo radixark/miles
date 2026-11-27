@@ -16,10 +16,10 @@ GATEWAY_PORT = 10613
 SERVE_TIMEOUT_S = 1200
 
 
-def qwen_serve_cmd(extra_args: str = "") -> str:
+def qwen_serve_cmd(extra_args: str = "", *, megatron_to_hf_mode: str = "bridge") -> str:
     return (
         "python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve "
-        f"--hf-checkpoint /root/models/{MODEL_NAME} "
+        f"--hf-checkpoint /root/models/{MODEL_NAME} --megatron-to-hf-mode {megatron_to_hf_mode} "
         "--model-type qwen3-4B-Instruct-2507 --tp 2 --ep 1 --lora-rank 8 --lora-alpha 16 "
         f'--extra-args "--tinker-base-model {BASE_MODEL} {extra_args}"'
     )

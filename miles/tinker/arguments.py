@@ -13,3 +13,11 @@ def configure_tinker_args(args):
     # commands ship one work unit at a time; its size is the batch size
     args.use_dynamic_global_batch_size = True
     args.delay_split_train_data_by_dp = True
+
+
+def validate_tinker_args(args):
+    """Checks on the final arguments; preprocessing runs before --custom-config-path is merged."""
+    # --save-interval and the other save-loop flags already require --save in miles_validate_args
+    for flag, value in (("--save", args.save), ("--save-hf", args.save_hf)):
+        assert value is None, f"Tinker does not support {flag}; checkpoints are saved through the Tinker API"
+    assert args.tinker_checkpoint_root, "Tinker requires --tinker-checkpoint-root"

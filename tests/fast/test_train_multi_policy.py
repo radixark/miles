@@ -1,6 +1,6 @@
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
+register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["algorithm", "multi-policy"])
 
 import asyncio
 from argparse import Namespace
@@ -32,6 +32,7 @@ def _make_args(**overrides: Any) -> Namespace:
         update_weights_interval=1,
         save=None,
         save_interval=None,
+        keep_recent_checkpoints=None,
         save_trigger_sentinel=None,
         debug_exit_after_rollout=None,
         check_weight_update_equal=False,

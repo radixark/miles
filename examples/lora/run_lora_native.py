@@ -13,7 +13,9 @@ projections and the trainer and the engine agree on which modules carry an adapt
 * MLA registries: ``q_a_proj,q_b_proj,kv_a_proj_with_mqa,kv_b_proj,o_proj``
   (SGLang stacks the two down-projections into ``fused_qkv_a_proj_with_mqa``)
 * Qwen3.5: ``q_proj,k_proj,v_proj,o_proj``, where ``q_proj`` carries the output-gate
-  slice. Its linear-attention (GDN) layers have no fused qkv and get no adapter.
+  slice, plus the linear-attention (GDN) ``in_proj_qkv,in_proj_z,in_proj_b,in_proj_a,out_proj``.
+  Native trains ``in_proj_q/k/v/z/b/a`` as separate adapters, which SGLang stacks into
+  ``in_proj_qkvz`` / ``in_proj_ba``.
 
 A raw-mode Qwen3.5 backward divergence (grad_norm 1e7-1e10 with recompute, NaN without)
 was once on record here; it no longer reproduces — 20-rollout runs of both Qwen3.5-35B-A3B
@@ -47,6 +49,8 @@ app = typer.Typer()
 
 _MLA_TARGET_MODULES = "q_a_proj,q_b_proj,kv_a_proj_with_mqa,kv_b_proj,o_proj"
 _GQA_TARGET_MODULES = "q_proj,k_proj,v_proj,o_proj"
+# Qwen3.5 adds its GDN projections; native trains in_proj_q/k/v/z/b/a as their own adapters
+_QWEN35_TARGET_MODULES = f"{_GQA_TARGET_MODULES},in_proj_qkv,in_proj_z,in_proj_b,in_proj_a,out_proj"
 
 
 @dataclass(frozen=True)
@@ -85,7 +89,7 @@ _REGISTRIES = {
     "Qwen3.5-35B-A3B": _Registry(
         megatron_model_type="qwen3.5-35B-A3B",
         hf_repo="Qwen/Qwen3.5-35B-A3B",
-        target_modules=_GQA_TARGET_MODULES,
+        target_modules=_QWEN35_TARGET_MODULES,
         tensor_model_parallel_size=2,
         expert_model_parallel_size=4,
         rollout_num_gpus_per_engine=2,
@@ -93,7 +97,7 @@ _REGISTRIES = {
     "Qwen3.5-9B": _Registry(
         megatron_model_type="qwen3.5-9B",
         hf_repo="Qwen/Qwen3.5-9B",
-        target_modules=_GQA_TARGET_MODULES,
+        target_modules=_QWEN35_TARGET_MODULES,
         tensor_model_parallel_size=2,
         expert_model_parallel_size=1,
         rollout_num_gpus_per_engine=2,

@@ -115,3 +115,29 @@ class TestMarkCellsErroredOnAnyRank:
 
         assert failed_cell_ids == {"cell-a"}
         assert gathered.contributed == [[]]
+
+
+class TestGatherLoraChecksums:
+    def _gather(self, monkeypatch: pytest.MonkeyPatch, rank: int, manifests: list[dict]) -> dict | None:
+        def gather_object(obj: Any, object_list: list | None, dst: int, group: Any) -> None:
+            assert group is _GLOO_GROUP and dst == 0
+            if object_list is not None:
+                object_list[:] = manifests
+
+        monkeypatch.setattr(updater_module, "get_gloo_group", lambda: _GLOO_GROUP)
+        monkeypatch.setattr(updater_module.dist, "get_world_size", lambda group: len(manifests))
+        monkeypatch.setattr(updater_module.dist, "get_rank", lambda: rank)
+        monkeypatch.setattr(updater_module.dist, "gather_object", gather_object)
+        return updater_module._gather_lora_checksums(manifests[rank])
+
+    def test_rank_0_gets_the_union_of_every_stage_manifest(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A PP-local sync sends each stage's shard from a different rank; the engine checks the whole adapter."""
+        stage_manifests = [{"lora": {"layers.0.lora_A": "a0"}}, {"lora": {"layers.1.lora_A": "a1"}}]
+
+        merged = self._gather(monkeypatch, rank=0, manifests=stage_manifests)
+
+        assert merged == {"lora": {"layers.0.lora_A": "a0", "layers.1.lora_A": "a1"}}
+
+    def test_other_ranks_get_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Only rank 0 passes the manifest to the engines."""
+        assert self._gather(monkeypatch, rank=1, manifests=[{"lora": {}}, {"lora": {"x": "h"}}]) is None

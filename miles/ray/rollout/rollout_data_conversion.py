@@ -1,4 +1,3 @@
-import itertools
 import logging
 from typing import Any
 
@@ -17,9 +16,8 @@ def postprocess_rollout_data(
 
     validate_compact_rollout_ids(data)
 
-    # flatten the data if it is a list of lists
-    while isinstance(data[0], list):
-        data = list(itertools.chain.from_iterable(data))
+    # groups can mix depths: a compact rollout is a list of samples, a single-turn one is a bare sample
+    data = list(_iter_samples(data))
 
     # Compact rollouts must not be trimmed by sample count; the schedule drops
     # whole trailing rollouts instead.
@@ -55,7 +53,8 @@ def validate_compact_rollout_ids(node, depth=0):
     if isinstance(node, Sample):
         return
     assert isinstance(node, list), f"unexpected rollout output node type: {type(node).__name__}"
-    if node and isinstance(node[0], Sample):
+    # a mixed-dataset group can hold bare samples next to compact lists; only an all-sample list is a leaf
+    if node and all(isinstance(item, Sample) for item in node):
         if depth >= 2 and len(node) > 1:
             rids = [s.rollout_id for s in node]
             missing = [i for i, r in enumerate(rids) if r is None]
@@ -68,6 +67,14 @@ def validate_compact_rollout_ids(node, depth=0):
         return
     for item in node:
         validate_compact_rollout_ids(item, depth + 1)
+
+
+def _iter_samples(node):
+    if isinstance(node, Sample):
+        yield node
+        return
+    for item in node:
+        yield from _iter_samples(item)
 
 
 def _first_sample(group):

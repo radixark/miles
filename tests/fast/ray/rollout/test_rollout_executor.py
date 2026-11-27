@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from argparse import Namespace
 from collections import defaultdict
 from pathlib import Path
@@ -38,6 +39,7 @@ from miles.utils.audit_utils.event_logger.models import (
 )
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
+from miles.utils.init_once import InitOnce
 from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.output_store import dropped
 from miles.utils.output_store.dropped import take_dropped_refs
@@ -80,6 +82,15 @@ class FakeEvalFunction:
         return RolloutFnEvalOutput(data={})
 
 
+def _inited_executor() -> RolloutExecutor:
+    """An executor built as init leaves it, so dispose tears it down."""
+    executor = RolloutExecutor.__new__(RolloutExecutor)
+    executor._init_once = InitOnce("RolloutExecutor")
+    with executor._init_once.guarding():
+        pass
+    return executor
+
+
 class _SynchronousDisposable:
     def __init__(self, disposed: list[str], name: str) -> None:
         self._disposed = disposed
@@ -95,7 +106,7 @@ class TestDispose:
         self, tmp_path: Path, issued_rollout_id: int
     ) -> None:
         """Shutdown defers only immature losses and never fabricates drops for prefetched output."""
-        executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor = _inited_executor()
         executor._disposed = False
         executor.use_legacy_rollout_v1 = False
         executor.generate_rollout = None
@@ -154,7 +165,7 @@ class TestDispose:
     ) -> None:
         """Out-of-tree rollout hooks may tear down synchronously without returning an awaitable."""
         disposed: list[str] = []
-        executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor = _inited_executor()
         executor._disposed = False
         executor.use_legacy_rollout_v1 = False
         executor.generate_rollout = _SynchronousDisposable(disposed, "train")
@@ -179,7 +190,7 @@ class TestDispose:
     ) -> None:
         """Last, so the producers have stopped writing and a failed CI check raises after the other teardown."""
         disposed: list[str] = []
-        executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor = _inited_executor()
         executor._disposed = False
         executor.use_legacy_rollout_v1 = False
         executor.generate_rollout = _SynchronousDisposable(disposed, "train")
@@ -204,7 +215,7 @@ class TestDispose:
     async def test_the_final_ownership_check_runs_before_the_run_ends(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Violations that only mature after the last get would otherwise never be checked."""
         checked: list[Namespace] = []
-        executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor = _inited_executor()
         executor._disposed = False
         executor.use_legacy_rollout_v1 = False
         executor.generate_rollout = None
@@ -236,7 +247,7 @@ class TestSetEvalFleetInfo:
         controller = FakeInferenceController()
         provider = FakeInferenceControllerProvider(controller)
         eval_function = FakeEvalFunction()
-        executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor = _inited_executor()
         executor._disposed = False
         executor.args = make_rollout_config(
             chat_template_path=None,
@@ -338,7 +349,7 @@ class _FakeObjectStore:
 
 
 def _make_executor(tmp_path: Path, rollout_fn: _CountingRolloutFn) -> RolloutExecutor:
-    executor = RolloutExecutor.__new__(RolloutExecutor)
+    executor = _inited_executor()
     executor.args = _make_runtime_args(load=str(tmp_path), save=str(tmp_path))
     executor.use_legacy_rollout_v1 = True
     executor.generate_rollout = rollout_fn
@@ -525,6 +536,30 @@ class TestOutputSnapshotReplay:
         await executor.save(2)
         data, _metadata = _load_executor_state(tmp_path, rollout_id=2)[None, 3]
         assert [sample.index for sample in data] == [7]
+
+
+class TestTrainDataPut:
+    async def test_the_batch_is_put_off_the_loop(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The fully-async producer shares this loop, so a slow put must not hold it."""
+        executor = _make_executor(tmp_path, _CountingRolloutFn())
+        loop_thread = threading.current_thread()
+
+        class Store:
+            def put(self, *, value, value_spec):
+                assert threading.current_thread() is not loop_thread
+                return _MooncakeStoreObjectRef(payload=value)
+
+        async def generate_rollout_data(*, rollout_id: int, trainer_model_id: str | None):
+            return [Sample(index=7)], {}
+
+        monkeypatch.setattr(executor, "_generate_rollout_data", generate_rollout_data)
+        monkeypatch.setattr(
+            rollout_executor_module, "convert_samples_to_train_data", lambda *_args, **_kw: {"sample_indices": [7]}
+        )
+        monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *_args: [{}])
+        monkeypatch.setattr(rollout_executor_module.object_store, "get_instance", Store)
+
+        assert (await executor.get(rollout_id=3)).sample_indices == [7]
 
 
 class TestSampleOwnershipRolloutId:

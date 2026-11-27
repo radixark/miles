@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 import pytest
 from pydantic import ValidationError
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.utils.workers.rpc.client.fake_transports import PollWindowRecordingTransport, StallingPollTransport
 
 from miles.utils.pydantic_utils import StrictBaseModel
@@ -33,6 +34,8 @@ from miles.utils.workers.rpc.common.protocol import (
 )
 from miles.utils.workers.rpc.server.app import create_rpc_app
 from miles.utils.workers.worker_handle import WorkerStillBusyError, WorkerUnreachableError
+
+register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["rpc-comm"])
 
 
 class _Item(StrictBaseModel):

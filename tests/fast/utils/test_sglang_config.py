@@ -2,7 +2,7 @@
 
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["sglang"])
+register_cpu_ci(est_time=10, suite="stage-b-cpu", labels=["sglang"])
 
 import pytest
 import yaml
@@ -24,6 +24,8 @@ def _resolve(path: str, *, rollout_num_gpus: int, hf_checkpoint: str = "/path/to
         prefill_num_servers=None,
         rollout_num_gpus=rollout_num_gpus,
         rollout_num_gpus_per_engine=1,
+        sglang_pp_size=1,
+        sglang_pp_layer_partition=None,
         num_gpus_per_node=8,
         eval_num_gpus=0,
         starts_inference_engines=True,

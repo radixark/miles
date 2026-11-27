@@ -6,6 +6,7 @@ import pytest
 import torch
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.ray.rollout.conftest import make_args, make_rollout_config, make_sample, make_samples_grouped
 from tests.fast.train_parallel_config_utils import make_train_parallel_config
 from tests.fast.utils.output_store.test_plan import ALL, INDEXER, MASK, R3, fake_store_refs, response
@@ -24,6 +25,8 @@ from miles.utils.object_store import RayObjectStore
 from miles.utils.output_store.plan import StorePlan, StorePlanError
 from miles.utils.sampling_mask import RolloutSamplingMask
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+
+register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 
 
 # ----------------------------- convert_samples_to_train_data -----------------------------
@@ -90,6 +93,27 @@ class TestConvertSamplesToTrainData:
         ):
             assert key in out, f"missing required key {key}"
         assert len(out["tokens"]) == len(samples)
+
+    @pytest.mark.parametrize("token_space", [False, True])
+    def test_media_refs_ship_only_in_token_space(self, token_space):
+        args = make_args(
+            advantage_estimator="grpo", rewards_normalization=False, multimodal_token_space_processing=token_space
+        )
+        samples = make_samples_grouped(n_groups=1, group_size=2)
+        samples[0].multimodal_inputs = {"images": ["/shared/a.png", "/shared/b.png"]}
+
+        out = convert_samples_to_train_data(
+            args,
+            samples,
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+
+        if token_space:
+            assert out["multimodal_inputs"] == [{"images": ["/shared/a.png", "/shared/b.png"]}, None]
+        else:
+            assert "multimodal_inputs" not in out
 
     def test_loss_mask_none_filled_with_ones(self):
         args = make_args(rewards_normalization=False)
@@ -1089,6 +1113,12 @@ class TestCanPrecomputeDpSchedule:
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)
         data = _make_split_data(8)
         data["multimodal_train_inputs"] = [None] * 8
+        assert not can_precompute_dp_schedule(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
+
+    def test_rejects_token_space_media_refs(self):
+        args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)
+        data = _make_split_data(8)
+        data["multimodal_inputs"] = [None] * 8
         assert not can_precompute_dp_schedule(args=args, data=data, train_parallel_config=FULL_SCHEDULE_CONFIG)
 
     def test_rejects_fewer_rollouts_than_gbs(self):

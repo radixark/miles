@@ -40,8 +40,12 @@ _OTHER_TRAINER_ID = "policy_b-actor"
 _INIT_REQUEST = TrainerControllerInitRequest(num_rollout=6, wandb_run_id="wandb", mlflow_run_id=None)
 _STALLED_SECONDS = 5.0
 _SHORT_BUDGET_SECONDS = 0.05
-_BROADCAST_ARGS = Namespace(update_weight_transfer_mode="broadcast", custom_agent_function_path=None)
-_DISK_DELTA_ARGS = Namespace(update_weight_transfer_mode="disk-delta", custom_agent_function_path=None)
+_BROADCAST_ARGS = Namespace(
+    update_weight_transfer_mode="broadcast", custom_agent_function_path=None, rollout_dataset_agent_functions=[]
+)
+_DISK_DELTA_ARGS = Namespace(
+    update_weight_transfer_mode="disk-delta", custom_agent_function_path=None, rollout_dataset_agent_functions=[]
+)
 
 
 class _FakeTrainer:

@@ -1,8 +1,8 @@
 """The replay columns of a trainer shard whose arrays are in the output store."""
 
 from argparse import Namespace
-from collections.abc import Callable, Sequence
-from typing import Any
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -13,22 +13,26 @@ from miles.utils.rollout_topk_logprobs import requests_support_logprobs
 from miles.utils.sampling_mask import RolloutSamplingMask
 from miles.utils.types import Sample
 
+if TYPE_CHECKING:
+    from radix_transfer_plugins import OutputStore
 
-def materialize_store_columns(args: Namespace, rollout_data: dict, *, read: Callable | None) -> None:
-    """Replace the shard's rollout_store_plan column with the replay columns the inline path carries.
 
-    ``read`` takes ``[(ref, names)]`` and returns one stash per entry, as ``OutputStore.read_many``
-    bound to its stash type does. Reads again on every call, so an FT retry works.
+def maybe_materialize_store_plans(args: Namespace, rollout_data: dict, *, store: "OutputStore | None") -> None:
+    """Replace the shard's rollout_store_plan column, if any, with the replay columns the trainer uses.
+
+    The sampling mask's objects are read whole into the inline path's columns, again on every call
+    so an FT retry works. A forward field's column holds each sample's ``ForwardSegments``: replay
+    reads this rank's rows of them per micro batch.
     """
     entries = rollout_data.pop("rollout_store_plan", None)
     if entries is None:
         return
-    if read is None:
-        raise StorePlanError("the rollout data has output store plans, but this trainer has no output store reader")
+    if store is None:
+        raise StorePlanError("the rollout data has output store plans, but this trainer has no output store client")
     plans = [StorePlan.from_dict(entry) for entry in entries]
     k = args.rollout_top_logprobs_num
     support_topk = k if requests_support_logprobs(args) else 0
-    objects = _read_objects(plans, read, support_topk=support_topk)
+    objects = _read_objects(plans, store, support_topk=support_topk)
     columns = [
         plan.materialize(
             objects,
@@ -49,11 +53,16 @@ def materialize_store_columns(args: Namespace, rollout_data: dict, *, read: Call
     compact_score_centering_candidates(args, rollout_data)
 
 
-def _read_objects(plans: Sequence[StorePlan], read: Callable, *, support_topk: int) -> dict[str, dict[str, Any]]:
-    """Read every object the shard's plans take rows from, once."""
+def _read_objects(plans: Sequence[StorePlan], store: "OutputStore", *, support_topk: int) -> dict[str, dict[str, Any]]:
+    """Read every object the shard's plans read whole, once."""
     requests = store_reads(plans, support_topk=support_topk)
+    if not requests:
+        return {}
+    # radix_transfer_plugins ships with SGLang and is not a Miles dependency.
+    from radix_transfer_plugins.stashes.token_output import TokenOutputStash
+
     try:
-        stashes = read(list(requests.values()))
+        stashes = store.read_many(list(requests.values()), stash_type=TokenOutputStash)
     except (KeyError, ValueError) as e:
         # A missing object or array, or one whose size differs from its ref: no retry can fix it.
         raise StorePlanError(f"cannot read this shard's output store objects: {e}") from e

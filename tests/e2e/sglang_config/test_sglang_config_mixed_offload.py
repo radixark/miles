@@ -27,7 +27,7 @@ register_cuda_ci(
     nightly=True,
     num_gpus=4,
 )
-register_rocm_ci(est_time=300, suite="nightly-stage-c-4-gpu-mi350", labels=["short"])
+register_rocm_ci(est_time=300, suite="stage-c-4-gpu-mi350", labels=["short"], nightly=True)
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"

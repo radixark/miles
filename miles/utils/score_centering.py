@@ -30,7 +30,6 @@ def validate_score_centering_args(args: Namespace) -> None:
         "use_opsm": "sequence masking changes the score-centering estimator",
         "true_on_policy_mode": "score centering uses float32 probability arithmetic",
         "recompute_logprobs_via_prefill": "sampler probabilities must be recorded at generation time",
-        "sglang_speculative_algorithm": "speculative candidate-logprob semantics are not verified",
         "custom_pg_loss_reducer_function_path": "use the standard token/sample reducer",
         "multi_lora": "per-sample Tinker losses bypass the score-centering loss",
         "use_opd": "distillation composition is not supported",
@@ -41,5 +40,18 @@ def validate_score_centering_args(args: Namespace) -> None:
             args, option
         ):  # config-access-exempt: option is selected from the required compatibility field names
             raise ValueError(f"Score centering is incompatible with --{option.replace('_', '-')}: {reason}")
+    speculative = args.sglang_speculative_algorithm
+    if speculative and speculative.upper() != "DFLASH":
+        raise ValueError(
+            f"Score centering is incompatible with --sglang-speculative-algorithm {speculative}: "
+            "only DFLASH's candidate log-probs are verified"
+        )
+    if speculative and (
+        args.sglang_speculative_accept_threshold_single != 1.0 or args.sglang_speculative_accept_threshold_acc != 1.0
+    ):
+        raise ValueError(
+            "Score centering with DFLASH requires --sglang-speculative-accept-threshold-single and "
+            "--sglang-speculative-accept-threshold-acc of 1.0: lower thresholds accept draft tokens the target would not sample"
+        )
     if os.environ.get("SGLANG_RETURN_ORIGINAL_LOGPROB", "").lower() in ("1", "true"):
         raise ValueError("Score centering requires SGLANG_RETURN_ORIGINAL_LOGPROB=0 on rollout servers")

@@ -7,7 +7,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, WorkerType
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, WorkerType, resolve_admin_api_key
+from miles.backends.sglang_utils.sglang_engine import SGLANG_DEFAULT_HEALTH_CHECK_TIMEOUT_SECONDS
 from miles.utils.http_utils import wrap_ipv6
 from miles.utils.retry_utils import retry_until_deadline
 from miles.utils.workers.backend_capability.base import BackendCapability
@@ -113,12 +114,14 @@ class _ExternalEngineInfo:
     port: int
     worker_type: WorkerType
     num_gpus: int
+    pp_size: int
     disaggregation_bootstrap_port: int | None
 
 
 def _compute_cells(*, args: Any, engines: list[_ExternalEngineInfo]) -> dict[str, _ExternalCell]:
     cells: dict[str, _ExternalCell] = {}
     gpu_offset = 0
+    admin_api_key = resolve_admin_api_key(args.sglang.base_args["admin_api_key"])
     for cell_index, engine in enumerate(engines):
         cell_id = compute_cell_id(pool_id=_EXTERNAL_ENGINE_POOL_ID, cell_index=cell_index)
         worker_name = compute_worker_name(pool_id=_EXTERNAL_ENGINE_POOL_ID, cell_index=cell_index)
@@ -135,8 +138,12 @@ def _compute_cells(*, args: Any, engines: list[_ExternalEngineInfo]) -> dict[str
                     num_gpus_per_engine=engine.num_gpus,
                     gpu_offset=gpu_offset,
                     sglang_api_key=args.sglang.base_args["api_key"],
+                    sglang_admin_api_key=admin_api_key,
                     needs_offload=False,
                     update_weights=True,
+                    # The engine's own SGLANG_HEALTH_CHECK_TIMEOUT is not reported, so assume SGLang's default
+                    # per pipeline stage.
+                    health_check_timeout_seconds=SGLANG_DEFAULT_HEALTH_CHECK_TIMEOUT_SECONDS * engine.pp_size,
                 ),
             ),
             addrs=_compute_engine_addrs(engine),
@@ -221,6 +228,7 @@ async def _discover_external_engine(url: str, *, api_key: str | None) -> _Extern
         port=addr.port,
         worker_type=WorkerType.from_server_info(server_info),
         num_gpus=int(server_info["internal_states"][0]["world_size"]),
+        pp_size=int(server_info["pp_size"]),
         disaggregation_bootstrap_port=(
             int(x) if (x := server_info.get("disaggregation_bootstrap_port")) is not None else None
         ),

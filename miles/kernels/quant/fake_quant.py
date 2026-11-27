@@ -62,11 +62,16 @@ def _fake_quant_kernel(
     tl.store(out_ptr + offs, out.to(out_ptr.dtype.element_ty), mask=mask)
 
 
-def _fake_quant(x: torch.Tensor, fp4: bool, compressed_kv: bool = False) -> torch.Tensor:
+def _fake_quant(
+    x: torch.Tensor, fp4: bool, compressed_kv: bool = False, out: torch.Tensor | None = None
+) -> torch.Tensor:
     block = COMPRESSED_KV_BLOCK_SIZE if compressed_kv else BLOCK_SIZE
     assert x.shape[-1] % block == 0
     xc = x.contiguous()
-    out = torch.empty_like(xc)
+    if out is None:
+        out = torch.empty_like(xc)
+    else:
+        assert out.is_contiguous() and out.shape == xc.shape
     n_rows = xc.numel() // block
     rows_per_prog = 64
     grid = (triton.cdiv(n_rows, rows_per_prog),)
@@ -94,8 +99,12 @@ def fake_quant_compressed_kv_forward(x: torch.Tensor) -> torch.Tensor:
     return _fake_quant(x, True, compressed_kv=True)
 
 
-def fake_quant_fp4_forward(x: torch.Tensor) -> torch.Tensor:
-    return _fake_quant(x, True)
+def fake_quant_fp4_forward(x: torch.Tensor, out: torch.Tensor | None = None) -> torch.Tensor:
+    """Round ``x`` onto the FP4 grid with per-32 power-of-two scales, into ``out`` if given.
+
+    ``out`` may be ``x`` itself: each program reads its rows before writing them back.
+    """
+    return _fake_quant(x, True, out=out)
 
 
 def fake_quant_fp8_forward(x: torch.Tensor) -> torch.Tensor:

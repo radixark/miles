@@ -50,6 +50,8 @@ The fused cuDNN indexer supports CP1, single-sequence CP batches, and complete m
 
 Native DSA defaults to `--dsa-indexer-loss-coeff 0` and freezes its indexer parameters, because native top-k selection runs without gradients when the auxiliary objective is disabled. This excludes unused parameters from DDP and optimizer weight decay. A positive native loss coefficient keeps the indexer trainable and requires explicitly selecting the reference implementation with `--dsa-kernel-backend none` or `--attention-backend unfused` when using an external top-k backend.
 
+The Miles DSA implementation (`--dsa-impl miles`) has no indexer loss and always freezes its indexer (`wq_b`, `wk`, `k_norm`, `weights_proj`). Checkpoints saved before this freeze hold optimizer state for those parameters, so resuming one with optimizer state fails on the distributed optimizer's bucket sizes; resume it with `--no-load-optim`. Converted HF checkpoints, `release` checkpoints and LoRA runs are unaffected.
+
 Convert into a separate `torch_dist` directory when changing implementations: the native attention and indexer parameter names differ from the Miles checkpoint layout. Use the same implementation for conversion, checkpoint loading, and training. This selector applies to DSA training; SGLang rollout backend flags remain independent.
 
 With BF16 training, native cuDNN uses BF16 head weights; Miles produces FP32 head weights from BF16 projection operands. [cuDNN Frontend PR #1311](https://github.com/NVIDIA/cudnn-frontend/pull/1311) adds FP32 input support to forward scoring only. This wiring remains BF16; FP32 projection and auxiliary-loss recompute/backward support are separate work. Head-weight precision affects scores independently of the top-k backend and tie policy.

@@ -1,10 +1,12 @@
 import asyncio
 import dataclasses
 import logging
+import os
 from enum import Enum
 from typing import Any
 
 import httpx
+import orjson
 
 from miles.utils.http_utils import GeneralHttpClientProvider
 
@@ -25,6 +27,15 @@ class WorkerType(Enum):
         return cls(mode)
 
 
+def resolve_admin_api_key(flag: str | None) -> str | None:
+    """``--admin-api-key``, else ``SGLANG_ADMIN_API_KEY``: the order SGLang's server and its admin clients use.
+
+    Only for engines miles does not launch: an engine miles launches may not see this environment (sglang-miles
+    never reads it), so its cells use the flag it is launched with. Not stored in args, which W&B and manifests record.
+    """
+    return os.environ.get("SGLANG_ADMIN_API_KEY") if flag is None else flag
+
+
 def _compute_headers(api_key: str | None) -> dict[str, str]:
     return {
         "Content-Type": "application/json; charset=utf-8",
@@ -32,7 +43,7 @@ def _compute_headers(api_key: str | None) -> dict[str, str]:
     }
 
 
-async def probe_server_healthy(server_url: str, api_key: str | None, timeout: float = 5.0) -> bool:
+async def probe_server_healthy(server_url: str, api_key: str | None, timeout: float | httpx.Timeout = 5.0) -> bool:
     try:
         response = await GeneralHttpClientProvider.client().get(
             f"{server_url}/health_generate",
@@ -71,30 +82,85 @@ async def wait_server_healthy(server_url, api_key):
         await asyncio.sleep(2)
 
 
+def _update_weights_from_tensor_payload(
+    serialized_named_tensors: list[str],
+    load_format: str | None,
+    flush_cache: bool,
+    weight_version: str | None,
+    selector: str,
+) -> dict:
+    payload = {
+        "serialized_named_tensors": serialized_named_tensors,
+        "load_format": load_format,
+        "flush_cache": flush_cache,
+        "selector": selector,
+    }
+    if weight_version is not None:
+        payload["weight_version"] = weight_version
+    return payload
+
+
+def encode_update_weights_from_tensor_body(
+    serialized_named_tensors: list[str],
+    load_format: str | None = None,
+    flush_cache: bool = False,
+    weight_version: str | None = None,
+    selector: str = "all",
+) -> bytes:
+    """The ``update_weights_from_tensor`` body, encoded once to post to many engines."""
+    return orjson.dumps(
+        _update_weights_from_tensor_payload(
+            serialized_named_tensors, load_format, flush_cache, weight_version, selector
+        )
+    )
+
+
 @dataclasses.dataclass(frozen=True)
 class SGLangApiClient:
     server_url: str
-    api_key: str | None = None
+    # kept out of repr, which tracebacks and logs print
+    api_key: str | None = dataclasses.field(default=None, repr=False)
+    admin_api_key: str | None = dataclasses.field(default=None, repr=False)
+
+    @property
+    def _normal_headers(self) -> dict[str, str]:
+        # SGLang's NORMAL routes check only api_key, and admit any request on a server without one
+        # (sglang/srt/utils/auth.py:decide_request_auth).
+        return _compute_headers(self.api_key)
 
     @property
     def _headers(self) -> dict[str, str]:
-        return _compute_headers(self.api_key)
+        # SGLang's ADMIN_FORCE / ADMIN_OPTIONAL routes take admin_api_key whenever the server has one, else api_key.
+        return _compute_headers(self.admin_api_key or self.api_key)
 
-    async def _make_request(self, endpoint: str, payload: dict | None = None, *, timeout: float | None = None):
+    async def _make_request(
+        self,
+        endpoint: str,
+        payload: dict | None = None,
+        *,
+        timeout: float | None = None,
+        body: bytes | None = None,
+    ):
         """Make a POST request to the specified endpoint with the given payload.
 
         Args:
             endpoint: The API endpoint to call
             payload: The JSON payload to send (default: empty dict)
+            body: An already JSON-encoded payload, sent as is instead of ``payload``
 
         Returns:
             The JSON response from the server
         """
         url = f"{self.server_url}/{endpoint}"
         bound: dict[str, float] = {} if timeout is None else dict(timeout=timeout)
-        response = await GeneralHttpClientProvider.client().post(
-            url, json=payload or {}, headers=self._headers, **bound
-        )
+        if body is None:
+            response = await GeneralHttpClientProvider.client().post(
+                url, json=payload or {}, headers=self._headers, **bound
+            )
+        else:
+            response = await GeneralHttpClientProvider.client().post(
+                url, content=body, headers={**self._headers, "Content-Type": "application/json"}, **bound
+            )
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
@@ -121,7 +187,7 @@ class SGLangApiClient:
         """
         response = await GeneralHttpClientProvider.client().get(
             f"{self.server_url}/health_generate",
-            headers=self._headers,
+            headers=self._normal_headers,
             timeout=timeout,
         )
         response.raise_for_status()
@@ -141,18 +207,16 @@ class SGLangApiClient:
         Note: The model should be on GPUs rather than CPU for this functionality to work properly.
         If you encounter issues, ensure your model is loaded on GPU devices rather than CPU.
         """
-        payload = {
-            "serialized_named_tensors": serialized_named_tensors,
-            "load_format": load_format,
-            "flush_cache": flush_cache,
-            "selector": selector,
-        }
-        if weight_version is not None:
-            payload["weight_version"] = weight_version
         return await self._make_request(
             "update_weights_from_tensor",
-            payload,
+            _update_weights_from_tensor_payload(
+                serialized_named_tensors, load_format, flush_cache, weight_version, selector
+            ),
         )
+
+    async def update_weights_from_tensor_encoded(self, body: bytes):
+        """``update_weights_from_tensor`` with a body from ``encode_update_weights_from_tensor_body``."""
+        return await self._make_request("update_weights_from_tensor", body=body)
 
     async def get_remote_instance_transfer_engine_info(self, rank: int, role: str):
         # TODO: will be changed to `remote_instance_transfer_engine_info` when the sglang side is ready.
@@ -178,7 +242,7 @@ class SGLangApiClient:
     async def get_server_info(self):
         response = await GeneralHttpClientProvider.client().get(
             f"{self.server_url}/server_info",
-            headers=self._headers,
+            headers=self._normal_headers,
             timeout=5.0,
         )
         response.raise_for_status()
@@ -281,7 +345,7 @@ class SGLangApiClient:
         # new sglang change api from /get_weight_version to /model_info
         for endpoint in ("/model_info", "/get_weight_version"):
             response = await GeneralHttpClientProvider.client().get(
-                f"{self.server_url}{endpoint}", headers=self._headers
+                f"{self.server_url}{endpoint}", headers=self._normal_headers
             )
             if response.status_code == 200:
                 return response.json()["weight_version"]
@@ -292,6 +356,12 @@ class SGLangApiClient:
         return await self._make_request(
             "register_lora_adapter",
             {"lora_name": lora_name, "config_dict": config_dict, "pinned": pinned},
+        )
+
+    async def load_lora_adapter(self, lora_name: str, lora_path: str, pinned: bool = False, upsert: bool = False):
+        """Load a PEFT adapter directory. With ``upsert``, a same-name adapter is replaced in place."""
+        return await self._make_request(
+            "load_lora_adapter", {"lora_name": lora_name, "lora_path": lora_path, "pinned": pinned, "upsert": upsert}
         )
 
     async def release_memory_occupation(self, tags: list[str] = None):

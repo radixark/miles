@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from argparse import Namespace
 
 import pytest
@@ -13,6 +14,8 @@ from miles.backends.sglang_utils.sglang_config import (
     SglangConfig,
     _compute_megatron_num_gpus,
     _compute_rollout_offset,
+    _eval_sglang_overrides,
+    _extract_base_args,
 )
 from miles.utils.external_utils.command_utils.common import encode_pseudo_file
 
@@ -23,6 +26,8 @@ def _make_args(**overrides) -> Namespace:
         prefill_num_servers=None,
         rollout_num_gpus=8,
         rollout_num_gpus_per_engine=1,
+        sglang_pp_size=1,
+        sglang_pp_layer_partition=None,
         num_gpus_per_node=8,
         eval_num_gpus=0,
         eval_num_gpus_per_engine=1,
@@ -184,7 +189,7 @@ class TestResolvedServerGroupValidation:
     def test_a_resolved_group_with_non_positive_gpus_per_engine_is_rejected(self):
         """A non-positive engine width would make the engine count division meaningless."""
         with pytest.raises(ValueError, match="greater than 0"):
-            ServerGroupConfig(worker_type="regular", num_gpus_per_engine=-1, needs_offload=False)
+            ServerGroupConfig(worker_type="regular", num_gpus_per_engine=-1, pp_size=1, needs_offload=False)
 
 
 class TestNumServerCells:
@@ -758,7 +763,7 @@ class TestCommonValue:
     def test_groups_that_agree_share_their_override(self):
         """Every engine group overriding a field to the same value yields that value."""
         group = ServerGroupConfig(
-            worker_type=WorkerType.REGULAR, num_gpus_per_engine=1, needs_offload=False, overrides={"x": 2}
+            worker_type=WorkerType.REGULAR, num_gpus_per_engine=1, pp_size=1, needs_offload=False, overrides={"x": 2}
         )
         model = ModelConfig(name="actor", model_path=None, server_groups=[group, group], update_weights=True)
 
@@ -779,7 +784,9 @@ class TestCommonValueBoundaries:
     def test_disagreeing_groups_cannot_supply_a_shared_value(self, second_overrides: dict[str, int]) -> None:
         """A shared consumer cannot silently select one engine group's conflicting setting."""
         groups = [
-            ServerGroupConfig(worker_type="regular", num_gpus_per_engine=1, needs_offload=False, overrides=value)
+            ServerGroupConfig(
+                worker_type="regular", num_gpus_per_engine=1, pp_size=1, needs_offload=False, overrides=value
+            )
             for value in [{"x": 2}, second_overrides]
         ]
         model = ModelConfig(name="actor", model_path=None, server_groups=groups, update_weights=True)
@@ -792,11 +799,13 @@ class TestCommonValueBoundaries:
         """GPU reservations without engines cannot override settings used by live engine consumers."""
         groups = [
             ServerGroupConfig(
-                worker_type="placeholder", num_gpus_per_engine=1, needs_offload=False, overrides={"x": 99}
+                worker_type="placeholder", num_gpus_per_engine=1, pp_size=1, needs_offload=False, overrides={"x": 99}
             )
         ]
         if include_engine:
-            groups.append(ServerGroupConfig(worker_type="regular", num_gpus_per_engine=1, needs_offload=False))
+            groups.append(
+                ServerGroupConfig(worker_type="regular", num_gpus_per_engine=1, pp_size=1, needs_offload=False)
+            )
         model = ModelConfig(name="actor", model_path=None, server_groups=groups, update_weights=True)
 
         assert SglangConfig(models=[model], base_args={"x": 1}).common_value("x") == 1
@@ -804,10 +813,72 @@ class TestCommonValueBoundaries:
     def test_a_field_missing_from_one_live_group_is_rejected(self) -> None:
         """An override in only one group cannot manufacture a globally available setting."""
         groups = [
-            ServerGroupConfig(worker_type="regular", num_gpus_per_engine=1, needs_offload=False, overrides=value)
+            ServerGroupConfig(
+                worker_type="regular", num_gpus_per_engine=1, pp_size=1, needs_offload=False, overrides=value
+            )
             for value in [{"x": 2}, {}]
         ]
         model = ModelConfig(name="actor", model_path=None, server_groups=groups, update_weights=True)
 
         with pytest.raises(AttributeError, match="No common field 'x'"):
             SglangConfig(models=[model], base_args={}).common_value("x")
+
+
+class TestActorValue:
+    @staticmethod
+    def _group(**overrides):
+        return ServerGroupConfig(
+            worker_type="regular", num_gpus_per_engine=1, pp_size=1, needs_offload=False, overrides=overrides
+        )
+
+    def test_frozen_models_do_not_take_part(self):
+        """A reward or reference engine with its own setting must not block the actor engines' value."""
+        actor = ModelConfig(name="actor", model_path=None, server_groups=[self._group(x=2)], update_weights=True)
+        reward = ModelConfig(
+            name="reward", model_path="/reward", server_groups=[self._group(x=3)], update_weights=False
+        )
+        cfg = SglangConfig(models=[actor, reward], base_args={"x": 1})
+
+        assert cfg.actor_value("x") == 2
+        with pytest.raises(AssertionError, match="Field 'x' differs"):
+            cfg.common_value("x")
+
+    def test_disagreeing_actor_groups_are_still_rejected(self):
+        actor = ModelConfig(
+            name="actor", model_path=None, server_groups=[self._group(x=2), self._group(x=3)], update_weights=True
+        )
+
+        with pytest.raises(AssertionError, match="Field 'x' differs"):
+            SglangConfig(models=[actor], base_args={"x": 1}).actor_value("x")
+
+    def test_without_actor_engines_the_cli_value_stands_in(self):
+        """--debug-train-only starts no engine; a frozen model alone does not change that."""
+        reward = ModelConfig(
+            name="reward", model_path="/reward", server_groups=[self._group(x=3)], update_weights=False
+        )
+
+        assert SglangConfig(models=[], base_args={"x": 1}).actor_value("x") == 1
+        assert SglangConfig(models=[reward], base_args={"x": 1}).actor_value("x") == 1
+
+
+def test_a_suppress_default_server_arg_is_extracted_only_when_given(monkeypatch):
+    """A SUPPRESS-default action leaves no dest on the namespace; reading it raised KeyError at startup."""
+
+    def add_server_args(parser):
+        parser.add_argument("--sglang-tp-size", dest="sglang_tp_size", type=int, default=1)
+        parser.add_argument("--sglang-old-alias", dest="sglang_old_alias", default=argparse.SUPPRESS)
+
+    monkeypatch.setattr("miles.backends.sglang_utils.sglang_config._add_prefixed_primary_server_args", add_server_args)
+
+    assert _extract_base_args(Namespace(sglang_tp_size=1)) == {"tp_size": 1}
+    assert _extract_base_args(Namespace(sglang_tp_size=1, sglang_old_alias="x")) == {"tp_size": 1, "old_alias": "x"}
+
+
+@pytest.mark.parametrize(
+    ("eval_overrides", "expected"), [({}, 1), ({"eval_sglang_attn_dp_size": 2}, 2)], ids=["reset", "explicit"]
+)
+def test_a_differently_sized_eval_engine_does_not_inherit_the_attention_dp_width(eval_overrides, expected):
+    """An 8-GPU rollout's attn_dp_size 8 cannot boot on a 2-GPU eval engine; --eval-sglang-attn-dp-size still wins."""
+    args = Namespace(rollout_num_gpus_per_engine=8, eval_num_gpus_per_engine=2, **eval_overrides)
+
+    assert _eval_sglang_overrides(args)["attn_dp_size"] == expected

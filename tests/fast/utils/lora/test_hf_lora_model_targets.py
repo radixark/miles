@@ -12,6 +12,7 @@ from miles.utils.hf_utils.weight_mapping import HfWeightMapping
 from miles.utils.lora.hf_lora_targets import (
     _HF_LORA_MODELS,
     exclude_hf_lora_targets,
+    gdn_in_proj_served_targets,
     get_hf_lora_targets,
     parse_lora_targets,
     resolve_hf_lora_targets,
@@ -30,7 +31,9 @@ _NATIVE_MODELS = (
     "gpt_oss",
     "deepseek_v2",
     "deepseek_v3",
+    "glm4",
     "glm4_moe",
+    "glm4_moe_lite",
     "glm_moe_dsa",
     "glm5_next",
 )
@@ -64,7 +67,7 @@ def _small_config(model_type, overrides):
         )
     if model_type == "gpt_oss":
         text.update(num_local_experts=2, num_experts_per_tok=1)
-    if model_type in {"deepseek_v2", "deepseek_v3", "glm4_moe", "glm_moe_dsa", "glm5_next"}:
+    if model_type in {"deepseek_v2", "deepseek_v3", "glm4_moe", "glm4_moe_lite", "glm_moe_dsa", "glm5_next"}:
         text.update(
             first_k_dense_replace=1,
             n_routed_experts=2,
@@ -74,8 +77,12 @@ def _small_config(model_type, overrides):
             n_group=1,
             topk_group=1,
         )
-    if model_type in {"deepseek_v2", "deepseek_v3", "glm_moe_dsa", "glm5_next"}:
+    if model_type in {"deepseek_v2", "deepseek_v3", "glm4_moe_lite", "glm_moe_dsa", "glm5_next"}:
         text.update(q_lora_rank=8, kv_lora_rank=8, qk_nope_head_dim=4, qk_rope_head_dim=4, v_head_dim=8)
+    if model_type == "glm4":
+        text.update(pad_token_id=0)
+    if model_type == "glm4_moe_lite":
+        text.update(mlp_layer_types=["dense", "sparse"])
     if model_type in {"glm_moe_dsa", "glm5_next"}:
         text.update(mlp_layer_types=["dense", "sparse"], index_n_heads=2, index_head_dim=8, index_topk=4)
     if model_type == "glm5_next":
@@ -116,7 +123,9 @@ def test_native_model_coverage():
         "kimi_k2",
         "kimi_k25",
         "kimi_k3",
+        "mimo",
         "mimo_v2",
+        "joyai_llm_flash",
         "inkling_model",
         "inkling_mm_model",
         "inkling_text",
@@ -129,7 +138,7 @@ def test_native_model_coverage():
     [pytest.param(name, {}, id=name) for name in _NATIVE_MODELS]
     + [
         pytest.param(name, {"q_lora_rank": None}, id=f"{name}-uncompressed-query")
-        for name in ("deepseek_v2", "deepseek_v3")
+        for name in ("deepseek_v2", "deepseek_v3", "glm4_moe_lite")
     ]
     + [
         pytest.param(name, {"first_k_dense_replace": count}, id=f"{name}-{kind}")
@@ -147,7 +156,8 @@ def test_native_model_coverage():
         for kind in ("full_attention", "linear_attention")
     ]
     + [
-        pytest.param("glm_moe_dsa", {"mlp_layer_types": [kind, kind]}, id=f"glm-dsa-{kind}")
+        pytest.param(name, {"mlp_layer_types": [kind, kind]}, id=f"{name}-{kind}")
+        for name in ("glm_moe_dsa", "glm4_moe_lite")
         for kind in ("dense", "sparse")
     ]
     + [
@@ -231,3 +241,110 @@ def test_remote_config_with_native_class_name():
         HfWeightMapping.from_config(remote_config).parameter_names
         == HfWeightMapping.from_config(config).parameter_names
     )
+
+
+# module leaves of the official Tinker exports in design doc §6.9 (unembed_tokens is HF's lm_head)
+_TINKER_QWEN3_5_4B = {
+    "self_attn.q_proj",
+    "self_attn.k_proj",
+    "self_attn.v_proj",
+    "self_attn.o_proj",
+    "linear_attn.in_proj_q",
+    "linear_attn.in_proj_k",
+    "linear_attn.in_proj_v",
+    "linear_attn.in_proj_z",
+    "linear_attn.out_proj",
+    "mlp.gate_proj",
+    "mlp.up_proj",
+    "mlp.down_proj",
+    "lm_head",
+}
+
+
+_GDN_HEADS = {
+    "linear_num_key_heads": 2,
+    "linear_key_head_dim": 2,
+    "linear_num_value_heads": 4,
+    "linear_value_head_dim": 2,
+}
+
+
+@pytest.mark.parametrize("model_type", ["qwen3_5", "qwen3_5_moe"])
+def test_qwen3_5_attn_group_is_official_tinkers(model_type):
+    """Official Qwen3.5 / 3.6 adapters train in_proj_q/k/v/z and out_proj on the GDN layers, never in_proj_b/a."""
+    text = {"layer_types": ["linear_attention", "full_attention"], "shared_expert_intermediate_size": 16, **_GDN_HEADS}
+    targets = resolve_hf_lora_targets({"model_type": model_type, "text_config": text}, target_modules=["attn"])
+    served = gdn_in_proj_served_targets(targets, targets)
+    gdn = {target.split(".layers.*.")[1] for target in served if ".linear_attn." in target}
+    assert gdn == {f"linear_attn.{leaf}" for leaf in ("in_proj_q", "in_proj_k", "in_proj_v", "in_proj_z", "out_proj")}
+
+
+def test_qwen3_5_dense_default_groups_match_the_official_export():
+    config = {
+        "model_type": "qwen3_5",
+        "text_config": {"layer_types": ["linear_attention", "full_attention"], **_GDN_HEADS},
+    }
+    targets = resolve_hf_lora_targets(config, target_modules=["attn", "mlp", "unembed"])
+    served = gdn_in_proj_served_targets(targets, targets)
+    assert {target.split(".layers.*.")[-1] for target in served} == _TINKER_QWEN3_5_4B
+
+
+@pytest.mark.parametrize(
+    "model_type,group,overrides",
+    [("glm4", "mlp", {}), ("glm4_moe_lite", "attention", {"mlp_layer_types": ["dense", "dense"]})],
+)
+def test_layouts_name_the_native_specs_projections(model_type, group, overrides):
+    """The adapter checkpoint keys native's export by these HF modules; a name native does not adapt has no data."""
+    from miles.backends.megatron_utils.lora.native.registry import MODEL_SPECS
+
+    layout = get_hf_lora_targets(_small_config(model_type, overrides).to_dict())
+    native_spec = getattr(MODEL_SPECS[model_type], group)
+    native_leaves = {binding.projection.hf_leaf for binding in native_spec.layout.singles}
+    assert {target.rsplit(".", 1)[1] for target in getattr(layout, group)} == native_leaves
+
+
+def test_glm5_default_targets_leave_kv_b_proj_frozen():
+    """SGLang's DSA prefill rejects a kv_b_proj adapter; GLM-4.7-Flash shares the layout builder but not that limit."""
+    glm5 = get_hf_lora_targets(_small_config("glm_moe_dsa", {}).to_dict())
+    glm47_flash = get_hf_lora_targets(_small_config("glm4_moe_lite", {}).to_dict())
+    assert set(glm47_flash.attention) - set(glm5.attention) == {"model.layers.*.self_attn.kv_b_proj"}
+
+
+# remote-code families: config fields and checkpoint projection names of XiaomiMiMo/MiMo-7B-RL and
+# jdopensource/JoyAI-LLM-Flash (config.json, model.safetensors.index.json); layer indices folded to *
+_MIMO_7B = {"model_type": "mimo", "num_hidden_layers": 36, "num_nextn_predict_layers": 1}
+_JOYAI_LLM_FLASH = {
+    "model_type": "joyai_llm_flash",
+    "num_hidden_layers": 40,
+    "n_routed_experts": 256,
+    "n_shared_experts": 1,
+    "first_k_dense_replace": 1,
+    "moe_layer_freq": 1,
+    "q_lora_rank": 1536,
+}
+_REMOTE_CHECKPOINT_PROJECTIONS = {
+    "mimo": {
+        *(f"model.layers.*.self_attn.{leaf}" for leaf in ("q_proj", "k_proj", "v_proj", "o_proj")),
+        *(f"model.layers.*.mlp.{leaf}" for leaf in ("gate_proj", "up_proj", "down_proj")),
+        "lm_head",
+    },
+    "joyai_llm_flash": {
+        *(
+            f"model.layers.*.self_attn.{leaf}"
+            for leaf in ("q_a_proj", "q_b_proj", "kv_a_proj_with_mqa", "kv_b_proj", "o_proj")
+        ),
+        *(
+            f"model.layers.*.mlp.{block}{leaf}"
+            for block in ("", "experts.*.", "shared_experts.")
+            for leaf in ("gate_proj", "up_proj", "down_proj")
+        ),
+        "lm_head",
+    },
+}
+
+
+@pytest.mark.parametrize("config", [_MIMO_7B, _JOYAI_LLM_FLASH], ids=lambda config: config["model_type"])
+def test_remote_code_native_families_name_their_checkpoints_projections(config):
+    """Native trains these families; their adapter checkpoint and export need the HF layout."""
+    layout = get_hf_lora_targets(config)
+    assert set(layout.attention + layout.mlp + layout.unembed) == _REMOTE_CHECKPOINT_PROJECTIONS[config["model_type"]]

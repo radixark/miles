@@ -23,6 +23,11 @@ from miles.utils.external_utils.command_utils.ray_backend.command import (
 )
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.external_utils.ray_job import run_ray_job
+from miles.utils.port_range import ray_worker_port_args
+
+
+# SIGTERM, then SIGKILL only after the grace period; ray's default waits 16 s
+_GRACEFUL_RAY_STOP = "ray stop --grace-period 60"
 
 
 class RayCommandBackend(BaseCommandBackend):
@@ -39,13 +44,14 @@ class RayCommandBackend(BaseCommandBackend):
             None if config.external_mooncake else self._resolve_mooncake_master_port(request.train_args)
         )
 
-        self._clean_up_previous_run(external_ray=external_ray)
+        self._clean_up_previous_run(external_ray=external_ray, graceful=config.graceful_ray_stop)
 
         if not external_ray:
             self.exec_command_cpu(
                 # will prevent ray from buffering stdout/stderr
                 f"export PYTHONUNBUFFERED=1 && "
                 f"ray start --head --node-ip-address {master_addr} --num-gpus {request.num_gpus_per_node} --disable-usage-stats"
+                f"{ray_worker_port_args()}"
             )
 
         if mooncake_master_port is not None:
@@ -73,7 +79,7 @@ class RayCommandBackend(BaseCommandBackend):
                 )
             finally:
                 if request.job_lifetime == "launcher" and not external_ray:
-                    self.exec_command_cpu("ray stop --force")
+                    self.exec_command_cpu(_GRACEFUL_RAY_STOP if config.graceful_ray_stop else "ray stop --force")
 
     def _resolve_mooncake_master_port(self, train_args: str) -> int | None:
         train_argv = shlex.split(train_args)
@@ -96,7 +102,11 @@ class RayCommandBackend(BaseCommandBackend):
     ) -> list[str | None]:
         return exec_command_all_ray_nodes(cmd, capture_output=capture_output, num_nodes=num_nodes)
 
-    def _clean_up_previous_run(self, external_ray: bool) -> None:
+    def _clean_up_previous_run(self, external_ray: bool, graceful: bool) -> None:
+        if graceful:
+            if not external_ray:
+                self.exec_command_cpu(_GRACEFUL_RAY_STOP)
+            return
         self.exec_command_cpu(
             "pkill -9 sglang; "
             "sleep 3; "

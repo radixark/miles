@@ -19,6 +19,7 @@ from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_scaling_config import ServerGroupScalingConfig, SglangScalingConfig
 from miles.utils.args.configs.sglang_client import SglangClientConfig
 from miles.utils.file_arg_utils import resolve_file_arg
+from miles.utils.hf_utils.config import load_hf_config
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.output_store.config import SGLANG_OUTPUT_STORE_FIELDS
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -155,12 +156,18 @@ class _RawSglangConfig(FrozenStrictBaseModel):
 class ServerGroupConfig(FrozenStrictBaseModel):
     worker_type: WorkerType
     num_gpus_per_engine: int = pydantic.Field(gt=0)
+    pp_size: int = pydantic.Field(gt=0)
     overrides: dict = pydantic.Field(default_factory=dict)
     needs_offload: bool
 
     @property
     def model_path(self) -> str:
         return self.overrides["model_path"]
+
+    @property
+    def tp_size(self) -> int:
+        # An SGLang engine spans tp_size * pp_size GPUs, so its TP is per pipeline stage.
+        return self.num_gpus_per_engine // self.pp_size
 
     @classmethod
     def resolve(
@@ -195,10 +202,16 @@ class ServerGroupConfig(FrozenStrictBaseModel):
             **({"enable_memory_saver": False} if args.offload_rollout and not needs_offload else {}),
             **raw.overrides,
         }
+        pp_size = overrides.get("pp_size", args.sglang_pp_size)
+        assert num_gpus_per_engine % pp_size == 0, (
+            f"{num_gpus_per_engine} GPUs per engine do not split into pp_size {pp_size} pipeline stages; "
+            f"each stage needs the same number of GPUs"
+        )
 
         config = cls(
             worker_type=raw.worker_type,
             num_gpus_per_engine=num_gpus_per_engine,
+            pp_size=pp_size,
             overrides=overrides,
             needs_offload=needs_offload,
         )
@@ -306,6 +319,22 @@ class SglangConfig(FrozenStrictBaseModel):
         ]
         return _list_of_dicts_get(values or [self.base_args], name)
 
+    def actor_value(self, name: str) -> Any:
+        """The actor engines' value of ``name``; raises when their groups disagree.
+
+        Actor engines belong to a model with ``update_weights``: they receive the trainer's weights and produce
+        its samples. A frozen reference, reward or eval model may set ``name`` differently. With no actor engine
+        (``--debug-train-only``) the base args stand in.
+        """
+        values = [
+            self.base_args | group.overrides
+            for model in self.models
+            if model.update_weights
+            for group in model.server_groups
+            if group.worker_type != WorkerType.PLACEHOLDER
+        ]
+        return _list_of_dicts_get(values or [self.base_args], name)
+
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
         SglangClientConfig.add_arguments(parser=parser)
@@ -343,8 +372,11 @@ class SglangConfig(FrozenStrictBaseModel):
         resolved = [ModelConfig.resolve(m, args, offset_cursor) for m in raw.models]
 
         assert offset_cursor.gpu == raw.total_num_gpus
+        models = [config for config, _ in resolved]
+        if args.sglang_pp_layer_partition is not None:
+            _validate_pp_layer_partition(args.sglang_pp_layer_partition, models)
         return (
-            cls(models=[config for config, _ in resolved], base_args=base_args),
+            cls(models=models, base_args=base_args),
             SglangScalingConfig(groups={config.name: scalings for config, scalings in resolved}),
         )
 
@@ -353,11 +385,40 @@ class SglangConfig(FrozenStrictBaseModel):
         return any(m.has_pd_disaggregation for m in self.models)
 
 
+def _validate_pp_layer_partition(partition: str, models: list[ModelConfig]) -> None:
+    # SGLang gives the one partition to every pipelined engine and checks it only when loading the model.
+    engine_groups = [
+        group for model in models for group in model.server_groups if group.worker_type != WorkerType.PLACEHOLDER
+    ]
+    pipelined = {(group.model_path, group.pp_size) for group in engine_groups if group.pp_size > 1}
+    if engine_groups and not pipelined:
+        raise ValueError(
+            f"--sglang-pp-layer-partition {partition} applies only to engines with pp_size > 1, and no server group "
+            f"has one; set --sglang-pp-size or drop the flag"
+        )
+    try:
+        stage_layers = [int(layers) for layers in partition.split(",")]
+    except ValueError:
+        stage_layers = []
+    for model_path, pp_size in sorted(pipelined):
+        num_layers = load_hf_config(model_path).get_text_config().num_hidden_layers
+        if len(stage_layers) != pp_size or min(stage_layers) < 1 or sum(stage_layers) != num_layers:
+            raise ValueError(
+                f"--sglang-pp-layer-partition {partition} must give each of the {pp_size} pipeline stages a "
+                f"positive layer count, {num_layers} in total for {model_path}"
+            )
+
+
 def _extract_base_args(args: Namespace) -> dict[str, Any]:
     parser = argparse.ArgumentParser(add_help=False)
     _add_prefixed_primary_server_args(parser)
     values = vars(args)
-    return {action.dest.removeprefix("sglang_"): values[action.dest] for action in parser._actions}
+    return {
+        action.dest.removeprefix("sglang_"): values[action.dest]
+        for action in parser._actions
+        # sglang's deprecated choice aliases default to SUPPRESS: no dest unless given
+        if action.default is not argparse.SUPPRESS or action.dest in values
+    }
 
 
 def _add_prefixed_primary_server_args(parser: argparse.ArgumentParser) -> None:
@@ -442,12 +503,13 @@ def _eval_sglang_overrides(args) -> dict:
         "enable_return_indexer_topk": False,
     }
     if args.eval_num_gpus_per_engine != args.rollout_num_gpus_per_engine:
-        # Inheriting these across a different tp gives an engine SGLang refuses to boot.
-        tp_coupled = ("dp_size", "pp_size", "ep_size", "attn_cp_size")
-        overrides |= dict.fromkeys(tp_coupled, 1)
+        # Inheriting these across a different engine size gives an engine SGLang refuses to boot.
+        size_coupled = ("dp_size", "attn_dp_size", "pp_size", "ep_size", "attn_cp_size")
+        overrides |= dict.fromkeys(size_coupled, 1)
         logger.info(
-            f"Eval tp={args.eval_num_gpus_per_engine} != rollout tp={args.rollout_num_gpus_per_engine}; "
-            f"{', '.join(tp_coupled)} default to 1. Override with --eval-sglang-*."
+            f"Eval engines span {args.eval_num_gpus_per_engine} GPUs and rollout engines "
+            f"{args.rollout_num_gpus_per_engine}; {', '.join(size_coupled)} default to 1. "
+            f"Override with --eval-sglang-*."
         )
     return overrides | collect_eval_sglang_overrides(args)
 

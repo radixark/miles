@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 import ray
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.ray.train import conftest as train_conftest
 from tests.fast.ray.train.conftest import (
     RecordingHealthChecker,
@@ -16,6 +17,8 @@ from miles.utils.workers.rpc.client.misc import ServerRestartedError
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+
+register_cpu_ci(est_time=140, suite="stage-b-cpu", labels=["algorithm", "ft-short"])
 
 pytestmark = pytest.mark.asyncio
 

@@ -1,4 +1,5 @@
-from .math_utils import extract_answer, grade_answer_mathd, grade_answer_sympy
+from miles.rollout.rm_hub.math_utils import extract_answer, grade_answer_mathd, grade_answer_sympy, has_boxed
+from miles.utils.reasoning import REASONING_DELIMITERS, extract_after_reasoning
 
 
 def _grade_boxed_solution(model_solution, label):
@@ -16,7 +17,7 @@ def _grade_boxed_solution(model_solution, label):
     processed_ground_truths = []
     for truth in ground_truths:
         truth = str(truth)
-        if "\\boxed" in truth:
+        if has_boxed(truth):
             processed_truth = extract_answer(truth)
             if processed_truth is not None:
                 processed_ground_truths.append(processed_truth)
@@ -36,15 +37,15 @@ def _grade_boxed_solution(model_solution, label):
 
 
 def get_deepscaler_rule_based_reward(response, label):
-    # markers that end the reasoning segment; Kimi K-series uses the tagged <|open|>response<|sep|>
-    for closer in ("<|open|>response<|sep|>", "</think>", "###Response"):
-        if closer in response:
-            return _grade_boxed_solution(response.split(closer)[-1], label)
-    return 0
+    solution = extract_after_reasoning(response)
+    if solution is None:
+        return 0
+    return _grade_boxed_solution(solution, label)
 
 
 def get_gemma_math_reward(response, label):
     # Gemma-4 closes thinking with <channel|>; grade text after the last one.
-    if "<channel|>" in response:
-        response = response.split("<channel|>")[-1]
+    _, delimiter = REASONING_DELIMITERS["gemma4"]
+    if delimiter in response:
+        response = response.rsplit(delimiter, 1)[-1]
     return _grade_boxed_solution(response, label)

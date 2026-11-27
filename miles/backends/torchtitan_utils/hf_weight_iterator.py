@@ -2,12 +2,14 @@ import functools
 import glob
 import json
 import os
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 
 import safetensors
 import torch
 import torch.distributed as dist
+from torch.distributed.tensor import DTensor, Shard
 
 from miles.backends.fsdp_utils.dtensor import gather_full_param
 from miles.backends.torchtitan_utils import lora_names
@@ -37,13 +39,18 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
         )
 
     def _iter_hf_param_units(self, weights, *, materialize):
-        for name, tensor in hf_weights(self.model, complete_across_pp=self.placement.gather_pp):
+        # an engine sharing the slice over ICI takes each EP rank's experts from the paired trainer rank
+        local_experts = self.args.update_weight_transfer_mode == "ici"
+        for name, tensor in hf_weights(
+            self.model, complete_across_pp=self.placement.gather_pp, local_experts=local_experts
+        ):
             if materialize:
                 yield [(name, self._to_engine_dtype(name, tensor))]
         yield from iter_checkpoint_tower_units(self.args.hf_checkpoint, materialize=materialize)
 
     def _to_engine_dtype(self, name: str, tensor: torch.Tensor) -> torch.Tensor:
-        target = self._engine_dtypes.get(name)
+        # experts split out of a grouped checkpoint tensor take its dtype
+        target = self._engine_dtypes.get(name) or self._engine_dtypes.get(_grouped_expert_name(name))
         if target is None or tensor.dtype == target or not tensor.is_floating_point():
             return tensor
         return tensor.to(target)
@@ -61,7 +68,9 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
                 yield [(name, tensor)]
 
 
-def hf_weights(trainer, *, complete_across_pp: bool = True) -> Iterator[tuple[str, torch.Tensor]]:
+def hf_weights(
+    trainer, *, complete_across_pp: bool = True, local_experts: bool = False
+) -> Iterator[tuple[str, torch.Tensor]]:
     # FSDP2 CPU offload keeps the shards on the host; gather_full_param moves one tensor at a time
     offloaded = (
         not trainer.config.training.enable_cpu_offload
@@ -71,7 +80,7 @@ def hf_weights(trainer, *, complete_across_pp: bool = True) -> Iterator[tuple[st
         for part in trainer.model_parts:
             part.to(current_platform.current_device())
     try:
-        yield from _hf_weights_on_device(trainer, complete_across_pp=complete_across_pp)
+        yield from _hf_weights_on_device(trainer, complete_across_pp=complete_across_pp, local_experts=local_experts)
     finally:
         if offloaded:
             for part in trainer.model_parts:
@@ -105,7 +114,9 @@ def _stage_process_groups(stage_ranks: tuple[tuple[int, ...], ...]) -> tuple:
 _GROUPED_EXPERTS = ".routed_experts."
 
 
-def _hf_weights_on_device(trainer, *, complete_across_pp: bool) -> Iterator[tuple[str, torch.Tensor]]:
+def _hf_weights_on_device(
+    trainer, *, complete_across_pp: bool, local_experts: bool
+) -> Iterator[tuple[str, torch.Tensor]]:
     sd_adapter = _state_dict_adapter(trainer)
     state = {
         k: v for part in trainer.model_parts for k, v in part.state_dict().items() if not lora_names.is_adapter_key(k)
@@ -116,10 +127,101 @@ def _hf_weights_on_device(trainer, *, complete_across_pp: bool) -> Iterator[tupl
     yield from layout.stream(sd_adapter.to_hf(dense))
 
     mine = sorted(k for k in state if _GROUPED_EXPERTS in k)
+    if local_experts:
+        yield from _local_experts(sd_adapter, state, mine)
+        return
     everyone: list = [None] * layout.world
     dist.all_gather_object(everyone, mine)
     for key in sorted(set().union(*everyone)):
         yield from layout.stream(sd_adapter.to_hf({key: gather_full_param(state[key])}) if key in state else {})
+
+
+def _local_experts(sd_adapter, state, keys: list[str]) -> Iterator[tuple[str, torch.Tensor]]:
+    """This rank's experts as whole HF tensors on its device, named by their global expert ids."""
+    rank, world = dist.get_rank(), dist.get_world_size()
+    device = current_platform.current_device()
+    for key in keys:
+        # under FSDP CPU offload the shards live on the host; the bucket goes out from the device
+        converted = sd_adapter.to_hf({key: _on_device(state[key], device)})
+        if any(_GROUPED_EXPERT_NAME.search(name) for name in converted):
+            yield from _grouped_experts_by_id(converted, titan_shape=state[key].shape, rank=rank, world=world)
+            continue
+        assert not any(isinstance(v, DTensor) for v in converted.values()), f"{key} is sharded within an expert"
+        num_experts = state[key].shape[0]
+        # the adapter records the split under the names it converts to, which may not be the grouped key's own
+        # (DeepSeek-V3's splits w13 into w1_EFD and w3_EFD first)
+        template = re.sub(r"(\d+)", "{}", key, count=1)
+        experts_prefix = template[: template.index(_GROUPED_EXPERTS) + len(_GROUPED_EXPERTS)]
+        splits = {span for name, span in sd_adapter.local_experts_indices.items() if name.startswith(experts_prefix)}
+        assert len(splits) == 1, f"the adapter split {key} into expert ranges {sorted(splits)}, expected one"
+        ((start, end),) = splits
+        # the engine skips experts it does not own, so a different split would leave them stale silently
+        assert (start, end) == (
+            rank * num_experts // world,
+            (rank + 1) * num_experts // world,
+        ), f"rank {rank} holds experts [{start}, {end}) of {key}, not the engine's even split over {world} ranks"
+        yield from converted.items()
+
+
+# a grouped HF expert tensor's layout -> the per-expert projections stacked along its rows, in order
+_PER_EXPERT_PROJECTIONS = {"gate_up_proj": ("gate_proj", "up_proj"), "down_proj": ("down_proj",)}
+_GROUPED_LAYOUT = {
+    projection: layout for layout, projections in _PER_EXPERT_PROJECTIONS.items() for projection in projections
+}
+_GROUPED_EXPERT_NAME = re.compile(rf"\.experts\.({'|'.join(_PER_EXPERT_PROJECTIONS)})$")
+_PER_EXPERT_NAME = re.compile(rf"\.experts\.\d+\.({'|'.join(_GROUPED_LAYOUT)})\.weight$")
+
+
+def _grouped_experts_by_id(
+    converted: dict[str, DTensor], *, titan_shape: torch.Size, rank: int, world: int
+) -> Iterator[tuple[str, torch.Tensor]]:
+    """An adapter that keeps HF's grouped expert layout (Qwen3.5-MoE: experts.gate_up_proj [E, 2F, D]) returns this
+    rank's Shard(0) slice still as a DTensor. The engine's grouped loader indexes all E experts, so this rank's experts
+    go out under the per-expert names the engine also loads (experts.{id}.gate_proj.weight).
+
+    Trainer EP = 1 only: FSDP alone shards the experts, so rank r holds the engine EP rank r's experts. Trainer EP > 1
+    is refused at startup on TPU, and its expert layout (EP and FSDP shards combined) is not handled here."""
+    for name, grouped in converted.items():
+        assert (
+            isinstance(grouped, DTensor) and grouped.placements == (Shard(0),) and grouped.device_mesh.size() == world
+        ), f"{name} is not FSDP's Shard(0) over all {world} ranks; grouped experts need trainer EP = 1"
+        num_experts = grouped.shape[0]
+        # the engine skips experts it does not own, so an uneven split would leave some stale silently
+        assert num_experts % world == 0, f"{num_experts} experts of {name} do not split evenly over {world} ranks"
+        # the per-expert split takes rows of torchtitan's [E, out, in] layout (w13 [E, 2, F, D] -> [E, 2F, D]);
+        # an adapter that transposes them (gpt-oss: [E, D, 2F]) would send wrong per-expert tensors
+        rows_by_columns = (titan_shape[1:-1].numel(), titan_shape[-1])
+        assert (
+            tuple(grouped.shape[1:]) == rows_by_columns
+        ), f"{name} {tuple(grouped.shape)} is not torchtitan's {tuple(titan_shape)} with its projections stacked as rows"
+        yield from _per_expert(name, grouped.to_local(), first_expert=rank * num_experts // world)
+
+
+def _per_expert(name: str, local_experts: torch.Tensor, *, first_expert: int) -> Iterator[tuple[str, torch.Tensor]]:
+    experts_name, layout = name.rsplit(".", 1)
+    projections = _PER_EXPERT_PROJECTIONS[layout]
+    for offset, expert in enumerate(local_experts):
+        for projection, weight in zip(projections, expert.chunk(len(projections)), strict=True):
+            yield f"{experts_name}.{first_expert + offset}.{projection}.weight", weight
+
+
+def _grouped_expert_name(name: str) -> str:
+    """The grouped checkpoint name a per-expert name was split from: experts.7.up_proj.weight -> experts.gate_up_proj."""
+    match = _PER_EXPERT_NAME.search(name)
+    if match is None:
+        return name
+    return f"{name[: match.start()]}.experts.{_GROUPED_LAYOUT[match.group(1)]}"
+
+
+def _on_device(tensor: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """``tensor`` with its local shard on ``device``; a DTensor keeps its mesh and placements."""
+    local = tensor.to_local() if isinstance(tensor, DTensor) else tensor
+    local = local.detach().to(device)
+    if not isinstance(tensor, DTensor):
+        return local
+    return DTensor.from_local(
+        local, tensor.device_mesh, tensor.placements, shape=tensor.shape, stride=tensor.stride(), run_check=False
+    )
 
 
 @dataclass(frozen=True)

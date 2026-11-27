@@ -39,7 +39,7 @@ from .loss_test_utils import (
     save_snapshot,
 )
 
-register_cpu_ci(est_time=50, suite="stage-b-cpu", labels=["precision"])
+register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["algorithm", "precision"])
 
 SNAPSHOT_DIR = Path(__file__).parent / "loss_snapshots"
 VOCAB_SIZE = 128

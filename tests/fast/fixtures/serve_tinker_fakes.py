@@ -15,7 +15,7 @@ from miles.utils.args.component_rollout import InferenceRuntimeImmutState, Infer
 
 
 @pytest.fixture
-async def tinker_startup(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[SimpleNamespace]:
+async def tinker_startup(monkeypatch: pytest.MonkeyPatch, tmp_path) -> AsyncIterator[SimpleNamespace]:
     controller = _InferenceController()
     trainer = _Trainer()
     requests: list[httpx.Request] = []
@@ -32,7 +32,10 @@ async def tinker_startup(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Simpl
         multi_lora=True,
         load=None,
         hf_checkpoint="base-model",
-        tinker_checkpoint_root="checkpoints",
+        tinker_checkpoint_root=str(tmp_path / "checkpoints"),
+        tinker_public_url=None,
+        save=None,
+        save_hf=None,
         max_tokens_per_gpu=None,
         inference_runtime_mut_state=InferenceRuntimeMutState(),
         eval_uses_snapshots=False,
@@ -63,9 +66,16 @@ async def tinker_startup(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Simpl
         tinker_server_host="127.0.0.1",
         tinker_server_port=10613,
     )
-    hf_config = SimpleNamespace(max_position_embeddings=4096, vocab_size=128)
+    hf_fields = {"model_type": "qwen3", "max_position_embeddings": 4096, "vocab_size": 128}
+    hf_config = SimpleNamespace(**hf_fields, to_dict=lambda: dict(hf_fields))
     actor_config = SimpleNamespace(role=serve_tinker.ACTOR_ROLE, trainer_id="actor", overrides={}, model_id=None)
-    monkeypatch.setattr(serve_tinker, "load_hf_config", lambda _: SimpleNamespace(get_text_config=lambda: hf_config))
+    monkeypatch.setattr(
+        serve_tinker,
+        "load_hf_config",
+        lambda _: SimpleNamespace(
+            get_text_config=lambda: hf_config, to_dict=lambda: {"model_type": "qwen3", "num_hidden_layers": 1}
+        ),
+    )
     monkeypatch.setattr(serve_tinker.ArgvOrchestratorStartupInfo, "create", lambda _: object())
 
     def init_orchestration(startup_info: object, *, disposer: object) -> object:

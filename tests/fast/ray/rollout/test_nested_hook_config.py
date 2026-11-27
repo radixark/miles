@@ -17,6 +17,7 @@ def _args(*, dataset_hook: CustomFunctionConfig | None) -> ImmutableNamespace:
         custom_agent_function_path=_hook("agent", agent_limit=3),
         custom_rm_path=_hook("reward", reward_limit=4),
         eval_datasets=[EvalDatasetConfig(name="eval", path="eval.jsonl", custom_generate_function_path=dataset_hook)],
+        rollout_dataset_functions={},
     )
 
 

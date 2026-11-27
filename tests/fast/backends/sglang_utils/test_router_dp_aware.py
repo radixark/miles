@@ -9,10 +9,12 @@ from miles.utils.args.configs.router import RouterConfig
 from miles.utils.http_utils import router_worker_base_urls
 
 
-def _args(argv):
+def _args(argv, *, sglang_has_enable_dp_attention=True):
     parser = add_sglang_arguments(argparse.ArgumentParser())
     RouterConfig.add_arguments(parser)
     args = parser.parse_args(argv)
+    if not sglang_has_enable_dp_attention:
+        vars(args).pop("sglang_enable_dp_attention", None)
     args.rollout_num_gpus_per_engine = 4
     args.true_on_policy_mode = False
     args.loss_type = "policy_loss"
@@ -27,6 +29,11 @@ def _args(argv):
 
 def test_dp_attention_turns_on_router_dp_aware():
     assert _args(["--sglang-enable-dp-attention", "--sglang-dp-size", "4"]).router_dp_aware is True
+
+
+def test_attn_dp_size_alone_turns_on_router_dp_aware_on_sglang_without_the_deprecated_flag():
+    """SGLang main no longer registers --enable-dp-attention, so attention DP comes from attn_dp_size alone."""
+    assert _args(["--sglang-attn-dp-size", "4"], sglang_has_enable_dp_attention=False).router_dp_aware is True
 
 
 def test_router_dp_aware_untouched_without_dp_attention():

@@ -8,6 +8,7 @@ from types import ModuleType
 
 import httpx
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.utils.workers.serving.registered_serve import REGISTERED_SERVE_MODULE, pod_env, serve_config_argv
 from tests.fast.utils.workers.serving.serve_smoke_worker import (
     POOL_ID,
@@ -26,6 +27,8 @@ from miles.utils.workers.serving import serve as serve_module
 from miles.utils.workers.serving import serve_inner
 from miles.utils.workers.serving.utils import split_worker_argv
 from miles.utils.workers.worker_handle import WorkerUnreachableError
+
+register_cpu_ci(est_time=50, suite="stage-b-cpu", labels=["rpc-comm"])
 
 _REPO_ROOT = Path(__file__).resolve().parents[5]
 

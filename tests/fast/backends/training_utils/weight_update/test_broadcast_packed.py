@@ -193,7 +193,9 @@ def test_unknown_mode_cannot_fall_back_to_colocated_transfer():
 @pytest.mark.parametrize("mode", ["broadcast", "broadcast_packed"])
 def test_both_broadcast_modes_share_protocol_and_preserve_selection(monkeypatch, mode):
     monkeypatch.setattr(broadcast, "get_parallel_state", lambda: SimpleNamespace(pp=SimpleNamespace(size=1)))
-    args = Namespace(train_backend="megatron", colocate=False, update_weight_transfer_mode=mode)
+    args = Namespace(
+        train_backend="megatron", colocate=False, update_weight_transfer_mode=mode, check_weight_update_equal=False
+    )
     protocol = get_weight_transfer_protocol(args)
     assert isinstance(protocol, broadcast.UpdateWeightFromDistributed)
     assert protocol.args.update_weight_transfer_mode == mode

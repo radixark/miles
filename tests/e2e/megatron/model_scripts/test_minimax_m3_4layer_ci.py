@@ -1,7 +1,7 @@
 import os
 
 from scripts.run_minimax_m3 import _RECIPES, ScriptArgs, execute
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
 register_cuda_ci(
@@ -10,6 +10,13 @@ register_cuda_ci(
     labels=["megatron", "model-scripts"],
     hardware=["hopper", "blackwell"],
     num_gpus=4,
+)
+
+register_rocm_ci(
+    est_time=1500,
+    suite="stage-c-4-gpu-mi350",
+    labels=["megatron", "model-scripts"],
+    nightly=True,
 )
 
 register_ci_gate(metric_key="train/grad_norm")

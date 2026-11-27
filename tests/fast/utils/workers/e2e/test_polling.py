@@ -2,8 +2,11 @@ import asyncio
 import time
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 
 from miles.utils.workers.rpc.client import call as client_module
+
+register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["rpc-comm"])
 
 
 async def _submit(raw, method: str, call_id: str, query: dict):

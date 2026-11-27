@@ -30,24 +30,11 @@ jobs:
       SGLANG_SOURCE_ROOT: ${{ github.workspace }}/sglang/python
       MEGATRON_SOURCE_ROOT: ${{ github.workspace }}/Megatron-LM
     steps:
-      - name: Free disk space
-        shell: bash
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          df -h
-
       - name: Checkout miles
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
-
-      # local actions load from the checked-out ref, which may predate them (/rerun-test, release CI)
-      - name: Checkout CI actions
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          path: .ci-actions
-          sparse-checkout: .github/actions
+          submodules: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -55,11 +42,43 @@ jobs:
           # Match the Miles Docker runtime.
           python-version: '3.12'
 
+      - name: Configure source paths
+        shell: bash
+        run: echo "PYTHONPATH=$GITHUB_WORKSPACE:$GITHUB_WORKSPACE/3rdparty/miles-ext-kernels:$GITHUB_WORKSPACE/packages/miles-dashboard:$SGLANG_SOURCE_ROOT:$MEGATRON_SOURCE_ROOT" >> "$GITHUB_ENV"
+
+      - name: Resolve suite plan
+        id: plan
+        if: ${{ !inputs.plan_already_resolved }}
+        shell: bash
+        run: ${{ inputs.execute_command }} --list-only --github-output "$GITHUB_OUTPUT"
+
+      - name: Free disk space
+        if: ${{ inputs.plan_already_resolved || steps.plan.outputs.has_tests == 'true' }}
+        shell: bash
+        run: |
+          avail_gb=$(df -BG --output=avail / | tail -n 1 | tr -dc '0-9')
+          avail_gb=${avail_gb:-0}
+          if [ "$avail_gb" -lt 40 ]; then
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          fi
+          df -h
+
+      # local actions load from the checked-out ref, which may predate them (/rerun-test, release CI)
+      - name: Checkout CI actions
+        if: ${{ inputs.plan_already_resolved || steps.plan.outputs.has_tests == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .ci-actions
+          sparse-checkout: .github/actions
+
       - name: Install uv
+        if: ${{ inputs.plan_already_resolved || steps.plan.outputs.has_tests == 'true' }}
         uses: astral-sh/setup-uv@v5
 
       - name: Resolve dependency refs
         id: resolve-refs
+        if: ${{ inputs.plan_already_resolved || steps.plan.outputs.has_tests == 'true' }}
         uses: ./.ci-actions/.github/actions/resolve-dependency-refs
         with:
           megatron_ref: ${{ github.event.inputs.ci_megatron_pr || '' }}
@@ -67,6 +86,7 @@ jobs:
           pr_body: ${{ github.event.pull_request.body || '' }}
 
       - name: Checkout sglang
+        if: ${{ inputs.plan_already_resolved || steps.plan.outputs.has_tests == 'true' }}
         uses: actions/checkout@v4
         with:
           repository: sgl-project/sglang
@@ -74,45 +94,42 @@ jobs:
           path: sglang
 
       - name: Checkout Megatron-LM
+        if: ${{ inputs.plan_already_resolved || steps.plan.outputs.has_tests == 'true' }}
         uses: actions/checkout@v4
         with:
           repository: radixark/Megatron-LM
           ref: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
           path: Megatron-LM
 
-      - name: Configure source paths
-        shell: bash
-        run: echo "PYTHONPATH=$GITHUB_WORKSPACE:$SGLANG_SOURCE_ROOT:$MEGATRON_SOURCE_ROOT" >> "$GITHUB_ENV"
-
       - name: Install dependencies
+        if: ${{ inputs.plan_already_resolved || steps.plan.outputs.has_tests == 'true' }}
         shell: bash
         env:
           UV_SYSTEM_PYTHON: "1"
         run: |
           uv pip install -r requirements.txt -r tests/ci/requirements-ci-cpu.txt
+          uv pip install -e ./sglang/radix_transfer_plugins --no-deps
 
       - name: Install Megatron Bridge override
-        if: ${{ github.event.inputs.ci_megatron_bridge_pr != '' || contains(github.event.pull_request.body, 'ci-megatron-bridge-pr:') }}
+        if: ${{ (inputs.plan_already_resolved || steps.plan.outputs.has_tests == 'true') && (github.event.inputs.ci_megatron_bridge_pr != '' || contains(github.event.pull_request.body, 'ci-megatron-bridge-pr:')) }}
         uses: ./.ci-actions/.github/actions/install-megatron-bridge
         with:
           ref: ${{ github.event.inputs.ci_megatron_bridge_pr || '' }}
           pr_body: ${{ github.event.pull_request.body || '' }}
 
       - name: Verify source resolution
+        if: ${{ inputs.plan_already_resolved || steps.plan.outputs.has_tests == 'true' }}
         shell: bash
         run: python tests/ci/verify_source_resolution.py
 
       - name: Install Helm
+        if: ${{ inputs.plan_already_resolved || steps.plan.outputs.has_tests == 'true' }}
         uses: azure/setup-helm@v4
         with:
           version: v4.2.3
 
-      - name: Resolve suite plan
-        if: ${{ !inputs.plan_already_resolved }}
-        shell: bash
-        run: ${{ inputs.execute_command }} --list-only
-
       - name: Run tests
+        if: ${{ inputs.plan_already_resolved || steps.plan.outputs.has_tests == 'true' }}
         shell: bash
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}

@@ -19,6 +19,10 @@ class SessionServerConfig(FrozenStrictBaseModel):
     hf_checkpoint: str | None
     chat_template_path: str | None
     tito_model: str
+    # resolved --allow-stop-token-replace
+    allow_stop_token_replace: bool
+    # resolved --allow-truncated-continuation
+    allow_truncated_continuation: bool
     apply_chat_template_kwargs: dict[str, Any] | None
     use_rollout_routing_replay: bool
     use_rollout_indexer_replay: bool
@@ -41,6 +45,8 @@ class SessionServerConfig(FrozenStrictBaseModel):
     rollout_temperature: float
     # The run's output store with --use-output-store, else None; the server resolves its own local_hostname.
     output_store_backend_config: dict[str, Any] | None
+    # Sent with each output store request; see pp_layer_splits.
+    replay_layer_splits: list[int]
 
 
 def compute_session_server_config(
@@ -56,6 +62,8 @@ def compute_session_server_config(
         hf_checkpoint=args.hf_checkpoint,
         chat_template_path=args.chat_template_path,
         tito_model=args.tito_model,
+        allow_stop_token_replace=args.allow_stop_token_replace,
+        allow_truncated_continuation=args.allow_truncated_continuation,
         apply_chat_template_kwargs=args.apply_chat_template_kwargs,
         use_rollout_routing_replay=args.use_rollout_routing_replay,
         use_rollout_indexer_replay=args.use_rollout_indexer_replay,
@@ -79,6 +87,7 @@ def compute_session_server_config(
             args, "rollout_temperature", 1.0
         ),  # config-access-exempt: legacy session inputs omit rollout_temperature
         output_store_backend_config=(output_store_backend_config(args) if args.use_output_store else None),
+        replay_layer_splits=args.replay_layer_splits,
     )
 
 

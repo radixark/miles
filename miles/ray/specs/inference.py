@@ -6,7 +6,7 @@ from typing_extensions import Self
 
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig
-from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
+from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd, compute_health_check_timeout_seconds
 from miles.backends.sglang_utils.sglang_scaling_config import ServerGroupScalingConfig
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
@@ -328,7 +328,12 @@ class InferenceEngineSpec(BaseCommandSpec):
         )
 
     def env_var(self, ctx: WorkerLaunchContext) -> dict[str, str]:
-        return compute_inference_engine_env_vars(ctx.args)
+        return compute_inference_engine_env_vars(
+            ctx.args,
+            tp_size=self.server_group_config.tp_size,
+            pp_size=self.server_group_config.pp_size,
+            health_check_timeout_seconds=self.partial_static_meta.values["health_check_timeout_seconds"],
+        )
 
     def launch_command(self, ctx: LaunchCommandContext) -> str:
         args = ctx.args
@@ -350,6 +355,8 @@ class InferenceEngineSpec(BaseCommandSpec):
             base_gpu_id=ctx.local_gpu_ids[0],
             sglang_overrides=server_group_config.overrides,
             num_gpus_per_engine=server_group_config.num_gpus_per_engine,
+            tp_size=server_group_config.tp_size,
+            pp_size=server_group_config.pp_size,
             dist_init_addr=f"{dist_init.host}:{dist_init.port}",
             nccl_port=ctx.self_addrs["nccl"].port,
             host=ctx.self_addrs["primary"].host,
@@ -435,14 +442,18 @@ def _compute_spec_inference_engine(
                 worker_type=server_group_config.worker_type.value,
                 num_gpus_per_engine=server_group_config.num_gpus_per_engine,
                 sglang_api_key=args.sglang.get_value("api_key", group=server_group_config),
+                sglang_admin_api_key=args.sglang.get_value("admin_api_key", group=server_group_config),
                 needs_offload=server_group_config.needs_offload,
                 update_weights=model_cfg.update_weights,
+                health_check_timeout_seconds=compute_health_check_timeout_seconds(pp_size=server_group_config.pp_size),
             ),
         ),
     )
 
 
-def compute_inference_engine_env_vars(args) -> dict[str, str]:
+def compute_inference_engine_env_vars(
+    args, *, tp_size: int, pp_size: int, health_check_timeout_seconds: int
+) -> dict[str, str]:
     env_vars = {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
         key: os.environ.get(key, default_val)
         for key, default_val in {
@@ -452,9 +463,7 @@ def compute_inference_engine_env_vars(args) -> dict[str, str]:
             "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
             "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
             "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
-            "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2": (
-                "0" if args.colocate and args.rollout_num_gpus_per_engine > 1 else "1"
-            ),
+            "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2": "0" if args.colocate and tp_size > 1 else "1",
             "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
             "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
             "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
@@ -465,6 +474,10 @@ def compute_inference_engine_env_vars(args) -> dict[str, str]:
             "SGLANG_EXPOSE_OWN_ENV_VARS": "1",
         }.items()
     }
+    # The cell's startup probe waits on this same budget.
+    env_vars["SGLANG_HEALTH_CHECK_TIMEOUT"] = str(health_check_timeout_seconds)
+    if args.sglang_pp_layer_partition is not None and pp_size > 1:
+        env_vars["SGLANG_PP_LAYER_PARTITION"] = args.sglang_pp_layer_partition
     if args.dumper_enable or args.dumper_inference:
         from miles.utils import dumper_utils
 

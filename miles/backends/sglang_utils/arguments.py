@@ -2,6 +2,7 @@ import argparse
 
 from sglang.srt.server_args import ServerArgs
 
+from miles.platforms import current_platform
 from miles.utils.args.utils import config_values
 from miles.utils.http_utils import wrap_ipv6
 from miles.utils.output_store.config import SGLANG_OUTPUT_STORE_FIELDS
@@ -94,9 +95,19 @@ def _add_prefixed_server_args(parser, *, flag_prefix: str, dest_prefix: str, ski
                     final_kwargs["dest"] = f"{dest_prefix}{canonical_dest}"
                     break
 
-        if inherit:
+        action = final_kwargs.get("action")
+        # SGLang's DeprecatedChoiceToFlagAction (matched by name: sglang-miles lacks it) sets the dests named in
+        # `flags` and passes its own default=SUPPRESS, so prefix those dests and flags and add no default.
+        is_deprecated_choice_map = isinstance(action, type) and action.__name__ == "DeprecatedChoiceToFlagAction"
+        if is_deprecated_choice_map:
+            final_kwargs["flags"] = {
+                choice: (f"{dest_prefix}{target_dest}", f"--{flag_prefix}-{new_flag.lstrip('-')}")
+                for choice, (target_dest, new_flag) in final_kwargs["flags"].items()
+            }
+
+        if inherit and not is_deprecated_choice_map:
             final_kwargs["default"] = argparse.SUPPRESS
-            if final_kwargs.get("action") in ("store_true", "store_false"):
+            if action in ("store_true", "store_false"):
                 # store_true can only turn a field on; an override must also turn one off.
                 final_kwargs["action"] = argparse.BooleanOptionalAction
                 final_kwargs.pop("const", None)
@@ -130,7 +141,11 @@ def add_sglang_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentPa
 
 
 def validate_args(args):
-    args.sglang_tp_size = args.rollout_num_gpus_per_engine
+    args.sglang_tp_size = args.rollout_num_gpus_per_engine // args.sglang_pp_size
+
+    # "auto" given explicitly counts as unset: on TPU it would mean fp8, which needs an explicit fp8_e4m3
+    if args.sglang_kv_cache_dtype == "auto" and current_platform.rollout_kv_cache_dtype is not None:
+        args.sglang_kv_cache_dtype = current_platform.rollout_kv_cache_dtype
 
     if args.loss_type == "score_centering":
         # Score centering forces the base LM-head setting on, overriding the parsed
@@ -147,13 +162,15 @@ def validate_args(args):
         args.sglang_enable_prefill_only_deterministic_inference = True
         args.sglang_enable_deterministic_inference = True
 
+    # SGLang main no longer registers the deprecated `--dp-size N --enable-dp-attention` spelling
+    enable_dp_attention = getattr(
+        args, "sglang_enable_dp_attention", False
+    )  # config-access-exempt: absent on SGLang builds that dropped --enable-dp-attention
     if args.sglang_dp_size > 1:
-        assert args.sglang_enable_dp_attention
+        assert enable_dp_attention
 
     if sglang_attention_dp_enabled(
-        attn_dp_size=args.sglang_attn_dp_size,
-        enable_dp_attention=args.sglang_enable_dp_attention,
-        dp_size=args.sglang_dp_size,
+        attn_dp_size=args.sglang_attn_dp_size, enable_dp_attention=enable_dp_attention, dp_size=args.sglang_dp_size
     ):
         args.router_dp_aware = True
 

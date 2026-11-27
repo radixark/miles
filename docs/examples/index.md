@@ -12,6 +12,8 @@ End-to-end training workflows — the place to start.
 
 - **[geo3k_vlm](/examples/geo3k-vlm)**: Training VLMs with FSDP using GRPO on the GEO3K dataset.
   - **[multi_turn](/examples/geo3k-vlm/multi-turn)**: The same dataset over multiple turns, with the model cropping images through an interactive environment.
+- **[timelens_video](/examples/timelens-video)**: Video temporal-grounding RL for Qwen3.5 with token-space media and a frozen vision tower.
+- **[avqa_audio](/examples/avqa-audio)**: AVQA audio RL for Inkling-Small with token-space audio and a LoRA on one node.
 - **[lora](https://github.com/radixark/miles/tree/main/examples/lora)**: LoRA fine-tuning with the Megatron backend.
 - **[multi_lora](/examples/multi-lora)**: Serve concurrent LoRA fine-tuning clients on one shared base model through the Tinker protocol.
   - **[harbor_tinker](/examples/multi-lora/harbor-tinker)**: Terminal-Bench 2 training with Harbor sandboxes and the official Tinker cookbook RL loop.
@@ -22,6 +24,7 @@ End-to-end training workflows — the place to start.
 - **[ppo](/examples/ppo)**: Actor-critic PPO with GAE advantages, where the critic shares the actor's train GPUs.
 - **[retool_v2](/examples/retool-v2)**: Tool-enabled language model generation with sandboxed Python code execution interleaved with thinking.
 - **[swe-agent-harbor-docker](/examples/swe-agent-harbor-docker)**: Trains coding and terminal agents with Harbor-managed local Docker sandboxes and verifier rewards.
+- **[text_to_sql](/examples/text-to-sql)**: Multi-turn text-to-SQL RL on BIRD-Platinum with a read-only SQLite tool, following River's recipe on Qwen3.6-35B-A3B.
 
 ## [Infra Features](/examples/infra-features)
 
@@ -43,6 +46,7 @@ data and weights around.
 Not fully verified — for experimental and development use.
 
 - **[agentenv](https://github.com/radixark/miles/tree/main/examples/experimental/agentenv)**: Rollouts against AgentENV, a self-hosted platform running agent sandboxes on Firecracker microVMs.
+- **[bpo](https://github.com/radixark/miles/tree/main/examples/experimental/bpo)**: Custom loss plugin implementing Bellman Policy Optimization (BPO) via `--loss-type custom_loss`.
 - **[DrGRPO](https://github.com/radixark/miles/tree/main/examples/experimental/DrGRPO)**: Custom reducer for Dr.GRPO algorithm.
 - **[eval](https://github.com/radixark/miles/tree/main/examples/experimental/eval)**: Documentation and setup for evaluation environments using NeMo-Skills.
 - **[eval_multi_task](https://github.com/radixark/miles/tree/main/examples/experimental/eval_multi_task)**: Example for supporting OOD evaluation tasks, e.g., GPQA, IFBench.

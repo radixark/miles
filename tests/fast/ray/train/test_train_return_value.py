@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 import ray
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell
 
 from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
@@ -12,6 +13,8 @@ from miles.utils.data import RolloutDataPack
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.ray_utils import Box
+
+register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["algorithm"])
 
 pytestmark = pytest.mark.asyncio
 

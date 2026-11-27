@@ -9,6 +9,9 @@ from pathlib import Path
 import pytest
 import torch.distributed as dist
 import torch.multiprocessing as mp
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["fsdp"])
 
 _SCENARIOS = (
     "success",

@@ -55,14 +55,18 @@ RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
 # `wheel[s]/` is a glob — silently no-ops when wheels/ is absent (CI's path).
 COPY wheel[s]/ /tmp/wheels/
 
-RUN case "${TARGETARCH}" in \
+# github_token (docker/build.py's BUILD_GITHUB_TOKEN) authenticates the API lookup; builds without it go anonymous
+RUN --mount=type=secret,id=github_token \
+    case "${TARGETARCH}" in \
       amd64) WHEELS_TAG="${WHEELS_TAG_X86}" ;; \
       arm64) WHEELS_TAG="${WHEELS_TAG_ARM64}" ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac && \
     echo "Fetching wheels release ${WHEELS_TAG}" && \
     mkdir -p /tmp/wheels && \
-    curl -sL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
+    if [ -s /run/secrets/github_token ]; then set -- -H "Authorization: Bearer $(cat /run/secrets/github_token)"; \
+    else set --; fi && \
+    curl -fsSL "$@" "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
     | python3 -c "import sys,json,subprocess,os; w='/tmp/wheels'; \
 [subprocess.run(['curl','-fSL','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) \
  for a in json.load(sys.stdin).get('assets',[]) \
@@ -197,7 +201,7 @@ RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.3
 RUN TMS_CUDA_MAJOR=$(python3 -c "import torch; print(torch.version.cuda.split('.')[0])") \
     pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@118b09b3bc7b0cf386745db1eac2601d4aa7e681 --no-cache-dir --force-reinstall
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
-RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@f590252e37cd26f3516b04a911d2ac735889a21f --no-deps --no-build-isolation
+RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@a0c6d6e09b0bd4d208c2d936608319d5ab456d87 --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
 
@@ -250,10 +254,12 @@ RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-t
 # ====================================== Install main package ============================================
 
 ARG MILES_COMMIT=main
+# the dashboard plugin is installed only when MILES_COMMIT already has it
 RUN git clone https://github.com/radixark/miles.git /root/miles && \
     cd /root/miles && \
     git checkout ${MILES_COMMIT} && \
-    pip install -e . --no-deps
+    pip install -e . --no-deps && \
+    if [ -d packages/miles-dashboard ]; then pip install -e packages/miles-dashboard --no-deps; fi
 
 # int4 fake-quant extension (source: miles/kernels/quant/int4_fake)
 RUN pip install /tmp/wheels/fake_int4_quant_cuda-*.whl
@@ -289,6 +295,19 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       pip install --force-reinstall /build/gateway_wheels/sglang_router-*.whl && \
       rm -rf /root/.cargo /root/.rustup /build/sgl-model-gateway /build/gateway_wheels; \
     fi
+
+# ==================== Patch what image scanners flag ====================
+# Third-party image reviews (Trivy, JFrog Xray) block HIGH/CRITICAL findings. This step fixes the
+# ones it can without moving a pinned dependency; findings in SGLang's pins or Ray's vendored files
+# are left to those projects.
+#   - linux-libc-dev, apt: the base image predates Ubuntu's security updates for them.
+#   - /root/.cargo/registry and /root/.cargo/git: crate sources cached by the base image's Rust
+#     builds. Nothing in the image reads them, and their Cargo.lock files pin the flagged crates.
+#   - nltk, oauthlib: unpinned transitive dependencies of the SGLang base.
+RUN apt-get update && \
+    apt-get install -y --only-upgrade linux-libc-dev apt libapt-pkg6.0t64 && \
+    rm -rf /var/lib/apt/lists/* /root/.cargo/registry /root/.cargo/git && \
+    pip install --no-cache-dir "nltk>=3.10.4" "oauthlib>=4.0.1"
 
 # ==================== Reconcile apache-tvm-ffi with sglang's pin ====================
 # sglang v0.5.16 bumped nvidia-cutlass-dsl 4.5.2 -> 4.6.0 while leaving its

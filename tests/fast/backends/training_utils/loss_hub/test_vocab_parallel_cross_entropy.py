@@ -3,9 +3,12 @@
 import pytest
 import torch
 import torch.distributed as dist
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.training_utils.loss.hub.math_utils import compute_log_probs, vocab_parallel_cross_entropy
+
+register_cpu_ci(est_time=50, suite="stage-b-cpu", labels=["algorithm", "precision"])
 
 SEQ, BATCH, VOCAB = 5, 2, 12
 

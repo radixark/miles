@@ -311,7 +311,7 @@ class MilesSGLangTransport:
         values["spaces_between_special_tokens"] = False
         values["n"] = 1
 
-        context_limit = self.args.rollout_max_context_len
+        context_limit = self.args.max_seq_len
         response_limit = self.args.rollout_max_response_len
         requested = int(values.get("max_new_tokens", response_limit))
         if context_limit is not None:
@@ -319,9 +319,7 @@ class MilesSGLangTransport:
         values["max_new_tokens"] = min(requested, response_limit)
         if values["max_new_tokens"] <= 0:
             runtime = _import_verifiers()
-            raise runtime.OverlongPromptError(
-                f"prompt has {prompt_len} tokens, rollout_max_context_len={context_limit}"
-            )
+            raise runtime.OverlongPromptError(f"prompt has {prompt_len} tokens, max_seq_len={context_limit}")
         return values
 
     async def post(self, endpoint: str, *, body: dict[str, Any], options=None, **_kwargs) -> httpx.Response:
@@ -558,7 +556,6 @@ def _make_eval_args(args: ImmutableNamespace) -> Namespace:
         ("eval_top_p", "rollout_top_p"),
         ("eval_top_k", "rollout_top_k"),
         ("eval_max_response_len", "rollout_max_response_len"),
-        ("eval_max_context_len", "rollout_max_context_len"),
     ):
         if (
             value := getattr(args, eval_name)

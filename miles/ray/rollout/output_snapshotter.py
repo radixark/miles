@@ -98,6 +98,16 @@ class _RolloutExecutorOutputSnapshotter:
         )
         logger.info(f"Loaded {len(outputs)} untrained rollout batches")
 
+    def drop_loaded(self, *, reason: str) -> None:
+        """Drop the restored untrained batches, e.g. because the data source they came from was reset."""
+        for key in [key for key, entry in self._snapshots.items() if entry.phase is _OutputSnapshotPhase.LOADED]:
+            data = self._snapshots.pop(key).data
+            logger.warning(
+                f"Dropping untrained rollout batch {key} ({reason}); its {len(data)} samples are not trained"
+            )
+            record_dropped_samples(data)
+            SampleOwnershipRecorder.log_dropped_samples(args=self._args, samples=data, reason=reason)
+
 
 class _OutputSnapshotKey(NamedTuple):
     trainer_model_id: str | None

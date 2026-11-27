@@ -187,6 +187,17 @@ class TestMergeSamples:
 
         assert merged.trainer_model_id == "policy-a"
 
+    def test_merge_preserves_the_shared_max_response_len(self, mock_tokenizer: MagicMock) -> None:
+        """Merging turns of one sample keeps its per-sample response budget."""
+        a = make_sample(tokens=[1, 2, 10], response_length=1, loss_mask=[1])
+        b = make_sample(tokens=[1, 2, 10, 20, 30], response_length=1, loss_mask=[1])
+        a.max_response_len = 64
+        b.max_response_len = 64
+
+        merged = _merge_sample_pair(a=a, b=b, tokenizer=mock_tokenizer)
+
+        assert merged.max_response_len == 64
+
     def test_merge_rejects_turns_from_different_trainer_models(self, mock_tokenizer: MagicMock) -> None:
         """Merging turns from different trainers rejects the cross-policy trajectory."""
         a = make_sample(tokens=[1, 2, 10], response_length=1, loss_mask=[1])
@@ -351,3 +362,34 @@ class TestMergeSamples:
 
         with pytest.raises(StorePlanError, match="with output store data and one without"):
             merge_samples([a, b], mock_tokenizer)
+
+    def test_merge_samples_extends_truncated_turn(self, mock_tokenizer):
+        # The next prompt starts with the closer after the cut turn's sampled
+        # tokens: the cut turn still trains, the closer is observation.
+        cut = make_sample(
+            tokens=[1, 2, 10, 11],
+            response_length=2,
+            loss_mask=[1, 1],
+            rollout_log_probs=[-0.1, -0.2],
+            status=Sample.Status.TRUNCATED,
+        )
+        closer_and_next_prompt = [90, 91, 20]
+        nxt = make_sample(
+            tokens=[1, 2, 10, 11, *closer_and_next_prompt, 30],
+            response_length=1,
+            loss_mask=[1],
+            rollout_log_probs=[-0.3],
+        )
+
+        merged = merge_samples([cut, nxt], mock_tokenizer)
+
+        assert merged.tokens == nxt.tokens
+        assert merged.loss_mask == [1, 1, 0, 0, 0, 1]
+        assert merged.rollout_log_probs == [-0.1, -0.2, 0.0, 0.0, 0.0, -0.3]
+        assert merged.status == Sample.Status.COMPLETED
+
+    def test_merge_samples_stops_after_aborted_turn(self, mock_tokenizer):
+        aborted = make_sample(tokens=[1, 2, 10], response_length=1, loss_mask=[1], status=Sample.Status.ABORTED)
+        nxt = make_sample(tokens=[1, 2, 10, 20, 30], response_length=1, loss_mask=[1])
+
+        assert merge_samples([aborted, nxt], mock_tokenizer) is aborted

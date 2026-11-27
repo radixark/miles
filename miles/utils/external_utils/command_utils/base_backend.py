@@ -26,6 +26,7 @@ from miles.utils.external_utils.command_utils.common import (
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
 from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
+from miles.utils.port_range import ray_worker_port_args
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.test_utils.snapshot import SNAPSHOT_RECORD_DIR_ENV_VAR
 from miles.utils.typer_utils import dataclass_from_env
@@ -100,6 +101,9 @@ class ExecuteTrainConfig(CommandUtilConfig):
     skip_upgrade_check: bool = False
     external_mooncake: bool = False
     ray_submission_id: str | None = None
+    # stop ray with SIGTERM and a grace period, and skip the pkill -9 sweep: a SIGKILL of a process holding a TPU can
+    # take the host's TPU session, and an engine sharing it, down with it
+    graceful_ray_stop: bool = False
 
     @property
     def parsed_hot_restart(self) -> list[HotRestartComponent]:
@@ -308,7 +312,7 @@ class BaseCommandBackend(ABC):
             'ssh root@"$worker_ip" '
             '"pkill -9 sglang ; ray stop --force ; pkill -9 miles ; '
             f"ray start --address={master_addr}:6379 --num-gpus {num_gpus_per_node} "
-            '--node-ip-address $worker_ip --disable-usage-stats" & '
+            f'--node-ip-address $worker_ip --disable-usage-stats{ray_worker_port_args()}" & '
             "done; wait"
         )
 

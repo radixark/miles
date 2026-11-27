@@ -8,6 +8,7 @@ from tests.ci.hardware import CUDA_STAGES, KNOWN_ARCHES, auto_arch
 from tests.ci.labels import KNOWN_LABELS, PERF_LABEL
 
 __all__ = [
+    "CPU_FAST_EST_TIME_LIMIT_S",
     "HWBackend",
     "CIRegistry",
     "collect_tests",
@@ -18,6 +19,8 @@ __all__ = [
     "register_rocm_ci",
     "ut_parse_one_file",
 ]
+
+CPU_FAST_EST_TIME_LIMIT_S = 30
 
 # Only these two parameters may be passed positionally; everything else
 # (labels, nightly, disabled) is keyword-only.
@@ -229,9 +232,11 @@ class RegistryVisitor(ast.NodeVisitor):
         if not isinstance(labels, list):
             raise ValueError(f"{self.filename}: labels must be a list or None in {func_name}()")
         backend = _REGISTER_BACKEND_MAP[func_name]
-        slow_cpu = backend == HWBackend.CPU and parsed["est_time"] > 30
+        slow_cpu = backend == HWBackend.CPU and parsed["est_time"] > CPU_FAST_EST_TIME_LIMIT_S
         if slow_cpu and parsed["suite"] != "stage-b-cpu":
-            raise ValueError(f"{self.filename}: CPU est_time > 30 seconds requires suite='stage-b-cpu'")
+            raise ValueError(
+                f"{self.filename}: CPU est_time > {CPU_FAST_EST_TIME_LIMIT_S} seconds requires suite='stage-b-cpu'"
+            )
         domain_labels = [label for label in labels if label != PERF_LABEL]
         if (backend != HWBackend.CPU or slow_cpu) and not domain_labels:
             raise ValueError(f"{self.filename}: labels in {func_name}() must contain at least one domain label")

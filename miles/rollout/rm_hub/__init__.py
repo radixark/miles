@@ -4,7 +4,7 @@ import random
 
 import aiohttp
 
-from miles.utils.args.custom_function import CustomFunctionConfig
+from miles.utils.args.custom_function import CustomFunctionConfig, _compute_config_class
 from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
@@ -36,11 +36,36 @@ async def remote_rm(args, sample: Sample):
             return await resp.json()
 
 
+def _spec_custom_rm_path(sample: Sample) -> str | None:
+    spec = sample.reward_spec
+    return (spec.custom_rm_path if spec is not None else None) or None
+
+
+def _run_custom_rm_path(args) -> str | None:
+    run_hook = args.custom_rm_path
+    return run_hook.path if isinstance(run_hook, CustomFunctionConfig) else run_hook
+
+
+def _resolve_spec_custom_rm_path(args, path: str) -> CustomFunctionConfig:
+    """A spec naming the run's hook reuses its config; a spec cannot supply config for any other hook."""
+    if path == _run_custom_rm_path(args) and isinstance(args.custom_rm_path, CustomFunctionConfig):
+        return args.custom_rm_path
+    if _compute_config_class(load_function(path), path=path) is not None:
+        raise ValueError(
+            f"reward_spec.custom_rm_path={path!r} names a reward function with its own config, which a per-sample "
+            "spec cannot carry; set it as --custom-rm-path instead"
+        )
+    return CustomFunctionConfig(path=path)
+
+
 def _resolve_reward_config(args, sample: Sample) -> tuple[CustomFunctionConfig | None, str]:
     # Spec fields win when set; unset/empty fields fall back to sample metadata and process-wide args.
     spec = sample.reward_spec
     metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
-    custom_rm_path = (spec.custom_rm_path if spec is not None else None) or args.custom_rm_path
+    if (spec_path := _spec_custom_rm_path(sample)) is not None:
+        custom_rm_path = _resolve_spec_custom_rm_path(args, spec_path)
+    else:
+        custom_rm_path = args.custom_rm_path
     if isinstance(custom_rm_path, str):
         custom_rm_path = CustomFunctionConfig(path=custom_rm_path)
     rm_type = ((spec.rm_type if spec is not None else None) or metadata.get("rm_type") or args.rm_type or "").strip()
@@ -70,12 +95,16 @@ async def async_rm(args, sample: Sample, **kwargs):
     if rm_type == "remote_rm":
         return await remote_rm(args, sample)
     elif rm_type == "deepscaler":
+        # DeepScaleR-style strict grading: requires an end-of-reasoning delimiter (see miles.utils.reasoning),
+        # grades only what follows it, and returns 0 when none is present.
         return get_deepscaler_rule_based_reward(response, label)
     elif rm_type == "gemma_math":
         return get_gemma_math_reward(response, label)
     elif rm_type == "dapo":
         return compute_score_dapo(response, label)
     elif rm_type == "math":
+        # Intentional verl-aligned grading: extracts the last \boxed{} from the full response without
+        # stripping thinking tags (use `deepscaler` for strict post-reasoning grading).
         return 1 if grade_answer_verl(response, label) else 0
     elif rm_type == "f1":
         return f1_score(response, label)[0]
@@ -113,6 +142,13 @@ async def batched_async_rm(
         return None
 
     if args.custom_rm_path is not None:
+        run_path = _run_custom_rm_path(args)
+        spec_paths = [_spec_custom_rm_path(sample) for sample in samples]
+        if samples_with_other_path := [i for i, path in enumerate(spec_paths) if path not in (None, run_path)]:
+            raise ValueError(
+                f"reward_spec.custom_rm_path on group samples {samples_with_other_path} differs from "
+                "--custom-rm-path, but --group-rm scores the whole group with that one batched function"
+            )
         rm_function = load_function(args.custom_rm_path)
         fn_args = compute_custom_function_config(args, args.custom_rm_path)
         return await rm_function(fn_args, samples, **kwargs)

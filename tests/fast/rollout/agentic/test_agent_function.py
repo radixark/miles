@@ -9,11 +9,14 @@ import time
 from pathlib import Path
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 
 from miles.rollout.agentic import agent_function
 from miles.rollout.agentic.agent_function import call_agent_function
 from miles.rollout.agentic.rollout_limits import current_scope
 from miles.utils.test_utils import agent_function_stubs as stubs
+
+register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["rollout"])
 
 
 def _wait_for(path: Path, timeout_s: float = 60.0) -> bool:
@@ -33,7 +36,8 @@ def _is_running(pid: int) -> bool:
     # a killed process whose new parent has not reaped it yet still answers signal 0
     try:
         return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] not in ("Z", "X")
-    except FileNotFoundError:
+    # reaped before the open, or between the open and the read
+    except (FileNotFoundError, ProcessLookupError):
         return False
 
 
@@ -145,6 +149,40 @@ def test_leftover_cleanup_is_cut_at_its_deadline(monkeypatch):
         return await _wait_until_gone(pid, timeout_s=30)
 
     assert asyncio.run(call_and_watch()), "the agent process outlived its leftover-cleanup deadline"
+
+
+def test_idle_module_pool_workers_do_not_hold_the_process(tmp_path):
+    """A pool's queued work still runs, then its idle workers exit long before the leftover-cleanup deadline."""
+    marker = tmp_path / "logged"
+
+    async def call_and_watch() -> bool:
+        pid = await call_agent_function(stubs.leave_module_pool_work, mode="subproc", marker=str(marker), delay_s=1.0)
+        return await _wait_until_gone(pid, timeout_s=30)
+
+    assert asyncio.run(call_and_watch()), "idle pool workers held the agent process"
+    assert marker.exists(), "the agent process exited before its pool's queued work ran"
+
+
+def test_an_idle_module_process_pool_does_not_hold_the_process():
+    async def call_and_watch() -> bool:
+        pid = await call_agent_function(stubs.leave_module_process_pool, mode="subproc")
+        return await _wait_until_gone(pid, timeout_s=30)
+
+    assert asyncio.run(call_and_watch()), "an idle process pool held the agent process"
+
+
+def test_leftover_cleanup_can_still_use_a_pool(tmp_path):
+    """Closing a sandbox can need a pool after the call (asyncio's DNS), even from a thread it starts."""
+    marker = tmp_path / "used"
+
+    async def call_and_watch() -> bool:
+        pid = await call_agent_function(
+            stubs.leave_cleanup_using_a_pool, mode="subproc", marker=str(marker), delay_s=1.0
+        )
+        return await _wait_until_gone(pid, timeout_s=30)
+
+    assert asyncio.run(call_and_watch()), "the agent process outlived its cleanup"
+    assert marker.exists(), "the cleanup could not use a pool after the call"
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PR_SET_PDEATHSIG exists only on Linux")

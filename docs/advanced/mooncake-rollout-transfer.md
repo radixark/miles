@@ -31,9 +31,11 @@ Before starting a Miles job:
 
 This backend imports the structured-object API from `mooncake.structured_object_store`
 (`FieldSchema`, `MooncakeBundleTransfer`, `export_ref`, `import_ref`), which Mooncake
-provides from 0.3.12.post1 on; earlier releases ship the module without these names. The
-Miles CUDA images use the Mooncake package that ships in the SGLang base image, and the
-ROCm images add Mooncake's Python files from `mooncake-transfer-engine-non-cuda` (see
+provides from 0.3.12.post1 on; earlier releases ship the module without these names. Use
+0.3.13 or newer for cleanup of already-removed bundle manifests
+([Mooncake#3374](https://github.com/kvcache-ai/Mooncake/pull/3374)). The Miles CUDA images
+use the Mooncake package that ships in the SGLang base image, and the ROCm images add
+Mooncake's Python files from `mooncake-transfer-engine-non-cuda` (see
 `docker/Dockerfile.rocm`). For a custom environment, install a Mooncake package that
 matches the CUDA runtime and is compatible with the Miles revision. Follow the
 [Mooncake installation guide](https://kvcache-ai.github.io/Mooncake/getting_started/build.html)
@@ -257,7 +259,14 @@ this Mooncake and returns a ref instead: routed experts (`--use-rollout-routing-
 indexer top-k (`--use-rollout-indexer-replay`) and the sampling mask (a positive
 `--rollout-top-k`). The trainer reads them back and receives the same columns as without
 the option. Miles deletes the objects once nothing can read them, at the latest after the
-rollout's `train` step.
+rollout's `train` step. Each trainer rank reads only its own rows: with Megatron pipeline
+parallelism, Miles sends the layers where its stages meet with each request
+(`replay_layer_splits`), SGLang stores routed experts and indexer top-k in parts split at
+them, and each stage reads only the parts of its layers. The split points follow the pipeline
+sizes and `--decoder-first/last-pipeline-num-layers`; a stage placed otherwise
+(`--pipeline-model-parallel-layout`, `--account-for-embedding-in-pipeline-split`,
+`--account-for-loss-in-pipeline-split`, or a `--megatron-config` trainer that overrides the
+pipeline) reads every part that holds one of its layers, so more than its own.
 
 ```bash
 --object-store-backend mooncake \
@@ -268,16 +277,21 @@ rollout's `train` step.
 Requirements:
 
 - SGLang with the output store, including
-  [sgl-project/sglang#46288](https://github.com/sgl-project/sglang/pull/46288), on every
-  engine, trainer and the session server. Miles configures each engine's store; do not
+  [sgl-project/sglang#46288](https://github.com/sgl-project/sglang/pull/46288) and
+  [sgl-project/sglang#48123](https://github.com/sgl-project/sglang/pull/48123), which stores
+  the forward fields in layer parts (`replay_layer_splits`), on every engine, trainer and the
+  session server. Miles configures each engine's store; do not
   set `output_store_backend` through `--sglang-*` flags or `sglang_overrides`.
 - `--use-miles-router`, or an `sgl-router` from `radixark/sgl-router-for-miles` that
-  forwards `return_outputs_via_store`; a router that drops it fails the rollout.
+  forwards `return_outputs_via_store` and `replay_layer_splits`; a router that drops either
+  fails the run.
 - An engine buffer (`--output-store-local-buffer-size`, default 16gb) that holds one
   response's arrays. Indexer top-k dominates, about 0.5 MB per token on DeepSeek-V3.2, so
-  16gb fits a 32k-token response. A buffer too small for the longest sequence that
-  `--rollout-max-context-len`, or else `--rollout-max-response-len`, allows is rejected at
-  launch. Under RDMA, each engine pins its whole buffer in
+  16gb fits a 32k-token response. A buffer too small for the longest sequence known at
+  launch is rejected: `--max-seq-len` on `/generate`, one `--rollout-max-response-len`
+  response more under the session server, where an agent that stops at `--max-seq-len`
+  can still get a full response past it, or else `--rollout-max-response-len`. An agent
+  that ignores `--max-seq-len` can still send more than the check assumes. Under RDMA, each engine pins its whole buffer in
   host memory when it starts.
 - For RDMA engines, `device_name` in `--mooncake-store-init-kwargs`: SGLang reads no
   `MOONCAKE_*` variable.

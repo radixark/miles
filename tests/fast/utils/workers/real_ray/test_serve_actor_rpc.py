@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import pytest
 import ray
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.utils.workers.conformance import (
     CHECK_IDS,
     CHECKS,
@@ -13,7 +14,6 @@ from tests.fast.utils.workers.conformance import (
     HandleCheck,
     compute_spec,
 )
-
 from tests.fast.utils.workers.conftest import worker_manager_args
 from tests.fast.utils.workers.real_ray.conftest import (
     kill_named_worker_manager,
@@ -28,6 +28,8 @@ from miles.utils.workers.types import WorkerCommBackend
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+
+register_cpu_ci(est_time=40, suite="stage-b-cpu", labels=["rpc-comm"])
 
 CELL_ID = compute_cell_id(pool_id=POOL_ID, cell_index=0)
 

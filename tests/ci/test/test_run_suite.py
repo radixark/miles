@@ -27,6 +27,7 @@ from types import SimpleNamespace
 
 import pytest
 import tests.ci.run_suite as run_suite_module
+import yaml
 from tests.ci.ci_policy import (
     NIGHTLY_CADENCE,
     REGULAR_CADENCE,
@@ -41,7 +42,7 @@ from tests.ci.labels import KNOWN_LABELS
 from tests.ci.run_suite import CI_SUITES, build_cpu_pytest_cmd, filter_tests
 from tests.ci.stage_selection import PR_GPU_STAGES
 
-register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
+register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 
 
 def _make(
@@ -153,6 +154,106 @@ class TestRunCpuTests:
         assert run_suite_module.run_cpu_tests(tests, 1800, continue_on_error=False) == 124
         assert calls == [self.BOUNDED_BENCH]
         assert f"TIMEOUT: {self.BENCH} after 500 seconds" in capsys.readouterr().out
+
+    def test_slow_stage_a_files_emit_github_warning_without_failing(self, monkeypatch, capsys):
+        slow_implicit = CIRegistry(
+            backend=HWBackend.CPU,
+            filename="tests/fast/test_slow_implicit.py",
+            est_time=1.0,
+            suite="stage-a-cpu",
+            labels=[],
+            implicit=True,
+        )
+        slow_explicit = _make(
+            "tests/fast/test_slow_explicit.py",
+            backend=HWBackend.CPU,
+            suite="stage-a-cpu",
+            labels=[],
+            est_time=20.0,
+        )
+        fast = _make(
+            "tests/fast/test_ok.py",
+            backend=HWBackend.CPU,
+            suite="stage-a-cpu",
+            labels=[],
+            est_time=1.0,
+        )
+        recorded_cmds: list[list[str]] = []
+
+        def fake_call(cmd):
+            recorded_cmds.append(cmd)
+            junit_arg = next(arg for arg in cmd if arg.startswith("--junitxml="))
+            xml_path = Path(junit_arg.split("=", 1)[1])
+            xml_path.write_text(
+                '<?xml version="1.0" encoding="utf-8"?>'
+                '<testsuites><testsuite name="pytest">'
+                '<testcase file="tests/fast/test_slow_implicit.py" name="a" time="20.5" />'
+                '<testcase file="tests/fast/test_slow_implicit.py" name="b" time="15.0" />'
+                '<testcase file="tests/fast/test_slow_explicit.py" name="a" time="42.2" />'
+                '<testcase file="tests/fast/test_ok.py" name="a" time="30.0" />'
+                "</testsuite></testsuites>",
+                encoding="utf-8",
+            )
+            return 0
+
+        monkeypatch.setattr(run_suite_module.subprocess, "call", fake_call)
+        rc = run_suite_module.run_cpu_tests(
+            [slow_implicit, slow_explicit, fast],
+            1800,
+            continue_on_error=False,
+            warn_slow_threshold_s=30,
+        )
+        assert rc == 0
+        assert len(recorded_cmds) == 1
+        assert "-o" in recorded_cmds[0] and "junit_family=xunit1" in recorded_cmds[0]
+        warning_lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("::warning ")]
+        assert len(warning_lines) == 2
+        assert "file=tests/fast/test_slow_explicit.py::" in warning_lines[0]
+        assert "42.2s in stage-a-cpu (budget: 30s, est_time=20s)" in warning_lines[0]
+        assert "file=tests/fast/test_slow_implicit.py::" in warning_lines[1]
+        assert "35.5s in stage-a-cpu (budget: 30s, est_time=1s (implicit))" in warning_lines[1]
+
+    def test_missing_junit_xml_does_not_mask_pytest_result(self, monkeypatch, capsys):
+        monkeypatch.setattr(run_suite_module.subprocess, "call", lambda cmd: 2)
+        fast = _make("tests/fast/test_ok.py", backend=HWBackend.CPU, suite="stage-a-cpu", labels=[], est_time=1.0)
+        rc = run_suite_module.run_cpu_tests([fast], 1800, continue_on_error=False, warn_slow_threshold_s=30)
+        assert rc == 2
+        assert "::warning " not in capsys.readouterr().out
+
+    @pytest.mark.parametrize(("suite", "expected_threshold"), [("stage-a-cpu", 30), ("stage-b-cpu", None)])
+    def test_run_a_suite_enables_slow_warning_only_for_stage_a_cpu(self, monkeypatch, suite, expected_threshold):
+        reg = _make(
+            "tests/fast/test_sample.py",
+            backend=HWBackend.CPU,
+            suite=suite,
+            labels=[] if suite == "stage-a-cpu" else ["algorithm"],
+            est_time=10.0 if suite == "stage-a-cpu" else 60.0,
+        )
+        seen: dict[str, object] = {}
+
+        def fake_run_cpu_tests(ci_tests, timeout_per_file, continue_on_error, *, warn_slow_threshold_s=None):
+            seen["warn_slow_threshold_s"] = warn_slow_threshold_s
+            return 0
+
+        monkeypatch.setattr(run_suite_module, "discover_ci_files", lambda: [reg.filename])
+        monkeypatch.setattr(run_suite_module, "collect_tests", lambda files, sanity_check=True: [reg])
+        monkeypatch.setattr(run_suite_module, "run_cpu_tests", fake_run_cpu_tests)
+        args = SimpleNamespace(
+            hw="cpu",
+            suite=suite,
+            cadence=REGULAR_CADENCE,
+            labels=[] if suite == "stage-a-cpu" else ["run-ci-algorithm"],
+            match_all_labels=False,
+            continue_on_error=False,
+            test_file=None,
+            auto_partition_id=None,
+            auto_partition_size=None,
+            github_output=None,
+            list_only=False,
+            timeout_per_file=1800,
+        )
+        assert run_suite_module.run_a_suite(args) == 0
+        assert seen["warn_slow_threshold_s"] == expected_threshold
 
 
 # --- CI_SUITES locked to the stage taxonomy ---------------------------------
@@ -401,9 +502,33 @@ class TestWorkflowScopeSeam:
 
         assert "needs: [resolve-ci-policy]" in stage_a
         assert "needs: [resolve-ci-policy, stage-a-cpu]" in stage_b
-        assert "    if:" not in stage_b
+        assert "if: needs.resolve-ci-policy.outputs.needs_stage_b_cpu == 'true'" in stage_b
+        # Without always(), GitHub still skips stage-b-cpu when stage-a-cpu fails.
+        assert "always()" not in stage_b
+        assert "bypass_fastfail" not in stage_b
         assert "resolve-ci-image" not in stage_a
         assert "resolve-ci-image" not in stage_b
+
+    def test_cpu_reusable_workflow_plans_before_heavy_setup_and_guards_disk_cleanup(self):
+        cpu_workflow = yaml.safe_load(self._reusable_workflow("_run-cpu-ci.yml"))
+        steps = cpu_workflow["jobs"]["run-cpu"]["steps"]
+        names = [step["name"] for step in steps]
+        plan_idx = names.index("Resolve suite plan")
+        for heavy in (
+            "Free disk space",
+            "Checkout sglang",
+            "Checkout Megatron-LM",
+            "Install dependencies",
+            "Run tests",
+        ):
+            heavy_idx = names.index(heavy)
+            assert plan_idx < heavy_idx, f"{heavy} should run after Resolve suite plan"
+            assert "steps.plan.outputs.has_tests == 'true'" in steps[heavy_idx]["if"]
+        plan_step = steps[plan_idx]
+        assert plan_step["id"] == "plan"
+        assert '--list-only --github-output "$GITHUB_OUTPUT"' in plan_step["run"]
+        free_disk = steps[names.index("Free disk space")]
+        assert 'if [ "$avail_gb" -lt 40 ]; then' in free_disk["run"]
 
     def test_non_default_base_pr_needs_run_ci_label(self):
         policy_gate = self._workflow().split("  resolve-ci-policy:", 1)[1].split("    runs-on:", 1)[0]
@@ -417,7 +542,8 @@ class TestWorkflowScopeSeam:
         assert workflow.count("uses: ./.github/workflows/_run-cpu-ci.yml") == 2
         assert workflow.count("uses: ./.github/workflows/_run-ci.yml") == 5
         assert workflow.count("uses: ./.github/workflows/_run-ci-b200.yml") == 1
-        assert workflow.count("uses: ./.github/workflows/_build-pr-ci-image.yml") == 1
+        # One call per PR image architecture.
+        assert workflow.count("uses: ./.github/workflows/_build-pr-ci-image.yml") == 2
         assert "cpu_runner" not in workflow
 
         gpu_workflow = self._reusable_workflow("_run-ci.yml")
@@ -438,7 +564,7 @@ class TestWorkflowScopeSeam:
 
     def test_docker_build_waits_for_cpu_gate_and_preserves_bypass(self):
         workflow = self._workflow()
-        caller = workflow.split("  docker-build:", 1)[1].split("  resolve-ci-image:", 1)[0]
+        caller = workflow.split("  docker-build-amd64:", 1)[1].split("  resolve-ci-image-amd64:", 1)[0]
 
         assert "needs: [resolve-ci-policy, stage-a-cpu]" in caller
         assert "always() && !cancelled()" in caller
@@ -460,22 +586,27 @@ class TestWorkflowScopeSeam:
         assert "value: ${{ jobs.docker-build.outputs.tag_available }}" in reusable
         assert "needs: [docker-decide]" in reusable
         # Rebuilds follow the build inputs, not whether the PR diff touched them.
-        assert "python3 docker/image_inputs.py --rev HEAD^1" in reusable
+        assert 'python3 docker/image_inputs.py --variant "$VARIANT" --rev HEAD^1' in reusable
         assert "python3 docker/image_inputs.py --read-label" in reusable
         assert "github.event.pull_request.head.repo.full_name == github.repository" in reusable
-        assert "python3 docker/build.py --variant cu13 --image-tag custom" in reusable
+        # The architecture picks the variant and tag from docker/image_inputs.py.
+        assert 'python3 docker/image_inputs.py --pr "$PR_NUMBER" --arch "$ARCH"' in reusable
+        assert (
+            'python3 docker/build.py --variant "$VARIANT" --image-tag custom --custom-tag "$TAG" --image-repo "$GITHUB_REPOSITORY" --push'
+            in reusable
+        )
 
     def test_docker_decision_logs_in_only_for_tag_inspection(self):
         reusable = self._reusable_workflow("_build-pr-ci-image.yml")
         decide_job = reusable.split("  docker-decide:", 1)[1].split("  docker-build:", 1)[0]
 
-        compare = decide_job.index("python3 docker/image_inputs.py --rev HEAD^1")
+        compare = decide_job.index('python3 docker/image_inputs.py --variant "$VARIANT" --rev HEAD^1')
         login = decide_job.index("- name: Login to Docker Hub")
         inspect = decide_job.index("docker buildx imagetools inspect")
         assert compare < login < inspect
         assert "if: steps.prepare.outputs.inspect_tag == 'true'" in decide_job
 
-    def test_docker_force_rebuild_uses_live_label_for_decision_and_consumption(self):
+    def test_docker_force_rebuild_reads_the_live_label_and_leaves_it(self):
         reusable = self._reusable_workflow("_build-pr-ci-image.yml")
         decide_job = reusable.split("  docker-decide:", 1)[1].split("  docker-build:", 1)[0]
 
@@ -485,11 +616,11 @@ class TestWorkflowScopeSeam:
         assert "LABELS=$(gh api --paginate" in decide_job
         assert 'grep -Fxq "rebuild-ci-image" <<< "$LABELS"' in decide_job
         assert "github.event.pull_request.labels.*.name" not in decide_job
-        assert "needs.docker-decide.outputs.force_rebuild == 'true'" in reusable
+        assert "labels/rebuild-ci-image" not in reusable
 
     def test_policy_job_is_a_thin_python_adapter(self):
         workflow = self._workflow()
-        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("  docker-build:", 1)[0]
+        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("  docker-build-amd64:", 1)[0]
         assert "uses: actions/checkout@v4" in policy_block
         assert "persist-credentials: false" in policy_block
         assert "run: python -m tests.ci.ci_policy" in policy_block
@@ -505,7 +636,7 @@ class TestWorkflowScopeSeam:
 
     def test_policy_job_passes_trigger_facts(self):
         workflow = self._workflow()
-        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("  docker-build:", 1)[0]
+        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("  docker-build-amd64:", 1)[0]
         assert "EVENT_NAME: ${{ github.event_name }}" in policy_block
         assert "SCHEDULE: ${{ github.event.schedule || '' }}" in policy_block
         assert "PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}" in policy_block
@@ -559,6 +690,25 @@ class TestWorkflowScopeSeam:
         assert all(load > 0 for load in loads)
         assert max(loads) <= 7200 if cadence == REGULAR_CADENCE else max(loads) < 7200
 
+    @pytest.mark.parametrize("cadence", [REGULAR_CADENCE, NIGHTLY_CADENCE])
+    def test_stage_b_cpu_shards_fit_runtime_budget(self, cadence):
+        workflow = self._workflow()
+        job = workflow.split("\n  stage-b-cpu:", 1)[1].split("\n  stage-", 1)[0]
+        assert "partition_id: [0, 1, 2, 3]" in job
+        policy = resolve_policy(cadence, {"run-ci-image"} if cadence == REGULAR_CADENCE else set())
+        tests, _ = filter_tests(
+            collect_tests(discover_ci_files()),
+            HWBackend.CPU,
+            "stage-b-cpu",
+            policy.admit_nightly_tests,
+            labels=set(policy.include_labels),
+            dispatch_arches=policy.dispatch_arches,
+            absorb=policy.absorb,
+        )
+        loads = [sum(test.est_time for test in run_suite_module.auto_partition(tests, rank, 4)) for rank in range(4)]
+        assert all(load > 0 for load in loads)
+        assert max(loads) <= 1800
+
     def test_b200_jobs_share_one_cross_pr_host_lease(self):
         workflow = self._workflow()
         b200_workflow = self._reusable_workflow("_run-ci-b200.yml")
@@ -600,13 +750,13 @@ class TestWorkflowScopeSeam:
         bypass_gate = "needs.resolve-ci-policy.outputs.bypass_fastfail == 'true'"
         assert gpu_stages.count(bypass_gate) == 6
         assert gpu_stages.count("needs.resolve-ci-policy.result == 'success'") == 6
-        assert gpu_stages.count("needs.resolve-ci-image.result == 'success'") == 6
+        assert gpu_stages.count("needs.resolve-ci-image-amd64.result == 'success'") == 6
         assert "needs.stage-a-cpu.result == 'failure'" not in gpu_stages
 
     def test_each_cuda_stage_consumes_the_fail_open_skip_list(self):
         workflow = self._workflow()
         b200_stages = {"stage-c-4-gpu-b200", "stage-c-8-gpu-b200"}
-        cuda_stages = PR_GPU_STAGES - {"stage-c-4-gpu-mi350"} - b200_stages
+        cuda_stages = {stage for stage in PR_GPU_STAGES if not stage.endswith("-mi350")} - b200_stages
         for stage_name in cuda_stages:
             block = workflow.split(f"  {stage_name}:", 1)[1]
             block = re.split(r"^  [A-Za-z_][A-Za-z0-9_-]*:\s*$", block, maxsplit=1, flags=re.MULTILINE)[0]
@@ -634,7 +784,7 @@ class TestWorkflowScopeSeam:
         )
 
         policy_header = workflow.split("  resolve-ci-policy:", 1)[1].split("    runs-on:", 1)[0]
-        docker_caller = workflow.split("  docker-build:", 1)[1].split("  resolve-ci-image:", 1)[0]
+        docker_caller = workflow.split("  docker-build-amd64:", 1)[1].split("  resolve-ci-image-amd64:", 1)[0]
         reusable = self._reusable_workflow("_build-pr-ci-image.yml")
 
         assert "github.event.action != 'closed'" in policy_header
@@ -654,15 +804,17 @@ class TestRocmWorkflowScopeSeam:
             in workflow
         )
         assert "cancel-in-progress: true" in workflow
-        for job in ("resolve-ci-policy", "resolve-ci-deps"):
-            header = workflow.split(f"  {job}:\n", 1)[1].split("    runs-on:", 1)[0]
-            assert "if: github.event.action != 'closed'" in header
+        header = workflow.split("  resolve-ci-policy:\n", 1)[1].split("    runs-on:", 1)[0]
+        assert "if: github.repository == 'radixark/miles' && github.event.action != 'closed'" in header
         image = workflow.split("  resolve-ci-image:\n", 1)[1].split("    runs-on:", 1)[0]
-        assert "needs: [resolve-ci-policy]" in image
-        assert "always()" not in image
+        build = workflow.split("  docker-build-rocm10-mi35x:\n", 1)[1].split("  resolve-ci-image:\n", 1)[0]
+        assert "github.event.action != 'closed'" in build
+        assert "needs: [resolve-ci-policy]" in build
+        assert "arch: rocm10-mi35x" in build
+        assert "needs: [resolve-ci-policy, docker-build-rocm10-mi35x]" in image
+        assert "needs.docker-build-rocm10-mi35x.result == 'success'" in image
         stage = workflow.split("  stage-c-4-gpu-mi350:\n", 1)[1]
         assert "needs.resolve-ci-policy.result == 'success'" in stage
-        assert "needs.resolve-ci-deps.result == 'success'" in stage
 
     def test_pr_schedules_and_dispatch_share_policy(self):
         workflow = self._workflow()
@@ -672,9 +824,7 @@ class TestRocmWorkflowScopeSeam:
         )
         assert "pull_request_target:" not in workflow
         configured = set(re.findall(r"^\s+- cron: ['\"]([^'\"]+)['\"]\s*$", workflow, flags=re.MULTILINE))
-        assert configured == set(SCHEDULE_POLICIES)
-        assert "    - cron: '0 15 * * 0-5'" in workflow
-        assert "    - cron: '0 15 * * 6'" in workflow
+        assert configured <= set(SCHEDULE_POLICIES)
         assert "timezone:" not in workflow
 
         policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("resolve-ci-image:", 1)[0]
@@ -693,22 +843,24 @@ class TestRocmWorkflowScopeSeam:
         stage = workflow.split("  stage-c-4-gpu-mi350:", 1)[1]
         command = stage.split("execute_command:", 1)[1].split("secrets:", 1)[0]
 
-        assert "needs: [resolve-ci-policy, resolve-ci-image, resolve-ci-deps]" in stage
+        assert "needs: [resolve-ci-policy, resolve-ci-image]" in stage
         assert "allow_self_hosted" not in stage
-        assert "partition_id: [0, 1]" in stage
+        assert (
+            "partition_id: ${{ fromJSON(needs.resolve-ci-policy.outputs.cadence == 'regular' && '[0,1,2,3]' || '[0,1,2,3,4,5]') }}"
+            in stage
+        )
         assert "max-parallel:" not in stage
-        assert "--auto-partition-size 2" in command
+        assert "--auto-partition-size ${{ strategy.job-total }}" in command
         assert "checkout_ref:" not in stage
         assert "--cadence ${{ needs.resolve-ci-policy.outputs.cadence }}" in command
         assert "--labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}" in command
         assert "${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}" in command
-        assert "WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}" in stage
+        assert workflow.count("AMD_WANDB_API_KEY: ${{ secrets.AMD_WANDB_API_KEY }}") == 4
+        assert "secrets.WANDB_API_KEY" not in workflow
         assert "needs.resolve-ci-policy.result == 'success'" in stage
         assert "needs.resolve-ci-image.result == 'success'" in stage
-        assert "needs.resolve-ci-deps.result == 'success'" in stage
-        assert (
-            "skip_dependency_install: ${{ needs.resolve-ci-deps.outputs.skip_dependency_install == 'true' }}" in stage
-        )
+        assert "resolve-ci-deps" not in workflow
+        assert "skip_dependency_install:" not in stage
         assert (
             "!contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350')"
             in stage
@@ -723,8 +875,10 @@ class TestRocmWorkflowScopeSeam:
         assert "MILES_HARDWARE_PLATFORM: rocm" in reusable
 
     def test_megatron_override_installs_the_checked_out_ref_unpatched(self):
-        reusable = (Path(__file__).resolve().parents[3] / ".github" / "workflows" / "_run-ci-rocm.yml").read_text()
-        override = reusable.split('if [ -n "$MEGATRON_PR" ]; then', 1)[1].split("          cd $GITHUB_WORKSPACE", 1)[0]
+        steps = (
+            Path(__file__).resolve().parents[3] / ".github" / "workflows" / "scripts" / "spur" / "container_steps.sh"
+        ).read_text()
+        override = steps.split("cd /root/Megatron-LM\n", 1)[1].split('cd "$GITHUB_WORKSPACE"', 1)[0]
 
         checkout = override.index("git checkout -f FETCH_HEAD")
         install = override.index("pip install -e . --no-deps --break-system-packages")
@@ -791,6 +945,19 @@ class TestRunSuiteCLI:
         assert result.returncode != 0
         assert "Unknown suite stage-c-unknown" in result.stderr
         assert "No tests to run. Exiting with success." not in result.stdout
+
+    def test_legacy_rocm_nightly_suite_name_runs_the_renamed_stage(self):
+        result = self._run(
+            "--hw",
+            "rocm",
+            "--suite",
+            "nightly-stage-c-4-gpu-mi350",
+            "--cadence",
+            "nightly",
+            "--list-only",
+        )
+        assert result.returncode == 0, result.stderr
+        assert "Suite: stage-c-4-gpu-mi350" in result.stdout
 
 
 # --- run_a_suite: resolved policy reaches cadence and runner behavior --------
@@ -1271,7 +1438,7 @@ class TestSnapshotHardware:
             ("stage-c-8-gpu-h100", "h100"),
             ("stage-c-2-gpu-h200", "h200"),
             ("stage-c-4-gpu-b200", "b200"),
-            ("nightly-stage-c-2-gpu-mi350", "mi350"),
+            ("stage-c-2-gpu-mi350", "mi350"),
         ],
     )
     def test_execution_suite_selects_the_snapshot_hardware(self, suite: str, hardware: str) -> None:

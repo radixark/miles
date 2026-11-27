@@ -22,7 +22,7 @@ def _args(**overrides):
     values = {
         "lora_adapter_path": None,
         "lora_rank": 0,
-        "rollout_max_context_len": 64,
+        "max_seq_len": 64,
         "rollout_max_prompt_len": None,
         "rollout_max_response_len": 8,
         "rollout_skip_special_tokens": True,

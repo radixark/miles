@@ -2,6 +2,7 @@ import subprocess
 
 import pytest
 import yaml
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.charts.utils import (
     CHART_DIR,
     LWS_RESOURCE,
@@ -19,6 +20,8 @@ from tests.fast.charts.utils import (
 from miles.utils.external_utils.miles_workbench.naming import object_name
 from miles.utils.external_utils.miles_workbench.preflight import rules as cli
 from miles.utils.external_utils.miles_workbench.render import rbac_plan_of
+
+register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["k8s", "deploy"])
 
 _FAKE_VERBS = ["get", "list", "watch"]
 _FAKE_GRANTED_RULES = {"services": tuple(_FAKE_VERBS), "pods/log": tuple(_FAKE_VERBS)}

@@ -61,6 +61,7 @@ class WorkflowPolicy:
     raw_labels: tuple[str, ...]
     bypass_fastfail: bool
     skipped_stages: tuple[str, ...]
+    needs_stage_b_cpu: bool = True
 
 
 def strip_run_ci_prefix(raw_labels: Iterable[str]) -> set[str]:
@@ -221,15 +222,18 @@ def _write_github_outputs(policy: WorkflowPolicy, output_path: str) -> None:
     bypass_fastfail = str(policy.bypass_fastfail).lower()
     skipped_stages = json.dumps(policy.skipped_stages, separators=(",", ":"))
     needs_cuda_image = str(bool(CUDA_STAGES.keys() - set(policy.skipped_stages))).lower()
+    needs_stage_b_cpu = str(policy.needs_stage_b_cpu).lower()
     with open(output_path, "a", encoding="utf-8") as output:
         output.write(f"cadence={policy.cadence}\n")
         output.write(f"raw_labels={raw_labels}\n")
         output.write(f"bypass_fastfail={bypass_fastfail}\n")
         output.write(f"skipped_stages={skipped_stages}\n")
         output.write(f"needs_cuda_image={needs_cuda_image}\n")
+        output.write(f"needs_stage_b_cpu={needs_stage_b_cpu}\n")
     print(
         f"Resolved CI policy: cadence={policy.cadence} labels=[{raw_labels}] "
-        f"bypass_fastfail={bypass_fastfail} skipped_stages={skipped_stages}"
+        f"bypass_fastfail={bypass_fastfail} skipped_stages={skipped_stages} "
+        f"needs_stage_b_cpu={needs_stage_b_cpu}"
     )
 
 
@@ -243,21 +247,34 @@ def main() -> int:
             cadence_override=os.environ.get("CADENCE_OVERRIDE", ""),
         )
         if event_name == "pull_request":
-            from tests.ci.ci_register import collect_tests, discover_ci_files
+            from tests.ci.ci_register import HWBackend, collect_tests, discover_ci_files
             from tests.ci.stage_selection import read_changed_files, select_skipped_gpu_stages
 
             changed_files = read_changed_files(os.environ.get("CHANGED_FILES_PATH", ""))
             if changed_files is None:
                 print("Changed-file diff is unavailable or empty; all selected GPU stages are treated as affected.")
+            registrations = collect_tests(discover_ci_files(), sanity_check=True)
             run_policy = resolve_policy(policy.cadence, set(policy.raw_labels))
             skipped_stages = select_skipped_gpu_stages(
                 event_name=event_name,
                 changed_files=changed_files,
-                registrations=collect_tests(discover_ci_files(), sanity_check=True),
+                registrations=registrations,
                 run_policy=run_policy,
                 raw_labels=policy.raw_labels,
             )
-            policy = replace(policy, skipped_stages=skipped_stages)
+            needs_stage_b_cpu = any(
+                reg.backend == HWBackend.CPU
+                and reg.suite == "stage-b-cpu"
+                and reg.disabled is None
+                and registration_matches_selection(
+                    reg.labels,
+                    reg.nightly,
+                    admit_nightly_tests=run_policy.admit_nightly_tests,
+                    include_labels=run_policy.include_labels,
+                )
+                for reg in registrations
+            )
+            policy = replace(policy, skipped_stages=skipped_stages, needs_stage_b_cpu=needs_stage_b_cpu)
     except ValueError as exc:
         print(f"::error::{exc}", file=sys.stderr)
         return 1

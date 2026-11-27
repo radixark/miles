@@ -21,6 +21,16 @@ from miles.utils.workers.argv_utils import _record_field_names
 
 logger = logging.getLogger(__name__)
 
+# SGLang's default SGLANG_HEALTH_CHECK_TIMEOUT.
+SGLANG_DEFAULT_HEALTH_CHECK_TIMEOUT_SECONDS = 20
+
+
+def compute_health_check_timeout_seconds(*, pp_size: int) -> int:
+    # A cold health request crosses every pipeline stage, so the launcher's budget is taken per stage
+    # and the engine gets the product instead of the launcher's value.
+    per_stage_seconds = int(os.environ.get("SGLANG_HEALTH_CHECK_TIMEOUT", SGLANG_DEFAULT_HEALTH_CHECK_TIMEOUT_SECONDS))
+    return per_stage_seconds * pp_size
+
 
 def format_v6_uri(addr: str | None) -> str | None:
     if not addr or addr.startswith("["):
@@ -46,6 +56,8 @@ def compute_engine_launch_cmd(
     base_gpu_id: int,
     sglang_overrides: dict,
     num_gpus_per_engine: int,
+    tp_size: int,
+    pp_size: int,
     dist_init_addr: str,
     nccl_port: int,
     host: str,
@@ -70,6 +82,8 @@ def compute_engine_launch_cmd(
         engine_info_bootstrap_port=engine_info_bootstrap_port,
         sglang_overrides=sglang_overrides,
         num_gpus_per_engine=num_gpus_per_engine,
+        tp_size=tp_size,
+        pp_size=pp_size,
         gated_launch_port=gated_launch_port,
         random_seed=random_seed,
     )
@@ -92,6 +106,8 @@ def _compute_server_args(
     engine_info_bootstrap_port: int | None,
     sglang_overrides: dict | None,
     num_gpus_per_engine: int | None,
+    tp_size: int,
+    pp_size: int,
     gated_launch_port: int,
     random_seed: int,
 ):
@@ -115,9 +131,9 @@ def _compute_server_args(
         "base_gpu_id": base_gpu_id,
         "gated_launch_port": gated_launch_port,
         # parallel
-        "tp_size": _gpus_per_engine,
+        "tp_size": tp_size,
         "dp_size": base_args["dp_size"],
-        "pp_size": base_args["pp_size"],
+        "pp_size": pp_size,
         "ep_size": base_args["ep_size"],
         # always skip warmup to prevent warmup timeout.
         "skip_server_warmup": True,
@@ -166,7 +182,8 @@ def _compute_server_args(
     elif lora_rollout_enabled(args):
         attention_dp = sglang_attention_dp_enabled(
             attn_dp_size=base_args["attn_dp_size"],
-            enable_dp_attention=base_args["enable_dp_attention"],
+            # absent on SGLang builds that dropped --enable-dp-attention
+            enable_dp_attention=base_args.get("enable_dp_attention", False),
             dp_size=base_args["dp_size"],
         )
         kwargs["enable_lora"] = True

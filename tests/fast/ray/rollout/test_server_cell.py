@@ -17,7 +17,7 @@ class TestServerCellAbortAll:
         timeouts: list[float | None] = []
 
         class _RecordingApiClient:
-            def __init__(self, server_url: str, api_key: str | None = None) -> None:
+            def __init__(self, server_url: str, api_key: str | None = None, admin_api_key: str | None = None) -> None:
                 self.server_url = server_url
                 self.api_key = api_key
 
@@ -39,6 +39,7 @@ class TestServerCellAbortAll:
                     worker_name="inference-engine-0-0-0-0",
                     needs_offload=False,
                     update_weights=True,
+                    health_check_timeout_seconds=20,
                     workers_hash="pseudo-hash-0",
                 ),
                 router_api_client=None,
@@ -57,3 +58,44 @@ class TestServerCellAbortAll:
 
         assert actual is result
         assert timeouts == [ABORT_REQUEST_TIMEOUT_SECONDS]
+
+
+class TestServerCellAdminKey:
+    @pytest.mark.parametrize(
+        ("flag", "expected"),
+        [("from-flag", "from-flag"), (None, None), ("", "")],
+        ids=["flag", "no-flag-ignores-env", "empty-flag"],
+    )
+    def test_the_cell_client_uses_the_metadata_key_and_ignores_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch, flag, expected
+    ) -> None:
+        """A managed engine may not hold SGLANG_ADMIN_API_KEY (sglang-miles never reads it), so the cell never adds it."""
+        monkeypatch.setenv("SGLANG_ADMIN_API_KEY", "from-env")
+        cell = track_server_cell(
+            ServerCell(
+                args=make_args(),
+                meta=ServerCellMetadata(
+                    model_id="default",
+                    worker_type="regular",
+                    cell_id="inference-engine-0-0-0",
+                    num_gpus_per_engine=1,
+                    gpu_offset=0,
+                    sglang_api_key="normal",
+                    sglang_admin_api_key=flag,
+                    worker_name="inference-engine-0-0-0-0",
+                    needs_offload=False,
+                    update_weights=True,
+                    health_check_timeout_seconds=20,
+                    workers_hash="pseudo-hash-0",
+                ),
+                router_api_client=None,
+                provider=None,
+            )
+        )
+
+        client = cell._build_api_client("http://10.0.0.1:30000")
+
+        assert (client.api_key, client.admin_api_key) == ("normal", expected)
+        assert client._headers["Authorization"] == f"Bearer {expected or 'normal'}"
+        assert "normal" not in repr(client)
+        assert "normal" not in repr(cell.meta)

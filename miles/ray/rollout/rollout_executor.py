@@ -7,12 +7,17 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, TypeVar
 
-from miles.dashboard import hooks as dashboard_hooks
-from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
+from miles.ray.rollout.debug_data import (
+    RolloutDataInjectionUtil,
+    drop_conversations_not_dumped,
+    load_debug_rollout_data,
+    save_debug_rollout_data,
+)
 from miles.ray.rollout.eval_fleet import EvalFleetInfo, RolloutExecutorEvalFleet
 from miles.ray.rollout.metrics import log_eval_rollout_data, log_eval_skip, log_rollout_data
 from miles.ray.rollout.output_snapshotter import _RolloutExecutorOutputSnapshotter
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
+from miles.ray.rollout.rollout_sample_reporter import report_rollout_samples
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
 from miles.ray.rollout.train_data_conversion import (
     ROLLOUT_DATA_VALUE_SPEC,
@@ -27,9 +32,10 @@ from miles.rollout.base_types import (
     call_rollout_fn,
 )
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
+from miles.rollout.data_source import RolloutDataResumeMismatch
 from miles.rollout.fully_async_data_buffer import Group
 from miles.rollout.inference_rollout.compatibility import load_rollout_function
-from miles.utils import object_store
+from miles.utils import object_store, observers
 from miles.utils.args.custom_function import CustomFunctionConfig
 from miles.utils.args.custom_view import ImmutableNamespace, compute_custom_function_config
 from miles.utils.args.runtime_base import BaseLeafConfig
@@ -45,9 +51,10 @@ from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.function_registry import load_function
 from miles.utils.hf_utils.config import is_complete_hf_export
 from miles.utils.http_utils import init_http_client
-from miles.utils.init_once import InitOnce, init_once
+from miles.utils.init_once import InitOnce, InitState, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
+from miles.utils.misc import call_agent_preflight_hook
 from miles.utils.output_store.config import connect_output_store, output_store_backend_config, sweep_output_store
 from miles.utils.output_store.dropped import store_refs_of, take_dropped_refs
 from miles.utils.output_store.plan import StorePlanError
@@ -100,10 +107,20 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         # Every rollout get() began is here until its release, so one left at dispose was never trained.
         self._unreleased_store_refs: dict[int, dict[str, Any]] = {}
         self._delete_store_refs = None
+        self.data_source = None
+        self.generate_rollout = None
+        self.eval_generate_rollout = None
+        self._metric_checker = None
+
+    async def check_agent_setup(self) -> None:
+        """Run the agent functions' ``preflight`` hooks. Needs nothing from ``init``, so it runs before the engine wait."""
+        if self.args.load_debug_rollout_data is None:  # replayed rollouts call no agent function
+            await call_agent_preflight_hook(self.args)
 
     @init_once
     async def init(self) -> None:
         args = self.args
+        observers.start_process("rollout_manager")
         if args.starts_inference_engines:
             await resolve_router_addrs(args, router_providers=self._router_providers)
             await wait_session_server_ready(args, provider=self._session_server_provider)
@@ -168,11 +185,12 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
     # -------------------------- lifecycle -----------------------------
 
     async def dispose(self) -> None:
-        if self._disposed:
+        # the driver may dispose an executor whose init never started; a partial init still tears down what it built
+        if self._disposed or self._init_once.state is InitState.NOT_INITED:
             return
         self._disposed = True
 
-        if not self.use_legacy_rollout_v1 and self.generate_rollout is not None:
+        if self.generate_rollout is not None and not self.use_legacy_rollout_v1:
             await maybe_await(self.generate_rollout.dispose())
         if (
             close := getattr(self.data_source, "close", None)
@@ -241,14 +259,17 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                 custom_reward_post_process_func=self.custom_reward_post_process_func,
             )
             sample_indices = train_data.get("sample_indices")
+            store = object_store.get_instance()
+            # Off the loop: the fully-async producer keeps generating on it.
             if self.args.delay_split_train_data_by_dp:
-                data_ref = object_store.get_instance().put(value=train_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
+                data_ref = await asyncio.to_thread(store.put, value=train_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
             else:
                 shards = split_train_data_by_dp(
                     self.args, train_data, self._train_parallel_configs_of_model_id[trainer_model_id]
                 )
-                store = object_store.get_instance()
-                data_ref = [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
+                data_ref = await asyncio.to_thread(
+                    lambda: [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
+                )
             return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
 
     async def release(self, rollout_id: int) -> None:
@@ -279,11 +300,15 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         if (
             get_buffer_length := getattr(self.data_source, "get_buffer_length", None)
         ) is not None:  # config-access-exempt: custom data sources may omit this lifecycle method
-            dashboard_hooks.report_data_buffer(get_buffer_length())
+            if (buffer_length := get_buffer_length()) is not None:
+                observers.Observers().data_buffer(buffer_length)
         with timer("rollout" if trainer_model_id is None else f"{trainer_model_id}/rollout"):
             data, metadata, metrics = await self._get_rollout_data(
                 rollout_id=rollout_id, trainer_model_id=trainer_model_id
             )
+        # before the dump, which moves recorded conversations out of the samples
+        report_rollout_samples(data, rollout_id=rollout_id, evaluation=False)
+        drop_conversations_not_dumped(self.args, data, evaluation=False)
         save_debug_rollout_data(
             self.args,
             data,
@@ -328,6 +353,8 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                     evaluation=True,
                 )
         data = result.data
+        report_rollout_samples(data, rollout_id=rollout_id, evaluation=True)
+        drop_conversations_not_dumped(self.args, data, evaluation=True)
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
         metrics = log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
         if self._metric_checker is not None:
@@ -371,6 +398,8 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                 return self.report_eval_skip(rollout_id, e.reason)
 
             data = result.data
+            report_rollout_samples(data, rollout_id=rollout_id, evaluation=True)
+            drop_conversations_not_dumped(self.args, data, evaluation=True)
             save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
             extra_metrics = dict(result.metrics or {})
             if (last_get_rollout_id := _single_or_none(self.last_get_rollout_id_of_model_id.values())) is not None:
@@ -463,10 +492,16 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
         self._output_snapshotter.discard_completed(
             completed_rollout_ids={None: rollout_id} if completed_rollout_ids is None else completed_rollout_ids
         )
-        self.data_source.load(directory / _DATA_SOURCE_DIRNAME)
+        reset_data = self._load_data_source(directory / _DATA_SOURCE_DIRNAME)
+        if reset_data:
+            self._output_snapshotter.drop_loaded(reason="data_reset_on_load")
         if not self.use_legacy_rollout_v1:
             if self.generate_rollout is not None:
-                self.generate_rollout.load(directory / _GENERATE_ROLLOUT_DIRNAME)
+                # in-flight prompt groups came from the saved data source, so a data reset drops them too
+                if reset_data:
+                    self.generate_rollout.drop_saved_in_flight(directory / _GENERATE_ROLLOUT_DIRNAME)
+                else:
+                    self.generate_rollout.load(directory / _GENERATE_ROLLOUT_DIRNAME)
             if (eval_fn := self.eval_generate_rollout) is not None and eval_fn is not self.generate_rollout:
                 eval_fn.load(directory / _EVAL_GENERATE_ROLLOUT_DIRNAME)
         # The loads dropped every batch that carried these refs, so nothing reads them; their objects
@@ -478,6 +513,23 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                 )
             else:
                 self._try_delete_store_refs(list(restored.values()))
+
+    def _load_data_source(self, directory: Path) -> bool:
+        """Restore the data source; True when it had to start over instead.
+
+        Only a checkpoint the current data configuration cannot resume is reset, so a run that keeps
+        --rollout-data-reset-on-load still resumes its own later checkpoints in place. A reset the data source
+        marks as needing no flag (a mix resumed under --prompt-data) happens without it.
+        """
+        try:
+            self.data_source.load(directory)
+            return False
+        except RolloutDataResumeMismatch as mismatch:
+            if mismatch.needs_flag and not self.args.rollout_data_reset_on_load:
+                raise
+            logger.warning(f"The training data starts over, as {mismatch}")
+        self.data_source.load_sample_ids(directory)
+        return True
 
     # -------------------------- misc APIs -----------------------------
 
@@ -533,6 +585,7 @@ def _compute_rollout_function_config(args: BaseLeafConfig, function: CustomFunct
             args.custom_agent_function_path,
             args.custom_rm_path,
             *(dataset.custom_generate_function_path for dataset in args.eval_datasets),
+            *args.rollout_dataset_functions.values(),
         ),
     )
 

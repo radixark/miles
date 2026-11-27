@@ -1,9 +1,12 @@
 import asyncio
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 
 from miles.utils.workers.rpc.client.misc import RpcWorkerCallError
 from miles.utils.workers.worker_handle import WorkerUnreachableError
+
+register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["rpc-comm"])
 
 
 async def _submit(raw, method: str, call_id: str, query: dict):

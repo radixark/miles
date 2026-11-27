@@ -3,6 +3,9 @@ import os
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
+from collections import defaultdict
+from pathlib import Path
 
 from tests.ci.ci_policy import (
     CI_CADENCES,
@@ -12,7 +15,14 @@ from tests.ci.ci_policy import (
     registration_matches_selection,
     resolve_policy,
 )
-from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests, discover_ci_files, file_timeout
+from tests.ci.ci_register import (
+    CPU_FAST_EST_TIME_LIMIT_S,
+    CIRegistry,
+    HWBackend,
+    collect_tests,
+    discover_ci_files,
+    file_timeout,
+)
 from tests.ci.ci_utils import (
     CI_GATE_RECORD_DIR_ENV,
     build_store_from_env,
@@ -22,6 +32,7 @@ from tests.ci.ci_utils import (
 )
 from tests.ci.hardware import CUDA_STAGES, dispatch_targets
 from tests.ci.labels import KNOWN_LABELS, PERF_LABEL
+from tests.ci.rocm import LEGACY_NIGHTLY_SUITES, ROCM_STAGES
 
 from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 
@@ -43,14 +54,7 @@ CI_SUITES = {
         "stage-b-cpu",
     ],
     HWBackend.CUDA: list(CUDA_STAGES),
-    HWBackend.ROCM: [
-        # Consumed by pr-test-rocm.yml.
-        "stage-c-4-gpu-mi350",
-        # Consumed by the external sgl-project/sglang MI350 nightly.
-        "nightly-stage-c-8-gpu-mi350",
-        "nightly-stage-c-4-gpu-mi350",
-        "nightly-stage-c-2-gpu-mi350",
-    ],
+    HWBackend.ROCM: list(ROCM_STAGES),
 }
 
 
@@ -74,10 +78,14 @@ def runs_in_stage(
     """Whether `registration` executes in `suite`, ignoring label selection.
 
     CPU and ROCm registrations have no arch, so their home suite is the only
-    answer. A CUDA registration's home stage is where AUTO sends it; an explicit
-    `run-on-*` can send it to another arch's stage instead. Shared with
-    `stage_selection` so runner allocation and test collection cannot disagree.
+    answer, except that `run-ci-blackwell-only` (an arch restriction without
+    `run-on-*`) selects no ROCm test. A CUDA registration's home stage is where
+    AUTO sends it; an explicit `run-on-*` can send it to another arch's stage
+    instead. Shared with `stage_selection` so runner allocation and test
+    collection cannot disagree.
     """
+    if registration.backend is HWBackend.ROCM:
+        return registration.suite == suite and (absorb or not dispatch_arches)
     if registration.backend is not HWBackend.CUDA:
         return registration.suite == suite
     return suite in dispatch_targets(
@@ -220,26 +228,95 @@ def build_cpu_pytest_cmd(filenames: list[str], continue_on_error: bool) -> list[
     return cmd
 
 
-def run_cpu_tests(ci_tests: list[CIRegistry], timeout_per_file: float, continue_on_error: bool) -> int:
+def _warn_slow_cpu_files(
+    junit_xml_path: Path,
+    ci_tests: list[CIRegistry],
+    threshold_s: float,
+) -> None:
+    """Emit non-failing GitHub Actions warnings for CPU test files exceeding `threshold_s`."""
+    if not junit_xml_path.is_file():
+        return
+    try:
+        root = ET.parse(junit_xml_path).getroot()
+    except (ET.ParseError, OSError):
+        return
+
+    durations_by_file: dict[str, float] = defaultdict(float)
+    for testcase in root.iter("testcase"):
+        raw_file = testcase.attrib.get("file", "")
+        raw_time = testcase.attrib.get("time", "")
+        if not raw_file or not raw_time:
+            continue
+        try:
+            elapsed = float(raw_time)
+        except ValueError:
+            continue
+        norm_file = Path(raw_file).as_posix().removeprefix("./")
+        durations_by_file[norm_file] += elapsed
+
+    regs_by_file = {Path(t.filename).as_posix().removeprefix("./"): t for t in ci_tests}
+    slow_files = sorted(
+        ((filename, elapsed) for filename, elapsed in durations_by_file.items() if elapsed > threshold_s),
+        key=lambda item: (-item[1], item[0]),
+    )
+    for filename, elapsed in slow_files:
+        reg = regs_by_file.get(filename)
+        if reg is not None:
+            est_note = f"est_time={reg.est_time:g}s{' (implicit)' if reg.implicit else ''}"
+        else:
+            est_note = "unmapped registration"
+        print(
+            f"::warning file={filename}::{filename} took {elapsed:.1f}s in stage-a-cpu "
+            f"(budget: {threshold_s:g}s, {est_note}). "
+            f"Speed it up or register it in stage-b-cpu with domain labels "
+            f"(see .claude/rules/ci-test-registration.md).",
+            flush=True,
+        )
+
+
+def run_cpu_tests(
+    ci_tests: list[CIRegistry],
+    timeout_per_file: float,
+    continue_on_error: bool,
+    *,
+    warn_slow_threshold_s: float | None = None,
+) -> int:
     """Run a CPU suite in one pytest, except that each `perf` file runs alone within its file timeout."""
     shared = [t.filename for t in ci_tests if PERF_LABEL not in t.labels]
-    runs = [(build_cpu_pytest_cmd(shared, continue_on_error), None)] if shared else []
-    for test in ci_tests:
-        if PERF_LABEL in test.labels:
-            timeout = file_timeout(test.est_time, test.labels, timeout_per_file)
-            # The bound of a /rerun-test file run: TERM the process group, KILL it 30 s later.
-            bound = ["timeout", "--signal=TERM", "--kill-after=30s", f"{timeout}s"]
-            runs.append((bound + build_cpu_pytest_cmd([test.filename], continue_on_error), (test.filename, timeout)))
-    status = 0
-    for cmd, bounded in runs:
-        print(f"Running: {' '.join(cmd)}", flush=True)
-        returncode = subprocess.call(cmd)
-        if bounded is not None and returncode == 124:  # coreutils `timeout` expired
-            print(f"TIMEOUT: {bounded[0]} after {bounded[1]} seconds", flush=True)
-        status = status or returncode
-        if status and not continue_on_error:
-            break
-    return status
+    junit_dir = (
+        tempfile.TemporaryDirectory(prefix="miles-cpu-ci-junit-") if (shared and warn_slow_threshold_s) else None
+    )
+    junit_path = Path(junit_dir.name) / "junit.xml" if junit_dir is not None else None
+    try:
+        runs: list[tuple[list[str], tuple[str, int] | None]] = []
+        if shared:
+            shared_cmd = build_cpu_pytest_cmd(shared, continue_on_error)
+            if junit_path is not None:
+                shared_cmd.extend(["-o", "junit_family=xunit1", f"--junitxml={junit_path}"])
+            runs.append((shared_cmd, None))
+        for test in ci_tests:
+            if PERF_LABEL in test.labels:
+                timeout = file_timeout(test.est_time, test.labels, timeout_per_file)
+                # The bound of a /rerun-test file run: TERM the process group, KILL it 30 s later.
+                bound = ["timeout", "--signal=TERM", "--kill-after=30s", f"{timeout}s"]
+                runs.append(
+                    (bound + build_cpu_pytest_cmd([test.filename], continue_on_error), (test.filename, timeout))
+                )
+        status = 0
+        for cmd, bounded in runs:
+            print(f"Running: {' '.join(cmd)}", flush=True)
+            returncode = subprocess.call(cmd)
+            if bounded is not None and returncode == 124:  # coreutils `timeout` expired
+                print(f"TIMEOUT: {bounded[0]} after {bounded[1]} seconds", flush=True)
+            status = status or returncode
+            if status and not continue_on_error:
+                break
+        if junit_path is not None and warn_slow_threshold_s is not None:
+            _warn_slow_cpu_files(junit_path, ci_tests, warn_slow_threshold_s)
+        return status
+    finally:
+        if junit_dir is not None:
+            junit_dir.cleanup()
 
 
 def run_a_suite(args):
@@ -292,24 +369,34 @@ def run_a_suite(args):
 
     # CPU tests (fast/) use pytest; CUDA tests use python3 per-file
     if hw == HWBackend.CPU:
-        return run_cpu_tests(ci_tests, args.timeout_per_file, continue_on_error)
+        warn_slow_threshold_s = CPU_FAST_EST_TIME_LIMIT_S if suite == "stage-a-cpu" else None
+        return run_cpu_tests(
+            ci_tests,
+            args.timeout_per_file,
+            continue_on_error,
+            warn_slow_threshold_s=warn_slow_threshold_s,
+        )
 
     # Add extra timeout when retry is enabled
     timeout = args.timeout_per_file
     if args.enable_retry:
         timeout += args.retry_timeout_increase
 
-    # Regression-gate wiring: the store exists only when NEON_DATABASE_URL is
-    # set (CI), so the gate hook is a no-op locally. The resolved cadence is
-    # also supplies the baseline-writing signal. Provenance comes from the GitHub env.
-    gate_store = build_store_from_env()
+    # Each backend uses its own optional Neon URL. Missing/empty URLs skip the
+    # history gate. The resolved cadence supplies the baseline-writing signal;
+    # provenance comes from the GitHub environment.
+    gate_store = build_store_from_env(backend=hw)
     gate_provenance = gate_provenance_from_env()
 
     # The gate collects only when a record directory exists. CI does not set
     # MILES_CI_GATE_RECORD_DIR, so allocate a job-local one whenever a store is
-    # configured (CUDA suites only -- the gate is CUDA-only). The training
+    # configured (CUDA and ROCm suites; ROCm only records, see run_gate_hook). The training
     # subprocesses' CiHistoryBackend and the merge/gate steps read it from env.
-    if gate_store is not None and hw == HWBackend.CUDA and not os.environ.get(CI_GATE_RECORD_DIR_ENV):
+    if (
+        gate_store is not None
+        and hw in (HWBackend.CUDA, HWBackend.ROCM)
+        and not os.environ.get(CI_GATE_RECORD_DIR_ENV)
+    ):
         os.environ[CI_GATE_RECORD_DIR_ENV] = tempfile.mkdtemp(prefix="miles-ci-gate-")
 
     return run_unittest_files(
@@ -436,6 +523,8 @@ def main():
 
     if args.github_output and not args.list_only:
         parser.error("--github-output requires --list-only.")
+    if args.hw == "rocm":
+        args.suite = LEGACY_NIGHTLY_SUITES.get(args.suite, args.suite)
 
     # Validate auto-partition arguments
     if (args.auto_partition_id is not None) != (args.auto_partition_size is not None):
