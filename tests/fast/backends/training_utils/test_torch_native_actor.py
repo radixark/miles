@@ -94,7 +94,9 @@ def step(monkeypatch):
     )
     calls["replay"] = replay
     monkeypatch.setattr(base_module, "routing_replay", replay)
-    monkeypatch.setattr(base_module, "get_data_iterator", lambda args, parts, data: ([object()], [2]))
+    monkeypatch.setattr(
+        base_module, "get_data_iterator", lambda args, parts, data, max_samples_per_microbatch: ([object()], [2])
+    )
     monkeypatch.setattr(
         TorchNativeTrainRayActor,
         "_log_probs",
@@ -284,7 +286,11 @@ def test_the_compile_warmup_runs_the_step_passes_but_leaves_the_weights_logs_and
     log_train_step = MagicMock()
     monkeypatch.setattr(base_module, "log_train_step", log_train_step)
     monkeypatch.setattr(base_module, "log_rollout_data", MagicMock(side_effect=AssertionError("rollout logged")))
-    monkeypatch.setattr(base_module, "get_data_iterator", lambda args, parts, data: ([_DataIterator()], [1]))
+    monkeypatch.setattr(
+        base_module,
+        "get_data_iterator",
+        lambda args, parts, data, max_samples_per_microbatch: ([_DataIterator()], [1]),
+    )
     monkeypatch.setattr(base_module, "_count_step_loss_tokens", lambda it, n: [None] * len(n))
     monkeypatch.setattr(base_module.dist, "get_rank", lambda: 0)
     monkeypatch.setattr(base_module, "response_layout_type", lambda args: SimpleNamespace(sample_device=None))

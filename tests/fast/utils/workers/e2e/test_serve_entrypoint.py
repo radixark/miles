@@ -26,7 +26,7 @@ from tests.fast.utils.workers.serving.registered_serve import pod_env, serve_con
 
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 
-register_cpu_ci(est_time=40, suite="stage-b-cpu", labels=["rpc-comm"])
+register_cpu_ci(est_time=150, suite="stage-b-cpu", labels=["rpc-comm"])
 
 
 @pytest.fixture

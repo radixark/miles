@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.ray.train import conftest as train_conftest
 from tests.fast.ray.train.conftest import make_deployment_identity
 
@@ -11,6 +12,8 @@ from miles.ray.train.group import TrainerController
 from miles.ray.train.init_request import TrainerControllerInitRequest
 from miles.utils.workers.worker_provider.base import CellInfo, CellReconcileFn, StopWatchFn
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+
+register_cpu_ci(est_time=50, suite="stage-b-cpu", labels=["algorithm"])
 
 pytestmark = pytest.mark.asyncio
 

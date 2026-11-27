@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 
 def _rollout_logprob_dtype(args: Namespace) -> torch.dtype:
-    if args.true_on_policy_mode:
+    if args.true_on_policy_mode and not current_platform.true_on_policy_fp32_logprobs:
         if args.backend.bf16:
             return torch.bfloat16
         if args.backend.fp16:
@@ -561,6 +561,8 @@ def get_data_iterator(
     args: Namespace,
     model: torch.nn.Module | Sequence[torch.nn.Module],
     rollout_data: RolloutBatch,
+    *,
+    max_samples_per_microbatch: int | None = None,
 ) -> tuple[list[DataIterator], list[int]]:
     """
     Create iterators and a micro-batch schedule for a rollout step.
@@ -633,16 +635,22 @@ def get_data_iterator(
         samples = rollout_data["total_lengths"]
         assert len(samples) == num_local_samples
         num_microbatches = []
+        max_tokens = args.max_tokens_per_gpu * cp_size
+        step_lengths = [samples[i * num_local_gbs : (i + 1) * num_local_gbs] for i in range(num_steps_per_rollout)]
         # a fixed-shape trainer cannot run a microbatch above the cap, which the balanced partition ignores
-        num_microbatches_for = (
-            get_minimum_num_micro_batch_size if current_platform.dynamic_shapes else _num_microbatches_within_cap
-        )
-        for i in range(num_steps_per_rollout):
-            start, end = i * num_local_gbs, (i + 1) * num_local_gbs
-            num_microbatches.append(num_microbatches_for(samples[start:end], args.max_tokens_per_gpu * cp_size))
+        for lengths in step_lengths:
+            num_microbatches.append(
+                get_minimum_num_micro_batch_size(lengths, max_tokens)
+                if current_platform.dynamic_shapes
+                else _num_microbatches_within_cap(lengths, max_tokens, max_samples=max_samples_per_microbatch)
+            )
 
         num_microbatches = torch.tensor(num_microbatches, dtype=torch.int, device=current_platform.current_device())
         GeneralPGUtil.create(dp_group).all_reduce(num_microbatches, dp_group, op=dist.ReduceOp.MAX)
+        if max_samples_per_microbatch is not None:
+            num_microbatches = _agree_on_counts_within_sample_cap(
+                num_microbatches, step_lengths, max_tokens, max_samples_per_microbatch, dp_group
+            )
 
         if vpp_size > 1:
             # vpp requies the number of microbatches to be divisible by vpp_size
@@ -680,18 +688,46 @@ def get_data_iterator(
     )
 
 
-def _num_microbatches_within_cap(lengths: list[int], max_tokens: int) -> int:
-    """The fewest microbatches whose seqlen-balanced partition keeps each one within `max_tokens`.
+def _num_microbatches_within_cap(
+    lengths: list[int], max_tokens: int, max_samples: int | None = None, at_least: int = 1
+) -> int:
+    """The fewest microbatches, at least `at_least`, whose seqlen-balanced partition keeps each one within
+    `max_tokens`, and within `max_samples` samples when given.
 
-    First-fit only bounds the count from below: the balanced partition ignores the cap.
+    First-fit only bounds the count from below: the balanced partition ignores the caps.
     """
     cap = max(max_tokens, max(lengths))
-    num = get_minimum_num_micro_batch_size(lengths, max_tokens)
-    while num < len(lengths) and _largest_partition(lengths, num) > cap:
+    num = max(at_least, get_minimum_num_micro_batch_size(lengths, max_tokens))
+    if max_samples is not None:
+        num = max(num, -(-len(lengths) // max_samples))
+    while num < len(lengths) and not _partitions_fit(lengths, num, cap, max_samples):
         num += 1
     return num
 
 
-def _largest_partition(lengths: list[int], num_partitions: int) -> int:
+def _agree_on_counts_within_sample_cap(
+    counts: torch.Tensor, step_lengths: list[list[int]], max_tokens: int, max_samples: int, dp_group
+) -> torch.Tensor:
+    """DP ranks run each step's largest count, and the balanced partition at a count above a rank's own can still
+    put more than `max_samples` samples in one microbatch: raise the counts until every rank fits at them."""
+    while True:
+        fitting = torch.tensor(
+            [
+                _num_microbatches_within_cap(lengths, max_tokens, max_samples, at_least=count)
+                for lengths, count in zip(step_lengths, counts.tolist(), strict=True)
+            ],
+            dtype=counts.dtype,
+            device=counts.device,
+        )
+        GeneralPGUtil.create(dp_group).all_reduce(fitting, dp_group, op=dist.ReduceOp.MAX)
+        if torch.equal(fitting, counts):
+            return counts
+        counts = fitting
+
+
+def _partitions_fit(lengths: list[int], num_partitions: int, max_tokens: int, max_samples: int | None) -> bool:
     partitions = get_seqlen_balanced_partitions(lengths, num_partitions, equal_size=False)
-    return max(sum(lengths[i] for i in partition) for partition in partitions)
+    return all(
+        sum(lengths[i] for i in partition) <= max_tokens and (max_samples is None or len(partition) <= max_samples)
+        for partition in partitions
+    )

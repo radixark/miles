@@ -3,11 +3,14 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.backends.megatron_utils.init_checkpoint_fixtures import _init_worker
 from tests.fast.backends.megatron_utils.test_actor import actor_module
 
 from miles.backends.megatron_utils.checkpoint_request import CHECKPOINT_LOAD_FIELDS, MegatronCkptLoadConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
+
+register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["megatron", "ckpt"])
 
 __all__ = ["actor_module"]
 

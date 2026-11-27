@@ -37,6 +37,8 @@ class Platform:
     rollout_kv_cache_dtype: str | None = None
     # torch_tpu lowers rowwise torch._scaled_mm and 2D x 3D torch._scaled_grouped_mm (--titan-fp8-recipe)
     titan_fp8_rowwise = False
+    # under --true-on-policy-mode the engine returns log-probs in the trainer's precision (bf16); True: in fp32
+    true_on_policy_fp32_logprobs = False
 
     def bind_device_before_process_group(self, local_rank: int) -> None:
         torch.cuda.set_device(f"cuda:{local_rank}")

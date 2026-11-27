@@ -385,12 +385,21 @@ def split_tuple(expr: str):
     return elems
 
 
+BOXED_TOKENS = ("\\boxed", "\\fbox")
+
+
+def has_boxed(text: str) -> bool:
+    return any(token in text for token in BOXED_TOKENS)
+
+
 def last_boxed_only_string(string):
-    idx = string.rfind("\\boxed")
+    idx = -1
+    for token in BOXED_TOKENS:
+        idx = string.rfind(token)
+        if idx >= 0:
+            break
     if idx < 0:
-        idx = string.rfind("\\fbox")
-        if idx < 0:
-            return None
+        return None
 
     i = idx
     right_brace_idx = None
@@ -414,13 +423,13 @@ def last_boxed_only_string(string):
 
 
 def remove_boxed(s):
-    left = "\\boxed{"
-    try:
-        assert s[: len(left)] == left
-        assert s[-1] == "}"
-        return s[len(left) : -1]
-    except Exception:
+    if not isinstance(s, str) or not s.endswith("}"):
         return None
+    for token in BOXED_TOKENS:
+        left = f"{token}{{"
+        if s.startswith(left):
+            return s[len(left) : -1]
+    return None
 
 
 def extract_boxed_answer(solution: str) -> str:
@@ -480,7 +489,7 @@ def grade_answer_mathd(given_answer: str, ground_truth: str) -> bool:
 
 
 def extract_answer(passage: str) -> str:
-    if "\\boxed" in passage:
+    if has_boxed(passage):
         return extract_boxed_answer(passage)
     return None
 
@@ -489,8 +498,10 @@ def grade_answer_verl(solution_str, ground_truth):
     if not ground_truth:
         return False
     ground_truth = str(ground_truth)
-    if "\\boxed" in ground_truth:
+    if has_boxed(ground_truth):
         ground_truth = extract_answer(ground_truth)
+        if ground_truth is None:
+            return False
     given_answer = extract_answer(solution_str)
     if given_answer is None:
         return False

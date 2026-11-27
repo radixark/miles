@@ -2,8 +2,11 @@ import asyncio
 
 import httpx
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
+
+register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["rpc-comm"])
 
 
 async def _wait_until_worker_event(handle: RpcWorkerHandle, *, tag: str, phase: str) -> None:

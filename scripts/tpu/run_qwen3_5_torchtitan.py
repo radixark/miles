@@ -25,7 +25,7 @@ Examples:
   python scripts/tpu/run_qwen3_5_torchtitan.py train --model-name Qwen3.8-27B --recipe smoke
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 import typer
@@ -46,6 +46,11 @@ _ENGINE_ARGS = "--tpu-compile-tokens 128 256 512 1024 2048 "
 _ENGINE_ENV = "SGLANG_TPU_VIT_PRECOMPILE_SIZES='' "
 # 27B has 48 linear-attention value heads, so GDN in_proj_ba has 2 * 48 / 4 = 24 rows per TP4 rank (% 16 != 0)
 _27B_FP8_ENGINE_ENV = "SGLANG_FP8_IGNORED_LAYERS=in_proj_ba,in_proj_b,in_proj_a "
+# true on-policy serves the language model alone: the vision tower's linears have a bias, which the engine's
+# batch-invariant matmul does not take. The engine then compiles token-id extend programs only, and its warmup
+# request, which carries an image, is skipped.
+_TRUE_ON_POLICY_ENGINE_ARGS = """--json-model-override-args '{"language_model_only": true}' --skip-server-warmup """
+_TRUE_ON_POLICY_ENGINE_ENV = "SGLANG_TPU_VL_TEXT_ONLY_EXTEND=1 "
 # dapo grades the "Answer:" line the dapo-math prompts ask for
 _ROLLOUT_ARGS = "--rm-type dapo --reward-key score --eval-reward-key acc "
 # AIME with the dapo-math prompts' "Answer:" instruction (tools/add_dapo_answer_instruction.py): thinking-off
@@ -110,7 +115,14 @@ class Qwen35ScriptArgs(ScriptArgs):
 
     @property
     def model(self) -> TitanTpuModel:
-        return _MODELS[self.model_name]
+        model = _MODELS[self.model_name]
+        if not self.true_on_policy:
+            return model
+        return replace(
+            model,
+            sglang_args=model.sglang_args + _TRUE_ON_POLICY_ENGINE_ARGS,
+            sglang_env=model.sglang_env + _TRUE_ON_POLICY_ENGINE_ENV,
+        )
 
 
 app = typer.Typer()

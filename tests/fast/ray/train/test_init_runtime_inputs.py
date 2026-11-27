@@ -1,8 +1,11 @@
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.args_fixtures import parse_megatron_test_config
 from tests.fast.ray.train.test_group import _make_controller
 
 from miles.ray.train.init_request import TrainerControllerInitRequest
+
+register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 
 
 class TestControllerRuntimeInputs:

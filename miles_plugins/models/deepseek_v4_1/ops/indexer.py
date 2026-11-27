@@ -8,7 +8,7 @@ from megatron.core.extensions.transformer_engine import TELinear
 from megatron.core.transformer.module import MegatronModule, mark_keep_in_fp32
 from megatron.core.transformer.transformer_config import TransformerConfig
 
-from miles.kernels.attention.dsa import indexer_logits_sbhd
+from miles.kernels.attention.dsa import indexer_logits_sbhd, score_rows
 from miles.kernels.attention.dsa.topk import get_dsa_topk_fn, torch_dsa_topk
 from miles.kernels.position.rope import apply_rotary_emb
 from miles.kernels.quant.fake_quant import fake_quant_fp4
@@ -109,7 +109,7 @@ def indexer_select(
         if not needs_topk:
             continue
         if deep_selecting:
-            flat = scores.reshape(bsz * (e - s), scores.size(-1))
+            flat = score_rows(scores)
             row_end = lens.to(torch.int32).repeat(bsz)
             _, idx = deep_select.topk(
                 flat,
@@ -126,7 +126,7 @@ def indexer_select(
             continue
         if n_kv < topk:
             scores = torch.nn.functional.pad(scores, (0, topk - n_kv), value=-torch.inf)
-        idx = topk_fn(scores.reshape(bsz * (e - s), scores.size(-1)), topk, row_starts.repeat(bsz), lens.repeat(bsz))
+        idx = topk_fn(score_rows(scores), topk, row_starts.repeat(bsz), lens.repeat(bsz))
         idx_parts.append(idx.reshape(bsz, e - s, topk))
     if needs_topk:
         idx = idx_parts[0] if len(idx_parts) == 1 else torch.cat(idx_parts, dim=1)

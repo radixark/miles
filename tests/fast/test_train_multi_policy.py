@@ -1,6 +1,6 @@
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
+register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["algorithm", "multi-policy"])
 
 import asyncio
 from argparse import Namespace

@@ -5,8 +5,10 @@ from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
-
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.utils.workers.e2e.e2e_worker import Colour, Item, Metric, Nested, Point
+
+register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["rpc-comm"])
 
 
 class TestComplexArgumentsAndResults:

@@ -18,7 +18,7 @@ from miles.utils.workers.reconcile.k8s_api import (
     exception_rejects_cursor,
 )
 
-register_cpu_ci(est_time=600, suite="stage-b-cpu", labels=["k8s"])
+register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["k8s"])
 
 _SHORT_WATCH_TIMEOUT = 5
 

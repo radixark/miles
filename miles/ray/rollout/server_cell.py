@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from pydantic import Field
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, WorkerType, probe_server_healthy
@@ -54,7 +55,10 @@ class ServerCellMetadata(FrozenStrictBaseModel):
     cell_id: str
     num_gpus_per_engine: int
     gpu_offset: int
-    sglang_api_key: str | None
+    # keys are kept out of repr, which tracebacks and validation errors print
+    sglang_api_key: str | None = Field(repr=False)
+    # an engine miles launches: the flag it is launched with; an external engine: also SGLANG_ADMIN_API_KEY
+    sglang_admin_api_key: str | None = Field(default=None, repr=False)
     worker_name: str
     needs_offload: bool
     update_weights: bool
@@ -174,9 +178,14 @@ class ServerCell:
     def server_url(self) -> str:
         return self.addr_info.server_url
 
+    def _build_api_client(self, server_url: str) -> SGLangApiClient:
+        return SGLangApiClient(
+            server_url=server_url, api_key=self.meta.sglang_api_key, admin_api_key=self.meta.sglang_admin_api_key
+        )
+
     @property
     def api_client(self) -> SGLangApiClient:
-        return SGLangApiClient(server_url=self.server_url, api_key=self.meta.sglang_api_key)
+        return self._build_api_client(self.server_url)
 
     async def init(self) -> None:
         assert isinstance(self._state, StateUninitialized), f"{self._state=}"
@@ -216,7 +225,7 @@ class ServerCell:
             )
 
         if self.meta.needs_offload:
-            api_client = SGLangApiClient(server_url=addr_info.server_url)
+            api_client = self._build_api_client(addr_info.server_url)
             await api_client.release_memory_occupation()
             await api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 

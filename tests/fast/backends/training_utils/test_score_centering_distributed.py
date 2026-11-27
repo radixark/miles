@@ -27,7 +27,7 @@ from miles.backends.training_utils.loss.hub.score_centering_loss import score_ce
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set_parallel_state
 from miles.utils.sampling_mask import RolloutSamplingMask
 
-register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["precision"])
+register_cpu_ci(est_time=40, suite="stage-b-cpu", labels=["algorithm", "precision"])
 
 # (total lengths, response lengths, loss masks). Packed samples; the last has no response.
 _PACKED = ([5, 9, 3], [2, 3, 0], [[1, 0], [1, 1, 1], []])

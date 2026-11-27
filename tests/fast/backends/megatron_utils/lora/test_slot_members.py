@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 import torch.distributed as dist
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
@@ -14,6 +15,8 @@ from miles.backends.training_utils.checkpoint.adapter.adapter_state import (
     raise_if_any_rank_failed,
 )
 from miles.utils.distributed_utils import init_gloo_group
+
+register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["lora", "ckpt"])
 
 
 def _members(param: torch.Tensor, master: torch.Tensor) -> LayerWiseSlotMembers:

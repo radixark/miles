@@ -2,8 +2,11 @@ import sys
 from argparse import Namespace
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.import_isolation_utils import run_with_blocked_imports
 from tools.convert_hf_to_torch_dist import _configure_pipeline_parallel, _ConversionConfig, get_args
+
+register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 
 
 class TestConversionPipelineParallel:

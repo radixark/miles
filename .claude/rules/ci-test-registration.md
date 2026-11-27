@@ -58,7 +58,11 @@ run the test; copying a neighbouring test's `suite=` is not a reason.
 | — | `stage-c-4-gpu-b200` | 4× B200 | Blackwell tests needing up to 4 GPUs |
 | — | `stage-c-8-gpu-b200` | 8× B200 | Blackwell tests needing 8 GPUs |
 
-CPU registrations with `est_time > 30` seconds must use `stage-b-cpu` and at least one existing domain tag in `labels`; the registration parser rejects either violation. When profiling reveals a slow implicitly registered file under `tests/fast/`, add an explicit registration with an evidence-backed estimate instead of leaving its implicit fast-test estimate. Apply the budget to the whole file, including setup and teardown, not to each test case separately.
+CPU registrations with `est_time > 30` seconds must use `stage-b-cpu` and at least one existing domain tag in `labels`; the registration parser rejects either violation, and `stage-a-cpu` emits a CI warning when a file's actual whole-file runtime exceeds 30 seconds. Apply the budget to the whole file, including setup and teardown, not to each test case separately:
+
+- Keep `stage-a-cpu` for fast core unit tests. Do not burn wall time on real `sleep` calls, unstubbed network timeouts, or real retry backoff in CPU tests.
+- Register heavy domain CPU tests expected to exceed 15 seconds (such as live Ray actors, local HTTP/TCP server loops, multi-step RL/trainer orchestration simulations, or large checkpoint/weight-update tests) directly in `stage-b-cpu` with matching domain labels (e.g. `algorithm`, `rollout`, `rpc-comm`) instead of relying on implicit `tests/fast/` registration.
+- When a core or CI test must stay in `stage-a-cpu` and takes at least 10 seconds, declare an explicit `est_time` so `auto_partition` balances shards instead of treating it as 1 second. Do not move a lightweight test out of `stage-a-cpu` solely because it paid one shard's first-call `torch.compile` warmup.
 
 The stage's GPU count equals the count the test requests (`ray start
 --num-gpus`, `--actor-num-gpus-per-node`, `torchrun --nproc-per-node`): a 4-GPU

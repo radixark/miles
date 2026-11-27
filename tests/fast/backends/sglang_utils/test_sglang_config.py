@@ -14,6 +14,7 @@ from miles.backends.sglang_utils.sglang_config import (
     SglangConfig,
     _compute_megatron_num_gpus,
     _compute_rollout_offset,
+    _eval_sglang_overrides,
     _extract_base_args,
 )
 from miles.utils.external_utils.command_utils.common import encode_pseudo_file
@@ -871,3 +872,13 @@ def test_a_suppress_default_server_arg_is_extracted_only_when_given(monkeypatch)
 
     assert _extract_base_args(Namespace(sglang_tp_size=1)) == {"tp_size": 1}
     assert _extract_base_args(Namespace(sglang_tp_size=1, sglang_old_alias="x")) == {"tp_size": 1, "old_alias": "x"}
+
+
+@pytest.mark.parametrize(
+    ("eval_overrides", "expected"), [({}, 1), ({"eval_sglang_attn_dp_size": 2}, 2)], ids=["reset", "explicit"]
+)
+def test_a_differently_sized_eval_engine_does_not_inherit_the_attention_dp_width(eval_overrides, expected):
+    """An 8-GPU rollout's attn_dp_size 8 cannot boot on a 2-GPU eval engine; --eval-sglang-attn-dp-size still wins."""
+    args = Namespace(rollout_num_gpus_per_engine=8, eval_num_gpus_per_engine=2, **eval_overrides)
+
+    assert _eval_sglang_overrides(args)["attn_dp_size"] == expected

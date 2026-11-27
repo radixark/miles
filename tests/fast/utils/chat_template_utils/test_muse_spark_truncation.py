@@ -33,7 +33,7 @@ from tests.fast.utils.chat_template_utils.tito_families import load_family_tito
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, TITOTokenizerType, extract_template_args
 from miles.utils.chat_template_utils.token_seq_comparator import MismatchType
 
-register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["rollout"])
+register_cpu_ci(est_time=10, suite="stage-b-cpu", labels=["rollout"])
 
 
 def _tool(name: str, parameter: str) -> dict[str, Any]:

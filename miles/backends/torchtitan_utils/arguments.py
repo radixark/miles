@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import torch
 
 from miles.backends.fsdp_utils.arguments import FSDPArgs, build_dataclass_parser, load_args_from_parser
-from miles.backends.training_utils.loss.hub.response_layout import validate_response_layout_args
+from miles.backends.training_utils.loss.hub.response_layout import padded_rows_enabled, validate_response_layout_args
 from miles.kernels.tpu import FLASH_ATTENTION_BLOCK
 from miles.platforms import current_platform, tpu_shared_slice
 from miles.utils.lora.utils import is_lora_enabled, lora_rollout_enabled
@@ -92,6 +92,8 @@ def validate_torchtitan_args(args) -> None:
         )
     if args.ref_update_interval is not None:
         raise ValueError("--ref-update-interval is not supported by the torchtitan backend")
+    if args.true_on_policy_mode:
+        _validate_true_on_policy_args(args)
     if args.fp16:
         raise ValueError("the torchtitan backend trains in bf16 mixed precision; --fp16 is not supported")
     if args.lr_decay_style not in ("constant", "linear", "cosine"):
@@ -213,3 +215,34 @@ def _validate_platform_args(args) -> None:
             f"--micro-batch-size {args.micro_batch_size} can pack more than --seq-length {args.seq_length} "
             "tokens, the shape every microbatch pads to; use --use-dynamic-batch-size with --max-tokens-per-gpu"
         )
+
+
+def _validate_true_on_policy_args(args) -> None:
+    """The trainer reproduces sglang-torchtpu's true on-policy programs (true_on_policy.py): TPU, no split reductions."""
+    if current_platform.device_type != "tpu":
+        raise ValueError("--true-on-policy-mode on the torchtitan backend runs on TPU only")
+    splits = {
+        "--tensor-model-parallel-size": args.tensor_model_parallel_size,
+        "--context-parallel-size": args.context_parallel_size,
+        "--pipeline-model-parallel-size": args.pipeline_model_parallel_size,
+    }
+    if bad := [f"{name} {size}" for name, size in splits.items() if size != 1]:
+        raise ValueError(f"--true-on-policy-mode needs every parallel split at 1, got {', '.join(bad)}")
+    # the engine does not check its own configuration: a TP split rounds partial sums, and nothing would say so
+    if args.rollout_num_gpus_per_engine != 1:
+        raise ValueError(
+            f"--true-on-policy-mode serves from a TP 1 engine, got --rollout-num-gpus-per-engine "
+            f"{args.rollout_num_gpus_per_engine}"
+        )
+    if args.entropy_coef != 0:
+        raise ValueError("--true-on-policy-mode scores with the engine's log-prob kernel, which has no entropy term")
+    if not padded_rows_enabled(args):
+        raise ValueError(
+            f"--true-on-policy-mode scores with the engine's log-prob kernel, which only the padded-row losses call; "
+            f"--loss-type {args.loss_type} does not"
+        )
+    # the installed forward runs each projection's base weight, so the adapters would drop out of the graph
+    if is_lora_enabled(args):
+        raise ValueError("--true-on-policy-mode does not cover LoRA")
+    if args.rollout_top_p != 1.0 or args.rollout_top_k > 0:
+        raise ValueError("--true-on-policy-mode covers plain temperature sampling: --rollout-top-p 1, no top-k")

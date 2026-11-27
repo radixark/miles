@@ -42,6 +42,7 @@ data and weights around.
 Not fully verified — for experimental and development use.
 
 - **[agentenv](./experimental/agentenv)**: Rollouts against AgentENV, a self-hosted platform running agent sandboxes on Firecracker microVMs.
+- **[bpo](./experimental/bpo)**: Custom loss plugin implementing Bellman Policy Optimization (BPO) via `--loss-type custom_loss`.
 - **[DrGRPO](./experimental/DrGRPO)**: Custom reducer for Dr.GRPO algorithm.
 - **[eval](./experimental/eval)**: Documentation and setup for evaluation environments using NeMo-Skills.
 - **[eval_multi_task](./experimental/eval_multi_task)**: Example for supporting OOD evaluation tasks, e.g., GPQA, IFBench.

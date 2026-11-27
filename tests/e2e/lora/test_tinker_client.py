@@ -7,7 +7,7 @@ from pathlib import Path
 
 from tests.ci.ci_register import register_cpu_ci
 
-register_cpu_ci(est_time=300, suite="stage-b-cpu", labels=["multi-lora"])
+register_cpu_ci(est_time=40, suite="stage-b-cpu", labels=["multi-lora"])
 
 
 def test_cookbook_client():

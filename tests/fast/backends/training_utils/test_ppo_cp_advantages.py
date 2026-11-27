@@ -10,7 +10,7 @@ from miles.backends.training_utils.loss.hub.advantages import compute_advantages
 from miles.backends.training_utils.loss.objective import compute_advantages_and_returns
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set_parallel_state
 
-register_cpu_ci(est_time=50, suite="stage-b-cpu", labels=["precision"])
+register_cpu_ci(est_time=80, suite="stage-b-cpu", labels=["algorithm", "precision"])
 
 
 def _parallel_state(rank: int = 0, world_size: int = 1) -> ParallelState:

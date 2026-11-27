@@ -504,7 +504,7 @@ def _eval_sglang_overrides(args) -> dict:
     }
     if args.eval_num_gpus_per_engine != args.rollout_num_gpus_per_engine:
         # Inheriting these across a different engine size gives an engine SGLang refuses to boot.
-        size_coupled = ("dp_size", "pp_size", "ep_size", "attn_cp_size")
+        size_coupled = ("dp_size", "attn_dp_size", "pp_size", "ep_size", "attn_cp_size")
         overrides |= dict.fromkeys(size_coupled, 1)
         logger.info(
             f"Eval engines span {args.eval_num_gpus_per_engine} GPUs and rollout engines "

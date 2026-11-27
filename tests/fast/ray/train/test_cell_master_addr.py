@@ -1,10 +1,13 @@
 import pytest
 import ray
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.ray.train import conftest as train_conftest
 from tests.fast.ray.train.conftest import RecordingHealthChecker, get_raw_actor_handles, make_cell, make_indep_dp_info
 
 from miles.utils.workers.worker_handle import WorkerUnreachableError
 from miles.utils.workers.worker_spec import HostAndPort
+
+register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["algorithm"])
 
 pytestmark = pytest.mark.asyncio
 

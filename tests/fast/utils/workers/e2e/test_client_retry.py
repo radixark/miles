@@ -3,12 +3,15 @@ import time
 from typing import Any
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.utils.workers.e2e.harness import wait_until_serving
 
 from miles.utils.workers.rpc.client import call as client_module
 from miles.utils.workers.rpc.client import handle as handle_module
 from miles.utils.workers.rpc.client.misc import RpcProtocolError
 from miles.utils.workers.worker_handle import WorkerUnreachableError
+
+register_cpu_ci(est_time=40, suite="stage-b-cpu", labels=["rpc-comm"])
 
 
 @pytest.fixture

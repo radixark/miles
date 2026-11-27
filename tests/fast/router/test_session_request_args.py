@@ -14,12 +14,15 @@ from unittest.mock import patch
 import pytest
 import requests
 from fastapi.responses import JSONResponse
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.router.test_sessions import _create_session, _post_chat, _serve_router
 from tests.fast.router.test_sessions_v2 import _serve_router as _serve_router_v2
 
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 from miles.utils.lora.utils import LORA_ADAPTER_NAME
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer
+
+register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["rollout"])
 
 USER = {"role": "user", "content": "hi"}
 LAUNCH_KWARGS = {"enable_thinking": False}  # both ``_serve_router`` helpers launch with this

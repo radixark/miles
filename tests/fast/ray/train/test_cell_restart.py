@@ -2,11 +2,14 @@ import asyncio
 
 import pytest
 import ray
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.ray.train import conftest as train_conftest
 from tests.fast.ray.train.conftest import get_raw_actor_handles, make_cell
 
 from miles.ray.train import cell as cell_module
 from miles.utils.workers.worker_handle import BaseWorkerHandle
+
+register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["algorithm", "ft-short"])
 
 pytestmark = pytest.mark.asyncio
 

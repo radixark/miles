@@ -6,6 +6,7 @@ import pytest
 import torch
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.ray.rollout.conftest import make_args, make_rollout_config, make_sample, make_samples_grouped
 from tests.fast.train_parallel_config_utils import make_train_parallel_config
 from tests.fast.utils.output_store.test_plan import ALL, INDEXER, MASK, R3, fake_store_refs, response
@@ -24,6 +25,8 @@ from miles.utils.object_store import RayObjectStore
 from miles.utils.output_store.plan import StorePlan, StorePlanError
 from miles.utils.sampling_mask import RolloutSamplingMask
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+
+register_cpu_ci(est_time=15, suite="stage-a-cpu", labels=[])
 
 
 # ----------------------------- convert_samples_to_train_data -----------------------------

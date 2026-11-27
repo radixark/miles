@@ -2,7 +2,8 @@
 
 The host's 8 TensorCores form one slice that the two jobs share. sglang serves the policy on devices 4-7 (chips 2-3);
 the torchtitan trainer runs as 4 ranks on devices 0-3 (chips 0-1) and drives that server as an external rollout
-engine. Weights reach the server device to device over ICI (`--update-weight-transfer-mode ici`).
+engine. Weights reach the server device to device over ICI (`--update-weight-transfer-mode ici`). With
+`--true-on-policy` the two jobs share one chip instead: the trainer on core 0, a TP1 engine on core 1.
 scripts/tpu/README.md describes the environment both expect.
 """
 
@@ -16,11 +17,31 @@ from miles.utils.external_utils import command_utils
 TitanFp8Recipe = Literal["rowwise", "rowwise_with_gw_hp"]
 
 SEQ_LEN = 8192
-NUM_TRAINER_DEVICES = 4
-NUM_ENGINE_DEVICES = 4
-SGLANG_BASE_DEVICE = 4
-SLICE_SIZE = NUM_TRAINER_DEVICES + NUM_ENGINE_DEVICES
-WHOLE_HOST_TOPOLOGY = "2,2,1,2"
+
+
+@dataclass(frozen=True)
+class _Layout:
+    """Which devices of the host the two jobs take; together they form the shared slice."""
+
+    trainer_devices: int
+    engine_devices: int
+    # TORCH_TPU_TOPOLOGY of the slice; v7x adds a cores-per-chip dimension
+    topology: str
+
+    @property
+    def slice_size(self) -> int:
+        return self.trainer_devices + self.engine_devices
+
+    @property
+    def engine_base_device(self) -> int:
+        return self.trainer_devices
+
+
+# the whole host: trainer on devices 0-3, a TP4 engine on devices 4-7
+_WHOLE_HOST = _Layout(trainer_devices=4, engine_devices=4, topology="2,2,1,2")
+# one chip: trainer on core 0, a TP1 engine on core 1. True on-policy serves TP1 only (a TP split rounds partial
+# sums), and ICI weight sync pairs trainer rank i with engine TP rank i.
+_ONE_CHIP = _Layout(trainer_devices=1, engine_devices=1, topology="1,1,1,2")
 # TpuPlatform.weight_transfer_modes; the launcher does not import torch_tpu to read it
 WEIGHT_TRANSFER_MODE = "ici"
 
@@ -77,6 +98,9 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     sglang_env_script: str = "/sgl-workspace/sglang/benchmark/tpu/common_env.sh"
     slice_port_base: int = 30100
     extra_args: str = ""
+    # train true on-policy: the engine serves in sglang-torchtpu's true on-policy mode and the trainer runs its ops,
+    # so trainer log-probs equal the rollout's bit for bit; one chip (_ONE_CHIP)
+    true_on_policy: bool = False
     # the engine shares this host's TPU session, so a run must not SIGKILL anything holding a TPU
     graceful_ray_stop: bool = True
     # keeps the trainer's compiled programs across runs (torch_tpu's tier-3 cache); a rerun's step 0 then loads them
@@ -125,9 +149,14 @@ _ENGINE_LIBTPU_ARGS = (
 _TRAINER_LIBTPU_ARGS = _SCAN_EMITTER_OFF
 
 
+def _layout(args: ScriptArgs) -> _Layout:
+    return _ONE_CHIP if args.true_on_policy else _WHOLE_HOST
+
+
 def _shared_slice(args: ScriptArgs, rank_offset: int) -> str:
     """The shared-slice spec of a job whose ranks start at `rank_offset`; the store sits after the builders."""
-    return f"{rank_offset},{SLICE_SIZE},localhost:{args.slice_port_base + SLICE_SIZE}"
+    size = _layout(args).slice_size
+    return f"{rank_offset},{size},localhost:{args.slice_port_base + size}"
 
 
 def _clear_chip_masks() -> None:
@@ -139,9 +168,9 @@ def _clear_chip_masks() -> None:
 def _slice_env(args: ScriptArgs, libtpu_args: str) -> dict[str, str]:
     """What both jobs share: one topology and the slice builders; each job brings its own libtpu flags."""
     return {
-        "TORCH_TPU_TOPOLOGY": WHOLE_HOST_TOPOLOGY,
+        "TORCH_TPU_TOPOLOGY": _layout(args).topology,
         "TORCH_TPU_SLICEBUILDER_ADDRESSES": ",".join(
-            f"localhost:{args.slice_port_base + index}" for index in range(SLICE_SIZE)
+            f"localhost:{args.slice_port_base + index}" for index in range(_layout(args).slice_size)
         ),
         "LIBTPU_INIT_ARGS": os.environ.get("LIBTPU_INIT_ARGS", libtpu_args),  # a caller's flag set wins
         # the engine compiles each program itself; the trainer shares its programs across ranks (_trainer_env)
@@ -156,13 +185,14 @@ def _slice_env(args: ScriptArgs, libtpu_args: str) -> dict[str, str]:
 
 
 def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
-    """Serve the policy on devices 4-7 in the foreground."""
+    """Serve the policy on the engine's devices (4-7, or core 1 with --true-on-policy) in the foreground."""
     U = args.create_backend()
     _clear_chip_masks()
     os.environ.update(_slice_env(args, _ENGINE_LIBTPU_ARGS))
     U.exec_command_cpu(
         f"source {args.sglang_env_script} && "
-        f"SGLANG_TPU_SHARED_SLICE={_shared_slice(args, rank_offset=NUM_TRAINER_DEVICES)} "
+        f"SGLANG_TPU_SHARED_SLICE={_shared_slice(args, rank_offset=_layout(args).trainer_devices)} "
+        f"{'SGLANG_TPU_ENABLE_TRUE_ON_POLICY=1 ' if args.true_on_policy else ''}"
         # the batched ragged paged attention reads this KV layout fastest; the cache stays bf16
         "SGLANG_TPU_USE_SEQ_ALONG_LANE_KV=1 "
         f"{model.sglang_env}"
@@ -182,8 +212,8 @@ def serve_sglang(args: ScriptArgs, model: TitanTpuModel) -> None:
         f"--kv-cache-dtype {args.kv_cache_dtype} "
         f"--context-length {SEQ_LEN} "
         "--chunked-prefill-size 2048 "
-        f"--tp-size {NUM_ENGINE_DEVICES} "
-        f"--base-gpu-id {SGLANG_BASE_DEVICE} "
+        f"--tp-size {_layout(args).engine_devices} "
+        f"--base-gpu-id {_layout(args).engine_base_device} "
         "--gpu-id-step 1 "
         # the engine has devices 4-7 to itself; the rest of HBM holds XLA's program buffers
         "--mem-fraction-static 0.7 "
@@ -235,7 +265,7 @@ def _trainer_env(args: ScriptArgs) -> dict[str, str]:
 
 
 def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str) -> None:
-    """Train on devices 0-3 against the sglang server."""
+    """Train on the trainer's devices (0-3, or core 0 with --true-on-policy) against the sglang server."""
     U = args.create_backend()
     recipe = _RECIPES[args.recipe]
     _clear_chip_masks()
@@ -288,8 +318,8 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
 
     sglang_args = (
         f"--rollout-external-engine-addrs http://localhost:{args.sglang_port} "
-        f"--rollout-num-gpus {NUM_ENGINE_DEVICES} "
-        f"--rollout-num-gpus-per-engine {NUM_ENGINE_DEVICES} "
+        f"--rollout-num-gpus {_layout(args).engine_devices} "
+        f"--rollout-num-gpus-per-engine {_layout(args).engine_devices} "
         f"--update-weight-transfer-mode {WEIGHT_TRANSFER_MODE} "
     )
 
@@ -312,8 +342,8 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
 
     misc_args = (
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {NUM_TRAINER_DEVICES} "
-        f"--num-gpus-per-node {NUM_TRAINER_DEVICES} "
+        f"--actor-num-gpus-per-node {_layout(args).trainer_devices} "
+        f"--num-gpus-per-node {_layout(args).trainer_devices} "
     )
 
     train_args = (
@@ -326,12 +356,13 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
         f"{sglang_args} "
         f"{train_backend_args} "
         f"{misc_args} "
+        f"{'--true-on-policy-mode ' if args.true_on_policy else ''}"
         f"{args.extra_args} "
     )
 
     U.execute_train(
         train_args=train_args,
-        num_gpus_per_node=NUM_TRAINER_DEVICES,
+        num_gpus_per_node=_layout(args).trainer_devices,
         megatron_model_type=None,
         extra_env_vars=_trainer_env(args),
     )

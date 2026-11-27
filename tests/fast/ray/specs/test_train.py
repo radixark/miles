@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.args_fixtures import parse_fsdp_test_config, parse_megatron_test_config, replace_config_values
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 from tests.fast.fixtures.megatron_config_fixtures import write_megatron_config, write_megatron_config_trainers
@@ -42,6 +43,8 @@ from miles.utils.workers.rpc.common.metadata import _find_rpc_config, declared_c
 from miles.utils.workers.serving.utils import parse_serve_worker_config
 from miles.utils.workers.types import DeployComponent, PlatformAccess
 from miles.utils.workers.worker_spec import WorkerCtorContext
+
+register_cpu_ci(est_time=30, suite="stage-b-cpu", labels=["algorithm", "megatron", "fsdp"])
 
 
 def _make_args(

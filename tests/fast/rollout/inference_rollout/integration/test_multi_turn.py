@@ -1,12 +1,15 @@
 from typing import Any
 
 import pytest
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.generation_fixtures import extra_argv_for_variant, listify
 from tests.fast.fixtures.rollout_fixtures import RolloutEnvConfig
 from tests.fast.rollout.inference_rollout.integration.utils import MODULAR_ROLLOUT_BASE_ARGV, load_and_call_rollout
 
 from miles.utils.test_utils.mock_tools import TwoTurnStub
 from miles.utils.types import Sample
+
+register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 
 
 TWO_TURN_DATA_ROWS = [{"input": [{"role": "user", "content": TwoTurnStub.USER_QUESTION}], "label": "2008"}]

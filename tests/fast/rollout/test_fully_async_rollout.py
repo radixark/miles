@@ -3,7 +3,7 @@ from tests.fast.fixtures.args_fixtures import sglang_router_args
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
-register_cpu_ci(est_time=60, suite="stage-b-cpu", labels=["fully-async"])
+register_cpu_ci(est_time=10, suite="stage-b-cpu", labels=["fully-async"])
 
 import argparse
 import asyncio

@@ -9,6 +9,7 @@ from miles.utils.chat_template_utils import deepseek
 from miles.utils.chat_template_utils.message_matcher_hub import assert_messages_append_only_with_allowed_role
 from miles.utils.chat_template_utils.tito_tokenizer.base import FixedTemplate, TITOTokenizer, _from_last_assistant
 from miles.utils.chat_template_utils.truncation import MarkerPair, TruncationGrammar
+from miles.utils.reasoning import REASONING_DELIMITERS
 
 
 _DEEPSEEK_MODE_KWARG_ALIASES = frozenset({"thinking_mode", "enable_thinking", "thinking"})
@@ -20,7 +21,7 @@ def _dsml_truncation(block: str, invoke: str, parameter: str) -> TruncationGramm
     The invoke and parameter openers are tag prefixes: their attributes follow.
     """
     return TruncationGrammar(
-        think=MarkerPair("<think>", "</think>"),
+        think=MarkerPair(*REASONING_DELIMITERS["think"]),
         tool_blocks=(
             MarkerPair(f"<｜DSML｜{block}>", f"\n</｜DSML｜{block}>"),
             MarkerPair(f"<｜DSML｜{invoke}", f"\n</｜DSML｜{invoke}>"),
@@ -167,8 +168,7 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
         )
         self._assistant_id: int = tokenizer.convert_tokens_to_ids("<｜Assistant｜>")
         self._think_bracket_ids: set[int] = {
-            tokenizer.convert_tokens_to_ids("<think>"),
-            tokenizer.convert_tokens_to_ids("</think>"),
+            tokenizer.convert_tokens_to_ids(token) for token in REASONING_DELIMITERS["think"]
         }
         self.trailing_token_ids = frozenset({self._assistant_id} | self._think_bracket_ids)
 

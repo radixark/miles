@@ -250,6 +250,7 @@ class TestStaticInferenceEngineWorkerProvider:
 
     async def test_each_url_becomes_one_cell_with_the_discovered_meta(self, monkeypatch):
         """The cell meta must carry what the controller reads, sourced from discovery."""
+        monkeypatch.delenv("SGLANG_ADMIN_API_KEY", raising=False)
         args = _make_args(["host1:8000"], num_gpus_per_engine=2, sglang_api_key="secret")
 
         provider = await self._make_provider(monkeypatch, args, {"http://host1:8000": _regular_payload(num_gpus=2)})
@@ -262,6 +263,7 @@ class TestStaticInferenceEngineWorkerProvider:
             num_gpus_per_engine=2,
             gpu_offset=0,
             sglang_api_key="secret",
+            sglang_admin_api_key=None,
             needs_offload=False,
             update_weights=True,
             health_check_timeout_seconds=20,
