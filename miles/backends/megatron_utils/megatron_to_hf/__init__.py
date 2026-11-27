@@ -12,6 +12,7 @@ from .mimo import convert_mimo_to_hf
 from .minimax_m3 import convert_minimax_m3_to_hf
 from .muse_spark import convert_muse_spark_1x_to_hf
 from .processors import quantize_params, remove_padding
+from .processors.quantizer_fp8 import quantize_expert_params_fp8
 from .qwen2 import convert_qwen2_to_hf
 from .qwen3_5 import convert_qwen3_5_to_hf
 from .qwen3_8_next import convert_qwen3_8_next_to_hf
@@ -33,6 +34,20 @@ def convert_to_hf(args, model_name, name, param, quantization_config=None, packe
     converted_named_tensors = _convert_to_hf_core(args, model_name, name, param)
 
     return quantize_params(args, name, converted_named_tensors, quantization_config, packed_weight_basenames)
+
+
+def convert_experts_to_hf(args, model_name, named_params, quantization_config=None, packed_weight_basenames=None):
+    """Convert one bounded expert batch, preserving each source parameter's HF unit."""
+    if (quantization_config or {}).get("quant_method") != "fp8" or getattr(
+        args, "rollout_routed_expert_format", None
+    ) is not None:  # config-access-exempt: offline checkpoint converters pass namespaces without rollout fields
+        return (
+            list(convert_to_hf(args, model_name, name, param, quantization_config, packed_weight_basenames))
+            for name, param in named_params
+        )
+
+    converted_units = [(name, list(convert_to_hf(args, model_name, name, param))) for name, param in named_params]
+    return quantize_expert_params_fp8(args, converted_units, quantization_config)
 
 
 # TODO optimize code details

@@ -1,6 +1,8 @@
+import contextlib
 import functools
 import os
 import re
+from collections import defaultdict
 from collections.abc import Callable
 
 import torch
@@ -13,6 +15,8 @@ from miles.backends.megatron_utils.sglang import (
     transform_scale_ue8m0,
 )
 from miles.kernels.quant.fp8_blockwise import fp8_blockwise_cast
+
+from .quantizer_mxfp4 import is_routed_expert_param
 
 
 def quantize_params_fp8(args, megatron_name, converted_named_params, quantization_config):
@@ -210,3 +214,95 @@ def _get_scale_format(args, name, weight_block_size):
         and args.sglang.common_value("moe_a2a_backend") in ["deepep", "mooncake"]
     )
     return "ue8m0" if is_deepgemm_moe_backend else None
+
+
+def _resolve_fp8_mode(args, name, weight_block_size):
+    # Mirror _quantize_param's branch order so per-tensor and ue8m0 short-circuit before reading NVTE env.
+    if weight_block_size is None:
+        return "per_tensor", ".weight_scale"
+    if _get_scale_format(args, name, weight_block_size) == "ue8m0":
+        return "ue8m0", ".weight_scale_inv"
+    if (
+        os.environ["NVTE_FP8_BLOCK_SCALING_FP32_SCALES"] == "0"
+        and per_block_cast_to_fp8 is not None
+        and list(weight_block_size) == [128, 128]
+    ):
+        return "per_block", ".weight_scale_inv"
+    return "blockwise", ".weight_scale_inv"
+
+
+def quantize_expert_params_fp8(args, converted_units, quantization_config):
+    fmt = quantization_config.get("fmt", "e4m3")
+    assert fmt == "e4m3", f"Unsupported FP8 format: {fmt}"
+    assert quantization_config["activation_scheme"] == "dynamic"
+    weight_block_size = quantization_config.get("weight_block_size", None)
+    is_skipped = _layer_skip_predicate(quantization_config)
+
+    units = [None] * len(converted_units)
+    buckets = defaultdict(list)
+
+    for unit_idx, (megatron_name, params) in enumerate(converted_units):
+        if not (megatron_name.startswith("module.module.") and is_routed_expert_param(megatron_name)):
+            units[unit_idx] = quantize_params_fp8(args, megatron_name, params, quantization_config)
+            continue
+        unit_out = []
+        for name, weight in params:
+            if name.endswith("_scale"):
+                continue
+            # Delegate exclusions, non-2D/empty shapes, and column-major (.T) views to the scalar path.
+            if (
+                not name.endswith(".weight")
+                or weight.dim() != 2
+                or weight.numel() == 0
+                or weight.stride(-1) != 1
+                or is_skipped(_skip_prefix(name))
+            ):
+                unit_out.extend(_quantize_param(args, name, weight, weight_block_size, is_skipped))
+                continue
+            mode, scale_suffix = _resolve_fp8_mode(args, name, weight_block_size)
+            pos = len(unit_out)
+            unit_out.extend((None, None))
+            buckets[(weight.device, weight.dtype, weight.shape, mode)].append(
+                (weight, unit_idx, pos, name, name.replace(".weight", scale_suffix))
+            )
+        units[unit_idx] = unit_out
+
+    for (device, _dtype, _shape, mode), entries in buckets.items():
+        weights = [entry[0] for entry in entries]
+        with torch.cuda.device(device) if device.type == "cuda" else contextlib.nullcontext():
+            results = _quantize_fp8_batch(weights, mode, weight_block_size)
+        for (_, unit_idx, pos, weight_name, scale_name), (qweight, scale) in zip(entries, results, strict=True):
+            units[unit_idx][pos] = (weight_name, qweight)
+            units[unit_idx][pos + 1] = (scale_name, scale)
+
+    return units
+
+
+def _quantize_fp8_batch(weights, mode, weight_block_size):
+    rows, cols = weights[0].shape
+    packed = torch.stack(weights, dim=0)
+    if mode == "per_tensor":
+        finfo = torch.finfo(torch.float8_e4m3fn)
+        scales = packed.abs().amax(dim=(1, 2)).clamp(min=1e-12).to(torch.float32) / finfo.max
+        # Match scalar (2-D weight / 0-D fp32 scale) rounding: CUDA casts the 0-D scale first; CPU divides in fp32.
+        denom = scales[:, None, None].to(packed.dtype) if packed.is_cuda else scales[:, None, None]
+        qweights = (packed / denom).to(packed.dtype).clamp(min=finfo.min, max=finfo.max)
+        return list(zip(qweights.to(torch.float8_e4m3fn).unbind(0), scales.unsqueeze(1).unbind(0), strict=True))
+
+    # Pad each expert to block_m so flattened 2-D block kernels never share a block across adjacent experts.
+    block_m = weight_block_size[0]
+    padded_rows = (rows + block_m - 1) // block_m * block_m
+    packed = torch.nn.functional.pad(packed, (0, 0, 0, padded_rows - rows))
+
+    if mode == "ue8m0":
+        # SGLang's ue8m0 helpers accept 3-D (B, M, K) directly and preserve TMA scale strides.
+        qweights, scales = quant_weight_ue8m0(packed, weight_block_size=weight_block_size)
+        scales = transform_scale_ue8m0(scales, mn=rows)
+    elif mode == "per_block":
+        qweights, scales = per_block_cast_to_fp8(packed.view(-1, cols))
+        scales = scales.view(len(weights), -1, scales.shape[-1])
+    else:
+        qweights, scales = fp8_blockwise_cast(packed.view(-1, cols), weight_block_size)
+        scales = scales.view(len(weights), -1, scales.shape[-1])
+    qweights = qweights.view(len(weights), padded_rows, cols)[:, :rows]
+    return list(zip(qweights.unbind(0), scales.unbind(0), strict=True))
