@@ -1,6 +1,7 @@
 """Per-datum outputs belong to their loss pass, including when backward recomputes the loss."""
 
 from argparse import Namespace
+from math import exp
 
 import pytest
 import torch
@@ -142,3 +143,33 @@ def test_nonzero_objectives_and_gradients(monkeypatch, recompute, loss_fn, confi
     torch.testing.assert_close(torch.stack([output["loss"] for output in outputs]), expected_losses)
     torch.testing.assert_close(torch.cat([output["logprobs"] for output in outputs]), logprobs.detach())
     assert all(not output["loss"].requires_grad and not output["logprobs"].requires_grad for output in outputs)
+
+
+@pytest.mark.parametrize(
+    "advantages, loss_mask, expected_loss",
+    [
+        ([-1.0, 1.0], [1.0, 1.0], exp(20) - exp(-20)),
+        ([1.0, -1.0], [1.0, 1.0], -0.4),
+        ([0.0, 0.0], [1.0, 1.0], 0.0),
+        ([-1.0, 1.0], [0.0, 0.0], 0.0),
+    ],
+    ids=["unclipped", "ppo-clipped", "zero-advantage", "padding"],
+)
+def test_ppo_extreme_log_ratios_have_finite_losses_and_zero_gradients(
+    monkeypatch, advantages, loss_mask, expected_loss
+):
+    make_parallel_state()
+    logprobs = torch.tensor([-1.0, -101.0], requires_grad=True)
+    monkeypatch.setattr(tinker_losses, "_target_logprobs", lambda _args, _batch, logits: [logits])
+    batch = {
+        "advantages": [advantages],
+        "rollout_log_probs": [[-101.0, -1.0]],
+        "loss_masks": [torch.tensor(loss_mask)],
+        "total_lengths": [3],
+        "response_lengths": [2],
+        "sample_indices": [0],
+    }
+    loss, _ = tinker_losses.ppo_loss_function(Namespace(qkv_format="thd"), batch, logprobs, None)
+    loss.backward()
+    assert loss.item() == pytest.approx(expected_loss, rel=1e-6, abs=1e-6)
+    torch.testing.assert_close(logprobs.grad, torch.zeros_like(logprobs))
