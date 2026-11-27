@@ -161,6 +161,7 @@ class WeightUpdater:
             )
         _mark_cells_errored_on_any_rank(cell_updaters)
         dist.barrier(group=get_gloo_group())
+        protocol.after_session_open()
 
         checksums = {name: {} for name, _ in adapters} if self.is_lora and self.args.check_lora_weight_equal else None
         # a full gather gives rank 0 the whole adapter; a PP-local sync splits it across senders
