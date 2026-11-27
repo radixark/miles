@@ -34,6 +34,16 @@ class TestTinkerBatchOwnership:
         assert args.target_modules == ["attn"]
 
 
+class TestTinkerBackends:
+    @pytest.mark.parametrize("backend", ["megatron", "torchtitan"])
+    def test_the_slot_backends_serve(self, backend: str) -> None:
+        configure_tinker_args(_tinker_args(train_backend=backend))
+
+    def test_a_backend_without_slots_is_refused(self) -> None:
+        with pytest.raises(AssertionError, match="Megatron or torchtitan"):
+            configure_tinker_args(_tinker_args(train_backend="fsdp"))
+
+
 class TestTinkerCheckpointOwnership:
     @pytest.mark.parametrize(
         "field,value,flag",

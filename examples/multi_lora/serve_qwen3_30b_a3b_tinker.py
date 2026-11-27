@@ -21,6 +21,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
     # bridge: Megatron-Bridge LoRA; raw: miles-native LoRA, dense models only (not this default MoE)
     megatron_to_hf_mode: Literal["bridge", "raw"] = "bridge"
+    # torchtitan: dense Qwen3 only, its flavor named by titan_model_flavor (e.g. 8B)
+    train_backend: Literal["megatron", "torchtitan"] = "megatron"
+    titan_model_flavor: str | None = None
 
     num_gpus_per_node: int = 8
     actor_num_gpus: int = 4
@@ -65,16 +68,16 @@ def serve(args: ScriptArgs):
         f"{args.n_adapters} adapter slots, port {args.tinker_port}"
     )
 
+    megatron = args.train_backend == "megatron"
     # raw mode starts fresh runs from --ref-load
-    ckpt_args = (
-        f"--hf-checkpoint {args.hf_checkpoint} --ref-load {args.hf_checkpoint} "
-        f"--megatron-to-hf-mode {args.megatron_to_hf_mode} "
+    ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} --ref-load {args.hf_checkpoint} " + (
+        f"--megatron-to-hf-mode {args.megatron_to_hf_mode} " if megatron else ""
     )
 
     lora_args = (
         f"--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout 0.0 "
-        "--no-gradient-accumulation-fusion "
-        f"--multi-lora-n-adapters {args.n_adapters} "
+        + ("--no-gradient-accumulation-fusion " if megatron else "")
+        + f"--multi-lora-n-adapters {args.n_adapters} "
         f'--target-modules "{args.target_modules}"'
     )
 
@@ -84,10 +87,11 @@ def serve(args: ScriptArgs):
     optimizer_args = "--optimizer adam --lr 1e-4 "
 
     perf_args = (
-        f"--tensor-model-parallel-size {args.tp} --sequence-parallel "
-        "--pipeline-model-parallel-size 1 --context-parallel-size 1 "
-        f"--expert-model-parallel-size {args.ep} --expert-tensor-parallel-size 1 "
-        "--use-dynamic-batch-size --max-tokens-per-gpu 8192 "
+        f"--tensor-model-parallel-size {args.tp} "
+        + ("--sequence-parallel " if megatron else "")
+        + "--pipeline-model-parallel-size 1 --context-parallel-size 1 "
+        + (f"--expert-model-parallel-size {args.ep} --expert-tensor-parallel-size 1 " if megatron else "")
+        + "--use-dynamic-batch-size --max-tokens-per-gpu 8192 "
         # Tinker targets cover full sequences; bound the FP32 cross-entropy temporaries
         "--log-probs-chunk-size 1024 "
     )
@@ -106,6 +110,10 @@ def serve(args: ScriptArgs):
     misc_args = (
         "--attention-dropout 0.0 --hidden-dropout 0.0 "
         "--accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --attention-backend flash "
+        if megatron
+        # canonical, as native LoRA's default, so the backends' Tinker checkpoints load into each other
+        else f"--train-backend torchtitan --titan-model-name qwen3 --titan-model-flavor {args.titan_model_flavor} "
+        "--seq-length 8192 --micro-batch-size 1 --lora-type canonical_lora "
     )
 
     train_args = (
@@ -116,7 +124,7 @@ def serve(args: ScriptArgs):
     args.create_backend().execute_train(
         train_args=train_args,
         num_gpus_per_node=args.num_gpus_per_node,
-        megatron_model_type=args.model_type,
+        megatron_model_type=args.model_type if megatron else None,
         train_script="serve_tinker.py",
         megatron_path=args.megatron_path,
         job_lifetime="launcher",

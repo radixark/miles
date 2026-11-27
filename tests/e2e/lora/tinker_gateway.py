@@ -27,11 +27,29 @@ def qwen_serve_cmd(extra_args: str = "", *, megatron_to_hf_mode: str = "bridge")
 
 QWEN_SERVE_CMD = qwen_serve_cmd()
 
+# untied, so torchtitan adapts its lm_head as the SDK's default train_unembed asks
+QWEN3_8B_NAME = "Qwen3-8B"
+QWEN3_8B_BASE_MODEL = f"Qwen/{QWEN3_8B_NAME}"
 
-def prepare_gateway():
+
+def qwen3_8b_serve_cmd(train_backend: str, extra: str = "") -> str:
+    backend = (
+        "--train-backend torchtitan --titan-model-flavor 8B"
+        if train_backend == "torchtitan"
+        else "--megatron-to-hf-mode raw"
+    )
+    return (
+        "python examples/multi_lora/serve_qwen3_30b_a3b_tinker.py serve "
+        f"--hf-checkpoint /root/models/{QWEN3_8B_NAME} {backend} --model-type qwen3-8B --tp 2 --ep 1 "
+        f"--lora-rank 8 --lora-alpha 16 --target-modules attn,mlp,unembed {extra} "
+        f'--extra-args "--tinker-base-model {QWEN3_8B_BASE_MODEL}"'
+    )
+
+
+def prepare_gateway(base_model: str = BASE_MODEL):
     U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models")
-    U.exec_command_cpu(f"hf download {BASE_MODEL} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu(f"hf download {base_model} --local-dir /root/models/{base_model.split('/')[-1]}")
 
 
 def _wait_for_gateway(server: subprocess.Popen) -> None:
