@@ -134,15 +134,9 @@ The [shared CUDA/ROCm rules](#shared-by-cuda-and-rocm) apply. This section conta
 - **Changed-file jobs.** PRs with `run-ci-amd`, `run-ci-all`, or `nightly` also run eligible changed ROCm files not covered by the selected suites, using the [single-file plan](01-label.md#manage-ci-from-pr-comments). `long` and `ft-long` require explicit `run-ci-long` and `run-ci-ft-long` labels. The planner reports skips and, if more than four files are eligible, lists them without launching file jobs. They use the suite's resolved image and share the ROCm `/rerun-test` queue. Without a usable diff, only suite selection applies.
 - **External nightly.** SGLang's [ROCm 10 nightly](https://github.com/sgl-project/sglang/blob/main/.github/workflows/nightly-test-amd-miles-rocm10.yml) runs the same MI350 suites with `--cadence nightly`, still under their former `nightly-` names, which `run_suite.py` maps to them until that workflow moves, on its own MI35X runners and the newest Miles image.
 
-## TPU contract job
-
-`tpu-contract.yml` is outside the stage inventory: it runs `tests/fast/backends/tpu` on a hosted CPU runner
-against the sglang-torchtpu commit `docker/Dockerfile.tpu` pins, on PRs only. Those files skip in
-`stage-a-cpu`, which has the CUDA sglang instead.
-
 ## TPU smoke runs
 
-`pr-test-tpu.yml` is also outside the stage inventory: it runs whole `scripts/tpu` launchers rather than registered
+`pr-test-tpu.yml` is outside the stage inventory: it runs whole `scripts/tpu` launchers rather than registered
 test files. Each run is the launcher's `smoke` recipe (3 rollouts; the sglang-torchtpu engine and the torchtitan
 trainer share one TPU v7x 2x2x1 host and sync weights over ICI) in a JobSet on sglang-torchtpu's GKE CI cluster,
 queued through its Kueue PR-gate queue alongside sglang-torchtpu's PR jobs. A PR runs the Qwen3-4B smoke only while

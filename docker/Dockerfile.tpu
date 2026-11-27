@@ -14,7 +14,6 @@ FROM lmsysorg/sglang:${SGLANG_TPU_IMAGE_TAG}
 ARG SGLANG_TPU_REPO=sgl-project/sglang-torchtpu
 # sglang-torchtpu main (2026-11-24, with sgl-project/sglang-torchtpu#2299); swap the commit for a release image tag
 # once one ships.
-# .github/workflows/tpu-contract.yml tests this commit.
 ARG SGLANG_TPU_COMMIT=b5391b80c58b75781ce36e3ca5e95c4e92367740
 ARG TORCH_VERSION=2.14.1
 ARG TORCHVISION_VERSION=0.29.1
