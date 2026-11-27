@@ -71,6 +71,9 @@ DTYPES = {
 BUCKET_NUMEL_LIMIT = 200_000_000
 FP32_RESIDENT_WARN_MB = 256
 IO_ALIGN = 4096
+# Hold the bucket files in host RAM (memfd) rather than on NVMe: for runs where the
+# 8 B/param of state fits host RAM but CPU Adam's ~14 B/param of copies does not.
+STATE_IN_RAM = os.environ.get("MILES_OPTIMIZER_STATE_IN_RAM", "0") == "1"
 
 
 class _Entry(NamedTuple):
@@ -91,6 +94,19 @@ def _allocate_file(path: str, nbytes: int) -> int:
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
     reserve_file(fd, nbytes)
     return fd
+
+
+def _copy_into_fd(src_path: str, fd: int, chunk_bytes: int = 64 << 20) -> None:
+    """Copy a file into an open, reserved file descriptor in place.
+
+    Reopening the destination by path (shutil.copyfile) truncates it, which drops the
+    reservation and, for a memfd, frees its pages before they are written again.
+    """
+    with open(src_path, "rb", buffering=0) as src:
+        offset = 0
+        while chunk := src.read(chunk_bytes):
+            _rw_full(os.pwritev, fd, offset, chunk)
+            offset += len(chunk)
 
 
 def _rw_full(op, fd: int, offset: int, buf) -> None:
@@ -230,7 +246,14 @@ class _Bucket:
                 at += _align(entry.main_param.numel() * dtypes[segment].itemsize)
             self.segment_nbytes[segment] = at - start
         self.nbytes = at
-        self.fd = _allocate_file(path, at)
+        if STATE_IN_RAM:
+            # Same store, host RAM instead of NVMe: an anonymous shmem file (fd I/O and
+            # /proc/self/fd paths unchanged), reserved up front so a short pod fails at init.
+            self.fd = os.memfd_create(os.path.basename(path), os.MFD_CLOEXEC)
+            reserve_file(self.fd, at)
+            self.path = f"/proc/self/fd/{self.fd}"
+        else:
+            self.fd = _allocate_file(path, at)
         self.moments_ready = False
 
     def _tensors(self, segment: str):
@@ -613,7 +636,7 @@ class NVMeOptimizerStateStore:
             assert meta["numel"] == bucket.numel
             assert meta["entry_numels"] == [e.main_param.numel() for e in bucket.entries]
             source = os.path.join(dirpath, meta["file"])
-            shutil.copyfile(source, bucket.path)
+            _copy_into_fd(source, bucket.fd)
             if self._page_cache is not None:
                 self._page_cache.release(bucket.fd, nbytes=bucket.nbytes)
                 self._page_cache.release(source, nbytes=bucket.nbytes)

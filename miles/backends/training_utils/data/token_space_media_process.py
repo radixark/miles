@@ -197,6 +197,7 @@ def build_trainer_processor(
     mm_processor_worker_num: int,
     mm_io_worker_num: int,
     device: torch.device,
+    true_on_policy: bool = False,
 ) -> TrainerProcessor:
     # Deferred: only SGLang builds with the token-space processor provide these modules.
     from sglang.srt.multimodal.cache import DiskPreprocessCache
@@ -252,12 +253,18 @@ def build_trainer_processor(
         worker_thread_device=worker_thread_device,
         item_feature_cache=item_feature_cache,
     )
-    image_device = _image_device(hf_processor, image_processor_backend=image_processor_backend, device=device)
+    image_device = _image_device(
+        hf_processor, image_processor_backend=image_processor_backend, device=device, true_on_policy=true_on_policy
+    )
     return TrainerProcessor(core=core, image_device=image_device)
 
 
-def _image_device(hf_processor, *, image_processor_backend: str, device: torch.device) -> str | None:
-    """The image device SGLang's processor wrapper derives, with this rank's device in place of the engine's."""
+def _image_device(
+    hf_processor, *, image_processor_backend: str, device: torch.device, true_on_policy: bool
+) -> str | None:
+    """The image device SGLang's processor wrapper derives, with this rank's device in place of the engine's.
+
+    ``true_on_policy``: the engines run under a true-on-policy contract, where they preprocess on the CPU."""
     from sglang.srt.multimodal.serving_preprocessing import (
         apply_npu_image_preprocess_patches,
         fast_image_processor_device,
@@ -269,7 +276,7 @@ def _image_device(hf_processor, *, image_processor_backend: str, device: torch.d
     if image_processor_backend == "pil" or not isinstance(image_processor, BaseImageProcessor):
         return None
     image_device = fast_image_processor_device(
-        hf_processor, base_gpu_id=device.index, rl_on_policy_target=None, true_on_policy_enabled=False
+        hf_processor, base_gpu_id=device.index, rl_on_policy_target=None, true_on_policy_enabled=true_on_policy
     )
     if image_device == "npu":
         apply_npu_image_preprocess_patches(hf_processor)

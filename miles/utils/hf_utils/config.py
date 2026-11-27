@@ -34,16 +34,32 @@ class _HFConfigAlias:
 
 def _normalize_deepseek_v41_kwargs(kwargs: dict) -> dict:
     """Flatten the composite HF config (text_config holds the decoder). Every V4.1 layer is MoE, so
-    DeepseekV3Config's first_k_dense_replace=3 default does not apply."""
+    DeepseekV3Config's first_k_dense_replace=3 default does not apply. The vision tower keeps SGLang's flat
+    ``vision_*`` fields, which SGLang's processor and V4.1 model read from this class once it is registered;
+    ``vision_n_layers`` is 0 without a tower."""
     kwargs = dict(kwargs)
     text = kwargs.pop("text_config", None)
-    kwargs.pop("vision_config", None)
+    vision = kwargs.pop("vision_config", None)
     if isinstance(text, dict):
         text = dict(text)
         text.pop("model_type", None)
         kwargs = {**text, **kwargs}
     kwargs.setdefault("first_k_dense_replace", 0)
+    kwargs.update(_deepseek_v41_vision_fields(vision))
+    kwargs.setdefault("vision_n_layers", 0)
     return kwargs
+
+
+def _deepseek_v41_vision_fields(vision) -> dict:
+    if vision is None:
+        return {}
+    try:
+        # SGLang's mapping of vision_config to its flat fields; builds without SGLang read no vision fields.
+        from sglang.srt.configs.deepseek_v41 import normalize_deepseek_v41_config
+    except ImportError:
+        return {}
+    flat = normalize_deepseek_v41_config({"vision_config": vision})
+    return {name: value for name, value in flat.items() if name.startswith("vision_")}
 
 
 _CONFIG_ALIASES: tuple[_HFConfigAlias, ...] = (

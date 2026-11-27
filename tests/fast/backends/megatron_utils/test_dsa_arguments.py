@@ -33,6 +33,7 @@ def _args(**overrides):
         miles_dsa_topk_backend="canonical",
         cp_comm_type=None,
         true_on_policy_mode=False,
+        true_on_policy_contract=None,
         debug_disable_optimizer=False,
         multi_lora_n_adapters=0,
         rope_type=None,

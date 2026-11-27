@@ -38,7 +38,27 @@ def convert_deepseekv3_to_hf(args, name, param):
             # indexer below stores the reordered channels.
             return [(f"model.layers.{layer_idx}.self_attn.{_NATIVE_DSA_ATTENTION_MAPPING[rest]}", param)]
 
-        # experts
+        # experts, SequentialMLP layout: one submodule per expert, each with its own linears.
+        # `--transformer-impl local` always builds this -- LocalSpecProvider returns SequentialMLP
+        # regardless of --moe-grouped-gemm -- so any local-impl run of this family takes it. Weight sync gets these
+        # under the grouped name with the global id (named_weights); a raw name here carries the local index, which
+        # is global only at EP1 (offline conversion).
+        local_expert_pattern = r"mlp\.experts\.local_experts\.(\d+)\.(.+)\.weight"
+        local_match = re.match(local_expert_pattern, rest)
+        if local_match:
+            expert_idx, which = local_match.groups()
+            if which == "linear_fc1":
+                gate_weight, up_weight = param.chunk(2, dim=0)
+                return [
+                    (f"model.layers.{layer_idx}.mlp.experts.{expert_idx}.gate_proj.weight", gate_weight),
+                    (f"model.layers.{layer_idx}.mlp.experts.{expert_idx}.up_proj.weight", up_weight),
+                ]
+            elif which == "linear_fc2":
+                return [(f"model.layers.{layer_idx}.mlp.experts.{expert_idx}.down_proj.weight", param)]
+            raise ValueError(f"Unknown expert parameter name: {name}")
+
+        # experts, grouped layout: one tensor per expert per role, suffixed weight{idx}. The digit
+        # is an EXPERT INDEX, not a role index.
         expert_pattern = r"mlp.experts\.(.+)\.weight(\d+)"
         match = re.match(expert_pattern, rest)
         if match:
@@ -80,7 +100,13 @@ def convert_deepseekv3_to_hf(args, name, param):
             return [(f"model.layers.{layer_idx}.self_attn.q_proj.weight", param)]
         elif rest == "self_attention.linear_q_down_proj.weight":
             return [(f"model.layers.{layer_idx}.self_attn.q_a_proj.weight", param)]
-        elif rest == "self_attention.linear_q_up_proj.layer_norm_weight":
+        elif (
+            rest == "self_attention.linear_q_up_proj.layer_norm_weight" or rest == "self_attention.q_layernorm.weight"
+        ):
+            # Two spellings of one weight. The fused layernorm-linear is a TE construct; under a
+            # backend that declines it the norm is a standalone module in the q_layernorm slot, so
+            # the same tensor arrives under a different megatron name. Same idiom as
+            # input_layernorm below.
             return [(f"model.layers.{layer_idx}.self_attn.q_a_layernorm.weight", param)]
 
         # indexer
@@ -139,7 +165,10 @@ def convert_deepseekv3_to_hf(args, name, param):
             return [(f"model.layers.{layer_idx}.post_attention_layernorm.weight", param)]
         elif rest == "self_attention.linear_kv_down_proj.weight":
             return [(f"model.layers.{layer_idx}.self_attn.kv_a_proj_with_mqa.weight", param)]
-        elif rest == "self_attention.linear_kv_up_proj.layer_norm_weight":
+        elif (
+            rest == "self_attention.linear_kv_up_proj.layer_norm_weight"
+            or rest == "self_attention.kv_layernorm.weight"
+        ):
             return [(f"model.layers.{layer_idx}.self_attn.kv_a_layernorm.weight", param)]
         elif rest == "self_attention.linear_kv_up_proj.weight":
             return [(f"model.layers.{layer_idx}.self_attn.kv_b_proj.weight", param)]

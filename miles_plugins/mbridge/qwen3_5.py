@@ -1,4 +1,5 @@
 import inspect
+import re
 
 import torch
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_mtp_block_spec
@@ -325,9 +326,30 @@ class Qwen3_5Bridge(LinearAttentionBridgeMixin, Qwen2MoEBridge):
 
     def _weight_name_mapping_mcore_to_hf(self, mcore_weights_name: str) -> list[str]:
         """Override to handle MTP layer mappings."""
+        parts = mcore_weights_name.split(".")
+        if len(parts) == 5 and parts[:2] == ["decoder", "layers"]:
+            norm = {"input_layernorm": "input_layernorm", "pre_mlp_layernorm": "post_attention_layernorm"}.get(
+                parts[3]
+            )
+            if norm and parts[4] == "weight":
+                return [f"model.language_model.layers.{parts[2]}.{norm}.weight"]
         if "mtp" in mcore_weights_name:
             return self._convert_mtp_param(mcore_weights_name)
         return super()._weight_name_mapping_mcore_to_hf(mcore_weights_name)
+
+    def _weight_name_mapping_mcore_local_to_global(self, model, consider_ep=True):
+        mapping = super()._weight_name_mapping_mcore_local_to_global(model, consider_ep=consider_ep)
+        for local_name, global_name in mapping.items():
+            match = re.search(r"\.mlp\.experts\.local_experts\.(\d+)\.linear_fc([12])\.weight$", global_name)
+            if match is None:
+                continue
+            if self.mpu.tp_size != 1 or self.mpu.etp_size != 1:
+                raise NotImplementedError("Qwen3.5 SequentialMLP loading requires TP1/ETP1")
+            expert, fc = map(int, match.groups())
+            if consider_ep:
+                expert += self.config.num_moe_experts // self.mpu.ep_size * self.mpu.ep_rank
+            mapping[local_name] = global_name[: match.start()] + f".mlp.experts.linear_fc{fc}.weight{expert}"
+        return mapping
 
     def _convert_mtp_param(self, name: str) -> list[str]:
         """Convert MTP layer parameters from MCore to HF format."""
@@ -374,6 +396,10 @@ class Qwen3_5Bridge(LinearAttentionBridgeMixin, Qwen2MoEBridge):
     def _weight_to_mcore_format(
         self, mcore_weights_name: str, hf_weights: list[torch.Tensor]
     ) -> tuple[list[str], list[torch.Tensor]]:
+        local_expert = re.search(r"\.mlp\.experts\.local_experts\.(\d+)\.linear_fc([12])\.weight$", mcore_weights_name)
+        if local_expert and len(hf_weights) == 1 and hf_weights[0].ndim == 3:
+            expert = int(local_expert.group(1)) + self.config.num_moe_experts // self.mpu.ep_size * self.mpu.ep_rank
+            return hf_weights[0][expert].contiguous()
         if mcore_weights_name.endswith("self_attention.linear_attn.A_log"):
             assert len(hf_weights) == 1
             # Keep A_log in fp32 before TP scatter; this avoids precision loss
@@ -434,6 +460,15 @@ class Qwen3_5Bridge(LinearAttentionBridgeMixin, Qwen2MoEBridge):
     def _weight_to_hf_format(
         self, mcore_weights_name: str, mcore_weights: torch.Tensor
     ) -> tuple[list[str], list[torch.Tensor]]:
+        expert = re.fullmatch(
+            r"decoder\.layers\.(\d+)\.mlp\.experts\.linear_fc([12])\.weight(\d+)", mcore_weights_name
+        )
+        if expert and mcore_weights.ndim == 2:
+            layer, fc, expert_id = expert.groups()
+            prefix = f"model.language_model.layers.{layer}.mlp.experts.{expert_id}"
+            if fc == "1":
+                return [f"{prefix}.gate_proj.weight", f"{prefix}.up_proj.weight"], list(mcore_weights.chunk(2, dim=0))
+            return [f"{prefix}.down_proj.weight"], [mcore_weights]
         names, weights = super()._weight_to_hf_format(mcore_weights_name, mcore_weights)
         if mcore_weights_name.endswith(self._GDN_GROUP_MAJOR):
             weights = [qkv_group_major_to_flat(weights[0], gdn_heads(self._get_text_config()))]

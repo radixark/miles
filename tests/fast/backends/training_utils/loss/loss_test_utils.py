@@ -77,6 +77,9 @@ _ARGS_DEFAULTS = dict(
     # get_responses / get_log_probs_and_entropy / get_values
     qkv_format="thd",
     rollout_temperature=1.0,
+    rollout_top_k=-1,
+    rollout_top_p=1.0,
+    fully_async=False,
     allgather_cp=False,
     log_probs_chunk_size=-1,
     log_probs_backend="torch",

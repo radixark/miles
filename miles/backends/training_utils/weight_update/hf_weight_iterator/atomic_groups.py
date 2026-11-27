@@ -1,6 +1,8 @@
 """HF-namespace atomic update groups: HF weights an sglang loader fuses into
 one engine parameter, which therefore must arrive in the same load call."""
 
+import dataclasses
+
 from miles.backends.training_utils.weight_update.hf_weight_iterator.bucketing import AtomicUpdateGroup
 
 # sglang's deepseek_v4 load_weights cache-and-concats each pair into one engine
@@ -32,13 +34,21 @@ def get_hf_atomic_update_groups(
     model_name: str,
     *,
     q_lora_rank: int | None = None,
+    frozen_indexer: bool = False,
 ) -> list[AtomicUpdateGroup]:
     """Atomic groups for a model. inkling registers none: its fusions happen
-    inside the converter, and its engine-side loads are split-safe."""
+    inside the converter, and its engine-side loads are split-safe.
+
+    ``frozen_indexer``: the DS4 indexer is not trained (TOP keeps serving's), so its compressor pair is never sent."""
     normalized_model_name = model_name.lower().replace("-", "").replace("_", "")
     if "deepseekv41" in normalized_model_name:
         return list(_DEEPSEEK_V41_GROUPS)
     if "deepseekv4" in normalized_model_name:
+        if frozen_indexer:
+            return [
+                dataclasses.replace(g, optional=True) if g.key == "indexer_compressor_wkv_gate" else g
+                for g in _DEEPSEEK_V4_GROUPS
+            ]
         return list(_DEEPSEEK_V4_GROUPS)
     if "inkling" in normalized_model_name:
         return []

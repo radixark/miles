@@ -109,6 +109,7 @@ class TestConnectRolloutEnginesFromDistributed:
             "world_size": 8,
             "rank": 0,
             "group_name": "miles-pp_0",
+            "pg_options": None,
         }
 
     def test_missing_gpu_counts_are_rejected_before_any_engine_is_asked(self) -> None:
@@ -149,7 +150,9 @@ class TestUpdateWeightFromDistributedConnect:
             intra_dp_cp=SimpleNamespace(rank=0),
         )
         with patch(f"{_BROADCAST_MODULE}.get_parallel_state", return_value=initial_parallel_state):
-            protocol = UpdateWeightFromDistributed(Namespace(check_weight_update_equal=False))
+            protocol = UpdateWeightFromDistributed(
+                Namespace(check_weight_update_equal=False, sglang=SimpleNamespace(actor_value=lambda name: False))
+            )
 
         engines = [MagicMock(name="prefill"), MagicMock(name="decode")]
         parallel_state = SimpleNamespace(pp=SimpleNamespace(rank=0))
@@ -172,6 +175,7 @@ class TestUpdateWeightFromDistributedConnect:
             "miles-pp_0",
             engines,
             engine_gpu_counts=[2, 4],
+            deterministic_engines=False,
         )
 
 

@@ -400,20 +400,6 @@ def _gather_true_on_policy_full_logits(
     return _prepare_true_on_policy_full_logits(full_logits, vocab_size=vocab_size)
 
 
-def true_on_policy_full_log_probs(
-    logits: torch.Tensor,
-    tp_group: dist.ProcessGroup | None,
-    *,
-    vocab_size: int | None = None,
-    sampling_mask: torch.Tensor | None = None,
-) -> torch.Tensor:
-    """``[R, V]`` full-vocabulary log-probs, computed exactly as the true-on-policy scoring computes them."""
-    full_logits = _gather_true_on_policy_full_logits(
-        _apply_sampling_mask(logits, sampling_mask), tp_group, vocab_size=vocab_size
-    )
-    return torch.log_softmax(full_logits, dim=-1)
-
-
 def _split_replicated_loss_gather_grad(
     grad_output: torch.Tensor,
     *,
@@ -1101,6 +1087,143 @@ def calculate_log_probs_and_entropy(
     return log_prob, entropy
 
 
+# Rows per chunk for the row-chunked TOP log-prob when --log-probs-chunk-size is unset; a [4096, 248k] FP32 chunk is 4 GiB.
+_TOP_LOG_PROB_CHUNK_ROWS = 4096
+
+
+def _top_scaled_full_logits(logits, temperature, vocab_size, sampling_mask):
+    """Serving's scoring input for these rows: a BF16 copy divided by the temperature, masked, at the true vocab."""
+    from sglang.srt.true_on_policy.sampling import scale_logits_for_sampling
+
+    scaled = logits.to(torch.bfloat16, copy=True)
+    temperatures = torch.full((scaled.shape[0], 1), temperature, dtype=torch.float32, device=scaled.device)
+    scaled = scale_logits_for_sampling(scaled, temperatures)
+    return _prepare_true_on_policy_full_logits(_apply_sampling_mask(scaled, sampling_mask), vocab_size=vocab_size)
+
+
+class _TopRowChunkedLogProb(torch.autograd.Function):
+    """TOP log-prob of the target token, ``chunk_rows`` rows at a time.
+
+    The value is the unchunked TOP computation's, row for row (every step is row-wise). Backward keeps only the
+    BF16 logits and recomputes each chunk's softmax, instead of retaining every chunk's FP32 log-softmax."""
+
+    @staticmethod
+    def forward(ctx, logits, tokens, temperature, vocab_size, sampling_mask, chunk_rows):
+        out = torch.empty(logits.shape[0], dtype=torch.float32, device=logits.device)
+        for lo in range(0, logits.shape[0], chunk_rows):
+            hi = min(lo + chunk_rows, logits.shape[0])
+            mask = None if sampling_mask is None else sampling_mask[lo:hi]
+            full = _top_scaled_full_logits(logits[lo:hi], temperature, vocab_size, mask)
+            log_probs = torch.log_softmax(full, dim=-1)
+            out[lo:hi] = torch.gather(log_probs, -1, tokens[lo:hi, None]).squeeze(-1).float()
+        ctx.save_for_backward(logits, tokens, sampling_mask)
+        ctx.temperature, ctx.vocab_size, ctx.chunk_rows = temperature, vocab_size, chunk_rows
+        return out
+
+    @staticmethod
+    def backward(ctx, grad):
+        logits, tokens, sampling_mask = ctx.saved_tensors
+        grad_logits = torch.zeros_like(logits)
+        for lo in range(0, logits.shape[0], ctx.chunk_rows):
+            hi = min(lo + ctx.chunk_rows, logits.shape[0])
+            mask = None if sampling_mask is None else sampling_mask[lo:hi]
+            full = _top_scaled_full_logits(logits[lo:hi], ctx.temperature, ctx.vocab_size, mask).float()
+            # d log p[y] / d z = onehot(y) - softmax(z); z = logits / T on the true vocabulary.
+            d = torch.softmax(full, dim=-1).mul_(-grad[lo:hi, None].float())
+            d.scatter_add_(-1, tokens[lo:hi, None], grad[lo:hi, None].float())
+            grad_logits[lo:hi, : d.shape[-1]] = d.div_(ctx.temperature).to(logits.dtype)
+        return grad_logits, None, None, None, None, None
+
+
+# Vocab rows per weight-gradient block: a [16384, H] FP32 temporary instead of a second [V, H] buffer.
+_HEAD_WGRAD_BLOCK = 16384
+
+
+def _accumulate_head_wgrad(grad_weight, d, h):
+    """grad_weight[:V] += d.T @ h in FP32, one vocab-row block at a time. Each block runs the batch-invariant mm
+    (aten::mm.dtype; addmm's out= overload would reach cuBLAS), whose output rows do not depend on how many rows it
+    computes, so the bytes are the unblocked product's."""
+    vocab = d.shape[-1]
+    for lo in range(0, vocab, _HEAD_WGRAD_BLOCK):
+        hi = min(lo + _HEAD_WGRAD_BLOCK, vocab)
+        grad_weight[lo:hi] += torch.mm(d[:, lo:hi].t(), h, out_dtype=torch.float32)
+
+
+class _TopHeadChunkedLogProb(torch.autograd.Function):
+    """``_TopRowChunkedLogProb`` behind a deferred LM head: each chunk's logits come from its input rows, so neither
+    the logits nor their gradient ever exist for every row at once."""
+
+    @staticmethod
+    def forward(ctx, hidden, weight, tokens, temperature, vocab_size, sampling_mask, chunk_rows, head):
+        out = torch.empty(hidden.shape[0], dtype=torch.float32, device=hidden.device)
+        for lo in range(0, hidden.shape[0], chunk_rows):
+            hi = min(lo + chunk_rows, hidden.shape[0])
+            mask = None if sampling_mask is None else sampling_mask[lo:hi]
+            full = _top_scaled_full_logits(head.logits(lo, hi), temperature, vocab_size, mask)
+            out[lo:hi] = torch.gather(torch.log_softmax(full, dim=-1), -1, tokens[lo:hi, None]).squeeze(-1).float()
+        ctx.save_for_backward(hidden, weight, tokens, sampling_mask)
+        ctx.temperature, ctx.vocab_size, ctx.chunk_rows = temperature, vocab_size, chunk_rows
+        return out
+
+    @staticmethod
+    def backward(ctx, grad):
+        hidden, weight, tokens, sampling_mask = ctx.saved_tensors
+        grad_hidden = torch.empty_like(hidden) if ctx.needs_input_grad[0] else None
+        grad_weight = (
+            torch.zeros(weight.shape, dtype=torch.float32, device=weight.device) if ctx.needs_input_grad[1] else None
+        )
+        for lo in range(0, hidden.shape[0], ctx.chunk_rows):
+            hi = min(lo + ctx.chunk_rows, hidden.shape[0])
+            h = hidden[lo:hi]
+            mask = None if sampling_mask is None else sampling_mask[lo:hi]
+            full = _top_scaled_full_logits(h @ weight.t(), ctx.temperature, ctx.vocab_size, mask).float()
+            d = torch.softmax(full, dim=-1).mul_(-grad[lo:hi, None].float())
+            d.scatter_add_(-1, tokens[lo:hi, None], grad[lo:hi, None].float())
+            d = d.div_(ctx.temperature).to(weight.dtype)
+            w = weight[: d.shape[-1]]
+            if grad_hidden is not None:
+                grad_hidden[lo:hi] = d @ w
+            if grad_weight is not None:
+                _accumulate_head_wgrad(grad_weight, d, h)
+        if grad_weight is not None:
+            grad_weight = grad_weight.to(weight.dtype)
+        return grad_hidden, grad_weight, None, None, None, None, None, None
+
+
+def top_log_probs_and_entropy(
+    logits,
+    tokens,
+    *,
+    temperature: float,
+    chunk_size: int,
+    vocab_size: int | None,
+    with_entropy: bool,
+    sampling_mask: torch.Tensor | None = None,
+):
+    """TOP v1 scoring at trainer TP1 from unscaled logits [R, V]: log-probs with gradient, entropy detached."""
+    from miles_plugins.top.lm_head import TopLMHeadRows
+
+    chunk_rows = chunk_size if chunk_size > 0 else _TOP_LOG_PROB_CHUNK_ROWS
+    deferred = isinstance(logits, TopLMHeadRows)
+    if deferred:
+        log_prob = _TopHeadChunkedLogProb.apply(
+            logits.hidden, logits.weight, tokens, temperature, vocab_size, sampling_mask, chunk_rows, logits
+        )
+    else:
+        log_prob = _TopRowChunkedLogProb.apply(logits, tokens, temperature, vocab_size, sampling_mask, chunk_rows)
+    if not with_entropy:
+        return log_prob, None
+    entropy = torch.empty_like(log_prob)
+    with torch.no_grad():
+        for lo in range(0, logits.shape[0], chunk_rows):
+            hi = min(lo + chunk_rows, logits.shape[0])
+            rows = logits.logits(lo, hi) if deferred else logits[lo:hi]
+            # Entropy stays normalized over the full vocabulary, as in the unchunked path.
+            log_probs = torch.log_softmax(_top_scaled_full_logits(rows, temperature, vocab_size, None), -1)
+            entropy[lo:hi] = -log_probs.exp().mul_(log_probs).sum(dim=-1)
+    return log_prob, entropy
+
+
 def _calculate_log_probs_and_entropy_true_on_policy(
     logits: torch.Tensor,
     tokens: torch.Tensor,
@@ -1133,8 +1256,12 @@ def _calculate_log_probs_and_entropy_true_on_policy(
         and *entropy* has shape ``[R]`` or is ``None``.
     """
     if logits.size(0) == 0:
-        log_prob = logits.new_zeros((0,))
-        entropy = logits.new_zeros((0,)) if with_entropy else None
+        # Keep empty CP response slices connected so backward produces zero
+        # gradients and joins the same parameter-reduction schedule.
+        log_prob = logits.sum(dim=-1)
+        entropy = log_prob if with_entropy else None
+        if entropy is not None and not entropy_requires_grad:
+            entropy = entropy.detach()
         return log_prob, entropy
 
     log_prob_logits = _apply_sampling_mask(logits, sampling_mask)

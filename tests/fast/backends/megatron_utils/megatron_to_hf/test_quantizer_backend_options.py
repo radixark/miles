@@ -14,7 +14,9 @@ class TestIndexerQuantizationOwnership:
     @pytest.mark.parametrize("interleaved", [False, True])
     def test_fp8_indexer_precision_follows_backend_rope_layout(self, interleaved: bool) -> None:
         """Standalone indexer keys are quantized only when the backend RoPE layout leaves them unfused."""
-        args = SimpleNamespace(backend=MegatronArgsNamespace(indexer_rope_interleave=interleaved))
+        args = SimpleNamespace(
+            backend=MegatronArgsNamespace(indexer_rope_interleave=interleaved), true_on_policy_contract=None
+        )
         weight = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
         values = [("model.layers.0.self_attn.indexer.wk.weight", weight)]
 
@@ -44,6 +46,7 @@ class TestIndexerQuantizationOwnership:
         args = SimpleNamespace(
             backend=MegatronArgsNamespace(indexer_rope_interleave=interleaved),
             extra_high_precision_layers_megatron=None,
+            true_on_policy_contract=None,
         )
         quantized = SimpleNamespace(
             _rowwise_data=torch.zeros(32, 32, dtype=torch.uint8),

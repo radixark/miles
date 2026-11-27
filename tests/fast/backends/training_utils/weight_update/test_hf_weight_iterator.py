@@ -160,9 +160,35 @@ def test_non_materializing_ranks_yield_nothing_and_read_nothing(tmp_path):
 
 def test_the_checkpoint_is_read_once_per_path(tmp_path):
     ckpt = _tower_checkpoint(tmp_path, indexed=True)
-    checkpoint_towers.load_checkpoint_towers.cache_clear()
+    checkpoint_towers._load.cache_clear()
     with patch(f"{_TOWERS_MODULE}.current_platform.current_device", return_value=torch.device("cpu")):
         list(checkpoint_towers.iter_checkpoint_tower_units(ckpt, materialize=True))
         with patch(f"{_TOWERS_MODULE}.safe_open") as opened:
             list(checkpoint_towers.iter_checkpoint_tower_units(ckpt, materialize=True))
     opened.assert_not_called()
+
+
+def test_units_move_to_the_device_one_at_a_time():
+    """A sync holds one unit on the device: moving the whole selection first held every tower tensor at once."""
+    moved = []
+
+    class _Tensor:
+        def __init__(self, name):
+            self.name = name
+
+        def to(self, device):
+            moved.append(self.name)
+            return self
+
+    loaded = tuple((name, _Tensor(name)) for name in ("visual.a.weight", "visual.b.weight", "audio.c.weight"))
+    with (
+        patch(f"{_TOWERS_MODULE}._load", return_value=loaded),
+        patch(f"{_TOWERS_MODULE}.current_platform.current_device", return_value=torch.device("cpu")),
+    ):
+        units = checkpoint_towers.iter_checkpoint_units(
+            "/ckpt", select=checkpoint_towers.is_tower_key, materialize=True
+        )
+        assert [name for name, _ in next(units)] == ["visual.a.weight"]
+        assert moved == ["visual.a.weight"]
+        assert [name for unit in units for name, _ in unit] == ["visual.b.weight", "audio.c.weight"]
+    assert moved == ["visual.a.weight", "visual.b.weight", "audio.c.weight"]

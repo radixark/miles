@@ -99,9 +99,6 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
         # Collective across all ranks; inert unless --kernel-backend hub.
         self.hub_kernels = HubKernels.prepare(self.args)
 
-        # backend-level true-on-policy setup (batch-invariant ops)
-        self._enable_true_on_policy_optimizations(args)
-
         model = self._load_hf_model(self.args.hf_checkpoint, keep_fp32_master=self.precision_policy.keep_fp32_master)
         routing_replay.install(model, self.arch_adapter.routing_replay)
 
@@ -240,18 +237,6 @@ class FSDPTrainRayActor(TorchNativeTrainRayActor):
 
             patched_layers = apply_sglang_triton_attention_patch(model)
         return model, patched_layers
-
-    def _enable_true_on_policy_optimizations(self, args):
-        """Backend-level true-on-policy setup (batch-invariant ops), gated on the run mode."""
-        if args.true_on_policy_mode:
-            from sglang.srt.batch_invariant_ops import enable_batch_invariant_mode
-
-            logger.info("FSDPTrainRayActor call enable_batch_invariant_mode for true-on-policy")
-            enable_batch_invariant_mode(
-                # In Qwen3, rope `inv_freq_expanded.float() @ position_ids_expanded.float()` uses bmm
-                # and disabling it will make it aligned
-                enable_bmm=False,
-            )
 
     def _get_init_weight_context_manager(self):
         """Context manager for model init: meta device (no allocation) on non-rank-0, EXCEPT when

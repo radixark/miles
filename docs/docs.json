@@ -305,7 +305,8 @@
        "examples/infra-features/score-centering",
        "examples/infra-features/split-deployment",
        "examples/infra-features/train-infer-mismatch-helper",
-       "examples/infra-features/true-on-policy"
+       "examples/infra-features/true-on-policy",
+       "examples/infra-features/true-on-policy/recipes"
       ]
      }
     ]

@@ -39,7 +39,11 @@ class TestInklingMultimodalTowers:
         env = inkling_tower_env
         args = SimpleNamespace(custom_model_provider_path=provider, hf_checkpoint=str(env.checkpoint))
 
-        units = list(env.module._iter_mm_tower_units(args, materialize=materialize))
+        units = list(
+            env.module._iter_checkpoint_units(
+                args, materialize=materialize, model_name="inkling", quantization_config=None
+            )
+        )
 
         assert [unit[0][0] for unit in units] == expected_names
         for [(name, tensor)] in units:

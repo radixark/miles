@@ -4,6 +4,7 @@ import dataclasses
 import gc
 import logging
 import math
+import os
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from functools import partial
@@ -30,8 +31,9 @@ from miles.backends.megatron_utils.lora.native import wrap_model_provider_with_l
 from miles.backends.megatron_utils.optimizer_state_reset import reset_optimizer_states
 from miles.backends.training_utils.data.rollout import DataIterator, get_batch
 from miles.backends.training_utils.data.sampling_mask import get_rollout_sampling_masks
+from miles.backends.training_utils.loss.is_weight_stats import IS_WEIGHT_STATS
 from miles.backends.training_utils.loss.objective import loss_function
-from miles.backends.training_utils.metrics.checks import check_grad_norm, check_kl
+from miles.backends.training_utils.metrics.checks import check_grad_norm, check_kl, check_true_on_policy_logprobs
 from miles.backends.training_utils.metrics.log_utils import (
     aggregate_forward_results,
     aggregate_train_losses,
@@ -43,6 +45,7 @@ from miles.backends.training_utils.model_companion import (
     SampleIdentityExtractor,
 )
 from miles.backends.training_utils.types import TrainStepOutcome
+from miles.true_on_policy.gdn import is_top_gdn
 from miles.utils.args.runtime import TrainerConfig
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
@@ -51,12 +54,14 @@ from miles.utils.bf16_stochastic_rounding import (
     validate_bf16_stochastic_rounding_optimizer,
 )
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
+from miles.utils.ft_utils.process_group_utils import MultiPGUtil
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory
 from miles.utils.test_utils.fault_injector.controller import reach_fault_hook
 from miles.utils.test_utils.fault_injector.models import FaultHookName
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.types import SampleLineage
+from miles_plugins.top.dsv41_media import is_top_dsv41
 
 from ...utils.misc import filter_keys
 from ..training_utils.parallel import get_parallel_state
@@ -72,10 +77,27 @@ from .lora.bridge_adapter_slots import BridgeAdapterSlots
 from .lora.checkpoint import restore_single_lora, save_single_lora
 from .lora.native.checkpoint import NativeAdapterSlots
 from .lora.utils import is_lora_enabled, is_lora_model, patch_param_grad_buffer_for_colocate_mode_lora
+from .megatron_config import has_hf_checkpoint
 from .model_provider import get_model_provider_func
 from .parallel import get_packed_seq_params
+from .weight_events import (
+    holds_installed_hf_checkpoint,
+    installed_hf_checkpoint,
+    masters_left_installed_hf,
+    weights_changed,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _check_hf_load_is_installed(load_dir: str, installed_hf: str) -> None:
+    """An HF --load other than the checkpoint the model provider installed would be silently ignored."""
+    is_hf_checkpoint = os.path.isfile(os.path.join(load_dir, "config.json"))
+    if is_hf_checkpoint and os.path.realpath(load_dir) != os.path.realpath(installed_hf):
+        raise ValueError(
+            f"--load {load_dir!r} is an HF checkpoint other than --hf-checkpoint {installed_hf!r}, which the "
+            "model provider installed; pass a Megatron checkpoint or the same HF checkpoint"
+        )
 
 
 def _has_loadable_ckpt(load_dir: str | None) -> bool:
@@ -372,18 +394,22 @@ def forward_only(
         assert "adapter_token_counts" not in batch, "multi-LoRA forwards run through run_forward_backward_pass"
 
         lm_head_kwargs, lm_head = lm_head_forward_kwargs(args, model_chunks)
-        output_tensor = model(
-            input_ids=tokens,
-            position_ids=batch.get("position_ids"),
-            attention_mask=None,
-            labels=None,
-            packed_seq_params=packed_seq_params,
-            loss_mask=batch["input_loss_masks"],
-            **(filter_keys(batch, ["witness_ids"]) if args.enable_witness else {}),
-            **(batch["multimodal_train_inputs"] if batch["multimodal_train_inputs"] is not None else {}),
-            **lm_head_kwargs,
-            fp32_output=fp32_output,
-        )
+        if is_top_gdn(args):
+            # TOP refuses the fused log-prob backends (validate_log_probs_backend_args), so lm_head is None here.
+            output_tensor = _gdn_forward(args, model, batch, fp32_output=fp32_output)
+        else:
+            output_tensor = model(
+                input_ids=tokens,
+                position_ids=_packed_position_ids(args, batch),
+                attention_mask=None,
+                labels=None,
+                packed_seq_params=packed_seq_params,
+                loss_mask=batch["input_loss_masks"],
+                **(filter_keys(batch, ["witness_ids"]) if args.enable_witness else {}),
+                **_media_forward_kwargs(args, model, batch),
+                **lm_head_kwargs,
+                fp32_output=fp32_output,
+            )
 
         callback_kwargs = dict(
             args=args,
@@ -391,6 +417,8 @@ def forward_only(
             total_lengths=total_lengths,
             response_lengths=response_lengths,
             with_entropy=args.use_rollout_entropy,
+            # Forward-only scoring: entropy is logged, never differentiated.
+            entropy_requires_grad=False,
             max_seq_lens=batch.get("max_seq_lens", None),
         )
         if use_rollout_sampling_mask:
@@ -445,6 +473,60 @@ def forward_only(
         for key, value in aggregated.items():
             rollout_data[f"{store_prefix}{key}"] = value
     return rollout_data
+
+
+def _gdn_forward(args, model, batch, *, fp32_output: bool) -> torch.Tensor:
+    """GDN TOP: each sample as one packed document through serving's GDN; logits keep the packed layout."""
+    from sglang.srt.true_on_policy.gdn_chunked import CHUNK
+
+    from miles_plugins.top.gdn_forward import gdn_forward, validate_gdn_forward
+
+    validate_gdn_forward(args, batch)
+    return gdn_forward(
+        model,
+        batch=batch,
+        pad_multiple=args.data_pad_size_multiplier,
+        grid=CHUNK,
+        hf_checkpoint=args.hf_checkpoint,
+        deferred_lm_head=_top_deferred_lm_head(args),
+        fp32_output=fp32_output,
+    )
+
+
+def _media_forward_kwargs(args, model, batch) -> dict:
+    """The micro-batch's media as the model takes them: the processor tensors as forward kwargs, or for
+    DeepSeek-V4.1 under TOP the embedding with the tower's rows written in (miles_plugins.top.dsv41_media)."""
+    media = batch["multimodal_train_inputs"]
+    if is_top_dsv41(args):
+        from miles_plugins.top.dsv41_media import dsv41_media_forward_kwargs
+
+        return dsv41_media_forward_kwargs(model, tokens=batch["tokens"], media=media, hf_checkpoint=args.hf_checkpoint)
+    return media if media is not None else {}
+
+
+def _packed_position_ids(args, batch) -> torch.Tensor | None:
+    """The batch's packed position ids for a model that reads them from its forward arguments."""
+    assert not (
+        args.allgather_cp and batch.get("sample_mrope_position_ids") is not None
+    ), "mRoPE positions need the per-sample THD CP layout"
+    return batch.get("position_ids")
+
+
+def _top_deferred_lm_head(args) -> bool:
+    """Whether every consumer of this run's logits is the row-chunked TOP log-prob (logit_processors.row_chunked_top),
+    so the LM head can stay deferred to it."""
+    from miles.true_on_policy.contracts import uses_true_on_policy_v1
+
+    return (
+        uses_true_on_policy_v1(args)
+        and args.tensor_model_parallel_size == 1
+        # GDN under all-gather CP gathers the final hidden rows itself (gdn_forward); other models score full logits.
+        and (not args.allgather_cp or is_top_gdn(args))
+        and args.loss_type == "policy_loss"
+        and args.entropy_coef == 0
+        and args.log_probs_backend != "fused"
+        and not args.use_sampling_support_replay
+    )
 
 
 def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disable_optimizer: bool) -> None:
@@ -506,6 +588,8 @@ def run_forward_backward_pass(
                 "advantages",
                 "returns",
                 "rollout_log_probs",
+                "rollout_token_fresh",
+                "rollout_token_stale",
                 "rollout_topk_token_ids",
                 "rollout_topk_lengths",
                 "rollout_topk_log_probs",
@@ -534,13 +618,18 @@ def run_forward_backward_pass(
             m.stage = "replay_forward"
 
         lm_head_kwargs, lm_head = lm_head_forward_kwargs(args, model_chunks)
-        if return_schedule_plan:
+        if is_top_gdn(args):
+            assert not return_schedule_plan, "GDN TOP does not build combined 1f1b schedule plans"
+            output_tensor = _gdn_forward(
+                args, model, batch, fp32_output=args.loss_type not in ("policy_loss", "sft_loss", "score_centering")
+            )
+        elif return_schedule_plan:
             assert not args.enable_mtp_training, "MTP training should not be enabled when using combined 1f1b"
             assert lm_head is None, "--log-probs-backend fused_lm_head is not supported with combined 1f1b"
             assert not args.enable_witness, "Witness is not supported with combined 1f1b (build_schedule_plan)"
             output_tensor = model.build_schedule_plan(
                 input_ids=batch["tokens"],
-                position_ids=batch.get("position_ids"),
+                position_ids=_packed_position_ids(args, batch),
                 attention_mask=None,
                 labels=None,
                 packed_seq_params=get_packed_seq_params(batch, args),
@@ -549,7 +638,7 @@ def run_forward_backward_pass(
         else:
             forward_kwargs = {
                 "input_ids": batch["tokens"],
-                "position_ids": batch.get("position_ids"),
+                "position_ids": _packed_position_ids(args, batch),
                 "attention_mask": None,
                 "labels": None,
                 "packed_seq_params": get_packed_seq_params(batch, args),
@@ -559,8 +648,7 @@ def run_forward_backward_pass(
                 **(filter_keys(batch, ["witness_ids"]) if args.enable_witness else {}),
             }
 
-            if (x := batch["multimodal_train_inputs"]) is not None:
-                forward_kwargs.update(x)
+            forward_kwargs.update(_media_forward_kwargs(args, model, batch))
             forward_kwargs.update(lm_head_kwargs)
 
             output_tensor = model(
@@ -616,6 +704,7 @@ def train_one_step(
     if args.enable_sample_ownership_checker:
         sample_consumption_start = data_iterator[0].offset
     _zero_grads(model, optimizer, disable_optimizer)
+    IS_WEIGHT_STATS.reset()  # a retried attempt starts over
 
     if (x := args.custom_megatron_before_train_step_hook_path) is not None:
         from miles.utils.args.custom_view import compute_custom_function_config
@@ -700,6 +789,8 @@ def train_one_step(
     if not disable_optimizer and valid_step:
         update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
         assert update_successful
+        weights_changed()
+        masters_left_installed_hf()
         ModelCompanionWeightVersionUtils.bump_weight_version(model)
         opt_param_scheduler.step(increment=num_rollouts)
 
@@ -736,6 +827,13 @@ def train_one_step(
                 if parallel_state.indep_dp.size > 1
                 else aggregate_train_losses(losses_reduced, metric_num_rollouts)
             )
+            if parallel_state.indep_dp.size == 1 and (args.use_tis or args.get_mismatch_metrics):
+                loss_reduced = {
+                    **loss_reduced,
+                    **IS_WEIGHT_STATS.reduce_and_reset(
+                        parallel_state.effective_dp_cp.groups_inner_to_outer, MultiPGUtil.all_reduce
+                    ),
+                }
             return loss_reduced, grad_norm, outcome
 
     return {}, grad_norm, outcome
@@ -928,6 +1026,8 @@ def train(
 
             if args.ci_test and not args.ci_disable_kl_checker:
                 check_kl(args, log_dict, step_id, accumulated_step_id)
+            if args.ci_test and args.true_on_policy_mode and not args.ci_disable_logprobs_checker:
+                check_true_on_policy_logprobs(args, log_dict, step_id)
 
             logger.info(f"{role_tag}step {accumulated_step_id}: {log_dict}")
 
@@ -1075,6 +1175,7 @@ def load_model_state(
         load_ctx = nullcontext()
 
     load_dir = args.backend.load
+    installed_hf = installed_hf_checkpoint()
     # --load may be unset when pretrained weights or an in-memory checkpoint supplies the state.
     assert (
         load_dir is not None
@@ -1082,7 +1183,26 @@ def load_model_state(
         or "local_checkpoint_manager" in (checkpointing_context or {})
     )
     explicit_selection = args.backend.ckpt_step is not None or args.backend.exit_on_missing_checkpoint
-    if load_dir is None or explicit_selection or _has_loadable_ckpt(load_dir):
+    if (
+        installed_hf is not None
+        and args.backend.ckpt_step is None
+        and has_hf_checkpoint(load_dir)
+        and "local_checkpoint_manager" not in (checkpointing_context or {})
+    ):
+        # The model provider already installed --hf-checkpoint as TOP FP8 masters and serving's FP8 bytes.
+        _check_hf_load_is_installed(load_dir, installed_hf)
+        if not holds_installed_hf_checkpoint():
+            raise NotImplementedError(
+                f"[top] --load {load_dir!r} is the HF checkpoint the TOP FP8 masters were installed from, but an "
+                "optimizer step or a Megatron load has since replaced them and the HF loader cannot reinstall FP8 "
+                "masters; resume from a Megatron checkpoint (save one before restarting)"
+            )
+        if is_first_replica_megatron_main_rank():
+            logger.info("TOP FP8 masters hold --hf-checkpoint; skipping HF --load %r", load_dir)
+        iteration = 0
+        restored_trained_iteration = not args.backend.finetune
+        scheduler_restored = False
+    elif load_dir is None or explicit_selection or _has_loadable_ckpt(load_dir):
         with load_ctx:
             iteration, restored_trained_iteration = load_checkpoint(
                 model,
@@ -1092,6 +1212,8 @@ def load_model_state(
                 args=args,
                 skip_load_to_model_and_opt=False,
             )
+        weights_changed()
+        masters_left_installed_hf()
         # MCore loads scheduler state with the optimizer state, and its load_state_dict
         # replays the saved step count whatever use_checkpoint_opt_param_scheduler says;
         # that flag only picks which scheduler settings win. A release checkpoint returns

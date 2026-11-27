@@ -237,14 +237,15 @@ class _ImageProcessor(BaseImageProcessor):
     ],
     ids=["image-processor", "pil-backend", "not-an-image-processor", "tokenizer-only"],
 )
-def test_image_device_follows_the_engine_wrapper(monkeypatch, backend, image_processor, expected):
+@pytest.mark.parametrize("true_on_policy", [False, True])
+def test_image_device_follows_the_engine_wrapper(monkeypatch, backend, image_processor, expected, true_on_policy):
     """A trainer that preprocesses images on another device than the engines computes other pixels."""
     from sglang.srt.multimodal import serving_preprocessing
 
     calls = []
 
     def fake_fast_image_processor_device(processor, *, base_gpu_id, rl_on_policy_target, true_on_policy_enabled):
-        calls.append(base_gpu_id)
+        calls.append((base_gpu_id, true_on_policy_enabled))
         return f"cuda:{base_gpu_id}"
 
     monkeypatch.setattr(serving_preprocessing, "fast_image_processor_device", fake_fast_image_processor_device)
@@ -253,11 +254,12 @@ def test_image_device_follows_the_engine_wrapper(monkeypatch, backend, image_pro
     hf_processor = type("Processor", (), attributes)()
 
     image_device = token_space_media_process._image_device(
-        hf_processor, image_processor_backend=backend, device=torch.device("cuda", 3)
+        hf_processor, image_processor_backend=backend, device=torch.device("cuda", 3), true_on_policy=true_on_policy
     )
 
     assert image_device == expected
-    assert calls == ([3] if expected else [])
+    # The engines' wrapper decides from the same contract flag the engines run under.
+    assert calls == ([(3, true_on_policy)] if expected else [])
 
 
 def test_placement_and_mrope_come_from_sglang(monkeypatch):

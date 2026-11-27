@@ -1,0 +1,172 @@
+### 0
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 1
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 2
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 3
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False", "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true", "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": "256", "SGLANG_DG_CACHE_DIR_PER_PROCESS": "0", "NVSHMEM_QP_DEPTH": "2048", "OMP_NUM_THREADS": "4", "TOKENIZERS_PARALLELISM": "false", "NCCL_ALGO": "Ring", "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0", "CUBLAS_WORKSPACE_CONFIG": ":4096:8", "SGLANG_DISABLE_DSA_INDEXER_FUSION": "1", "SGLANG_DSA_FUSE_TOPK": "0", "SGLANG_DSA_TOPK_FLASHINFER_DETERMINISTIC": "1", "SGLANG_DSA_TOPK_FLASHINFER_TIE_BREAK": "small", "SGLANG_DSA_PREFILL_DENSE_ATTN_KV_LEN_THRESHOLD": "0", "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0", "TOP_TRANSPORT_CHECKS": "0", "TOP_MOE_CHUNKS": "1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --spec miles_plugins.models.glm5.glm5 get_glm5_spec
+  --moe-layer-freq '[0]*3+[1]*75'
+  --num-experts 256
+  --moe-shared-expert-intermediate-size 2048
+  --moe-router-topk 8
+  --moe-ffn-hidden-size 2048
+  --moe-router-score-function sigmoid
+  --moe-router-pre-softmax
+  --moe-router-enable-expert-bias
+  --moe-router-bias-update-rate 0
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-router-topk-scaling-factor 2.5
+  --moe-aux-loss-coeff 0
+  --make-vocab-size-divisible-by 16
+  --num-layers 78
+  --hidden-size 6144
+  --ffn-hidden-size 12288
+  --num-attention-heads 64
+  --disable-bias-linear
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --position-embedding-type rope
+  --no-position-embedding
+  --normalization RMSNorm
+  --qk-layernorm
+  --multi-latent-attention
+  --q-lora-rank 2048
+  --kv-lora-rank 512
+  --qk-head-dim 192
+  --v-head-dim 256
+  --kv-channels 192
+  --qk-pos-emb-head-dim 64
+  --vocab-size 154880
+  --rotary-base 8000000
+  --enable-experimental
+  --load /root/shared_data/glm5.2-math-top 
+  --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
+  --input-key prompt
+  --label-key label
+  --apply-chat-template
+  --apply-chat-template-kwargs '{"reasoning_effort": "high"}'
+  --rollout-shuffle
+  --rm-type math
+  --seed 42
+  --custom-rm-path examples.infra_features.true_on_policy.recipes.math_rewards.finish_or_fail_score
+  --reward-key score
+  --num-rollout 100
+  --rollout-batch-size 32
+  --n-samples-per-prompt 32
+  --global-batch-size 1024
+  --num-steps-per-rollout 1
+  --rollout-max-response-len 4096
+  --rollout-max-prompt-len 512
+  --rollout-temperature 1.0
+  --rollout-top-k -1
+  --rollout-top-p 1
+  --eval-reward-key acc
+  --over-sampling-batch-size 64
+  --dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
+  --eval-config /root/datasets/dapo-math-17k/glm5_2_aime_eval.yaml
+  --eval-interval 10 
+  --advantage-estimator grpo
+  --kl-loss-coef 0
+  --kl-loss-type low_var_kl
+  --kl-coef 0
+  --entropy-coef 0
+  --eps-clip 0.2
+  --eps-clip-high 0.28
+  --calculate-per-token-loss
+  --optimizer adam
+  --lr 1e-6
+  --lr-decay-style constant
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.95
+  --offload-train
+  --offload-rollout
+  --use-distributed-optimizer
+  --stream-optimizer-state-to-disk
+  --stream-optimizer-state-moment-dtype bf16
+  --offload-train-target disk
+  --offload-train-disk-dir /tmp/miles-optimizer-offload 
+  --hf-checkpoint /root/models/GLM-5.2-FP8
+  --ref-load /root/models/GLM-5.2-FP8
+  --colocate
+  --actor-num-nodes 8
+  --actor-num-gpus-per-node 8
+  --num-gpus-per-node 8
+  --rollout-num-gpus-per-engine 8
+  --tensor-model-parallel-size 1
+  --pipeline-model-parallel-size 8
+  --decoder-first-pipeline-num-layers 2
+  --decoder-last-pipeline-num-layers 4
+  --context-parallel-size 1
+  --expert-model-parallel-size 8
+  --expert-tensor-parallel-size 1
+  --moe-token-dispatcher-type flex
+  --moe-flex-dispatcher-backend deepep
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --grad-reduce-in-bf16
+  --use-dynamic-batch-size
+  --train-memory-margin-bytes 2147483648
+  --attention-dropout 0
+  --hidden-dropout 0
+  --attention-softmax-in-fp32
+  --no-log-inference-engine-weight-checksums
+  --max-tokens-per-gpu 4608
+  --true-on-policy-mode
+  --deterministic-mode
+  --true-on-policy-contract true_on_policy_v1
+  --spec miles_plugins.top.spec get_top_spec
+  --transformer-impl local
+  --use-cpu-initialization
+  --no-bias-swiglu-fusion
+  --miles-dsa-topk-backend flashinfer
+  --attention-backend flash
+  --use-rollout-logprobs 
+  --sglang-ep-size 8
+  --sglang-dp-size 8
+  --sglang-enable-dp-attention
+  --sglang-enable-dp-lm-head
+  --sglang-moe-dense-tp-size 1
+  --sglang-moe-a2a-backend deepep
+  --sglang-deepep-mode auto
+  --sglang-moe-runner-backend deep_gemm
+  --sglang-fp8-gemm-backend deep_gemm
+  --sglang-attention-backend dsa
+  --sglang-kv-cache-dtype fp8_e4m3
+  --sglang-page-size 64
+  --sglang-chunked-prefill-size 32768
+  --sglang-context-length 16384
+  --sglang-max-running-requests 256
+  --sglang-cuda-graph-max-bs-decode 64
+  --sglang-disable-shared-experts-fusion
+  --sglang-router-policy round_robin
+  --sglang-sampling-defaults openai
+  --sglang-watchdog-timeout 3600
+  --update-weight-buffer-size 1073741824
+  --sglang-speculative-algorithm EAGLE
+  --sglang-speculative-num-steps 5
+  --sglang-speculative-eagle-topk 1
+  --sglang-speculative-num-draft-tokens 6
+  --sglang-speculative-draft-model-path /root/models/GLM-5.2-FP8
+  --sglang-mem-fraction-static 0.85
+  --sglang-deepep-dispatcher-output-dtype bf16
+  --sglang-enable-deterministic-inference
+  --sglang-cuda-graph-backend-prefill disabled
+  --sglang-dsa-prefill-backend flashmla_sparse
+  --sglang-dsa-decode-backend flashmla_sparse
+  --sglang-dsa-topk-backend flashinfer 
+  --deploy-component all

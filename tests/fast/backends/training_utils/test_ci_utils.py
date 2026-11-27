@@ -2,7 +2,7 @@ from argparse import Namespace
 
 import pytest
 
-from miles.backends.training_utils.metrics.checks import check_kl
+from miles.backends.training_utils.metrics.checks import check_kl, check_true_on_policy_logprobs
 
 
 class TestCheckKl:
@@ -45,3 +45,15 @@ class TestCheckKl:
                 step_id=0,
                 accumulated_step_id=1,
             )
+
+
+class TestCheckTrueOnPolicyLogprobs:
+    def test_only_the_first_optimizer_step_of_a_rollout_must_match_the_rollout(self) -> None:
+        """Later steps of a rollout score updated weights, so their train/rollout diff is not zero."""
+        args = Namespace(trainer_model_id=None)
+        log_dict = {"train/pg_loss": 0.1, "train/train_rollout_logprob_abs_diff": 0.02}
+
+        with pytest.raises(AssertionError, match="train_rollout_logprob_abs_diff=0.02"):
+            check_true_on_policy_logprobs(args, log_dict, step_id=0)
+        check_true_on_policy_logprobs(args, log_dict, step_id=1)
+        check_true_on_policy_logprobs(args, {**log_dict, "train/train_rollout_logprob_abs_diff": 0.0}, step_id=0)

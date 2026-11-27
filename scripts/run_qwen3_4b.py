@@ -3,14 +3,16 @@ from typing import Literal
 
 import typer
 
-from miles.true_on_policy import (
-    apply_true_on_policy_script_defaults,
-    build_true_on_policy_launch_plan,
-    get_megatron_model_type,
-)
 from miles.utils.external_utils import command_utils
 
 app = typer.Typer()
+
+_MEGATRON_MODEL_TYPES = {
+    "Qwen3-0.6B": "qwen3-0.6B",
+    "Qwen3-4B": "qwen3-4B",
+    "Qwen3-4B-Base": "qwen3-4B",
+    "Qwen3-4B-Instruct-2507": "qwen3-4B-Instruct-2507",
+}
 
 
 @dataclass
@@ -28,7 +30,6 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     multi_eval: bool = False
     true_on_policy: bool = False
     sglang_rl_on_policy_target: str | None = None
-    true_on_policy_contract: str | None = None
     dynamic_sampling: bool = False
     enable_eval: bool = True
     train_backend: Literal["fsdp", "megatron"] = "megatron"
@@ -43,7 +44,7 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
         self.hardware = command_utils.resolve_hardware(self)
         self.num_gpus_per_node = self.num_gpus_per_node or command_utils.NUM_GPUS_OF_HARDWARE[self.hardware]
         if self.train_backend == "megatron":
-            self.megatron_model_type = get_megatron_model_type(self.model_name)
+            self.megatron_model_type = _MEGATRON_MODEL_TYPES[self.model_name]
 
         # Derived parallelism defaults for Qwen3 dense models
         self.tensor_model_parallel_size = 1 if self.model_name == "Qwen3-0.6B" else 2
@@ -54,8 +55,14 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
         self.max_tokens_per_gpu = 32768 if self.train_backend == "fsdp" else 9216
         self.rollout_num_gpus_per_engine = 1
         self.train_memory_margin_bytes = 3221225472
+        if self.true_on_policy:
+            if self.train_backend != "megatron" or self.train_fp8 or self.rollout_fp8:
+                raise ValueError("--true-on-policy runs BF16 Qwen3 dense on the Megatron backend")
+            # TOP admits Qwen3 dense at trainer TP1/CP1 without sequence parallelism.
+            self.tensor_model_parallel_size = self.context_parallel_size = 1
+            self.cp_comm_type = None
+            self.use_sequence_parallel = False
 
-        apply_true_on_policy_script_defaults(self)
         if self.train_backend == "megatron" and self.enable_megatron_bridge and self.use_kl_loss:
             raise ValueError(
                 "Megatron bridge mode does not provide a Megatron-format ref checkpoint for KL. "
@@ -289,9 +296,13 @@ eval:
             "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 
-    true_on_policy_plan = build_true_on_policy_launch_plan(args)
-    true_on_policy_args = true_on_policy_plan.train_args
-    true_on_policy_envs = true_on_policy_plan.env_vars
+    if args.true_on_policy:
+        # TOP launches need SGLang's true-on-policy package; other runs of this script do not.
+        from miles.true_on_policy.launch import TOP_RECIPE_TRAIN_ARGS, top_launch
+
+        launch = top_launch(model_type="qwen3", engine_gpus=args.rollout_num_gpus_per_engine)
+        misc_args += " ".join(launch.train_args + TOP_RECIPE_TRAIN_ARGS) + " "
+        misc_env_vars |= launch.env_vars
 
     train_args = (
         f"{ckpt_args} "
@@ -305,7 +316,6 @@ eval:
         f"{sglang_args} "
         f"{train_backend_args} "
         f"{misc_args} "
-        f"{true_on_policy_args} "
         f"{args.extra_args} "
     )
 
@@ -314,10 +324,7 @@ eval:
         # TODO may get it from `config`
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
-        extra_env_vars={
-            **misc_env_vars,
-            **true_on_policy_envs,
-        },
+        extra_env_vars=misc_env_vars,
         megatron_path=args.megatron_path,
     )
 

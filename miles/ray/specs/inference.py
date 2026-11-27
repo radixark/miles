@@ -460,7 +460,9 @@ def compute_inference_engine_env_vars(
             # DeepEP/NVSHMEM's internal NCCL conflicts with our NCCL and hangs under CUDA graphs.
             "NVSHMEM_DISABLE_NCCL": "1",
             "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
-            "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
+            # DeepGEMM commits JIT cache entries atomically, so engines share one cache rather than recompile per run;
+            # keep SGLANG_DG_CACHE_DIR node-local when SGLANG_CACHE_DIR sits on a shared NFS home.
+            "SGLANG_DG_CACHE_DIR_PER_PROCESS": "0",
             "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
             "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
             "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2": "0" if args.colocate and tp_size > 1 else "1",

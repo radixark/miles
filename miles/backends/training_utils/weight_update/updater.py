@@ -93,6 +93,10 @@ class WeightUpdater:
         engine_gpu_offsets: Sequence[int] | None,
         engine_cell_ids: Sequence[str],
     ) -> None:
+        if self.args.true_on_policy_mode:
+            from miles.true_on_policy.device import refuse_mixed_gpu_architectures
+
+            refuse_mixed_gpu_architectures(rollout_engines=rollout_engines, engine_cell_ids=engine_cell_ids)
         self.protocol.connect(
             rollout_engines=rollout_engines,
             engine_gpu_counts=engine_gpu_counts,

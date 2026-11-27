@@ -19,7 +19,7 @@ from miles.rollout.generate_utils.rollout_topk_logprobs import (
     configure_rollout_topk_logprobs_request,
 )
 from miles.rollout.inference_rollout.compatibility import load_generate_function
-from miles.rollout.inference_rollout.inference_rollout_common import stamp_sample_lineage
+from miles.rollout.inference_rollout.inference_rollout_common import sample_seed, stamp_sample_lineage
 from miles.utils import dumper_utils
 from miles.utils.async_utils import DynamicLimitSemaphore, run
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
@@ -109,10 +109,6 @@ class GenerateState(metaclass=SingletonMeta):
             no_stop_trim=True,
             spaces_between_special_tokens=False,
         )
-
-        if args.sglang.common_value("enable_deterministic_inference"):
-            sampling_seed_base = args.rollout_seed
-            self.group_sampling_seeds = [sampling_seed_base + i for i in range(args.n_samples_per_prompt)]
 
         # dp rank balancing
         self.dp_counts = [0] * (args.sglang.common_value("dp_size") or 1)
@@ -438,8 +434,7 @@ async def generate_and_rm_group(
     for idx, sample in enumerate(group):
         current_sampling_params = sampling_params.copy()
         if args.sglang.common_value("enable_deterministic_inference"):
-            seed = state.group_sampling_seeds[idx]
-            current_sampling_params["sampling_seed"] = seed
+            current_sampling_params["sampling_seed"] = sample_seed(args, sample, idx)
         tasks.append(
             asyncio.create_task(generate_and_rm(args, sample, current_sampling_params, evaluation=evaluation))
         )
@@ -703,7 +698,7 @@ async def eval_rollout_single_dataset(
             sampling_params = base_sampling_params
             if args.sglang.common_value("enable_deterministic_inference"):
                 sampling_params = base_sampling_params.copy()
-                sampling_params["sampling_seed"] = args.rollout_seed + j
+                sampling_params["sampling_seed"] = sample_seed(args, sample, j)
             tasks.append(
                 asyncio.create_task(
                     generate_and_rm(

@@ -64,6 +64,13 @@ class InfoActor:
         return ray.util.get_node_ip_address(), ray.get_gpu_ids()[0]
 
 
+def _head_node_ip() -> str | None:
+    for node in ray.nodes():
+        if node.get("Alive") and "node:__internal_head__" in node.get("Resources", {}):
+            return node["NodeManagerAddress"]
+    return None
+
+
 def sort_key(x):
     index, node_identifier, gpu_id = x
     # Sort by node IP number and then by GPU ID
@@ -91,8 +98,12 @@ class PlacementGroupInfo(NamedTuple):
     pg_reordered_gpu_ids: list[int]
 
 
-def _create_placement_group(num_gpus) -> PlacementGroupInfo:
-    """Create a placement group with the specified number of GPUs."""
+def _create_placement_group(num_gpus, *, head_last: bool = False) -> PlacementGroupInfo:
+    """Create a placement group with the specified number of GPUs.
+
+    ``head_last`` orders the head node's GPUs after every other node's, so the trainer (which takes the first
+    GPUs) avoids the head while it fits elsewhere: --pin-rollout-manager-to-head puts the rollout executor, router,
+    session servers and agent processes there, and a trainer sharing that host RAM can be OOM-killed."""
     if num_gpus == 0:
         return None, [], []
 
@@ -117,7 +128,8 @@ def _create_placement_group(num_gpus) -> PlacementGroupInfo:
         ray.kill(actor)
 
     bundle_infos = [(i, gpu_ids[i][0], gpu_ids[i][1]) for i in range(num_bundles)]
-    sorted_bundle_infos = sorted(bundle_infos, key=sort_key)
+    head_ip = _head_node_ip() if head_last else None
+    sorted_bundle_infos = sorted(bundle_infos, key=lambda info: (info[1] == head_ip, sort_key(info)))
     pg_reordered_bundle_indices = [info[0] for info in sorted_bundle_infos]
     # Map from logical index -> physical GPU ID
     pg_reordered_gpu_ids = [gpu_ids[info[0]][1] for info in sorted_bundle_infos]
@@ -162,7 +174,9 @@ def create_placement_groups(args) -> dict[str, PlacementGroupInfo]:
     num_gpus, rollout_offset = _get_placement_group_layout(args)
 
     logger.info(f"Creating placement group with {num_gpus} GPUs...")
-    pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids = _create_placement_group(num_gpus)
+    pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids = _create_placement_group(
+        num_gpus, head_last=args.pin_rollout_manager_to_head
+    )
 
     rollout_pg_reordered_bundle_indices = actor_pg_reordered_bundle_indices[rollout_offset:]
     rollout_pg_reordered_gpu_ids = actor_pg_reordered_gpu_ids[rollout_offset:]

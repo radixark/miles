@@ -184,6 +184,16 @@ class ClusterConfig(BaseConfig):
             ),
         ),
     ] = "cpu"
+    offload_train_keep_cpu_backup: A[
+        bool,
+        Arg(
+            help=(
+                "With --offload-train-target=cpu, keep the actor's pinned host backup across "
+                "sleep/wake instead of re-pinning it every cycle (needs a torch_memory_saver "
+                "build that reads TMS_KEEP_CPU_BACKUP). Holds that host RAM for the whole run."
+            )
+        ),
+    ] = False
     stream_optimizer_state_to_disk: A[
         bool,
         Arg(

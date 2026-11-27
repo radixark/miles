@@ -1,0 +1,167 @@
+### 0
+mkdir -p -m 700 /root/shared_data/text-to-sql-sqlite-top-r3-nocap/snapshots /root/shared_data/text-to-sql-sqlite-top-r3-nocap/tmp
+
+### 1
+chmod 700 /root/shared_data/text-to-sql-sqlite-top-r3-nocap/snapshots /root/shared_data/text-to-sql-sqlite-top-r3-nocap/tmp
+
+### 2
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 3
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 4
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 5
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "NCCL_ALGO": "Ring", "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0", "CUBLAS_WORKSPACE_CONFIG": ":4096:8", "SGLANG_TOP_GDN_MODE": "chunked", "FLA_DISABLE_BACKEND_DISPATCH": "1", "TEXT_TO_SQL_SQLITE_SNAPSHOT_ROOT": "/root/shared_data/text-to-sql-sqlite-top-r3-nocap/snapshots", "TMPDIR": "/root/shared_data/text-to-sql-sqlite-top-r3-nocap/tmp", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --spec miles_plugins.models.qwen3_5 get_qwen3_5_spec
+  --disable-bias-linear
+  --qk-layernorm
+  --group-query-attention
+  --num-attention-heads 16
+  --num-query-groups 2
+  --kv-channels 256
+  --num-layers 40
+  --hidden-size 2048
+  --ffn-hidden-size 512
+  --normalization RMSNorm
+  --apply-layernorm-1p
+  --position-embedding-type rope
+  --norm-epsilon 1e-6
+  --rotary-percent 0.25
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 248320
+  --rotary-base 10000000
+  --moe-ffn-hidden-size 512
+  --moe-shared-expert-intermediate-size 512
+  --moe-router-score-function softmax
+  --moe-token-dispatcher-type alltoall
+  --moe-router-topk 8
+  --moe-layer-freq '[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]'
+  --num-experts 256
+  --moe-grouped-gemm
+  --moe-token-drop-policy probs
+  --moe-permute-fusion
+  --moe-aux-loss-coeff 0
+  --attention-output-gate
+  --moe-shared-expert-gate
+  --mtp-num-layers 1
+  --hf-checkpoint /root/models/Qwen3.6-35B-A3B
+  --load /root/models/Qwen3.6-35B-A3B
+  --ref-load /root/models/Qwen3.6-35B-A3B 
+  --prompt-data /root/datasets/text-to-sql/train.jsonl
+  --input-key prompt
+  --label-key label
+  --tool-key tools
+  --apply-chat-template
+  --rollout-shuffle
+  --custom-generate-function-path examples.text_to_sql.sql_episode.generate
+  --custom-rm-path examples.text_to_sql.sql_episode.reward_func
+  --reward-key score
+  --num-rollout 60
+  --rollout-batch-size 64
+  --n-samples-per-prompt 16
+  --global-batch-size 1024
+  --rollout-max-response-len 3072
+  --max-seq-len 29696
+  --rollout-temperature 1.0
+  --fully-async
+  --pause-generation-mode retract
+  --update-weights-interval 1
+  --max-weight-staleness 8
+  --async-submit-within-staleness
+  --async-data-buffer-capacity-factor 9
+  --async-unused-samples-handler retry
+  --async-max-consecutive-aborted-groups 64
+  --async-max-concurrent-samples 2048
+  --sglang-enable-prefill-weight-versions
+  --eval-interval 5
+  --eval-prompt-data validation /root/datasets/text-to-sql/validation.jsonl arcwise /root/datasets/text-to-sql/arcwise.jsonl
+  --eval-reward-key correct
+  --n-samples-per-eval-prompt 1
+  --eval-temperature 1e-05
+  --eval-max-response-len 3072 
+  --advantage-estimator grpo
+  --disable-grpo-std-normalization
+  --entropy-coef 0.00
+  --eps-clip 0.2
+  --eps-clip-high 0.28
+  --use-tis
+  --skip-actor-forward-only
+  --tis-clip inf
+  --use-rollout-routing-replay
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --optimizer adam
+  --lr 1e-06
+  --lr-decay-style cosine
+  --min-lr 1e-07
+  --lr-warmup-iters 10
+  --lr-decay-iters 160
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.98 
+  --tensor-model-parallel-size 1
+  --sequence-parallel
+  --pipeline-model-parallel-size 1
+  --context-parallel-size 1
+  --expert-model-parallel-size 8
+  --expert-tensor-parallel-size 1
+  --use-dynamic-batch-size
+  --max-tokens-per-gpu 32768
+  --rollout-num-gpus-per-engine 2
+  --sglang-mem-fraction-static 0.7
+  --sglang-max-running-requests 128
+  --attention-dropout 0.0
+  --hidden-dropout 0.0
+  --accumulate-allreduce-grads-in-fp32
+  --attention-softmax-in-fp32
+  --attention-backend flash
+  --actor-num-nodes 4
+  --actor-num-gpus-per-node 8
+  --num-gpus-per-node 8
+  --rollout-num-gpus 32
+  --pin-rollout-manager-to-head
+  --log-passrate
+  --sglang-cuda-graph-max-bs-decode 64
+  --true-on-policy-mode
+  --deterministic-mode
+  --true-on-policy-contract true_on_policy_v1
+  --spec miles_plugins.top.spec get_top_spec
+  --transformer-impl local
+  --use-cpu-initialization
+  --no-bias-swiglu-fusion
+  --sglang-enable-deterministic-inference
+  --mtp-num-layers 0
+  --attention-backend flash
+  --megatron-to-hf-mode raw
+  --sglang-linear-attn-backend triton
+  --sglang-mamba-ssm-dtype float32
+  --sglang-page-size 128
+  --sglang-mamba-radix-cache-strategy extra_buffer
+  --sglang-mamba-track-interval 128
+  --sglang-sampling-defaults openai
+  --sglang-moe-runner-backend deep_gemm
+  --moe-token-dispatcher-type flex
+  --moe-flex-dispatcher-backend deepep
+  --sglang-moe-a2a-backend deepep
+  --sglang-deepep-mode auto
+  --sglang-deepep-dispatcher-output-dtype bf16
+  --sglang-ep-size 2
+  --sglang-disable-shared-experts-fusion
+  --sglang-enable-dp-attention
+  --sglang-enable-dp-lm-head
+  --sglang-dp-size 2
+  --sglang-moe-dense-tp-size 1 
+  --deploy-component all

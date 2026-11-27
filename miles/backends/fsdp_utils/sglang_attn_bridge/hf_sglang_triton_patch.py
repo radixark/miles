@@ -19,8 +19,7 @@ import torch
 class TritonAttnFunction(torch.autograd.Function):
     """Autograd wrapper: Triton forward + Triton backward.
 
-    This gives us true on-policy (fwd matches inference exactly) while
-    maintaining full gradient flow through q/k/v projections.
+    It keeps full gradient flow through the q/k/v projections.
     The backward uses memory-efficient tiled Triton kernels (no SxS materialization).
     """
 

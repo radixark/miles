@@ -925,6 +925,7 @@ def _weight_update_worker(actor_module: Any, monkeypatch: pytest.MonkeyPatch) ->
     worker.weights_backuper = Mock()
     worker.weights_backuper.get.return_value = dict(worker.model[0].named_parameters())
     monkeypatch.setattr(actor_module, "print_memory", Mock())
+    monkeypatch.setattr(actor_module, "clear_memory", Mock())
     monkeypatch.setattr(actor_module, "get_gloo_group", lambda: None)
     monkeypatch.setattr(actor_module.dist, "barrier", lambda **_kwargs: None)
     return worker

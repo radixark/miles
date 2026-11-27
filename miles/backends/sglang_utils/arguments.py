@@ -156,6 +156,13 @@ def validate_args(args):
     if args.true_on_policy_mode:
         # True on-policy mode overrides the parsed setting to keep inference deterministic.
         args.sglang_enable_deterministic_inference = True
+        # One contract for trainer and serving: --true-on-policy-contract selects both.
+        if args.sglang_true_on_policy_contract not in (None, args.true_on_policy_contract):
+            raise ValueError(
+                f"--sglang-true-on-policy-contract {args.sglang_true_on_policy_contract!r} differs from "
+                f"--true-on-policy-contract {args.true_on_policy_contract!r}; pass only the latter"
+            )
+        args.sglang_true_on_policy_contract = args.true_on_policy_contract
 
     if args.recompute_logprobs_via_prefill:
         # Prefill logprob recomputation overrides both parsed settings for deterministic scoring.

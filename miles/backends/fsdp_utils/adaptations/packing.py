@@ -48,7 +48,7 @@ def hf_attention_packing_kwargs(
 
     ``max_length`` is an int, since FlashAttention-4 rejects HF's tensor, and it covers every segment, since
     the kernel leaves rows past it unwritten. Keeping the pad tail as one segment would raise it, and the
-    kernel's launch plan with it, away from what HF (and true-on-policy's bitwise match) uses.
+    kernel's launch plan with it, away from what HF uses.
     """
     pad = cu_seqlens_host[-1] - cu_seqlens_host[num_documents]
     # on the device from host lengths, so building it never syncs

@@ -8,17 +8,17 @@ from miles.utils.hf_utils.config import load_hf_config
 from miles_plugins.models.deepseek_v4.arguments import is_dsv4_model, normalize_dsv4_args
 from miles_plugins.models.glm5.arguments import normalize_dsa_args
 
-__all__ = ["validate_args", "parse_args", "set_default_megatron_args"]
+__all__ = ["validate_args", "parse_args", "set_default_megatron_args", "admit_true_on_policy_trainer"]
 
 logger = logging.getLogger(__name__)
 
 
 def set_default_megatron_args(args):
-    if args.true_on_policy_mode:
-        raise NotImplementedError(
-            "--true-on-policy-mode is not supported on the megatron backend with this Megatron "
-            "version; support lands in a follow-up PR. Use --train-backend fsdp for true-on-policy."
-        )
+    if args.true_on_policy_mode or args.true_on_policy_contract or _is_top_spec(args):
+        # TOP modules load SGLang's true-on-policy package, which ordinary runs do not require.
+        from miles.true_on_policy.contracts import select_true_on_policy
+
+        select_true_on_policy(args)
     # Muon currently owns its sharding path, and Megatron's distributed optimizer
     # only supports Adam-family optimizers.
     args.use_distributed_optimizer = (
@@ -56,6 +56,15 @@ def set_default_megatron_args(args):
 
     if is_dsv4_model(args):
         normalize_dsv4_args(args)
+    elif _is_top_dsv4(args):
+        # The TOP spec builds DS4 / DS4.1 layers itself and shares only Megatron's mHC switch with the plugin spec.
+        args.enable_hyper_connections = True
+        if args.context_parallel_size > 1 and args.cp_comm_type is None:
+            # TOP DS4 attention all-gathers the CP chunks itself; Megatron's local layers then require all_gather.
+            args.cp_comm_type = ["all_gather"]
+    elif _is_top_spec(args) and args.context_parallel_size > 1 and args.cp_comm_type is None:
+        # TOP attention gathers keys over CP itself; the TOP spec's local (non-TE) layers then require all_gather.
+        args.cp_comm_type = ["all_gather"]
 
     if args.dsa_impl == "megatron":
         normalize_dsa_args(args, load_hf_config(args.hf_checkpoint))
@@ -63,3 +72,60 @@ def set_default_megatron_args(args):
         args.cp_comm_type = ["p2p"]
 
     return args
+
+
+def _is_top_spec(args) -> bool:
+    spec = args.spec
+    return bool(spec) and spec[0] == "miles_plugins.top.spec"
+
+
+def _refuse_top_gdn_paths(args) -> None:
+    """Paths Qwen GDN TOP has no program for: each would fail or train wrong after launch."""
+    from miles.backends.megatron_utils.model import _top_deferred_lm_head
+
+    if args.recompute_loss_function and _top_deferred_lm_head(args):
+        raise NotImplementedError(
+            "[top] --recompute-loss-function checkpoints the loss on tensor inputs, but GDN TOP hands it the "
+            "deferred LM head's rows (TopDeferredLogits), so the policy loss would get no gradient; drop the flag"
+        )
+    if args.megatron_to_hf_mode == "bridge":
+        raise NotImplementedError(
+            "[top] Qwen GDN TOP converts its local-spec weights with the raw converter only (weight sync and "
+            "--save-hf); use --megatron-to-hf-mode raw"
+        )
+
+
+def admit_true_on_policy_trainer(args) -> None:
+    """Refuse an unadmitted TOP model or trainer layout before any process starts; get_top_spec re-checks the build."""
+    if not args.true_on_policy_mode:
+        return
+    from miles.true_on_policy.args import refuse_unreplayable_routing
+    from miles.true_on_policy.gdn import default_serving_context_length, is_top_gdn, require_gdn_program
+    from miles_plugins.top.fp8_config import checkpoint_is_block_fp8
+    from miles_plugins.top.registry import TrainerLayout, admit_trainer
+
+    if not args.hf_checkpoint:
+        raise ValueError("--true-on-policy-mode needs --hf-checkpoint, whose model_type names the TOP family")
+    if args.use_session_server and is_top_gdn(args):
+        raise NotImplementedError("[top] no Qwen GDN TOP gate runs session rollouts (--use-session-server) yet")
+    if is_top_gdn(args):
+        require_gdn_program()
+        _refuse_top_gdn_paths(args)
+        default_serving_context_length(args)
+    family = admit_trainer(
+        load_hf_config(args.hf_checkpoint).model_type,
+        TrainerLayout.from_args(args),
+        fp8=checkpoint_is_block_fp8(args.hf_checkpoint),
+        vision=args.multimodal_keys is not None,
+    )
+    refuse_unreplayable_routing(args, family=family)
+
+
+def _is_top_dsv4(args) -> bool:
+    """A TOP DeepSeek-V4 or V4.1 run: both build their mHC layers on Megatron's hyper-connection switch."""
+    if not _is_top_spec(args):
+        return False
+    model_type = getattr(
+        load_hf_config(args.hf_checkpoint), "model_type", None
+    )  # config-access-exempt: third-party HF configurations may omit model_type
+    return model_type in ("deepseek_v4", "deepseek_v41")

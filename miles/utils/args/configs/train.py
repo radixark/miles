@@ -36,7 +36,24 @@ class TrainConfig(BaseConfig):
             ),
         ),
     ] = "te"
-    true_on_policy_mode: A[bool, Arg(help="Whether to enable true-on-policy mode.")] = False
+    true_on_policy_mode: A[
+        bool,
+        Arg(
+            help=(
+                "Enable true on-policy (Megatron only); selects the true_on_policy_v1 contract and "
+                "--spec miles_plugins.top.spec get_top_spec."
+            )
+        ),
+    ] = False
+    true_on_policy_contract: A[
+        str | None,
+        Arg(
+            help=(
+                "Shared runtime contract for trainer and serving (true_on_policy_v1, the default under "
+                "--true-on-policy-mode); it also selects the engines' --sglang-true-on-policy-contract."
+            )
+        ),
+    ] = None
     train_env_vars: A[
         Any,
         Arg(

@@ -72,6 +72,13 @@ class DSASelfAttentionSubmodules:
     weights_proj: ModuleSpec | type = None
 
 
+def _top_glm_ops(config):
+    """The TOP spec's GLM ops (miles_plugins.top.glm_ops), which it attaches to the TransformerConfig; None natively."""
+    return getattr(
+        config, "top_glm_ops", None
+    )  # config-access-exempt: only the TOP spec attaches top_glm_ops to the TransformerConfig
+
+
 class DSAMultiLatentAttention(Attention):
     """Multi-Latent Attention layer abstract class.
 
@@ -117,13 +124,20 @@ class DSAMultiLatentAttention(Attention):
         )
         self.qkv_up_checkpoint = None
 
+        top_ops = _top_glm_ops(config)
+        rope_init_kwargs = {} if top_ops is None else top_ops.rope_init_kwargs(self.config)
         mscale = _yarn_get_mscale(self.config.rotary_scaling_factor, self.config.mscale)
         self.softmax_scale = mscale * mscale / math.sqrt(self.q_head_dim)
+        self._sparse_mla = None if top_ops is None else top_ops.sparse_mla
+        if top_ops is not None:
+            # Hands this layer's index selection on unchanged; a module, so the dumper can capture it.
+            self.top_index_selection = torch.nn.Identity()
 
         if self.config.rope_type == "rope":
             self.rotary_pos_emb = RotaryEmbedding(
                 self.config.qk_pos_emb_head_dim,
                 rotary_percent=self.config.rotary_percent,
+                **rope_init_kwargs,
                 rotary_base=self.config.rotary_base,
                 cp_group=self.pg_collection.cp,
             )
@@ -131,6 +145,7 @@ class DSAMultiLatentAttention(Attention):
 
             self.rotary_pos_emb = YarnRotaryEmbedding(
                 self.config.qk_pos_emb_head_dim,
+                **rope_init_kwargs,
                 rotary_base=self.config.rotary_base,
                 scaling_factor=self.config.rotary_scaling_factor,
                 original_max_position_embeddings=self.config.original_max_position_embeddings,
@@ -160,7 +175,9 @@ class DSAMultiLatentAttention(Attention):
             tp_group=self.pg_collection.tp,
         )
 
-        self.index_topk = 2048
+        self.index_topk = getattr(
+            self.config, "index_topk", 2048
+        )  # config-access-exempt: index_topk is a model-specific TransformerConfig extension set by get_glm5_spec
         self.topk_backend = topk_backend
         indexer_replay_manager.register_to_module(self, "indexer_replay", stream_idx=self.layer_number - 1)
 
@@ -235,24 +252,40 @@ class DSAMultiLatentAttention(Attention):
 
         def fused_select_topk(index_q, index_k, w, starts, ends, block_size=8192):
             seq_len = index_q.shape[0]
+            top_ops = _top_glm_ops(self.config)
             # replay records one topk tensor per layer-forward; don't split it
             if indexer_replay_manager.enabled:
                 block_size = seq_len
+            elif top_ops is not None:
+                block_size = top_ops.select_block_rows(index_k.shape[0], block_size)
             topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(self.topk_backend), return_probs=False)
             topk_indices = []
             for start in range(0, seq_len, block_size):
                 end = min(start + block_size, seq_len)
                 starts_block = starts[start:end].to(torch.int32)
                 ends_block = ends[start:end].to(torch.int32)
-                logits = indexer_logits(
-                    index_q[start:end],
-                    index_k,
-                    w[start:end],
-                    starts_block,
-                    ends_block,
-                    clean_logits=self.topk_backend != "canonical",
-                )
-                topk_indices.append(topk_fn(logits, self.index_topk, starts_block, ends_block))
+                if top_ops is not None:
+                    _, topk_indices_block = top_ops.select_indices(
+                        index_q[start:end],
+                        index_k,
+                        w[start:end].squeeze(-1),
+                        starts_block,
+                        ends_block,
+                        self.index_topk,
+                        topk_backend=self.topk_backend,
+                        replay_enabled=indexer_replay_manager.enabled,
+                    )
+                else:
+                    logits = indexer_logits(
+                        index_q[start:end],
+                        index_k,
+                        w[start:end],
+                        starts_block,
+                        ends_block,
+                        clean_logits=self.topk_backend != "canonical",
+                    )
+                    topk_indices_block = topk_fn(logits, self.index_topk, starts_block, ends_block)
+                topk_indices.append(topk_indices_block)
             return torch.cat(topk_indices, dim=0).unsqueeze(1)
 
         if self.index_share:
@@ -297,13 +330,17 @@ class DSAMultiLatentAttention(Attention):
             ends = scatter_to_sequence_parallel_region(ends, group=parallel_state.get_context_parallel_group())
             topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
 
-        core_attn_out = sparse_attention(
-            q.unsqueeze(0),
-            kv.unsqueeze(0),
-            topk_indices.unsqueeze(0),
-            self.softmax_scale,
-            d_v=self.config.kv_lora_rank,
-        ).squeeze(0)
+        if self._sparse_mla is None:
+            core_attn_out = sparse_attention(
+                q.unsqueeze(0),
+                kv.unsqueeze(0),
+                topk_indices.unsqueeze(0),
+                self.softmax_scale,
+                d_v=self.config.kv_lora_rank,
+            ).squeeze(0)
+        else:
+            topk_indices = self.top_index_selection(topk_indices)
+            core_attn_out, _ = self._sparse_mla.apply(q, kv, topk_indices, self.softmax_scale)
         core_attn_out = torch.einsum("thm,hdm->thd", core_attn_out, wv)
 
         core_attn_out = core_attn_out.reshape(core_attn_out.size(0), 1, -1)
@@ -452,16 +489,22 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
             bias=False,
             skip_bias_add=False,
             is_expert=False,
-            parallel_mode="duplicated",
             skip_weight_param_allocation=False,
         )
+
+        def indexer_kwargs(module):
+            if _top_glm_ops(self.config) is None or module is TELinear:
+                return {**indexer_linear_kwargs, "parallel_mode": "duplicated"}
+            if module is Linear:
+                return indexer_linear_kwargs
+            raise ValueError(f"Unsupported indexer linear: {module}")
 
         self.wq_b = build_module(
             submodules.wq_b,
             input_size=self.config.q_lora_rank,
             output_size=self.config.index_num_attention_heads * self.config.index_head_dim,
             tp_comm_buffer_name="wq_b",
-            **indexer_linear_kwargs,
+            **indexer_kwargs(submodules.wq_b),
         )
         self.wq_b.weight._skip_gather = True
 
@@ -471,7 +514,7 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
             input_size=self.config.hidden_size,
             output_size=self.config.index_head_dim,
             tp_comm_buffer_name="wk",
-            **indexer_linear_kwargs,
+            **indexer_kwargs(submodules.wk),
         )
 
         # Build key normalization
@@ -494,7 +537,7 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
             input_size=self.config.hidden_size,
             output_size=self.config.index_num_attention_heads,
             tp_comm_buffer_name="weights_proj",
-            **indexer_linear_kwargs,
+            **indexer_kwargs(submodules.weights_proj),
         )
         self.weights_proj.weight._skip_gather = True
 
@@ -512,6 +555,13 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
                     self, name
                 ):  # config-access-exempt: skip layers delete optional submodules by registered names
                     delattr(self, name)
+        elif _top_glm_ops(self.config) is not None:
+            # TOP selects from serving's FP8 index logits and drops their scores, so the indexer gets no gradient;
+            # frozen, as on the native DSA path without its loss, so weight decay does not move it either.
+            for name in _INDEXER_SUBMODULE_NAMES:
+                getattr(self, name).requires_grad_(
+                    False
+                )  # config-access-exempt: attribute selected at runtime from a table of names
 
     def get_absorb_query_key_value_tensors(
         self,
@@ -547,7 +597,10 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         # QKV down projection and layernorm
         # =========================================
 
-        # down proj are `TELinear`s, so the output is gathered and not TP-partitioned.`
+        # Down projections are replicated, so their outputs are not TP-partitioned.
+        top_ops = _top_glm_ops(self.config)
+        if top_ops is not None:
+            hidden_states = top_ops.match_linear_dtype(hidden_states, self.linear_q_down_proj)
         q_compressed, _ = self.linear_q_down_proj(hidden_states)
         q_compressed = q_compressed.squeeze(1)
 
@@ -563,6 +616,8 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         # absorb
         # =========================================
         q_compressed = self.q_layernorm(q_compressed)
+        if top_ops is not None:
+            q_compressed = top_ops.match_linear_dtype(q_compressed, self.linear_q_up_proj)
         q, _ = self.linear_q_up_proj(q_compressed)
         q = q.view(*q.size()[:-1], self.num_attention_heads_per_partition, self.q_head_dim)
         q_no_pe, q_pos_emb = torch.split(q, [self.config.qk_head_dim, self.config.qk_pos_emb_head_dim], dim=-1)
@@ -575,13 +630,24 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         # absorb
         q_no_pe = torch.einsum("thd,hdm->thm", q_no_pe, w_kc)
 
-        # use scatter and gather here, to make the kv grad all reduce in tp
-        kv_compressed = torch.nn.functional.rms_norm(
-            kv_compressed.float(),
-            normalized_shape=(kv_compressed.shape[-1],),
-            weight=self.linear_kv_up_proj.layer_norm_weight.float(),
-            eps=self.config.layernorm_epsilon,
-        ).to(kv_compressed.dtype)
+        # Fused linear modules store the KV norm weight; normalize explicitly
+        # because this absorbed path only reads their projection weights.
+        # The local path already applied kv_layernorm above. Its placement is
+        # supported here only with TP1 and sequence parallelism disabled.
+        if top_ops is None or hasattr(
+            self.linear_kv_up_proj, "layer_norm_weight"
+        ):  # config-access-exempt: module variants differ in whether they define layer_norm_weight
+            kv_compressed = torch.nn.functional.rms_norm(
+                kv_compressed.float(),
+                normalized_shape=(kv_compressed.shape[-1],),
+                weight=self.linear_kv_up_proj.layer_norm_weight.float(),
+                eps=self.config.layernorm_epsilon,
+            ).to(kv_compressed.dtype)
+        else:
+            assert not self.config.sequence_parallel and self.config.tensor_model_parallel_size == 1, (
+                "unfused kv norm assumes tp=1 with sequence parallel off, so the gathers around it "
+                "are identities; at tp>1 the norm must stay here to keep the kv grad all-reduce"
+            )
 
         k_pos_emb = gather_from_sequence_parallel_region(k_pos_emb, group=parallel_state.get_context_parallel_group())
         kv_compressed = gather_from_sequence_parallel_region(
@@ -589,9 +655,9 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         )
 
         def fuse_rope(q, cu_seqlens, gathered=False, interleaved=True):
-            # worse precision than apex.
-            # from megatron.core.extensions.transformer_engine import fused_apply_rotary_pos_emb_thd
-            from apex.transformer.functional import fused_apply_rotary_pos_emb_thd
+            if top_ops is not None:
+                return top_ops.rotary(q, cu_seqlens, self.config.rotary_base, interleaved, gathered=gathered)
+            from apex.transformer.functional import fused_apply_rotary_pos_emb_thd as fused_glm_rope
 
             if interleaved:
                 # mla use rope interleave
@@ -600,17 +666,17 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
                 t = torch.cat((x1, x2), dim=-1)
             else:
                 t = q
-            # TODO remove copy here
-            # fuse rope not support this way rope (diff with cp)
+
             if gathered:
-                return fused_apply_rotary_pos_emb_thd(t, cu_seqlens, rotary_pos_emb.squeeze(0))
+                out = fused_glm_rope(t, cu_seqlens, rotary_pos_emb.squeeze(0))
             else:
                 seq_len = q.shape[0]
                 cp_size = parallel_state.get_context_parallel_world_size()
                 cp_rank = parallel_state.get_context_parallel_rank()
                 t = t.repeat(cp_size, 1, 1)
-                out = fused_apply_rotary_pos_emb_thd(t, cu_seqlens, rotary_pos_emb.squeeze(0))
-                return out[cp_rank * seq_len : (cp_rank + 1) * seq_len]
+                out = fused_glm_rope(t, cu_seqlens, rotary_pos_emb.squeeze(0))
+                out = out[cp_rank * seq_len : (cp_rank + 1) * seq_len]
+            return out
 
         q_pos_emb = fuse_rope(q_pos_emb, cu_seqlens_q, gathered=False, interleaved=True)
         k_pos_emb = fuse_rope(k_pos_emb, cu_seqlens_kv, gathered=True, interleaved=True)
@@ -631,13 +697,15 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         # =========================================
         # Project queries and keys
         q_compressed = q_compressed.detach()
-        # The query RMSNorm is fused into linear_q_up_proj, so q_compressed
-        # still holds its unnormalized input. Share the norm with the indexer
-        # without sending indexer gradients into the attention parameters.
-        q_norm_weight = self.linear_q_up_proj.layer_norm_weight.detach()
-        if self.config.layernorm_zero_centered_gamma:
-            q_norm_weight = q_norm_weight.float() + 1
-        q_compressed = rms_norm(q_compressed, q_norm_weight, self.config.layernorm_epsilon)
+        top_ops = _top_glm_ops(self.config)
+        if top_ops is None:
+            # The query RMSNorm is fused into linear_q_up_proj, so q_compressed
+            # still holds its unnormalized input. Share the norm with the indexer
+            # without sending indexer gradients into the attention parameters.
+            q_norm_weight = self.linear_q_up_proj.layer_norm_weight.detach()
+            if self.config.layernorm_zero_centered_gamma:
+                q_norm_weight = q_norm_weight.float() + 1
+            q_compressed = rms_norm(q_compressed, q_norm_weight, self.config.layernorm_epsilon)
         hidden_states = hidden_states.detach()
         rotary_pos_emb = rotary_pos_emb.detach()
 
@@ -649,18 +717,27 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
             index_q = gather_from_sequence_parallel_region(index_q)
 
         index_k, _ = self.wk(hidden_states)
-        index_k = self.k_norm(index_k.squeeze(1).float()).bfloat16()
+        index_k = index_k.squeeze(1)
+        if (
+            top_ops is None or getattr(self.k_norm, "backend_name", None) != "sglang"
+        ):  # config-access-exempt: module variants differ in whether they define backend_name
+            index_k = index_k.float()
+        index_k = self.k_norm(index_k).bfloat16()
 
         if self.config.sequence_parallel:
             index_k = gather_from_sequence_parallel_region(index_k)
         index_k = gather_from_sequence_parallel_region(index_k, group=parallel_state.get_context_parallel_group())
         index_k = index_k.unsqueeze(1)  # [total_tokens, 1, head_dim]
 
-        # head_weights, _ = self.weights_proj(hidden_states.float())
-        head_weights = WeightLinearFunction.apply(hidden_states, self.weights_proj.weight, None, torch.float32)
-        head_weights = head_weights.squeeze(1) * (
-            (self.config.index_num_attention_heads**-0.5) * (self.config.index_head_dim**-0.5)
-        )  # [total_tokens, index_num_attention_heads_per_partition]
+        if top_ops is not None:
+            # TOP's indexer applies head_dim**-0.5 with the query quantization scale, as serving does.
+            head_weights = top_ops.head_weights(hidden_states, self.weights_proj.weight)
+            head_weights = head_weights.squeeze(1) * (self.config.index_num_attention_heads**-0.5)
+        else:
+            head_weights = WeightLinearFunction.apply(hidden_states, self.weights_proj.weight, None, torch.float32)
+            head_weights = head_weights.squeeze(1) * (
+                (self.config.index_num_attention_heads**-0.5) * (self.config.index_head_dim**-0.5)
+            )  # [total_tokens, index_num_attention_heads_per_partition]
         if self.config.sequence_parallel:
             head_weights = gather_from_sequence_parallel_region(head_weights)
 
@@ -763,15 +840,20 @@ def get_glm5_spec(args, config, vp_stage):
     # store indexer weights on a subset of "computing" layers (e.g. GLM-5.2). When absent,
     # every layer computes its own top-k (plain DSA) and DSAMLASelfAttention runs the
     # non-shared path.
+    config.index_topk = (
+        getattr(hf_config, "index_topk", 2048) or 2048
+    )  # config-access-exempt: HF checkpoints may omit the indexer top-k width
     config.index_topk_freq = (
         getattr(hf_config, "index_topk_freq", 1) or 1
     )  # config-access-exempt: HF checkpoints may omit index sharing frequency
     config.index_skip_topk_offset = (
         getattr(hf_config, "index_skip_topk_offset", 0) or 0
     )  # config-access-exempt: HF checkpoints may omit index sharing offsets
-    # Define the decoder block spec
+    # Use the same backend for the decoder block and its attention submodules.
+    top_ops = _top_glm_ops(config)
+    use_transformer_engine = top_ops is None or args.backend.transformer_impl == "transformer_engine"
     kwargs = {
-        "use_transformer_engine": True,
+        "use_transformer_engine": use_transformer_engine,
     }
     if vp_stage is not None:
         kwargs["vp_stage"] = vp_stage
@@ -802,7 +884,14 @@ def get_glm5_spec(args, config, vp_stage):
                     f"{config.index_topk_freq}, index_skip_topk_offset={config.index_skip_topk_offset})."
                 )
 
-    backend = TESpecProvider()
+    if use_transformer_engine:
+        backend = TESpecProvider()
+    else:
+        backend = top_ops.local_spec_provider()
+
+    # Expose standalone norms when the backend does not fuse norm and projection.
+    fused_ln_linear = backend.column_parallel_layer_norm_linear()
+    fuse_norm_linear = fused_ln_linear is not None and backend.fuse_layernorm_and_linear()
 
     self_attn_module_spec = ModuleSpec(
         module=DSAMLASelfAttention,
@@ -812,13 +901,13 @@ def get_glm5_spec(args, config, vp_stage):
         },
         submodules=DSASelfAttentionSubmodules(
             linear_q_down_proj=backend.linear(),
-            linear_q_up_proj=backend.column_parallel_layer_norm_linear(),
+            linear_q_up_proj=fused_ln_linear if fuse_norm_linear else backend.column_parallel_linear(),
             linear_kv_down_proj=backend.linear(),
-            linear_kv_up_proj=backend.column_parallel_layer_norm_linear(),
+            linear_kv_up_proj=fused_ln_linear if fuse_norm_linear else backend.column_parallel_linear(),
             core_attention=backend.core_attention(),
             linear_proj=backend.row_parallel_linear(),
-            q_layernorm=IdentityOp,
-            kv_layernorm=IdentityOp,
+            q_layernorm=IdentityOp if fuse_norm_linear else backend.layer_norm(rms_norm=True),
+            kv_layernorm=IdentityOp if fuse_norm_linear else backend.layer_norm(rms_norm=True),
             linear_v_up_proj=IdentityOp,
             wq_b=backend.linear(),
             wk=backend.linear(),

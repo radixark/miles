@@ -20,7 +20,7 @@ miles/
 │   ├── ray/                  # Ray actors, placement groups, the train and rollout groups
 │   ├── rollout/              # rollout functions, data source, filters, fully-async buffer
 │   ├── router/               # Miles Router (FastAPI proxy in router.py)
-│   ├── true_on_policy/       # true-on-policy contracts and model profiles
+│   ├── true_on_policy/       # true-on-policy contract selection
 │   └── utils/                # arguments.py, async / IO / distributed helpers, audit utils
 ├── miles_plugins/            # opt-in plugins, imported by name from flags
 │   ├── models/               # per-architecture Megatron specs and HF wrappers

@@ -199,8 +199,26 @@ def _wire_message(message: dict[str, Any]) -> dict[str, Any]:
         whitespace = message[CONTENT_LEADING_WHITESPACE_KEY]
         message = {k: v for k, v in message.items() if k != CONTENT_LEADING_WHITESPACE_KEY}
         message["content"] = whitespace + message["content"]
+    if isinstance(message.get("content"), list):
+        message = {**message, "content": [_wire_block(block) for block in message["content"]]}
     # sglang's chat endpoint renders a null content as "".
     return message if message.get("content") is not None else {**message, "content": ""}
+
+
+# deepseek-recipe takes http(s) and data URLs only, and renders any image as its placeholder alone.
+_RENDERED_IMAGE_URL_PREFIXES = ("http://", "https://", "data:")
+_PLACEHOLDER_IMAGE_URL = "data:image/png;base64,"
+
+
+def _wire_block(block: Any) -> Any:
+    """An image block of miles' datasets (``{"type": "image", "image": ref}``) as the OpenAI ``image_url`` block
+    deepseek-recipe takes. The prompt text only needs the placeholder, so a reference recipe cannot parse (a file
+    path) renders through an empty data URL; the engine loads the media from the sample's own references."""
+    if isinstance(block, dict) and block.get("type") == "image" and "image" in block:
+        ref = str(block["image"])
+        url = ref if ref.startswith(_RENDERED_IMAGE_URL_PREFIXES) else _PLACEHOLDER_IMAGE_URL
+        return {"type": "image_url", "image_url": {"url": url}}
+    return block
 
 
 def _tool_payload(tool: dict[str, Any]) -> dict[str, Any]:

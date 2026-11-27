@@ -1,85 +1,38 @@
-from __future__ import annotations
-
-from dataclasses import dataclass
-
-from .schema import (
-    QWEN3_DENSE_TRUE_ON_POLICY_V1_SCHEMA,
-    KernelContract,
-    LogprobContract,
-    ModelFamily,
-    TrueOnPolicyContractName,
-    TrueOnPolicyContractSchema,
-)
+TOP_SPEC = ("miles_plugins.top.spec", "get_top_spec")
 
 
-@dataclass(frozen=True)
-class TrueOnPolicyContract:
-    """Internal parity contract selected by Miles and implemented by each backend."""
+def _contract_v1() -> str:
+    # Deferred: SGLang's true-on-policy package is required only by runs that select a TOP contract.
+    from sglang.srt.true_on_policy.contracts import TRUE_ON_POLICY_V1
 
-    schema: TrueOnPolicyContractSchema
-
-    @property
-    def name(self) -> TrueOnPolicyContractName:
-        return self.schema.name
-
-    @property
-    def model_family(self) -> ModelFamily:
-        return self.schema.model_family
-
-    @property
-    def required_kernel_contracts(self) -> tuple[KernelContract, ...]:
-        return self.schema.required_kernel_contracts
-
-    @property
-    def logprob_contract(self) -> LogprobContract:
-        return self.schema.logprob_contract
-
-    @property
-    def sglang_attention_backend(self) -> str:
-        return self.schema.sglang_attention_backend
-
-    @property
-    def fsdp_attention_implementation(self) -> str:
-        return self.schema.fsdp_attention_implementation
-
-    @property
-    def disable_megatron_sequence_parallel(self) -> bool:
-        return self.schema.disable_megatron_sequence_parallel
-
-    def kernel_policy_kwargs_for(
-        self,
-        *,
-        train_backend: str,
-        sglang_target: str,
-    ) -> dict[str, object]:
-        uses_megatron = train_backend == "megatron"
-        uses_tp_invariant_rollout = sglang_target == "fsdp_tp"
-        return {
-            "deterministic_inference": True,
-            "deterministic_training": True,
-            "sglang_attention_backend": self.sglang_attention_backend,
-            "megatron_uses_sglang_backend": uses_megatron,
-            "disable_rope_fusion": uses_megatron,
-            "disable_bias_swiglu_fusion": uses_megatron,
-            "batch_invariant_mode": uses_megatron,
-            "tp_invariant_row_linear": uses_tp_invariant_rollout,
-            "deterministic_tp_allreduce": uses_tp_invariant_rollout,
-        }
+    return TRUE_ON_POLICY_V1
 
 
-QWEN3_DENSE_TRUE_ON_POLICY_V1 = TrueOnPolicyContract(
-    schema=QWEN3_DENSE_TRUE_ON_POLICY_V1_SCHEMA,
-)
+def select_true_on_policy(args) -> None:
+    """``--true-on-policy-mode`` is the one switch: it selects the only contract and the TOP block spec.
+
+    ``--true-on-policy-contract`` also turns TOP on. Both may still be spelled out, but only with these values, so
+    the trainer spec, the trainer mode and the engines' contract are on or off together.
+    """
+    spec = args.spec
+    contract = args.true_on_policy_contract
+    if not (args.true_on_policy_mode or contract):
+        if spec is not None and tuple(spec) == TOP_SPEC:
+            raise ValueError("--spec miles_plugins.top.spec get_top_spec needs --true-on-policy-mode")
+        return
+    v1 = _contract_v1()
+    if contract not in (None, v1):
+        raise ValueError(f"unknown --true-on-policy-contract {contract!r}; the only contract is {v1}")
+    if spec is not None and tuple(spec) != TOP_SPEC:
+        raise ValueError(f"--true-on-policy-mode builds the TOP block spec; remove --spec {' '.join(spec)}")
+    args.true_on_policy_mode = True
+    args.true_on_policy_contract = v1
+    args.spec = list(TOP_SPEC)
 
 
-_CONTRACT_BY_NAME = {
-    QWEN3_DENSE_TRUE_ON_POLICY_V1.name: QWEN3_DENSE_TRUE_ON_POLICY_V1,
-}
-
-
-def get_true_on_policy_contract(name: str) -> TrueOnPolicyContract:
-    try:
-        return _CONTRACT_BY_NAME[name]
-    except KeyError as exc:
-        supported = ", ".join(sorted(_CONTRACT_BY_NAME))
-        raise ValueError(f"Unsupported true-on-policy contract {name!r}. Supported contracts: {supported}") from exc
+def uses_true_on_policy_v1(args) -> bool:
+    """Whether the run selected the v1 contract with ``--true-on-policy-contract``."""
+    contract = getattr(
+        args, "true_on_policy_contract", None
+    )  # config-access-exempt: weight converters and tools pass partial namespaces that carry no TOP contract
+    return contract is not None and contract == _contract_v1()

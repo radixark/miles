@@ -124,6 +124,7 @@ class DumperMegatronUtil:
         )
         if self.enabled:
             dumper.register_non_intrusive_dumper(self._extract_model(model))
+            _keep_recompute_on_forward_step()
 
     def wrap_forward_step(self, forward_step_func: Callable) -> Callable:
         if not self.enabled:
@@ -182,12 +183,13 @@ class DumperMegatronUtil:
         }
 
         # Only write dump files on effective DP rank 0 (covers both intra-DP
-        # and indep-DP). Other DP ranks still participate in dumper collectives
+        # and indep-DP) unless --dumper-every-dp-rank. Other DP ranks still participate in dumper collectives
         # (barrier, broadcast, allgather) but don't produce output files.
         # TODO: optimize — non-DP-rank-0 ranks currently run full dumper logic
         # (forward hooks, model iteration) without producing output.
         if get_parallel_state().effective_dp.rank != 0:
-            merged["enable_output_file"] = False
+            if not args.dumper_every_dp_rank:
+                merged["enable_output_file"] = False
             merged["enable_output_console"] = False
 
         full_config = DumperConfig(**merged)
@@ -298,6 +300,37 @@ def _wrap_forward_step_with_stepping(forward_step_func: Callable) -> Callable:
         return forward_step_func(*args, **kwargs)
 
     return _wrapped
+
+
+def _keep_recompute_on_forward_step() -> None:
+    """Dump an activation-recompute forward, and the backward through it, under the step of the forward it repeats.
+
+    The dumper's step advances at every microbatch forward. Under pipeline 1F1B a stage runs later microbatches'
+    forwards before an earlier one's backward, so without this the recompute (and every gradient hook registered on
+    its tensors) would be tagged with the latest forward's step. Covers Megatron's full recompute (`CheckpointFunction`).
+    """
+    from megatron.core.tensor_parallel.random import CheckpointFunction
+
+    if getattr(
+        CheckpointFunction, "_dumper_step_kept", False
+    ):  # config-access-exempt: module variants differ in whether they define _dumper_step_kept
+        return
+    forward, backward = CheckpointFunction.forward, CheckpointFunction.backward
+
+    def forward_keeping_step(ctx, *args):
+        ctx.dumper_step = dumper._state.step
+        return forward(ctx, *args)
+
+    def backward_on_forward_step(ctx, *grads):
+        current, dumper._state.step = dumper._state.step, ctx.dumper_step
+        try:
+            return backward(ctx, *grads)
+        finally:
+            dumper._state.step = current
+
+    CheckpointFunction.forward = staticmethod(forward_keeping_step)
+    CheckpointFunction.backward = staticmethod(backward_on_forward_step)
+    CheckpointFunction._dumper_step_kept = True
 
 
 # ------------------------------- Common -------------------------------------

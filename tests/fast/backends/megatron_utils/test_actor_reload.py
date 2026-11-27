@@ -216,6 +216,74 @@ def test_auxiliary_load_restores_arguments_after_failure(actor_module, monkeypat
     worker.weights_backuper.backup.assert_not_called()
 
 
+def test_top_fp8_auxiliary_load_of_the_installed_hf_checkpoint_keeps_the_installed_masters(
+    actor_module, monkeypatch, tmp_path
+):
+    """The model provider installed --hf-checkpoint as TOP FP8 masters; the HF loader would misread its FP8 bytes."""
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    (hf / "config.json").write_text("{}")
+    args = _args(tmp_path, load=str(hf))
+    worker = _actor(actor_module, role="actor", args=args)
+    worker.weights_backuper = Mock()
+    load = Mock()
+    monkeypatch.setattr(actor_module, "load_checkpoint", load)
+    monkeypatch.setattr(actor_module, "installed_hf_checkpoint", lambda: str(hf))
+    monkeypatch.setattr(actor_module, "holds_installed_hf_checkpoint", lambda: True)
+    worker._active_model_tag = "actor"
+
+    worker.load_other_checkpoint("ref", str(hf))
+
+    load.assert_not_called()
+    worker.weights_backuper.restore.assert_not_called()
+    worker.weights_backuper.backup.assert_called_once_with("ref")
+
+
+def test_top_fp8_auxiliary_load_of_the_installed_hf_checkpoint_after_a_megatron_ref_backs_up_the_actor(
+    actor_module, monkeypatch, tmp_path
+):
+    """A Megatron ref load left the ref's weights in the model; the old actor (HF --load) is the actor's install."""
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    (hf / "config.json").write_text("{}")
+    ref = _write_checkpoint(tmp_path / "ref", iteration=3)
+    args = _args(tmp_path, load=str(hf), offload_train=True)
+    worker = _actor(actor_module, role="actor", args=args)
+    worker.weights_backuper = Mock(backup_tags=["actor"])
+    monkeypatch.setattr(actor_module, "load_checkpoint", Mock())
+    monkeypatch.setattr(actor_module, "weights_changed", lambda: None)
+    monkeypatch.setattr(actor_module, "installed_hf_checkpoint", lambda: str(hf))
+    monkeypatch.setattr(actor_module, "holds_installed_hf_checkpoint", lambda: True)
+    worker._active_model_tag = "actor"
+
+    worker.load_other_checkpoint("ref", ref)
+    worker.load_other_checkpoint("old_actor", str(hf))
+
+    worker.weights_backuper.restore.assert_called_once_with("actor")
+    assert [c.args for c in worker.weights_backuper.backup.call_args_list] == [("ref",), ("old_actor",)]
+    assert worker._active_model_tag == "old_actor"
+
+
+@pytest.mark.parametrize("case", ["other-hf", "actor-replaced"])
+def test_top_fp8_auxiliary_load_refuses_hf_weights_the_model_does_not_hold(actor_module, monkeypatch, tmp_path, case):
+    """``actor-replaced``: an optimizer step or a Megatron load (a resume or a peer heal, whatever the startup
+    --load said) replaced the install, so a skipped ref load would back up the resumed actor as the ref."""
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    other = tmp_path / "other-hf"
+    other.mkdir()
+    args = _args(tmp_path, load=str(hf))
+    worker = _actor(actor_module, role="actor", args=args)
+    worker.weights_backuper = Mock()
+    monkeypatch.setattr(actor_module, "load_checkpoint", Mock())
+    monkeypatch.setattr(actor_module, "installed_hf_checkpoint", lambda: str(hf))
+    monkeypatch.setattr(actor_module, "holds_installed_hf_checkpoint", lambda: case != "actor-replaced")
+
+    with pytest.raises(NotImplementedError, match="pass a Megatron checkpoint"):
+        worker.load_other_checkpoint("ref", str(other if case == "other-hf" else hf))
+    worker.weights_backuper.backup.assert_not_called()
+
+
 @pytest.mark.parametrize("recovering", [False, True])
 def test_peer_recovery_does_not_inherit_startup_checkpoint_selection(actor_module, monkeypatch, tmp_path, recovering):
     args = _args(

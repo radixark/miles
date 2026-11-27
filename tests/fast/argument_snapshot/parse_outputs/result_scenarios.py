@@ -46,21 +46,17 @@ def result_scenarios() -> dict[str, ResultScenario]:
         error=ValueError,
         message="must be divisible",
     )
-    scenarios["megatron_reject_true_on_policy"] = ResultScenario(
-        backend="megatron",
+    scenarios["fsdp_reject_true_on_policy"] = ResultScenario(
+        backend="fsdp",
         arguments=("--true-on-policy-mode",),
-        error=NotImplementedError,
-        message="not supported on the megatron backend",
+        error=ValueError,
+        message="runs on the megatron backend only",
     )
     scenarios["fsdp_reject_lora"] = ResultScenario(
         backend="fsdp",
         arguments=("--lora-rank", "8", "--target-modules", "q_proj,v_proj"),
         error=AssertionError,
         message="LoRA injection is not implemented for FSDP",
-    )
-    scenarios["fsdp_true_on_policy"] = ResultScenario(backend="fsdp", arguments=("--true-on-policy-mode",))
-    scenarios["fsdp_prefill_logprobs"] = ResultScenario(
-        backend="fsdp", arguments=("--true-on-policy-mode", "--recompute-logprobs-via-prefill")
     )
     scenarios["legacy_reject_fully_async"] = ResultScenario(
         backend="megatron",

@@ -62,7 +62,7 @@ miles/
 │   ├── fully_async_*.py  # queue-backed producer for train_async.py
 │   └── inference_rollout/# default class-based rollout
 ├── router/               # FastAPI proxy + worker load-balancer (router.py)
-├── true_on_policy/       # true-on-policy contracts and per-model profiles
+├── true_on_policy/       # true-on-policy contract selection
 └── utils/                # arguments.py, async / IO / distributed helpers, audit_utils/
 ```
 

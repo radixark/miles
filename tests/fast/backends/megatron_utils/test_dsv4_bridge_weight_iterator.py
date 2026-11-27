@@ -83,6 +83,7 @@ def test_bridge_canonicalizes_names_before_postprocessing(native_names, plain_ex
     iterator = object.__new__(HfWeightIteratorBridge)
     iterator.args = Namespace(params_dtype=torch.bfloat16)
     iterator.quantization_config = None
+    iterator.model_name = "deepseekv4"
     iterator.model = []
     iterator._export_dtypes = None
     iterator._bridge = Mock()
@@ -109,7 +110,7 @@ def test_bridge_canonicalizes_names_before_postprocessing(native_names, plain_ex
 
     monkeypatch.setattr(bridge_iterator, "postprocess_hf_param", postprocess)
     monkeypatch.setattr(bridge_iterator.megatron_bridge_utils, "patch_megatron_model", lambda model: nullcontext())
-    monkeypatch.setattr(bridge_iterator, "_iter_mm_tower_units", lambda *args, **kwargs: iter(()))
+    monkeypatch.setattr(bridge_iterator, "_iter_checkpoint_units", lambda *args, **kwargs: iter(()))
 
     assert list(iterator._iter_hf_param_units({}, materialize=True)) == [[(hf_name, weight)]]
     assert received == [(hf_name, weight, megatron_name)]

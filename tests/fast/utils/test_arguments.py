@@ -865,8 +865,17 @@ def _fully_async_candidate_args(**overrides) -> SimpleNamespace:
         over_sampling_batch_size=None,
         train_backend="megatron",
         ft_components=[],
+        max_weight_staleness=None,
+        custom_async_data_buffer_path=None,
+        async_max_consecutive_aborted_groups=None,
     )
     return SimpleNamespace(**(defaults | overrides))
+
+
+def test_aborted_group_limit_must_be_positive():
+    """N=0 would fail on the very first aborted group."""
+    with pytest.raises(AssertionError, match="at least 1"):
+        _resolve_rollout_functions(_fully_async_candidate_args(async_max_consecutive_aborted_groups=0))
 
 
 def test_naming_the_fully_async_class_enables_the_mode():
@@ -947,6 +956,9 @@ def _make_fully_async_args(**overrides) -> SimpleNamespace:
         over_sampling_batch_size=None,
         train_backend="megatron",
         ft_components=[],
+        max_weight_staleness=None,
+        custom_async_data_buffer_path=None,
+        async_max_consecutive_aborted_groups=None,
     )
     return SimpleNamespace(**{**defaults, **overrides})
 
@@ -3626,6 +3638,9 @@ class TestValidateSkipActorForwardOnly:
     def test_tis_configuration_passes(self):
         validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(use_tis=True))
 
+    def test_true_on_policy_with_a_recomputed_old_policy_passes(self):
+        validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(true_on_policy_mode=True, use_tis=True))
+
     def test_rollout_logprobs_configuration_passes(self):
         validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(use_rollout_logprobs=True))
 
@@ -3681,7 +3696,7 @@ class TestValidateSkipActorForwardOnly:
             {"moe_router_force_biased": 0.0},
             {"moe_router_load_balancing_type": ["sinkhorn"]},
             {"use_rollout_entropy": True},
-            {"true_on_policy_mode": True},
+            {"true_on_policy_mode": True, "use_rollout_logprobs": True},
             {"log_correct_samples": True},
             {"custom_megatron_before_log_prob_hook_path": "pkg.hook"},
             {"dumper_source_patcher_config_train": "patcher.yaml"},
@@ -3987,6 +4002,74 @@ class TestWeightTransferModeSelection:
     def test_unknown_mode_is_rejected(self):
         with pytest.raises(SystemExit):
             self._parse(["--update-weight-transfer-mode", "typo"])
+
+    def test_true_on_policy_mode_refuses_sampling_support_replay(self):
+        args = self._parse(["--true-on-policy-mode", "--rollout-top-p", "0.95", "--rollout-top-k", "32"])
+        with pytest.raises(ValueError, match="samples the full vocabulary"):
+            miles_validate_args(args)
+
+    def test_true_on_policy_mode_refuses_prefill_recomputed_logprobs(self):
+        args = self._parse(
+            [
+                "--true-on-policy-mode",
+                "--true-on-policy-contract",
+                "true_on_policy_v1",
+                "--recompute-logprobs-via-prefill",
+            ]
+        )
+        with pytest.raises(ValueError, match="decode-produced logprobs"):
+            miles_validate_args(args)
+
+    def test_true_on_policy_mode_is_megatron_only(self):
+        args = self._parse(["--train-backend", "fsdp", "--true-on-policy-mode"])
+        with pytest.raises(ValueError, match="megatron backend only"):
+            miles_validate_args(args)
+
+    def test_true_on_policy_mode_passes_launch_validation(self):
+        """The negative cases below are meaningful only while a plain TOP launch passes."""
+        miles_validate_args(self._parse(["--true-on-policy-mode", "--attention-dropout", "0.0"]))
+
+    def test_true_on_policy_mode_refuses_an_eval_config_dataset_sampling_top_k(self, tmp_path):
+        """The eval YAML's per-dataset sampling resolves after the --eval-* flags; the refusal reads the result."""
+        config = tmp_path / "eval.yaml"
+        config.write_text("eval:\n  datasets:\n    - name: aime\n      path: /data/aime.jsonl\n      top_k: 20\n")
+        args = self._parse(["--true-on-policy-mode", "--attention-dropout", "0.0", "--eval-config", str(config)])
+        with pytest.raises(ValueError, match="eval dataset 'aime' sets top_k"):
+            miles_validate_args(args)
+
+    def test_true_on_policy_mode_refuses_megatron_default_attention_dropout(self):
+        with pytest.raises(ValueError, match="--attention-dropout 0.1"):
+            miles_validate_args(self._parse(["--true-on-policy-mode"]))
+
+    def test_true_on_policy_mode_refuses_an_sglang_config_group_without_the_contract(self, tmp_path):
+        config = tmp_path / "sglang.yaml"
+        config.write_text(
+            "sglang:\n"
+            "  - name: actor\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 1\n"
+            "        overrides: {true_on_policy_contract: null}\n"
+        )
+        args = self._parse(
+            [
+                "--true-on-policy-mode",
+                "--attention-dropout",
+                "0.0",
+                "--rollout-num-gpus",
+                "1",
+                "--sglang-config",
+                str(config),
+            ]
+        )
+        miles_validate_args(args)
+        # The engine groups are checked on the resolved SGLang config, right after parse_args builds it.
+        from miles.backends.sglang_utils.sglang_config import SglangConfig
+        from miles.true_on_policy.args import refuse_engines_off_the_contract
+
+        sglang, _ = SglangConfig.parse_args(args)
+        with pytest.raises(ValueError, match="overrides true_on_policy_contract"):
+            refuse_engines_off_the_contract(args, sglang=sglang)
 
     def test_packed_mode_from_yaml_overrides_cli_and_remains_observable(self, tmp_path):
         config = tmp_path / "custom.yaml"
@@ -4566,7 +4649,6 @@ class TestMultimodalTokenSpaceProcessingArgs:
             ({"enable_token_space_processor": False}, None, "--sglang-enable-token-space-processor"),
             ({}, ["10.0.0.1:30000"], "external engines"),
             ({"rl_on_policy_target": "fsdp"}, None, "--sglang-rl-on-policy-target"),
-            ({"true_on_policy_contract": "qwen3_dense_v1"}, None, "--sglang-true-on-policy-contract"),
             ({"decrypted_config_file": "/ckpt/override.json"}, None, "--sglang-decrypted-config-file"),
             ({"mm_attention_backend": "triton_attn"}, None, "--sglang-mm-attention-backend"),
         ],

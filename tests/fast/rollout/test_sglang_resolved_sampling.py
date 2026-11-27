@@ -64,7 +64,7 @@ class TestResolvedDeterministicSampling:
         assert sampling == {"temperature": 0.5}
 
     def test_legacy_state_sizes_dp_balancing_from_resolved_settings(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Legacy generation state derives its DP lanes and deterministic group seeds from resolved ownership."""
+        """Legacy generation state derives its DP lanes from resolved ownership (seeds come per sample, above)."""
         args = _make_generate_args()
         args.sglang = make_sglang_config(enable_deterministic_inference=True, dp_size=3)
         args.rollout_seed = 17
@@ -78,4 +78,3 @@ class TestResolvedDeterministicSampling:
         state = sglang_rollout.GenerateState(args)
 
         assert state.dp_counts == [0, 0, 0]
-        assert state.group_sampling_seeds == [17, 18]

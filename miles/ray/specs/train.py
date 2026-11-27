@@ -246,6 +246,8 @@ def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, fp8_scales: str)
             )
         else:
             env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
+            if args.offload_train_keep_cpu_backup:
+                env_vars["TMS_KEEP_CPU_BACKUP"] = "1"
 
     return env_vars
 

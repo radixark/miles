@@ -365,7 +365,7 @@ class TestCreatePlacementGroups:
         from miles.ray import placement_group as placement_group_module
         from miles.ray.placement_group import PlacementGroupInfo
 
-        def _fake_create(num_gpus):
+        def _fake_create(num_gpus, *, head_last=False):
             requested.append(num_gpus)
             return PlacementGroupInfo(
                 pg="pg-sentinel",
@@ -1043,6 +1043,33 @@ class TestCreateTrainingModel:
         assert info.start_rollout_id == 4
         handle.load_state.assert_awaited_once_with(_INIT_REQUEST)
         handle.init.assert_not_awaited()
+
+
+def test_head_node_gpus_sort_last_when_the_control_plane_is_pinned_there(monkeypatch):
+    """The trainer takes the first bundles; with the control plane on the head, the head's GPUs must come last."""
+    from types import SimpleNamespace
+
+    from miles.ray import placement_group as pgm
+
+    gpu_ids = [("192.0.2.10", 0), ("192.0.2.10", 1), ("192.0.2.6", 0), ("192.0.2.11", 0), ("192.0.2.6", 1)]
+
+    def order(head_last):
+        class FakeInfo:
+            def __init__(self, ip, gpu):
+                self.get_ip_and_gpu_id = SimpleNamespace(remote=lambda: (ip, gpu))
+
+        actors = iter([FakeInfo(*g) for g in gpu_ids])
+        monkeypatch.setattr(pgm, "placement_group", lambda bundles, strategy: SimpleNamespace(ready=lambda: None))
+        monkeypatch.setattr(pgm.ray, "get", lambda x: x)
+        monkeypatch.setattr(pgm.InfoActor, "options", lambda **kw: SimpleNamespace(remote=lambda: next(actors)))
+        monkeypatch.setattr(pgm.ray, "kill", lambda actor: None)
+        monkeypatch.setattr(pgm, "PlacementGroupSchedulingStrategy", lambda **kw: None)
+        monkeypatch.setattr(pgm, "_head_node_ip", lambda: "192.0.2.10")
+        _pg, indices, _gpus = pgm._create_placement_group(len(gpu_ids), head_last=head_last)
+        return [gpu_ids[i][0] for i in indices]
+
+    assert order(False) == ["192.0.2.6", "192.0.2.6", "192.0.2.10", "192.0.2.10", "192.0.2.11"]
+    assert order(True) == ["192.0.2.6", "192.0.2.6", "192.0.2.11", "192.0.2.10", "192.0.2.10"]
 
 
 class TestCreateComponents:

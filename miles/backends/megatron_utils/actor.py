@@ -25,6 +25,7 @@ from miles.backends.training_utils.data.rollout import (
     get_num_rollouts,
     get_rollout_data,
 )
+from miles.backends.training_utils.data.version_split import add_fresh_stale_masks
 from miles.backends.training_utils.loss.objective import (
     compute_advantages_and_returns,
     get_log_probs_and_entropy,
@@ -81,7 +82,7 @@ from miles.utils.workers.rpc.common.wire_types import Pickled
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
 from ..training_utils.parallel import get_parallel_state
-from .checkpoint import load_checkpoint
+from .checkpoint import _is_megatron_checkpoint, load_checkpoint
 from .ft.checkpoint_transfer import recv_ckpt
 from .ft.checkpoint_transfer import send_ckpt as _send_ckpt
 from .ft.in_memory_checkpoint import InMemoryCheckpointManager
@@ -100,6 +101,10 @@ from .named_weights import named_params_and_buffers
 from .optimizer_utils import reset_optimizer_state
 from .parallel import verify_megatron_parallel_state
 from .replay_utils import assign_routed_experts_streams
+from .weight_events import holds_installed_hf_checkpoint, installed_hf_checkpoint
+from .weight_events import offloading as weight_events_offloading
+from .weight_events import train_starting as weight_events_train_starting
+from .weight_events import weights_changed
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
@@ -509,6 +514,8 @@ class MegatronTrainRayActor(TrainRayActor):
             return
 
         self._clear_quantized_weight_workspaces()
+        if freed := weight_events_offloading():
+            logger.info(f"Dropped {freed / 2**30:.2f} GiB of stale derived weights before offload")
         clear_memory(clear_host_memory=True)
         print_memory("before offload model")
         should_log_cpu_memory = is_first_replica_megatron_main_rank() and self._last_rollout_id is not None
@@ -627,6 +634,10 @@ class MegatronTrainRayActor(TrainRayActor):
         if target_tag not in self.weights_backuper.backup_tags:
             raise ValueError(f"Cannot switch to unknown model tag: {target_tag}")
         self.weights_backuper.restore(target_tag)
+        if target_tag != self._active_model_tag:
+            weights_changed()
+            # Rebuild derived caches from the restored masters now, not inside the next forward beside its activations.
+            weight_events_train_starting()
         self._active_model_tag = target_tag
 
     def _set_replay_stage(self, stage: str) -> None:
@@ -771,6 +782,9 @@ class MegatronTrainRayActor(TrainRayActor):
         witness_info: WitnessInfo | None,
         attempt: int,
     ) -> TrainStepOutput:
+        if "rollout_token_versions" in rollout_data and not self.args.keep_old_actor:
+            # The proximal forward below runs at the actor's current version; old_actor would be another one.
+            add_fresh_stale_masks(rollout_data, proximal_version=self._get_actor_weight_version())
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
         num_optimizer_steps = len(num_microbatches)
@@ -819,6 +833,7 @@ class MegatronTrainRayActor(TrainRayActor):
                         )
                     )
                 self._switch_model("old_actor" if self.args.keep_old_actor else "actor")
+                weight_events_train_starting()
                 if not skip_actor_forward_only and (
                     not self.args.use_rollout_logprobs or self.args.get_mismatch_metrics
                 ):
@@ -1087,6 +1102,8 @@ class MegatronTrainRayActor(TrainRayActor):
                 )
             ):
                 self.weight_updater.update_weights(weight_version=weight_version)
+            # Serving now holds the sync quantizer's bytes, not the checkpoint's (even before the first step).
+            weights_changed()
             print_memory("after update_weights")
 
             cell_updaters = self.weight_updater.protocol.cell_updaters_of_cell_id
@@ -1111,6 +1128,11 @@ class MegatronTrainRayActor(TrainRayActor):
                 else:
                     self.weights_backuper.backup("old_actor")
 
+        if self.args.offload_train:
+            # The sync's scratch sat in disable()'s deleted pool, which only empty_cache returns to the device;
+            # otherwise it stays reserved through the rollout (~10 GB/GPU on GLM-5.2), out of the engine's headroom.
+            clear_memory()
+
         if self.args.rematerialize_param_from_master_weight:
             torch_memory_saver.pause(tag="param_buffer")
         if process_groups_are_temporary:
@@ -1126,18 +1148,33 @@ class MegatronTrainRayActor(TrainRayActor):
         elif model_tag == "teacher":
             ckpt_step = self.args.opd_teacher_ckpt_step
 
-        with self.args.backend.mutable(), inplace_modify_args(
-            self.args.backend,
-            dict(load=path, no_load_optim=True, no_load_rng=True, finetune=True, ckpt_step=ckpt_step),
-        ):
-            load_checkpoint(
-                self.model,
-                None,
-                None,
-                checkpointing_context={},
-                args=self.args,
-                skip_load_to_model_and_opt=False,
-            )
+        installed_hf = installed_hf_checkpoint()
+        if installed_hf is not None and not _is_megatron_checkpoint(path):
+            # The HF load path would read FP8 bytes into the TOP FP8 masters' modules. The model provider installed
+            # --hf-checkpoint, which the actor holds until an optimizer step or a Megatron load replaces it.
+            if not holds_installed_hf_checkpoint() or os.path.realpath(path) != os.path.realpath(installed_hf):
+                raise NotImplementedError(
+                    f"[top] {model_tag} checkpoint {path!r} is an HF checkpoint other than the TOP FP8 masters the "
+                    f"actor holds (installed from {installed_hf!r}, until trained or loaded from a Megatron "
+                    f"checkpoint); pass a Megatron checkpoint"
+                )
+            # An earlier auxiliary load may have replaced the model's weights; the actor's backup holds the install.
+            if self._active_model_tag != "actor":
+                self._switch_model("actor")
+        else:
+            with self.args.backend.mutable(), inplace_modify_args(
+                self.args.backend,
+                dict(load=path, no_load_optim=True, no_load_rng=True, finetune=True, ckpt_step=ckpt_step),
+            ):
+                load_checkpoint(
+                    self.model,
+                    None,
+                    None,
+                    checkpointing_context={},
+                    args=self.args,
+                    skip_load_to_model_and_opt=False,
+                )
+        weights_changed()
 
         self.weights_backuper.backup(model_tag)
         self._active_model_tag = model_tag

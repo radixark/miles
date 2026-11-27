@@ -114,6 +114,9 @@ def _resolve_rollout_functions(args) -> None:
             "--mask-offpolicy-in-partial-rollout does not re-extend the loss mask on the "
             "class-based rollout path yet; set MILES_USE_LEGACY_ROLLOUT_V1=1"
         )
+    assert (
+        args.async_max_consecutive_aborted_groups is None or args.async_max_consecutive_aborted_groups >= 1
+    ), "--async-max-consecutive-aborted-groups must be at least 1"
     if args.fully_async:
         assert (
             not use_legacy_rollout_v1()
@@ -269,6 +272,7 @@ def parse_args_and_get_parser(
 
     backend = parse_args_train_backend()
     if backend == "megatron":
+        from miles.backends.megatron_utils.arguments import admit_true_on_policy_trainer
         from miles.backends.megatron_utils.arguments import parse_args as megatron_parse_args
         from miles.backends.megatron_utils.arguments import set_default_megatron_args
         from miles.backends.megatron_utils.arguments import validate_args as megatron_validate_args
@@ -351,6 +355,7 @@ def parse_args_and_get_parser(
         previous_arg_names = set(vars(args))
         megatron_validate_args(args)
         validate_lora_args_after_megatron(args)
+        admit_true_on_policy_trainer(args)
 
         # always use varlen
         args.variable_seq_lengths = True
@@ -420,6 +425,11 @@ def parse_args_and_get_parser(
     check_output_store_args(args, sglang=sglang, megatron=raw_megatron)
     _check_stop_token_replace_streaming_session(args, sglang=sglang)
     _check_multimodal_token_space_processing_args(args, sglang=sglang)
+    if args.true_on_policy_mode:
+        # TOP modules load SGLang's true-on-policy package, which ordinary runs do not require.
+        from miles.true_on_policy.args import refuse_engines_off_the_contract
+
+        refuse_engines_off_the_contract(args, sglang=sglang)
     values = {name: value for name, value in vars(args).items() if name in AllConfig.model_fields} | {
         "raw_megatron": raw_megatron,
         "raw_fsdp": FsdpArgsNamespace(**backend_values) if backend == "fsdp" else None,
@@ -1166,7 +1176,8 @@ def _check_multimodal_token_space_processing_args(args, *, sglang: SglangConfig)
         )
     if args.trainer_mm_io_worker_num < 0:
         raise ValueError(f"--trainer-mm-io-worker-num must be at least 0, got {args.trainer_mm_io_worker_num}")
-    for name in ("rl_on_policy_target", "true_on_policy_contract", "decrypted_config_file"):
+    # A true-on-policy contract moves the engines' image preprocessing to the CPU; build_trainer_processor follows.
+    for name in ("rl_on_policy_target", "decrypted_config_file"):
         if sglang.actor_value(name) is not None:
             raise ValueError(
                 f"--multimodal-token-space-processing does not support --sglang-{name.replace('_', '-')}: the "
@@ -1189,6 +1200,11 @@ def miles_validate_args(args):
         _apply_custom_config(args, yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {})
 
     validate_length_penalty_args(args)
+    if (args.true_on_policy_mode or args.true_on_policy_contract) and args.train_backend != "megatron":
+        raise ValueError(
+            f"--true-on-policy-mode runs on the megatron backend only, got --train-backend {args.train_backend}"
+        )
+
     mode = args.update_weight_transfer_mode
     if mode not in ("broadcast", "broadcast_packed", "p2p", "disk-delta", "ici", "http-lora"):
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
@@ -1252,6 +1268,11 @@ def miles_validate_args(args):
         args.world_size = per_replica_size
 
     if args.recompute_logprobs_via_prefill:
+        if args.true_on_policy_contract is not None:
+            from miles.true_on_policy.contracts import uses_true_on_policy_v1
+
+            if uses_true_on_policy_v1(args):
+                raise ValueError("TOP requires decode-produced logprobs; remove --recompute-logprobs-via-prefill")
         assert args.true_on_policy_mode, "--recompute-logprobs-via-prefill requires --true-on-policy-mode"
 
     if args.use_session_server not in (False, True, "v1", "v2"):
@@ -1312,6 +1333,8 @@ def miles_validate_args(args):
                 "sampling-support replay cannot currently be combined with reference KL or teacher distillation; "
                 "those objectives require a separate full-policy actor score"
             )
+        if args.true_on_policy_mode:
+            raise ValueError("--true-on-policy-mode samples the full vocabulary; drop --rollout-top-p/--rollout-top-k")
     validate_rollout_topk_logprobs_args(args)
 
     validate_log_probs_backend_args(args)
@@ -1773,6 +1796,11 @@ def miles_validate_args(args):
         uid = os.getuid() if hasattr(os, "getuid") else 0  # config-access-exempt: os.getuid is platform-dependent
         args.offload_train_disk_dir = os.path.join(os.environ.get("SCRATCH", "/scratch"), f"miles_train_offload_{uid}")
 
+    if args.offload_train_keep_cpu_backup:
+        assert (
+            args.offload_train and args.offload_train_target == "cpu"
+        ), "--offload-train-keep-cpu-backup keeps the pinned backup of --offload-train-target=cpu"
+
     if args.offload_train_target == "disk":
         assert args.offload_train, "--offload-train-target=disk requires --offload-train"
         assert (
@@ -2094,6 +2122,10 @@ def miles_validate_args(args):
     if args.mini_ft_controller_enable and args.api_server_port == 0:
         raise ValueError("--mini-ft-controller-enable requires --api-server-port to be set (non-zero)")
 
+    if args.true_on_policy_mode:
+        from miles.true_on_policy.args import validate_true_on_policy_args
+
+        validate_true_on_policy_args(args)
     _validate_deploy_component(args)
 
 
@@ -2120,7 +2152,13 @@ def validate_skip_actor_forward_only(args) -> None:
                 "sinkhorn" in args.moe_router_load_balancing_type,
             ),
             ("--use-rollout-entropy", args.use_rollout_entropy),
-            ("--true-on-policy-mode", args.true_on_policy_mode),
+            # TOP's synchronous recipe skips the old-policy pass by scoring rollout log-probs, which are the
+            # trainer's bit for bit; the two skips are not combined. With a recomputed old policy (async decoupled
+            # PPO), the training forward's own log-probs equal the forward-only pass under TOP.
+            (
+                "--true-on-policy-mode with --use-rollout-logprobs",
+                args.true_on_policy_mode and args.use_rollout_logprobs,
+            ),
             ("--log-correct-samples", args.log_correct_samples),
             (
                 "--custom-megatron-before-log-prob-hook-path",

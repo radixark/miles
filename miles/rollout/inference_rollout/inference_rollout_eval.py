@@ -12,6 +12,7 @@ from miles.rollout.inference_rollout.inference_rollout_common import (
     GenerateState,
     compute_sampling_params,
     generate_and_rm,
+    sample_seed,
 )
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
@@ -27,12 +28,15 @@ async def run_eval_datasets(
     prompt_dataset_cache: dict[Any, Dataset],
     *,
     kv_cache_namespace: str | None = None,
+    rollout_id: int | None = None,
 ) -> dict[str, dict[str, Any]]:
     args = state.args
     assert not args.group_rm, "Group RM is not supported for eval rollout"
 
     coros = []
     for dataset_cfg in args.eval_datasets:
+        if not dataset_cfg.due(rollout_id, args.num_rollout):
+            continue
         coros.append(
             eval_rollout_single_dataset(
                 state, dataset_cfg, prompt_dataset_cache, kv_cache_namespace=kv_cache_namespace
@@ -104,7 +108,7 @@ async def eval_rollout_single_dataset(
             sampling_params = base_sampling_params
             if args.sglang.common_value("enable_deterministic_inference"):
                 sampling_params = base_sampling_params.copy()
-                sampling_params["sampling_seed"] = args.rollout_seed + j
+                sampling_params["sampling_seed"] = sample_seed(args, sample, j)
             tasks.append(
                 asyncio.create_task(
                     generate_and_rm(

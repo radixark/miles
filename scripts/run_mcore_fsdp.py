@@ -17,7 +17,6 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
     run_id: str = command_utils.create_run_id()
     multi_eval: bool = False
-    true_on_policy: bool = False
     dynamic_sampling: bool = False
     enable_eval: bool = True
     megatron_model_type: str | None = None
@@ -171,8 +170,6 @@ eval:
             "--gradient-checkpointing "
             "--attn-implementation flash_attention_2 "
         )
-        if args.true_on_policy:
-            train_backend_args += "--sglang-attention-backend fa3 " "--attn-implementation flash_attention_3 "
     else:
         tp_size = 2 if args.num_gpus_per_node == 8 else 1
         cp_size = 4 if args.num_gpus_per_node == 8 else 1
@@ -213,21 +210,6 @@ eval:
 
     misc_env_vars = {}
 
-    true_on_policy_args = ""
-    true_on_policy_envs = {}
-    if args.true_on_policy:
-        true_on_policy_args = (
-            "--sglang-enable-deterministic-inference "
-            "--sglang-rl-on-policy-target fsdp "
-            "--deterministic-mode "
-            "--true-on-policy-mode "
-        )
-        true_on_policy_envs = {
-            "NCCL_ALGO": "allreduce:tree",
-            "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
-            "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
-        }
-
     backend_name = "fsdp" if args.train_backend == "fsdp" else "megatron"
     ref_name = "ref" if args.use_ref else "noref"
     colocate_name = "" if args.colocate else "-dist"
@@ -245,7 +227,6 @@ eval:
         f"{sglang_args} "
         f"{train_backend_args} "
         f"{misc_args} "
-        f"{true_on_policy_args} "
         f"{wandb_args} "
         f"{args.extra_args} "
     )
@@ -262,8 +243,6 @@ eval:
             "CUDA_DEVICE_MAX_CONNECTIONS": "1",
             "NCCL_NVLS_ENABLE": has_nvlink,
         }
-
-    extra_env_vars |= true_on_policy_envs
 
     U.execute_train(
         train_args=train_args,

@@ -90,6 +90,14 @@ def build_ngram_contexts_packed(
 
 _state = threading.local()
 
+# Numerical binding point for the whole increment (projections included); the TOP adapter sets it.
+_top_ple_forward = None
+
+
+def set_top_ple_forward(fn) -> None:
+    global _top_ple_forward
+    _top_ple_forward = fn
+
 
 def current_ple_batch():
     batch = getattr(
@@ -330,6 +338,8 @@ class Qwen38NextPLE(MegatronModule):
             raise RuntimeError(f"PLE token counts differ: state {hc_state.shape[0]} vs ids {ngram_ids.shape[0]}")
 
         embeddings = self.ple_embedding(ngram_ids)
+        if _top_ple_forward is not None:
+            return _top_ple_forward(self, hc_state, embeddings, cu_seqlens)
         key, _ = self.key_proj(embeddings)
         value, _ = self.value_proj(embeddings)
 
