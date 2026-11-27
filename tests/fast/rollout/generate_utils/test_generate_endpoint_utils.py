@@ -53,6 +53,7 @@ def _make_args() -> SimpleNamespace:
         use_output_store=False,
         multimodal_token_space_processing=False,
         replay_layer_splits=[],
+        rollout_skip_return_logprob=False,
     )
 
 
@@ -287,3 +288,42 @@ def test_routed_experts_cover_the_prompt_the_engine_served():
     asyncio.run(update_sample_from_response(args, sample, {"input_ids": sample.tokens}, output))
 
     assert sample.rollout_routed_experts.shape == (served_prompt_tokens + len(response) - 1, layers, topk)
+
+
+class TestRolloutSkipReturnLogprob:
+    """--rollout-skip-return-logprob: no per-token log-probs requested; tokens come from output_ids."""
+
+    def test_default_requests_logprobs(self):
+        payload, _ = compute_request_payload(_make_args(), input_ids=[1, 2], sampling_params={})
+        assert payload["return_logprob"] is True
+
+    def test_flag_turns_the_request_off(self):
+        args = _make_args()
+        args.rollout_skip_return_logprob = True
+        payload, _ = compute_request_payload(args, input_ids=[1, 2], sampling_params={})
+        assert payload["return_logprob"] is False
+
+    @pytest.mark.asyncio
+    async def test_response_without_logprobs_uses_output_ids(self):
+        args = _make_args()
+        args.rollout_skip_return_logprob = True
+        args.sglang = SimpleNamespace(common_value=lambda _name: None)
+        sample = Sample(prompt="p", tokens=[], response="", response_length=0)
+        payload, _ = compute_request_payload(args, input_ids=[1, 2], sampling_params={})
+        output = {
+            "text": "ab",
+            "output_ids": [7, 8, 9],
+            "meta_info": {
+                "completion_tokens": 3,
+                "prompt_tokens": 2,
+                "finish_reason": {"type": "stop"},
+                "weight_version": 4,
+            },
+        }
+        await update_sample_from_response(args, sample, payload=payload, output=output, update_loss_mask=True)
+        assert sample.tokens == [1, 2, 7, 8, 9]
+        assert sample.response_length == 3
+        assert sample.rollout_log_probs is None
+        assert sample.loss_mask == [1, 1, 1]
+        spans = sample.weight_versions[-1].spans
+        assert [(span.version, span.abs_start, span.abs_end) for span in spans] == [(4, 2, 5)]

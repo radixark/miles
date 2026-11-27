@@ -95,7 +95,12 @@ class WeightVersionsPerCall:
 
     @staticmethod
     def from_meta_info(meta_info: dict, output_end: int) -> "WeightVersionsPerCall":
-        num_output_tokens = len(meta_info.get("output_token_logprobs") or [])
+        # With return_logprob the per-token list is authoritative; without it the engine's completion_tokens
+        # count anchors the spans (the request asked for no log-probs, so no list exists).
+        if output_token_logprobs := meta_info.get("output_token_logprobs"):
+            num_output_tokens = len(output_token_logprobs)
+        else:
+            num_output_tokens = int(meta_info.get("completion_tokens") or 0)
         if (raw_spans := meta_info.get("weight_versions")) is not None:
             output_relative = [(span["version"], span["start"], span["end"]) for span in raw_spans]
             assert all(end <= num_output_tokens for _, _, end in output_relative), (
@@ -103,10 +108,6 @@ class WeightVersionsPerCall:
                 f"output_token_logprobs; anchoring spans relies on return_logprob reporting every output token"
             )
         elif meta_info.get("weight_version") is not None:
-            assert num_output_tokens > 0 or not meta_info.get("completion_tokens"), (
-                "weight_version is present but output_token_logprobs is empty; anchoring the version to output "
-                "tokens requires return_logprob=True on the generate request"
-            )
             output_relative = [(meta_info["weight_version"], 0, num_output_tokens)]
         else:
             output_relative = []

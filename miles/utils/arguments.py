@@ -1503,6 +1503,22 @@ def miles_validate_args(args):
     if args.use_rollout_logprobs:
         assert not args.use_tis, "use_rollout_logprobs and use_tis cannot be set at the same time."
 
+    if getattr(args, "rollout_skip_return_logprob", False):
+        consumers = {
+            "--use-rollout-logprobs": args.use_rollout_logprobs,
+            "--use-tis": args.use_tis,
+            "--get-mismatch-metrics": getattr(args, "get_mismatch_metrics", False),
+            "--custom-tis-function-path": getattr(args, "custom_tis_function_path", None) is not None,
+            "--score-centering-is": getattr(args, "score_centering_is", "none") != "none",
+            "--rollout-top-logprobs-num": bool(getattr(args, "rollout_top_logprobs_num", 0)),
+            "--use-sampling-support-replay": getattr(args, "use_sampling_support_replay", False),
+            "--true-on-policy-mode": getattr(args, "true_on_policy_mode", False),
+        }
+        active = [flag for flag, on in consumers.items() if on]
+        assert not active, (
+            f"--rollout-skip-return-logprob cannot be combined with {', '.join(active)}: they read the rollout log-probs"
+        )
+
     if args.get_mismatch_metrics:
         assert (
             args.custom_tis_function_path is not None
