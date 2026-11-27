@@ -357,6 +357,7 @@ def test_the_adapter_state_carries_moments_only_when_they_are_saved(save_moments
     param = torch.nn.Parameter(torch.ones(2, 2))
     slots = SimpleNamespace(
         parameters={_LORA_A: param},
+        slot_params=lambda slot: [param],
         slot_parameters=lambda slot: [param],
         get_local_shard_specs=lambda slot: [SimpleNamespace(key="q_proj.lora_A", local_shape=(2, 2))],
         local_pieces=lambda slot, tensors: tensors,
@@ -666,6 +667,7 @@ def test_the_actor_starts_after_the_restored_rollout_and_saves_lora_as_adapter_d
         offload_train=False,
     )
     actor = titan_actor.TorchtitanTrainRayActor.__new__(titan_actor.TorchtitanTrainRayActor)
+    actor.args = args  # set by __init__, which __new__ skips
 
     start = actor.init(args, "actor", indep_dp_info=SimpleNamespace(quorum_id=0), indep_dp_store_addr=None)
 
