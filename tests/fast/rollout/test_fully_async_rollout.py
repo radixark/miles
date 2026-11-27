@@ -45,8 +45,9 @@ def sample_flow_event_dir(tmp_path: Path) -> Iterator[Path]:
 
 
 class FakeGenerateState(GenerateState):
-    def __init__(self, args):
+    def __init__(self, args, *, reward_pools=None):
         self.args = args
+        self.reward_kwargs = {}
         self.sampling_params = {}
         self.aborted = False
         self.generate_fn_semaphore = asyncio.Semaphore(2)

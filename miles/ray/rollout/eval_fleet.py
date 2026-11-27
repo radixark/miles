@@ -12,6 +12,8 @@ import asyncio
 import dataclasses
 import logging
 from argparse import Namespace
+from collections.abc import Mapping
+from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.ray.specs.inference import inference_controller_worker_name
@@ -47,7 +49,12 @@ class RolloutExecutorEvalFleet:
     """The executor's side of the fleet: one state to generate against, pinned over rpc."""
 
     def __init__(
-        self, args: Namespace, *, info: EvalFleetInfo, inference_controller_provider: BaseWorkerProvider
+        self,
+        args: Namespace,
+        *,
+        info: EvalFleetInfo,
+        inference_controller_provider: BaseWorkerProvider,
+        reward_pools: Mapping[str, Any] | None = None,
     ) -> None:
         self._inference_controller: BaseWorkerHandle = inference_controller_provider.get_handle(
             inference_controller_worker_name()
@@ -58,7 +65,8 @@ class RolloutExecutorEvalFleet:
                 router_ip=info.router.host,
                 router_port=info.router.port,
                 engine_gpu_counts=info.engine_gpu_counts,
-            )
+            ),
+            reward_pools=reward_pools,
         )
 
     async def pin(self, checkpoint_dir: str, weight_version: str) -> GenerateState:

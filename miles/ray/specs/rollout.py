@@ -2,6 +2,7 @@ from typing import Any, ClassVar
 
 from typing_extensions import Self
 
+from miles.ray.rollout.reward_pool import RewardPoolClient
 from miles.ray.specs.inference import (
     SESSION_SERVER_POOL_ID,
     compute_inference_controller_provider,
@@ -48,6 +49,9 @@ class RolloutExecutorSpec(BaseServeSpec):
                 else None
             ),
             inference_controller_provider=compute_inference_controller_provider(ctx.args, capability=ctx.capability),
+            reward_pools={
+                pool.name: RewardPoolClient(config=pool, capability=ctx.capability) for pool in ctx.args.reward_pools
+            },
         )
 
 

@@ -4,14 +4,16 @@ against the user's original prompt, as `--custom-rm-path examples.experimental.p
 The terms are RePrompt's (https://github.com/microsoft/DKI_LLM/tree/main/RePrompt, `train_reprompt.py`), on the
 completion with the assistant prefix the prompt ends in put back in front of it, summed with weight 1 each:
 
-- image: ImageReward of the image rendered from the first single-line `<answer>...</answer>` (or "a photo" when there
-  is none), scored against the original prompt, as `0.5 * IR / 2.0`.
+- image: the score of the image rendered from the first single-line `<answer>...</answer>` (or "a photo" when there
+  is none) against the original prompt, times `--pe-image-weight`: RePrompt's `0.5 * IR / 2.0` for ImageReward.
 - format: 1 when the completion is `<think>` reasoning on one line, a newline and one `<answer>`, else -1.
 - length: 1 when the answer has 16 to 76 words, -1 outside that, 0 with no answer.
 
-The image comes from the model named by `--pe-generator-model` in `--sglang-config`, through its router; the score from
-`scorer_server.py` processes, which receive the PNG bytes. The reward is per sample, since Miles' eval rejects
-`--group-rm`; it is `None` (the group is dropped) when the engine or every scorer attempt fails.
+The image comes from the model named by `--pe-generator-model` in `--sglang-config`, through its router. The score comes
+from the reward pool named by `--pe-scorer-pool` (`--reward-pool-config`), or else from ImageReward in `scorer_server.py`
+processes at `--pe-scorer-urls`; both receive the PNG bytes. The reward is per sample, since Miles' eval rejects
+`--group-rm`; it is `None` (the group is dropped) when the engine fails, the pool cannot score the image, or every
+scorer server attempt fails.
 """
 
 import asyncio
@@ -65,7 +67,16 @@ class PromptEnhancerRewardConfig(BaseConfig):
     pe_seed_per_sample: A[
         bool, Arg(help="Draw the image seed per sample instead of one per group (RePrompt's own run, for parity).")
     ] = False
-    pe_scorer_urls: A[str, Arg(help="Comma-separated base URLs of scorer_server.py processes; requests rotate.")]
+    pe_scorer_pool: A[
+        str | None, Arg(help="The reward pool in --reward-pool-config that scores the image, e.g. hpsv3.")
+    ] = None
+    pe_scorer_urls: A[
+        str | None,
+        Arg(help="Comma-separated base URLs of scorer_server.py (ImageReward) processes, when no pool scores."),
+    ] = None
+    pe_image_weight: A[
+        float, Arg(help="Weight of the image score in the reward; RePrompt's 0.25 for ImageReward.")
+    ] = 0.25
 
 
 class PromptEnhancerLogConfig(BaseConfig):
@@ -95,6 +106,8 @@ def image_seed(ori_prompt: str, draw: int | None) -> int:
 
 
 async def prompt_enhancer_rm(args, sample: Sample, **kwargs) -> float | None:
+    if (args.pe_scorer_pool is None) == (args.pe_scorer_urls is None):
+        raise NonRetryableError("prompt_enhancer_rm scores with one of --pe-scorer-pool and --pe-scorer-urls")
     if not args.rollout_skip_special_tokens:
         raise NonRetryableError(
             "prompt_enhancer_rm scores the completion text: run with --rollout-skip-special-tokens"
@@ -116,14 +129,14 @@ async def prompt_enhancer_rm(args, sample: Sample, **kwargs) -> float | None:
         logger.warning(f"no image for sample {sample.index}: {e}")
         return None
     rendered = time.monotonic()
-    image_reward = await _score(args.pe_scorer_urls.split(","), png=png, prompt=ori_prompt)
-    if image_reward is None:
+    image_score = await _score_image(args, png=png, prompt=ori_prompt, kwargs=kwargs)
+    if image_score is None:
         return None
     parts = {
-        "t2i": 0.5 * image_reward / 2.0,
+        "t2i": args.pe_image_weight * image_score,
         "format": format_reward(completion),
         "length": length_reward(completion),
-        "image_reward": image_reward,
+        "image_score": image_score,
         "t2i_prompt": request.prompt,
         "seed": request.seed,
         "render_secs": rendered - started,
@@ -149,7 +162,16 @@ def _client(args) -> ImageGenerationClient:
     return _clients[key]
 
 
-async def _score(urls: list[str], *, png: bytes, prompt: str) -> float | None:
+async def _score_image(args, *, png: bytes, prompt: str, kwargs: dict) -> float | None:
+    if args.pe_scorer_pool is None:
+        return await _score_on_servers(args.pe_scorer_urls.split(","), png=png, prompt=prompt)
+    if (pool := kwargs.get(f"{args.pe_scorer_pool}_pool")) is None:
+        raise NonRetryableError(f"--pe-scorer-pool {args.pe_scorer_pool} names no pool in --reward-pool-config")
+    (score,) = await pool.score([png], [prompt])
+    return score
+
+
+async def _score_on_servers(urls: list[str], *, png: bytes, prompt: str) -> float | None:
     payload = {"image_b64": base64.b64encode(png).decode(), "prompt": prompt}
     client = GeneralHttpClientProvider.client()
     for attempt in range(_SCORER_ATTEMPTS):
@@ -171,7 +193,8 @@ def log_rollout_data(rollout_id, args, samples: list[Sample], rollout_extra_metr
         return False
     parts = [s.metadata[REWARD_KEY] for s in scored]
     metrics = {f"rollout/pe/{key}": float(np.mean([p[key] for p in parts])) for key in ("t2i", "format", "length")}
-    metrics["rollout/pe/image_reward"] = float(np.mean([p["image_reward"] for p in parts]))
+    # Samples saved before the pool, as debug rollout data, hold ImageReward's score under its old key.
+    metrics["rollout/pe/image_score"] = float(np.mean([p.get("image_score", p.get("image_reward")) for p in parts]))
     metrics["rollout/pe/reward"] = float(np.mean([s.get_reward_value(args) for s in scored]))
     metrics["rollout/pe/completion_tokens"] = float(np.mean([s.response_length for s in scored]))
     for key in ("render_secs", "score_secs"):

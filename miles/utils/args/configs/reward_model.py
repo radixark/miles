@@ -36,6 +36,17 @@ class RewardModelRolloutOnlyConfig(BaseConfig):
     ] = 1
     eval_reward_key: A[str | None, Arg(help="The eval variant for --reward-key")] = None
     group_rm: A[bool, Arg(help="Whether to do rm on a whole group.")] = False
+    reward_pool_config: A[
+        str | None,
+        Arg(
+            help=(
+                "YAML list of reward pools to start: each entry sets a pool's `name`, `scorer_path`, `scorer_kwargs`, "
+                "`num_workers`, `uses_gpu`, `batch_size` and `max_wait_ms`. A GPU pool's workers each take one GPU "
+                "after the rollout and eval GPUs, and a reward function reaches the pool as its `<name>_pool` keyword "
+                "argument, `await pool.score(outputs, prompts)`."
+            )
+        ),
+    ] = None
     rm_url: A[
         str | None,
         Arg(help="URL for the reward model service for --rm-type remote_rm, e.g. http://localhost:8000"),

@@ -25,13 +25,17 @@ def _parse(tmp_path, monkeypatch, **script_args):
         tie_word_embeddings=True,
     ).save_pretrained(tmp_path / "Qwen2.5-3B-Instruct")
     (tmp_path / "Qwen2.5-3B-Instruct_torch_dist").mkdir(exist_ok=True)
-    args = ScriptArgs(run_id="test", model_dir=str(tmp_path), scorer_urls="http://a:1,http://b:2", **script_args)
+    args = ScriptArgs(run_id="test", model_dir=str(tmp_path), **script_args)
     return parse_megatron_test_config("--ffn-hidden-size", "256", *shlex.split(_train_args(args)))
 
 
 @pytest.fixture
 def config(monkeypatch, tmp_path):
     return _parse(tmp_path, monkeypatch)
+
+
+# The README's ImageReward command: scorer URLs and no --scorer.
+_IMAGEREWARD = dict(scorer_urls="http://a:1,http://b:2")
 
 
 def test_the_grpo_settings_are_reprompts(config):
@@ -59,7 +63,8 @@ def test_the_reward_and_log_hooks_get_their_settings(config):
         pe_num_inference_steps=9,
         pe_guidance_scale=0.0,
         pe_seed_per_sample=False,
-        pe_scorer_urls="http://a:1,http://b:2",
+        pe_scorer_pool="hpsv3",
+        pe_image_weight=0.08,
     )
     assert not config.group_rm
     log_hook = config.custom_rollout_log_function_path
@@ -80,9 +85,52 @@ def test_the_generator_is_a_frozen_diffusion_model_after_the_policy(config, tmp_
     assert config.router == "miles"
 
 
-def test_the_job_holds_the_trainer_the_policy_and_the_generator_engines(config):
+def test_the_job_holds_the_trainer_the_policy_the_generator_engines_and_the_scorer(config):
     assert config.rollout_num_gpus == 6 and config.actor_num_gpus_per_node == 1 and not config.colocate
-    assert config.num_gpus_per_node == 7
+    assert config.num_gpus_per_node == 8
+    assert config.reward_scaling.pools["hpsv3"].model_dump() == dict(num_gpus=1, gpu_offset=6)
+
+
+def test_hpsv3_scores_on_a_reward_pool_by_default(config, tmp_path):
+    (pool,) = config.reward_pools
+    assert pool.scorer_path == "miles.rollout.rm_hub.image.hpsv3.HPSv3Scorer"
+    assert pool.scorer_kwargs == dict(
+        checkpoint_path=f"{tmp_path}/HPSv3/HPSv3.safetensors", base_model_path=f"{tmp_path}/Qwen2-VL-7B-Instruct"
+    )
+    assert (pool.name, pool.num_workers, pool.uses_gpu, pool.batch_size, pool.max_wait_ms) == (
+        "hpsv3",
+        1,
+        True,
+        16,
+        50,
+    )
+
+
+def test_scorer_urls_alone_keep_the_imagereward_job(monkeypatch, tmp_path):
+    config = _parse(tmp_path, monkeypatch, **_IMAGEREWARD)
+
+    reward_config = config.custom_rm_path.config
+    assert (reward_config.pe_scorer_pool, reward_config.pe_scorer_urls) == (None, "http://a:1,http://b:2")
+    assert reward_config.pe_image_weight == 0.25
+    assert config.reward_pools == [] and config.reward_scaling.num_gpus == 0
+    assert (config.num_gpus_per_node, config.rollout_num_gpus) == (7, 6)
+
+
+def test_imagereward_without_urls_uses_the_local_scorer_server():
+    args = ScriptArgs(scorer="imagereward")
+
+    assert (args.scorer_urls, args.scorer_gpus, args.num_gpus_per_node) == ("http://127.0.0.1:18200", 0, 7)
+
+
+def test_scorer_urls_with_hpsv3_are_refused():
+    with pytest.raises(AssertionError, match="ImageReward's scorers"):
+        ScriptArgs(scorer="hpsv3", scorer_urls="http://a:1")
+
+
+@pytest.mark.parametrize("scorer, scorer_gpus", [("hpsv3", 0), ("imagereward", 1), ("pickscore", 1)])
+def test_a_scorer_without_its_gpus_is_refused(scorer, scorer_gpus):
+    with pytest.raises(AssertionError, match="--scorer"):
+        ScriptArgs(scorer=scorer, scorer_gpus=scorer_gpus, num_gpus_per_node=7 + scorer_gpus)
 
 
 def test_the_parity_flags_reach_the_run(monkeypatch, tmp_path):
@@ -98,14 +146,12 @@ def test_without_a_training_seed_miles_defaults_stay(config):
 
 def test_a_split_that_does_not_fill_the_job_is_refused():
     with pytest.raises(AssertionError, match="must add up to"):
-        ScriptArgs(generator_gpus=2)
+        ScriptArgs(generator_gpus=2, num_gpus_per_node=8)
 
 
 def test_the_checkpoint_is_converted_on_the_trainers_gpus(monkeypatch):
-    conversions = []
-    backend = SimpleNamespace(
-        exec_command_cpu=lambda cmd: None, convert_checkpoint=lambda **kw: conversions.append(kw)
-    )
+    conversions, commands = [], []
+    backend = SimpleNamespace(exec_command_cpu=commands.append, convert_checkpoint=lambda **kw: conversions.append(kw))
     monkeypatch.setattr(ScriptArgs, "create_backend", lambda self: backend)
 
     prepare(ScriptArgs(model_dir="/m"))
@@ -113,3 +159,5 @@ def test_the_checkpoint_is_converted_on_the_trainers_gpus(monkeypatch):
     (conversion,) = conversions
     assert conversion["num_gpus_per_node"] == 1
     assert (conversion["hf_checkpoint"], conversion["dir_dst"]) == ("/m/Qwen2.5-3B-Instruct", "/m")
+    assert "hf download MizzenAI/HPSv3 --local-dir /m/HPSv3" in commands
+    assert "hf download Qwen/Qwen2-VL-7B-Instruct --local-dir /m/Qwen2-VL-7B-Instruct" in commands

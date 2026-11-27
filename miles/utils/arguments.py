@@ -30,6 +30,7 @@ from miles.rollout.reward_shaping import validate_length_penalty_args
 from miles.router.backend import RouterKind
 from miles.utils.args.configs.data import DataConfig
 from miles.utils.args.configs.fault_tolerance import _DEFAULT_FT_API_SERVER_PORT
+from miles.utils.args.configs.reward_pool import compute_reward_pools
 from miles.utils.args.configs.router import RouterConfig
 from miles.utils.args.custom_function import (
     _compute_config_class,
@@ -420,6 +421,7 @@ def parse_args_and_get_parser(
     check_output_store_args(args, sglang=sglang, megatron=raw_megatron)
     _check_stop_token_replace_streaming_session(args, sglang=sglang)
     _check_multimodal_token_space_processing_args(args, sglang=sglang)
+    reward_pools, reward_scaling = compute_reward_pools(args)
     values = {name: value for name, value in vars(args).items() if name in AllConfig.model_fields} | {
         "raw_megatron": raw_megatron,
         "raw_fsdp": FsdpArgsNamespace(**backend_values) if backend == "fsdp" else None,
@@ -427,6 +429,8 @@ def parse_args_and_get_parser(
         "sglang": sglang,
         "sglang_scaling": sglang_scaling,
         "sglang_model_routers": None,
+        "reward_pools": reward_pools,
+        "reward_scaling": reward_scaling,
         "init_expected_num_cells": _compute_init_expected_num_cells(
             args, sglang=sglang, sglang_scaling=sglang_scaling
         ),

@@ -21,6 +21,7 @@ class SimpleProcessIdentity(_ProcessIdentityBase):
         "multi_lora_controller",
         "worker_manager",
         "registration_reporter",
+        "reward_worker",
     ]
 
 

@@ -2,7 +2,7 @@ import asyncio
 import logging
 import uuid
 from argparse import Namespace
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from typing import Any
 
@@ -32,9 +32,11 @@ logger = logging.getLogger(__name__)
 
 
 class GenerateState:
-    def __init__(self, args: Namespace) -> None:
+    def __init__(self, args: Namespace, *, reward_pools: Mapping[str, Any] | None = None) -> None:
         # persistent state for the generation process
         self.args = args
+        # rm_hub hands each pool to a custom reward function as its `<name>_pool` kwarg.
+        self.reward_kwargs = {f"{name}_pool": pool for name, pool in (reward_pools or {}).items()}
         self.tokenizer = load_tokenizer(
             args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True
         )
@@ -140,14 +142,14 @@ async def generate_and_rm(
 
             # for multi agent system, the reward of some sample is calculated during generation.
             samples_need_reward = [sample for sample in samples if sample.reward is None]
-            await batched_async_rm(args, samples_need_reward, inplace_set_reward_field=True)
+            await batched_async_rm(args, samples_need_reward, inplace_set_reward_field=True, **state.reward_kwargs)
             return samples
         else:
             if sample.status == Sample.Status.ABORTED:
                 return sample
             # for multi-turn environment, a reward could be assigned to the agent.
             if sample.reward is None:
-                sample.reward = await async_rm(args, sample)
+                sample.reward = await async_rm(args, sample, **state.reward_kwargs)
     except BaseException:
         # A generate function may return new samples; once their reward fails, nothing else holds their refs.
         record_dropped_samples([sample])
@@ -194,7 +196,7 @@ async def generate_and_rm_group(
             return group
 
         if args.group_rm:
-            await batched_async_rm(args, group, inplace_set_reward_field=True)
+            await batched_async_rm(args, group, inplace_set_reward_field=True, **state.reward_kwargs)
     except BaseException:
         # cancel siblings and let them settle: the group returns only after every
         # sample task is done, so no orphan generation or in-flight credit outlives it
@@ -235,7 +237,7 @@ class InferenceRolloutFn(BaseRolloutFn):
     def __init__(self, input: RolloutFnConstructorInput):
         super().__init__(input)
         self.data_source = input.data_source
-        self.state = GenerateState(input.args)
+        self.state = GenerateState(input.args, reward_pools=input.reward_pools)
         self.eval_prompt_dataset_cache = {}
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:

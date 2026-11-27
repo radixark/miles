@@ -5,6 +5,7 @@ from miles.ray.specs.inference import (
     RouterSpec,
     SessionServerSpec,
 )
+from miles.ray.specs.reward import RewardPoolSpec
 from miles.ray.specs.rollout import RolloutExecutorSpec
 from miles.ray.specs.train import TrainerControllerSpec, TrainerSpec
 from miles.utils.workers.types import DeployComponent
@@ -35,6 +36,7 @@ def _compute_all_specs(args) -> list[BaseSpec]:
         InferenceRegistrationReporterSpec,
         SessionServerSpec,
         InferenceEngineSpec,
+        RewardPoolSpec,
         TrainerControllerSpec,
         TrainerSpec,
     ]

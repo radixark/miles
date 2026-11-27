@@ -26,7 +26,7 @@ from miles.utils.types import Sample
 
 def test_inference_rollout_fn_exposes_the_constructor_input(monkeypatch) -> None:
     """The base class promises constructor_input, so the framework's own subclasses must set it too."""
-    monkeypatch.setattr(inference_rollout_common, "GenerateState", lambda args: MagicMock())
+    monkeypatch.setattr(inference_rollout_common, "GenerateState", lambda args, reward_pools=None: MagicMock())
     constructor_input = RolloutFnConstructorInput(args=MagicMock(), data_source=MagicMock())
 
     fn = InferenceRolloutFn(constructor_input)
@@ -48,7 +48,9 @@ class TestInferenceRolloutFnKvCacheNamespace:
 
         args = SimpleNamespace(**make_eval_args(namespaced_radix_cache=partition))
         monkeypatch.setattr(
-            inference_rollout_common, "GenerateState", lambda args: make_state(generate_function, args=args)
+            inference_rollout_common,
+            "GenerateState",
+            lambda args, reward_pools=None: make_state(generate_function, args=args),
         )
         monkeypatch.setattr(
             "miles.rollout.inference_rollout.inference_rollout_train.generate_rollout_async",
