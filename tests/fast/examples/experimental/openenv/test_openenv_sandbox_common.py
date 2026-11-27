@@ -75,6 +75,7 @@ async def _fake_episode_env(env_cls, metadata):
         ("  E2B  ", "e2b"),
         ("modal", "modal"),
         ("novita", "novita"),
+        ("boxd", "boxd"),
     ],
 )
 def test_resolve_backend_normalizes_names_and_aliases(name, expected):
