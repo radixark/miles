@@ -189,6 +189,6 @@ def sglang_router_args(policy: str | None = None) -> dict[str, Any]:
     return dict(
         router="sglang",
         sglang_router_policy=policy,
-        router_args=dict(policy=None, prefill_policy=None, decode_policy=None),
+        router_args=dict(policy=None, prefill_policy=None, decode_policy=None, assignment_mode="random"),
         rollout_external_router_pd=False,
     )
