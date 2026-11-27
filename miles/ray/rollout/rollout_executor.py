@@ -46,13 +46,14 @@ from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.sample_ownership.recorder import SampleOwnershipRecorder
 from miles.utils.data import RolloutDataPack
-from miles.utils.dp_schedule import TrainParallelConfig
+from miles.utils.dp_schedule import TrainParallelConfig, check_dynamic_batch_alignment
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.function_registry import load_function
 from miles.utils.hf_utils.config import is_complete_hf_export
 from miles.utils.http_utils import init_http_client
 from miles.utils.init_once import InitOnce, InitState, init_once
 from miles.utils.logging_utils import configure_logger
+from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.misc import call_agent_preflight_hook
 from miles.utils.output_store.config import connect_output_store, output_store_backend_config, sweep_output_store
@@ -556,6 +557,8 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
     def set_train_parallel_config(
         self, config: TrainParallelConfig | None, trainer_model_id: str | None = None
     ) -> None:
+        if config is not None and config.supports_precomputed_schedule and not is_multi_lora_enabled(self.args):
+            check_dynamic_batch_alignment(self.args, config)
         self._train_parallel_configs_of_model_id[trainer_model_id] = config
 
     async def set_eval_fleet_info(self, eval_fleet_info: EvalFleetInfo | None) -> None:
