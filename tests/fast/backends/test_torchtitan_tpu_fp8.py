@@ -52,6 +52,8 @@ def test_tpu_launcher_fp8_flags_wire_engine_and_trainer_and_reject_mismatched_tr
         ScriptArgs(rollout_fp8=True, train_fp8=False, titan_fp8_recipe="rowwise")
     with pytest.raises(ValueError, match="expected one of"):
         ScriptArgs(rollout_fp8=True, train_fp8=True, titan_fp8_recipe="blockwise")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="true-on-policy"):
+        ScriptArgs(true_on_policy=True, rollout_fp8=True)
 
     serve_sglang(ScriptArgs(rollout_fp8=True, train_fp8=True), model)
     assert "--quantization fp8 --tpu-fp8-runtime channelwise" in captured_cpu_cmds[-1]
@@ -80,6 +82,12 @@ def test_tpu_launcher_fp8_flags_wire_engine_and_trainer_and_reject_mismatched_tr
         launcher_file="run_qwen3_4b_torchtitan.py",
     )
     assert "--titan-fp8-recipe rowwise " in captured_train_args[-1]
+    assert "--titan-fp8-filter-fqns" not in captured_train_args[-1]
+
+    # the trainer keeps BF16 exactly the GDN gate projections the engine keeps BF16
+    qwen35_27b_train_fp8 = Qwen35ScriptArgs(model_name="Qwen3.5-27B", rollout_fp8=True, train_fp8=True)
+    execute_train(qwen35_27b_train_fp8, qwen35_27b_train_fp8.model, launcher_file="run_qwen3_5_torchtitan.py")
+    assert "--titan-fp8-filter-fqns in_proj_a in_proj_b " in captured_train_args[-1]
     assert captured_train_envs[-1]["SGLANG_ADMIN_API_KEY"] == "tpu-admin-secret"
 
 

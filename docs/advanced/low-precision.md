@@ -405,6 +405,14 @@ share a **channelwise / rowwise W8A8** forward contract from a single
   encoders, MTP layers, and `HiMidLoLinear` projections (`router.gate`) stay in
   high precision automatically. Pass `--titan-fp8-filter-fqns <substr> ...` to
   keep additional module FQNs in BF16.
+* **Where rollout and training still differ**: the recipe is the same, but some
+  scales are not bit-identical, so expect a higher `train/train_rollout_kl` than
+  BF16. At engine TP > 1, row-parallel projections (`o_proj`, `down_proj`, GDN
+  `out_proj`) shard `K`, so the engine computes each scale over `K / TP` values
+  while the trainer uses the full row. The engine stores MoE weight scales in
+  BF16 unless `SGLANG_TPU_FP8_MOE_FP32_SCALES=1`; the trainer keeps them in FP32.
+  Layers a launcher keeps in BF16 on the engine (`SGLANG_FP8_IGNORED_LAYERS`) are
+  kept in BF16 on the trainer through `--titan-fp8-filter-fqns`.
 
 Launch unified FP8 rollout and training on TPU v7x:
 

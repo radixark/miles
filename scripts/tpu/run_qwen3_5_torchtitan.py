@@ -46,6 +46,8 @@ _ENGINE_ARGS = "--tpu-compile-tokens 128 256 512 1024 2048 "
 _ENGINE_ENV = "SGLANG_TPU_VIT_PRECOMPILE_SIZES='' "
 # 27B has 48 linear-attention value heads, so GDN in_proj_ba has 2 * 48 / 4 = 24 rows per TP4 rank (% 16 != 0)
 _27B_FP8_ENGINE_ENV = "SGLANG_FP8_IGNORED_LAYERS=in_proj_ba,in_proj_b,in_proj_a "
+# the trainer keeps the same GDN gate projections in BF16 (torchtitan's layers.N.attention.in_proj_a / in_proj_b)
+_27B_TITAN_FP8_FILTER = "in_proj_a in_proj_b"
 # true on-policy serves the language model alone: the vision tower's linears have a bias, which the engine's
 # batch-invariant matmul does not take. The engine then compiles token-id extend programs only, and its warmup
 # request, which carries an image, is skipped.
@@ -78,6 +80,7 @@ _MODELS: dict[str, TitanTpuModel] = {
         sglang_args=_ENGINE_ARGS,
         sglang_env=_ENGINE_ENV,
         sglang_fp8_env=_27B_FP8_ENGINE_ENV,
+        titan_fp8_filter_fqns=_27B_TITAN_FP8_FILTER,
         rollout_args=_ROLLOUT_ARGS,
         eval_data=_EVAL_DATA,
         train_args=_HOST_OPTIMIZER,
@@ -102,6 +105,7 @@ _MODELS: dict[str, TitanTpuModel] = {
         sglang_args=_ENGINE_ARGS,
         sglang_env=_ENGINE_ENV,
         sglang_fp8_env=_27B_FP8_ENGINE_ENV,
+        titan_fp8_filter_fqns=_27B_TITAN_FP8_FILTER,
         rollout_args=_ROLLOUT_ARGS,
         eval_data=_EVAL_DATA,
         train_args=_HOST_OPTIMIZER,

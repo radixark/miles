@@ -1,8 +1,9 @@
 """Dynamic rowwise W8A8 FP8 training for TorchTitan on TPU (`torch_tpu`).
 
-Forward projections quantize activations per token row and weights per output channel (`amax / 448.0` in `float8_e4m3fn`),
-matching `sglang-torchtpu --quantization fp8 --tpu-fp8-runtime channelwise`. Parameters stay in BF16 with FP32 optimizer
-states, so FSDP2 collectives, checkpoints, LoRA adapters, and ICI weight transfers keep their BF16 layouts unchanged.
+Forward projections quantize activations per token row and weights per output channel (`amax / 448.0` in
+`float8_e4m3fn`), the recipe of `sglang-torchtpu --quantization fp8 --tpu-fp8-runtime channelwise`. Parameters stay in
+BF16 with FP32 optimizer states, so FSDP2 collectives, checkpoints, LoRA adapters, and ICI weight transfers keep their
+BF16 layouts unchanged.
 """
 
 import dataclasses

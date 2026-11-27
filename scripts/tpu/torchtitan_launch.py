@@ -59,6 +59,8 @@ class TitanTpuModel:
     sglang_env: str = ""
     # environment assignments added when --rollout-fp8 is set, e.g. "SGLANG_FP8_IGNORED_LAYERS=... "
     sglang_fp8_env: str = ""
+    # trainer module-name substrings kept in BF16 under --train-fp8, the layers sglang_fp8_env keeps BF16 on the engine
+    titan_fp8_filter_fqns: str = ""
     # how rollouts are prompted and scored; math grades the last \boxed{}, deepscaler only after </think>, which a
     # thinking-off response lacks
     rollout_args: str = "--rm-type math "
@@ -120,6 +122,8 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
             raise ValueError(
                 f"--titan-fp8-recipe {self.titan_fp8_recipe!r}: expected one of {get_args(TitanFp8Recipe)}"
             )
+        if self.true_on_policy and (self.rollout_fp8 or self.train_fp8):
+            raise ValueError("--true-on-policy serves and trains unquantized; drop --rollout-fp8 / --train-fp8")
         if self.train_fp8 and not self.rollout_fp8:
             raise ValueError(
                 "--train-fp8 requires --rollout-fp8 (on both the sglang and train commands) so rollout and training "
@@ -323,7 +327,8 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
         f"--update-weight-transfer-mode {WEIGHT_TRANSFER_MODE} "
     )
 
-    fp8_recipe = args.titan_fp8_recipe or "rowwise_with_gw_hp"
+    fp8_filter = f"--titan-fp8-filter-fqns {model.titan_fp8_filter_fqns} " if model.titan_fp8_filter_fqns else ""
+    fp8_args = f"--titan-fp8-recipe {args.titan_fp8_recipe or 'rowwise_with_gw_hp'} {fp8_filter}"
     train_backend_args = (
         "--train-backend torchtitan "
         f"--titan-model-name {model.titan_model_name} "
@@ -336,7 +341,7 @@ def execute_train(args: ScriptArgs, model: TitanTpuModel, *, launcher_file: str)
         f"{'--use-rollout-routing-replay ' if model.routing_replay else ''}"
         "--use-dynamic-batch-size "
         f"--max-tokens-per-gpu {SEQ_LEN} "
-        f"{f'--titan-fp8-recipe {fp8_recipe} ' if args.train_fp8 else ''}"
+        f"{fp8_args if args.train_fp8 else ''}"
         f"{model.train_args}"
     )
 

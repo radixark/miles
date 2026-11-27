@@ -246,3 +246,6 @@ def _validate_true_on_policy_args(args) -> None:
         raise ValueError("--true-on-policy-mode does not cover LoRA")
     if args.rollout_top_p != 1.0 or args.rollout_top_k > 0:
         raise ValueError("--true-on-policy-mode covers plain temperature sampling: --rollout-top-p 1, no top-k")
+    # the installed forward multiplies each projection's BF16 weight directly, skipping the FP8 linear
+    if args.titan_fp8_recipe is not None:
+        raise ValueError("--true-on-policy-mode does not cover --titan-fp8-recipe")
