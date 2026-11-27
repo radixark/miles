@@ -56,12 +56,17 @@ INPUT_GLOBS_BY_HARDWARE = {
         "docker/Dockerfile.tpu.dockerignore",
         "docker/tpu_patch/*",
     ),
+    "xpu": (
+        "docker/Dockerfile.xpu",
+        "docker/Dockerfile.xpu.dockerignore",
+    ),
 }
 
 HARDWARE_BY_VARIANT = {
     **dict.fromkeys(("cu13", "cu13-x86", "cu13-aarch64", "rubin"), "cuda"),
     **dict.fromkeys(("rocm724-mi35x", "rocm10-mi35x", "rocm10-mi30x", "rocm10-mi35x-pr"), "rocm"),
     "tpu": "tpu",
+    "xpu": "xpu",
 }
 
 LABEL_KEY = "miles.image-inputs"

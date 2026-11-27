@@ -55,7 +55,7 @@ class TestClusterToolsInEveryTrainingImage:
 
     def test_every_variant_of_the_build_script_is_covered(self):
         """A new variant pointing at a third Dockerfile must not quietly opt out of this check."""
-        assert len(training_dockerfiles()) == 4
+        assert len(training_dockerfiles()) == 5
 
 
 def _arg_default(dockerfile: str, name: str) -> str:
@@ -88,3 +88,8 @@ def test_each_build_variant_stamps_its_own_input_hash(tmp_path, monkeypatch, var
     build.build_and_push(variant, "custom", True, DEFAULT_DOCKERFILE, custom_tag="fixture", context=tmp_path)
     assert hashes == [(tmp_path, variant)]
     assert "miles.image-inputs=fixture-hash" in commands[0]
+
+
+def test_the_xpu_image_takes_the_cuda_images_router():
+    """Bumping only docker/Dockerfile would leave the XPU image on the old router build."""
+    assert _arg_default("docker/Dockerfile.xpu", "WHEELS_TAG") == _arg_default("docker/Dockerfile", "WHEELS_TAG_X86")
