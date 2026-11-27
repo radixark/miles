@@ -237,13 +237,23 @@ def _install_mamba_model_loss_mask_shim() -> None:
     MambaModel._miles_loss_mask_shim_installed = True
 
 
+_bridge_class = None
+
+
+def bridge_class():
+    """Return the registered :class:`MilesNemotronHBridge`, building it on first use."""
+    global _bridge_class
+    if _bridge_class is None:
+        _bridge_class = _build_bridge_subclass()
+    return _bridge_class
+
+
 def install() -> None:
     """Register the Nemotron-H bridge subclass."""
-    for fn in (_build_bridge_subclass,):
-        try:
-            fn()
-        except Exception as e:  # best-effort; avoid breaking unrelated models
-            logger.warning("miles nemotron_h shim %s not applied: %s", fn.__name__, e)
+    try:
+        bridge_class()
+    except Exception as e:  # best-effort; avoid breaking unrelated models
+        logger.warning("miles nemotron_h bridge not registered: %s", e)
 
 
 install()
