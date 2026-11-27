@@ -40,21 +40,23 @@ class TestExplicitTrainConfig:
         monkeypatch.setattr(model_module, "get_args", _reject_global_config, raising=False)
         env = train_one_step_env
 
-        _, grad_norm, outcome = model_module.train_one_step(
+        output = model_module.train_one_step(
             args=env.args,
-            rollout_id=2,
-            step_id=0,
-            model=env.model,
-            optimizer=None,
-            opt_param_scheduler=None,
-            data_iterator=env.data_iterator,
-            num_microbatches=1,
-            num_rollouts=1,
-            witness_info=None,
-            attempt=0,
+            input=model_module.TrainOneStepInput(
+                rollout_id=2,
+                step_id=0,
+                data_iterator=env.data_iterator,
+                model=env.model,
+                optimizer=None,
+                opt_param_scheduler=None,
+                num_microbatches=1,
+                num_rollouts=1,
+                witness_info=None,
+                attempt=0,
+            ),
         )
 
-        assert outcome is TrainStepOutcome.NORMAL
-        assert grad_norm == 0.0
+        assert output.outcome is TrainStepOutcome.NORMAL
+        assert output.grad_norm == 0.0
         assert len(env.forward_backward_engine.calls) == 1
         assert env.forward_backward_engine.calls[0]["forward_only"] is False

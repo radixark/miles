@@ -149,21 +149,23 @@ class TestTrainOneStepStructuredLog:
         self, train_one_step_env: TrainOneStepEnv, caplog
     ):
         """Log consumers key train-step events off the train tag, so the caller must emit that tag with its fields."""
-        from miles.backends.megatron_utils.model import train_one_step
+        from miles.backends.megatron_utils.model import TrainOneStepInput, train_one_step
 
         with caplog.at_level(logging.INFO, logger="miles.backends.megatron_utils.model"):
             train_one_step(
                 args=train_one_step_env.args,
-                rollout_id=7,
-                step_id=3,
-                data_iterator=train_one_step_env.data_iterator,
-                model=train_one_step_env.model,
-                optimizer=None,
-                opt_param_scheduler=None,
-                num_microbatches=1,
-                num_rollouts=1,
-                witness_info=None,
-                attempt=2,
+                input=TrainOneStepInput(
+                    rollout_id=7,
+                    step_id=3,
+                    data_iterator=train_one_step_env.data_iterator,
+                    model=train_one_step_env.model,
+                    optimizer=None,
+                    opt_param_scheduler=None,
+                    num_microbatches=1,
+                    num_rollouts=1,
+                    witness_info=None,
+                    attempt=2,
+                ),
             )
 
         assert "train op=train_step rollout=7 step=3 attempt=2 outcome=NORMAL valid_step=true" in caplog.messages
@@ -177,7 +179,7 @@ class TestMtpGradientGate:
         self, train_one_step_env: TrainOneStepEnv, detach: bool, response_length: int, checked: bool
     ) -> None:
         """The backend detach flag preserves the real gradient check and its truncation boundary."""
-        from miles.backends.megatron_utils.model import train_one_step
+        from miles.backends.megatron_utils.model import TrainOneStepInput, train_one_step
 
         env = train_one_step_env
         env.args = make_train_one_step_args(
@@ -191,16 +193,18 @@ class TestMtpGradientGate:
         with pytest.raises(AssertionError, match="Expected all non-MTP parameters") if checked else nullcontext():
             train_one_step(
                 args=env.args,
-                rollout_id=7,
-                step_id=3,
-                data_iterator=env.data_iterator,
-                model=env.model,
-                optimizer=None,
-                opt_param_scheduler=None,
-                num_microbatches=1,
-                num_rollouts=1,
-                witness_info=None,
-                attempt=0,
+                input=TrainOneStepInput(
+                    rollout_id=7,
+                    step_id=3,
+                    data_iterator=env.data_iterator,
+                    model=env.model,
+                    optimizer=None,
+                    opt_param_scheduler=None,
+                    num_microbatches=1,
+                    num_rollouts=1,
+                    witness_info=None,
+                    attempt=0,
+                ),
             )
 
 
@@ -221,20 +225,22 @@ class TestTrainOneStepFaultHook:
         return log
 
     def _train(self, env: TrainOneStepEnv) -> None:
-        from miles.backends.megatron_utils.model import train_one_step
+        from miles.backends.megatron_utils.model import TrainOneStepInput, train_one_step
 
         train_one_step(
             args=env.args,
-            rollout_id=7,
-            step_id=0,
-            data_iterator=env.data_iterator,
-            model=env.model,
-            optimizer=None,
-            opt_param_scheduler=None,
-            num_microbatches=1,
-            num_rollouts=1,
-            witness_info=None,
-            attempt=2,
+            input=TrainOneStepInput(
+                rollout_id=7,
+                step_id=0,
+                data_iterator=env.data_iterator,
+                model=env.model,
+                optimizer=None,
+                opt_param_scheduler=None,
+                num_microbatches=1,
+                num_rollouts=1,
+                witness_info=None,
+                attempt=2,
+            ),
         )
 
     def test_the_hook_of_this_step_fires_before_the_cross_replica_allreduce(
@@ -403,19 +409,21 @@ class TestTrainOneStepModelCompanion:
         )
         monkeypatch.setattr(model_module.SampleIdentityExtractor, "gather_sample_identities", reject_witness_work)
 
-        _, _, outcome = model_module.train_one_step(
+        outcome = model_module.train_one_step(
             args=train_one_step_env.args,
-            rollout_id=7,
-            step_id=3,
-            data_iterator=train_one_step_env.data_iterator,
-            model=train_one_step_env.model,
-            optimizer=optimizer,
-            opt_param_scheduler=FakeScheduler(),
-            num_microbatches=1,
-            num_rollouts=1,
-            witness_info=None,
-            attempt=2,
-        )
+            input=model_module.TrainOneStepInput(
+                rollout_id=7,
+                step_id=3,
+                data_iterator=train_one_step_env.data_iterator,
+                model=train_one_step_env.model,
+                optimizer=optimizer,
+                opt_param_scheduler=FakeScheduler(),
+                num_microbatches=1,
+                num_rollouts=1,
+                witness_info=None,
+                attempt=2,
+            ),
+        ).outcome
 
         assert outcome is model_module.TrainStepOutcome.NORMAL
         assert optimizer.step_count == 1
@@ -438,21 +446,23 @@ class TestTrainOneStepModelCompanion:
 
         monkeypatch.setattr(model_module, "get_forward_backward_func", lambda: forward_backward_engine)
 
-        _, _, outcome = model_module.train_one_step(
+        output = model_module.train_one_step(
             args=train_one_step_env.args,
-            rollout_id=7,
-            step_id=3,
-            data_iterator=train_one_step_env.data_iterator,
-            model=train_one_step_env.model,
-            optimizer=FakeFiniteOptimizer(),
-            opt_param_scheduler=FakeScheduler(),
-            num_microbatches=1,
-            num_rollouts=1,
-            witness_info=None,
-            attempt=2,
+            input=model_module.TrainOneStepInput(
+                rollout_id=7,
+                step_id=3,
+                data_iterator=train_one_step_env.data_iterator,
+                model=train_one_step_env.model,
+                optimizer=FakeFiniteOptimizer(),
+                opt_param_scheduler=FakeScheduler(),
+                num_microbatches=1,
+                num_rollouts=1,
+                witness_info=None,
+                attempt=2,
+            ),
         )
 
-        assert outcome is model_module.TrainStepOutcome.NORMAL
+        assert output.outcome is model_module.TrainStepOutcome.NORMAL
         assert train_one_step_env.model[0].model_companion.snapshot_sample_consumptions(is_skipped=False) == {
             model_module.SampleLineage(source_sample_index=7, output_index=0, output_count=1): 1
         }
@@ -478,22 +488,24 @@ class TestTrainOneStepModelCompanion:
 
         monkeypatch.setattr(model_module, "get_forward_backward_func", lambda: forward_backward_engine)
 
-        _, _, outcome = model_module.train_one_step(
+        output = model_module.train_one_step(
             args=train_one_step_env.args,
-            rollout_id=7,
-            step_id=3,
-            data_iterator=train_one_step_env.data_iterator,
-            model=train_one_step_env.model,
-            optimizer=FakeNonfiniteOptimizer(),
-            opt_param_scheduler=None,
-            num_microbatches=1,
-            num_rollouts=1,
-            witness_info=None,
-            attempt=2,
+            input=model_module.TrainOneStepInput(
+                rollout_id=7,
+                step_id=3,
+                data_iterator=train_one_step_env.data_iterator,
+                model=train_one_step_env.model,
+                optimizer=FakeNonfiniteOptimizer(),
+                opt_param_scheduler=None,
+                num_microbatches=1,
+                num_rollouts=1,
+                witness_info=None,
+                attempt=2,
+            ),
         )
 
         assert train_one_step_env.model[0].model_companion.weight_version.item() == 0
-        assert outcome is model_module.TrainStepOutcome.NORMAL
+        assert output.outcome is model_module.TrainStepOutcome.NORMAL
         assert train_one_step_env.model[0].model_companion.snapshot_sample_consumptions(is_skipped=False) == {}
         assert train_one_step_env.model[0].model_companion.snapshot_sample_consumptions(is_skipped=True) == {
             model_module.SampleLineage(source_sample_index=7, output_index=1, output_count=2): 1
@@ -524,19 +536,21 @@ class TestTrainOneStepModelCompanion:
         monkeypatch.setattr(model_module, "get_forward_backward_func", lambda: forward_backward_engine)
         monkeypatch.setattr(model_module, "allreduce_grads_and_losses_across_replicas", discard_attempt)
 
-        _, _, outcome = model_module.train_one_step(
+        outcome = model_module.train_one_step(
             args=train_one_step_env.args,
-            rollout_id=7,
-            step_id=0,
-            data_iterator=train_one_step_env.data_iterator,
-            model=train_one_step_env.model,
-            optimizer=optimizer,
-            opt_param_scheduler=None,
-            num_microbatches=1,
-            num_rollouts=1,
-            witness_info=None,
-            attempt=2,
-        )
+            input=model_module.TrainOneStepInput(
+                rollout_id=7,
+                step_id=0,
+                data_iterator=train_one_step_env.data_iterator,
+                model=train_one_step_env.model,
+                optimizer=optimizer,
+                opt_param_scheduler=None,
+                num_microbatches=1,
+                num_rollouts=1,
+                witness_info=None,
+                attempt=2,
+            ),
+        ).outcome
 
         assert outcome is model_module.TrainStepOutcome.DISCARDED_SHOULD_RETRY
         assert optimizer.step_count == 0
@@ -570,18 +584,20 @@ def test_ft_discard_stays_invalid_with_finite_gradient_norm(
         model_module, "allreduce_grads_and_losses_across_replicas", lambda *args, **kwargs: (False, {})
     )
 
-    _, _, outcome = model_module.train_one_step(
+    outcome = model_module.train_one_step(
         args=env.args,
-        rollout_id=7,
-        step_id=0,
-        data_iterator=env.data_iterator,
-        model=env.model,
-        optimizer=optimizer,
-        opt_param_scheduler=None,
-        num_microbatches=1,
-        num_rollouts=1,
-        witness_info=None,
-        attempt=2,
-    )
+        input=model_module.TrainOneStepInput(
+            rollout_id=7,
+            step_id=0,
+            data_iterator=env.data_iterator,
+            model=env.model,
+            optimizer=optimizer,
+            opt_param_scheduler=None,
+            num_microbatches=1,
+            num_rollouts=1,
+            witness_info=None,
+            attempt=2,
+        ),
+    ).outcome
 
     assert outcome is model_module.TrainStepOutcome.DISCARDED_SHOULD_RETRY

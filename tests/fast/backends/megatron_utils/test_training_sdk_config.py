@@ -165,16 +165,18 @@ class TestBackendTrainingDimensions:
         else:
             model_sdk.module.train_one_step(
                 args=args,
-                rollout_id=0,
-                step_id=0,
-                data_iterator=[iterator],
-                model=[model_sdk.model],
-                optimizer=None,
-                opt_param_scheduler=None,
-                num_microbatches=4,
-                num_rollouts=8,
-                witness_info=None,
-                attempt=0,
+                input=model_sdk.module.TrainOneStepInput(
+                    rollout_id=0,
+                    step_id=0,
+                    data_iterator=[iterator],
+                    model=[model_sdk.model],
+                    optimizer=None,
+                    opt_param_scheduler=None,
+                    num_microbatches=4,
+                    num_rollouts=8,
+                    witness_info=None,
+                    attempt=0,
+                ),
             )
 
         [call] = model_sdk.pipeline_calls
@@ -209,22 +211,24 @@ class TestBackendTrainingDimensions:
         )
         model_sdk.pipeline_outputs = [{"keys": ["loss"], "values": torch.tensor([8.0, 16.0])}]
 
-        metrics, _, outcome = model_sdk.module.train_one_step(
+        output = model_sdk.module.train_one_step(
             args=args,
-            rollout_id=0,
-            step_id=0,
-            data_iterator=[DataIterator({}, micro_batch_size=1)],
-            model=[model_sdk.model],
-            optimizer=None,
-            opt_param_scheduler=None,
-            num_microbatches=1,
-            num_rollouts=4,
-            witness_info=None,
-            attempt=0,
+            input=model_sdk.module.TrainOneStepInput(
+                rollout_id=0,
+                step_id=0,
+                data_iterator=[DataIterator({}, micro_batch_size=1)],
+                model=[model_sdk.model],
+                optimizer=None,
+                opt_param_scheduler=None,
+                num_microbatches=1,
+                num_rollouts=4,
+                witness_info=None,
+                attempt=0,
+            ),
         )
 
-        assert metrics == {"loss": expected}
-        assert outcome == TrainStepOutcome.NORMAL
+        assert output.loss_dict == {"loss": expected}
+        assert output.outcome == TrainStepOutcome.NORMAL
 
 
 class TestBackendTrainingValidation:
@@ -263,19 +267,21 @@ class TestBackendTrainingValidation:
         optimizer = Mock(prepare_grads=Mock(return_value=True), step=Mock(return_value=(True, 1.0, 0)))
         scheduler = Mock()
 
-        _, _, outcome = model_sdk.module.train_one_step(
+        outcome = model_sdk.module.train_one_step(
             args=args,
-            rollout_id=0,
-            step_id=0,
-            data_iterator=[DataIterator({}, micro_batch_size=1)],
-            model=[model_sdk.model],
-            optimizer=optimizer,
-            opt_param_scheduler=scheduler,
-            num_microbatches=1,
-            num_rollouts=4,
-            witness_info=None,
-            attempt=0,
-        )
+            input=model_sdk.module.TrainOneStepInput(
+                rollout_id=0,
+                step_id=0,
+                data_iterator=[DataIterator({}, micro_batch_size=1)],
+                model=[model_sdk.model],
+                optimizer=optimizer,
+                opt_param_scheduler=scheduler,
+                num_microbatches=1,
+                num_rollouts=4,
+                witness_info=None,
+                attempt=0,
+            ),
+        ).outcome
 
         assert optimizer.prepare_grads.call_count == int(not check_nan)
         assert optimizer.step.call_count == int(check_nan)
