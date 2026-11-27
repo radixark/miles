@@ -6,7 +6,8 @@ import httpx
 import pytest
 import requests
 import sglang_router
-from fastapi import Request
+import zstandard
+from fastapi import FastAPI, Request, Response
 
 from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
@@ -95,6 +96,34 @@ def mock_worker_factory():
     yield _create
     for s in servers:
         s.stop()
+
+
+@pytest.fixture
+def zstd_worker():
+    """A worker that zstd-compresses its /generate reply when the request accepts zstd, as SGLang does."""
+    app = FastAPI()
+
+    @app.get("/health")
+    async def health():
+        return {"status": "ok"}
+
+    @app.post("/generate")
+    async def generate(request: Request):
+        body = b'{"text": "ok"}'
+        if "zstd" not in request.headers.get("accept-encoding", ""):
+            return Response(body, media_type="application/json")
+        return Response(
+            zstandard.ZstdCompressor().compress(body),
+            media_type="application/json",
+            headers={"content-encoding": "zstd"},
+        )
+
+    server = UvicornThreadServer(app, host="127.0.0.1", port=find_available_port(31100))
+    server.start()
+    try:
+        yield server.url
+    finally:
+        server.stop()
 
 
 @pytest.fixture
@@ -578,6 +607,15 @@ class TestProxyIntegration:
         all_requests = worker1.request_log + worker2.request_log
         assert len(all_requests) == 4
         assert all(req == payload for req in all_requests)
+
+    def test_proxy_returns_a_compressing_workers_reply_decoded(self, router_env: RouterEnv, zstd_worker: str):
+        requests.post(f"{router_env.url}/add_worker", params={"url": zstd_worker}, timeout=5.0).raise_for_status()
+
+        r = requests.post(f"{router_env.url}/generate", json={}, headers={"Accept-Encoding": "zstd"}, timeout=10.0)
+        r.raise_for_status()
+
+        assert "content-encoding" not in r.headers
+        assert r.json() == {"text": "ok"}
 
     def test_proxy_health_endpoint(self, router_env: RouterEnv, mock_worker: MockSGLangServer):
         requests.post(f"{router_env.url}/add_worker", params={"url": mock_worker.url}, timeout=5.0)
