@@ -231,6 +231,15 @@ hands out groups in completion order:
 The flag counts staleness in training steps, so it requires `--update-weights-interval 1`
 and one optimizer step per rollout.
 
+The bound also decides when the driver drains the next batch. The filter compares a group
+with the engine's version at the drain, so a strictly on-policy run (`N = 0`, or no bound)
+drains only after each weight update, and the drain (the wait for `rollout_batch_size`
+groups, the sample conversion, the split over data-parallel ranks and the object-store put)
+sits between the update and the next training step. With `N >= 1` the driver issues the
+next drain at the start of the step, so it overlaps training and the update; the batch
+then trains one version later than it was drained, i.e. its groups are at most `N + 1`
+versions behind the weights they train with.
+
 When those knobs are not enough, `--custom-async-data-buffer-path` replaces the buffer
 itself. This is a larger step than setting any flag above: your `DataBuffer` subclass
 takes over the full interface and therefore every group-level decision, and the flags in
