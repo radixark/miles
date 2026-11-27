@@ -25,11 +25,11 @@ async def test_runtime_topology_waits_for_changes_and_excludes_the_eval_fleet(in
     controller = object.__new__(InferenceController)
     controller.context_lock = ContextLock("runtime-topology-test")
     controller.servers = {
-        "primary": SimpleNamespace(engine_gpu_counts=primary_counts),
-        "reference": SimpleNamespace(engine_gpu_counts=[8]),
+        "primary": SimpleNamespace(engine_gpu_counts=primary_counts, engine_urls=["http://p0", "http://p1"]),
+        "reference": SimpleNamespace(engine_gpu_counts=[8], engine_urls=["http://r0"]),
     }
     if include_eval:
-        controller.servers["eval"] = SimpleNamespace(engine_gpu_counts=[1, 1])
+        controller.servers["eval"] = SimpleNamespace(engine_gpu_counts=[1, 1], engine_urls=["http://e0", "http://e1"])
     before = await controller.get_inference_runtime_immut_state()
 
     async with controller.context_lock:
@@ -39,8 +39,20 @@ async def test_runtime_topology_waits_for_changes_and_excludes_the_eval_fleet(in
         primary_counts.append(6)
     after = await asyncio.wait_for(pending, timeout=1)
 
-    assert before.model_dump() == {"engine_count": 3, "gpu_count": 14, "eval_engine_count": 2 if include_eval else 0}
-    assert after.model_dump() == {"engine_count": 4, "gpu_count": 20, "eval_engine_count": 2 if include_eval else 0}
+    urls = ["http://p0", "http://p1", "http://r0"]
+    eval_count = 2 if include_eval else 0
+    assert before.model_dump() == {
+        "engine_count": 3,
+        "gpu_count": 14,
+        "eval_engine_count": eval_count,
+        "engine_urls": urls,
+    }
+    assert after.model_dump() == {
+        "engine_count": 4,
+        "gpu_count": 20,
+        "eval_engine_count": eval_count,
+        "engine_urls": urls,
+    }
 
 
 @pytest.mark.parametrize("evaluation", [False, True])

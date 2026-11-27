@@ -3,7 +3,6 @@ from collections.abc import Iterator
 from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sample
@@ -110,7 +109,6 @@ class TestLegacyRolloutSampleOwnership:
             sglang_router_port=30000,
         )
         monkeypatch.setattr(sglang_rollout, "GenerateState", lambda _args: state)
-        monkeypatch.setattr(sglang_rollout, "get", lambda _url: _return({"workers": []}))
         monkeypatch.setattr(sglang_rollout, "call_agent_abort_hook", _no_op)
         set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="rollout_executor")))
 
@@ -216,7 +214,3 @@ class TestLegacyRolloutSampleOwnership:
         [event] = _drop_events(tmp_path)
         assert event.source_sample_indices == [1]
         assert event.reason == "rollout_sample_filter"
-
-
-async def _return(value: Any) -> Any:
-    return value

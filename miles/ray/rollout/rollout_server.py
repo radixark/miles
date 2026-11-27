@@ -111,6 +111,11 @@ class RolloutServer:
 
     @property
     @requires_lock
+    def engine_urls(self) -> list[str]:
+        return [cell.server_url for cell in self._addressable_cells()]
+
+    @property
+    @requires_lock
     def normal_server_cells(self) -> dict[str, ServerCell]:
         return {cell_id: cell for cell_id, cell in self.all_server_cells.items() if not cell.is_errored}
 
