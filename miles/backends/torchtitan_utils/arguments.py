@@ -28,6 +28,9 @@ class TorchtitanArgs(FSDPArgs):
     titan_fsdp_gather_once: bool = False
     # FSDP's gradient reduce dtype: bfloat16 halves the reduce-scatter buffers and bytes
     titan_fsdp_reduce_dtype: str = "float32"
+    # tokens per chunk of the TPU gated delta rule (Qwen3.5's linear attention): the backward runs one step of
+    # eight matmuls per chunk, so a larger chunk means fewer, larger device programs; a power of two
+    titan_gated_delta_chunk_size: int = 128
 
 
 def build_torchtitan_parser(extra_args_provider=None):
@@ -63,6 +66,12 @@ def validate_torchtitan_args(args) -> None:
             "inside the rope kernel"
         )
 
+    chunk_size = args.titan_gated_delta_chunk_size
+    if chunk_size < 16 or chunk_size & (chunk_size - 1):
+        raise ValueError(
+            f"--titan-gated-delta-chunk-size {chunk_size}: the chunked delta rule inverts its chunk-local system by "
+            "doubling 16-row blocks, so the chunk must be a power of two of at least 16"
+        )
     if args.titan_fsdp_reduce_dtype not in _FSDP_REDUCE_DTYPES:
         raise ValueError(
             f"--titan-fsdp-reduce-dtype {args.titan_fsdp_reduce_dtype!r}: expected one of {_FSDP_REDUCE_DTYPES}"

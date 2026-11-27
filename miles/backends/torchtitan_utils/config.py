@@ -1,9 +1,11 @@
 import copy
+import functools
 import importlib
 import inspect
 import logging
 import os
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -75,7 +77,7 @@ def build_model_config(
     model = builder(args.backend.titan_model_flavor, **kwargs)
     _disable_load_balancing(model)
     if not platforms.current_platform.flex_attention:
-        _replace_inner_attention(model)
+        _replace_inner_attention(model, gated_delta_chunk_size=args.backend.titan_gated_delta_chunk_size)
         _check_gated_delta_runs_without_tp(model, tp=parallelism.tensor_parallel_degree)
     if parallelism.context_parallel_degree > 1:
         if platforms.current_platform.flex_attention:
@@ -212,7 +214,8 @@ class TpuGatedDeltaInnerAttention(InnerAttention):
 
     @dataclass(kw_only=True, slots=True)
     class Config(_SegmentIdsConfig):
-        pass
+        # tokens per chunk of the chunked recurrence; the backward is one step per chunk (--titan-gated-delta-chunk-size)
+        chunk_size: int = 128
 
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -222,6 +225,7 @@ class TpuGatedDeltaInnerAttention(InnerAttention):
         allow_scan_in_selective_checkpoint()
         self.gated_delta_rule = gated_delta_rule
         self.short_conv = short_conv
+        self.chunk_size = config.chunk_size
 
     def forward(
         self,
@@ -253,14 +257,15 @@ class TpuGatedDeltaInnerAttention(InnerAttention):
             g_TH,
             torch.sigmoid(b_TH),
             segment_ids=attention_metadata,
+            chunk_size=self.chunk_size,
         )
 
 
-def _replace_inner_attention(model: BaseModel.Config) -> None:
+def _replace_inner_attention(model: BaseModel.Config, *, gated_delta_chunk_size: int = 128) -> None:
     """Swap in inner attentions keyed on segment ids, for platforms without sparse FlexAttention or attn_gym."""
-    replacements: dict[type[InnerAttention.Config], type[InnerAttention.Config]] = {
+    replacements: dict[type[InnerAttention.Config], Callable[[], InnerAttention.Config]] = {
         FlexInnerAttention.Config: TpuFlashInnerAttention.Config,
-        InnerGDN.Config: TpuGatedDeltaInnerAttention.Config,
+        InnerGDN.Config: functools.partial(TpuGatedDeltaInnerAttention.Config, chunk_size=gated_delta_chunk_size),
     }
     for layer in model.layers:
         for _, inner, parent, field_name in layer.traverse(InnerAttention.Config, recurse=True):
