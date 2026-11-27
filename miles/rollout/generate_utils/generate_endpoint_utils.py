@@ -120,6 +120,24 @@ def adopt_expanded_prompt_ids(sample: Sample, payload: dict, output: dict) -> No
     sample.tokens = list(prompt_token_ids)
 
 
+def opd_student_top_k(args) -> int:
+    """Return the OPD student-side top-k count when student candidate log-probs are needed, else 0."""
+    opd_top_k = args.opd_log_prob_top_k or 0
+    if args.use_opd and opd_top_k > 0 and args.opd_top_k_strategy != "only-teacher":
+        return opd_top_k
+    return 0
+
+
+def append_opd_student_top_logprobs(args, sample: Sample, output: dict) -> None:
+    """Append SGLang's ``output_top_logprobs`` into ``sample.metadata['opd_student_top_logprobs']``."""
+    if not opd_student_top_k(args):
+        return
+    output_top_logprobs = output.get("meta_info", {}).get("output_top_logprobs")
+    if output_top_logprobs is not None:
+        sample.metadata.setdefault("opd_student_top_logprobs", [])
+        sample.metadata["opd_student_top_logprobs"].extend(output_top_logprobs)
+
+
 def compute_request_payload(
     args,
     input_ids: list[int],
@@ -161,6 +179,8 @@ def compute_request_payload(
         payload["extra_key"] = kv_cache_namespace
 
     if not evaluation:
+        if opd_top_k := opd_student_top_k(args):
+            payload["top_logprobs_num"] = opd_top_k
         configure_rollout_topk_logprobs_request(args, payload)
     if args.use_output_store and not evaluation and any(payload.get(field.request_key) for field in FIELDS):
         if "image_data" in payload:
@@ -239,6 +259,9 @@ async def update_sample_from_response(
     sample.tokens = sample.tokens + new_response_tokens
     sample.response_length += len(new_response_tokens)
     sample.response += output["text"]
+
+    if payload.get("top_logprobs_num"):
+        append_opd_student_top_logprobs(args, sample, output)
 
     if sample.rollout_log_probs is None:
         sample.rollout_log_probs = []
