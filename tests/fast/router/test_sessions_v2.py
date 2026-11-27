@@ -58,6 +58,8 @@ def _serve_router(extra_args: dict | None = None):
             "replay_layer_splits": [],
             "use_sampling_support_replay": False,
             "use_output_store": False,
+            "multimodal_token_space_processing": False,
+            "shared_media_dir": None,
             "rollout_top_logprobs_num": 0,
             "rollout_sampling_logprobs_mode": "selected",
             "sglang": make_sglang_config(speculative_algorithm=None),

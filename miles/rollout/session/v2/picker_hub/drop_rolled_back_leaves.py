@@ -98,6 +98,8 @@ def _same_prompt(node_id: int, sample: Sample, leaf_samples: list[Sample], nodes
 
     Tokens come from any leaf sample whose path covers the node; a node that no
     leaf sample covers, e.g. one whose leaves all truncated away, matches nothing.
+    Only token IDs are compared: the same text with another image renders the
+    same placeholders, so the later re-send supersedes the earlier as a retry.
     """
     prompt_len = nodes[sample.metadata["leaf"]["node_id"]]["completion_span"][0]
     if nodes[node_id]["completion_span"][0] != prompt_len:

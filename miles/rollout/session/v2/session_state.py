@@ -203,10 +203,12 @@ def commit_generation(
     response_id: str,
     finish_reason: str,
     turn_args: dict[str, Any] | None = None,
+    engine_prompt_len: int | None = None,
 ) -> TrajectoryNode:
     """Validate and append one generation under *parent* (the request's attach
     node). Prefix validation is byte-identical to the pre-tree checkpoint check.
-    ``turn_args`` is the full resolved request for this generation."""
+    ``turn_args`` is the full resolved request for this generation; ``engine_prompt_len``
+    is the length of the prompt the engine ran, ``len(prompt_token_ids)`` unless media expanded it."""
     all_token_ids = prompt_token_ids + completion_token_ids
     assert_pretokenized_prefix(
         parent.token_ids if parent is not None else [],
@@ -218,11 +220,14 @@ def commit_generation(
 
     parent_messages = parent.path_messages() if parent is not None else []
     delta = list(request_messages[len(parent_messages) :]) + [assistant_message]
+    # The span is in the engine's form, as the samples are (token_space): a prompt with media is longer
+    # there than in token_ids, which the tree keeps in TITO's form for its prefix checks.
+    completion_start = len(prompt_token_ids) if engine_prompt_len is None else engine_prompt_len
     node = state.tree.create_node(
         parent,
         delta_messages=delta,
         token_ids=all_token_ids,
-        completion_span=(len(prompt_token_ids), len(all_token_ids)),
+        completion_span=(completion_start, completion_start + len(completion_token_ids)),
         committed_at=record.timestamp,
         response_id=response_id,
         record=record,
