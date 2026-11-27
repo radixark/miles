@@ -202,6 +202,10 @@ class ForwardSegments(Segments):
     - 0: the object holds every row, and ``append`` replaces all earlier rows;
     - ``start`` > 0: the object holds rows from ``start`` on, preceded by a ref-less segment of
       ``start`` rows, which ``append`` fills with the earlier plan's first ``start`` rows.
+
+    ``insert`` appends a ref-less segment for tokens no forward ran yet, such as a final tool
+    observation; ``range_reads`` pads its rows with -1, the inline path's padding, until a later response
+    replaces them.
     """
 
     column: ClassVar[str]
@@ -236,11 +240,15 @@ class ForwardSegments(Segments):
             raise StorePlanError(
                 f"{self.name} continues from row {covered}, but only {self.num_rows()} rows precede it"
             )
-        return type(self)(self.prefix(covered).segs + new.segs[1 if covered else 0 :])
+        kept = self.prefix(covered).segs
+        if any(seg.ref is None for seg in kept):
+            # Inserted rows the next forward does not cover would never be replaced.
+            raise StorePlanError(f"{self.name} continues from row {covered}, past rows no forward ran")
+        return type(self)(kept + new.segs[1 if covered else 0 :])
 
     def insert(self, n: int) -> Segments:
-        # The next forward covers the inserted tokens.
-        return self
+        # Ref-less rows until the next forward replaces them; range_reads pads them with -1, as inline.
+        return type(self)(self.segs + (Seg(None, 0, n),)) if n else self
 
     @classmethod
     def _row_specs(cls, specs: Mapping[str, Any]) -> list[Any]:
@@ -316,7 +324,11 @@ class ForwardSegments(Segments):
 
         ``ranges`` are the rank's positions of this sample in local order (``CPLayout.local_ranges``).
         Local row k lands at ``dst_offset + k * row_bytes``, a row of the part. Position p has row p for
-        p < ``num_rows()``; the local rows of later positions come back as ``[start, end)`` spans the caller pads.
+        p < ``num_rows()``; the local rows of later positions, and of inserted rows no forward ran, come back as
+        ``[start, end)`` spans the caller pads.
+
+        Raises:
+            StorePlanError: The first segment is ref-less, so no object holds the rows a later response was to fill.
         """
         dtype, row_shape = self.row_format(block)
         row_bytes = dtype.itemsize * int(np.prod(row_shape, dtype=np.int64))
@@ -331,9 +343,13 @@ class ForwardSegments(Segments):
             while row < min(b, num_rows):
                 i = bisect.bisect_right(starts, row) - 1
                 seg = self.segs[i]
-                if seg.ref is None:
-                    raise StorePlanError(f"{self.name} rows {starts[i]}-{starts[i + 1]} have no object to read")
                 count = min(b, num_rows, starts[i + 1]) - row
+                if seg.ref is None:
+                    if i == 0:
+                        raise StorePlanError(f"{self.name} rows {starts[i]}-{starts[i + 1]} have no object to read")
+                    pads.append((local + row - a, local + row + count - a))
+                    row += count
+                    continue
                 src = (seg.start + row - starts[i]) * row_bytes
                 dst = dst_offset + (local + row - a) * row_bytes
                 last = reads[-1] if reads else None

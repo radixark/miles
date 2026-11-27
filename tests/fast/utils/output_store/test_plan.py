@@ -202,10 +202,24 @@ class TestEdits:
         with pytest.raises(StorePlanError, match="continues from row 5, but only 0 rows precede it"):
             RoutedExpertsSegments().append(later.fields[R3])
 
-    def test_a_tool_observation_adds_forced_mask_rows_only(self):
+    def test_a_tool_observation_adds_ref_less_rows_to_every_field(self):
         plan = response("a", prompt=3, output=2).insert_tokens(3)
-        assert segs(plan, R3) == [("a", 0, 4)] and segs(plan, MASK) == [("a", 0, 2), (None, 0, 3)]
+        assert segs(plan, R3) == segs(plan, INDEXER) == [("a", 0, 4), (None, 0, 3)]
+        assert segs(plan, MASK) == [("a", 0, 2), (None, 0, 3)]
+        plan.validate(num_tokens=8, response_length=5)
         assert plan.insert_tokens(0) == plan
+
+    def test_an_incremental_forward_cannot_keep_rows_no_forward_ran(self):
+        # 3 observation tokens after rows 0..3, but the next object starts at position 6.
+        before = response("a", prompt=3, output=2, requested={R3}).insert_tokens(3)
+        later = StorePlan.from_response(
+            Ref("b", (part(R3, (3, 2, 4)),)),
+            request=request({R3}, routed_experts_start_len=6),
+            num_tokens=10,
+            response_length=1,
+        )
+        with pytest.raises(StorePlanError, match="continues from row 6, past rows no forward ran"):
+            before.append_response(later)
 
     def test_session_merge_puts_forced_rows_between_turns_and_keeps_the_later_forward(self):
         turn1 = response("a", prompt=3, output=2)
@@ -374,10 +388,12 @@ def read_part(segments: ForwardSegments, objects: dict, block: tuple[int, int]) 
     rows = np.empty((segments.num_rows(), *row_shape), dtype=dtype)
     dst = rows.reshape(-1).view(np.uint8)
     reads, pads = segments.range_reads([(0, segments.num_rows())], dst_offset=0, block=block)
-    assert pads == []
     for read in reads:
         src = np.ascontiguousarray(objects[read.ref.key][name]).reshape(-1).view(np.uint8)
         dst[read.dst_offset : read.dst_offset + read.nbytes] = src[read.src_offset : read.src_offset + read.nbytes]
+    # Inserted rows no forward ran, as _BlockRegion.rows pads them.
+    for start, end in pads:
+        rows[start:end] = -1
     return rows
 
 
@@ -443,9 +459,26 @@ class TestRangeReads:
             [],
         )
 
+    def test_inserted_rows_are_padding_and_their_local_rows_come_back_as_pads(self):
+        # Rows 0-3 in object a, then 2 inserted rows no forward ran; cp 2 zigzag in chunks of 2.
+        segments = seq_rows_of(R3, ("a", 0, 4), (None, 0, 2))
+        a, row = segments.segs[0].ref, self.ROW
+
+        assert segments.range_reads([(0, 2), (6, 8)], dst_offset=0, block=(0, 2)) == (
+            [RowRead(a, 0, 2 * row, 0)],
+            [(2, 4)],
+        )
+        assert segments.range_reads([(2, 4), (4, 6)], dst_offset=0, block=(0, 2)) == (
+            [RowRead(a, 2 * row, 2 * row, 0)],
+            [(2, 4)],
+        )
+        objects = {"a": stored_parts(R3, r3(6, 1), [])}
+        expected = np.concatenate([objects["a"][f"{R3}.0-2"][:4], np.full((2, 2, 4), -1, dtype=np.int32)])
+        np.testing.assert_array_equal(read_rows(segments, objects), expected)
+
     def test_rows_no_object_holds_or_of_two_formats_cannot_be_read(self):
         with pytest.raises(StorePlanError, match="no object to read"):
-            seq_rows_of(R3, ("a", 0, 2), (None, 0, 2)).range_reads([(0, 4)], dst_offset=0, block=(0, 2))
+            seq_rows_of(R3, (None, 0, 2), ("a", 0, 2)).range_reads([(0, 4)], dst_offset=0, block=(0, 2))
         mixed = RoutedExpertsSegments(
             (
                 Seg(ref("a", seq_rows=2), 0, 2),

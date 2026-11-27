@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+import numpy as np
 from openai.types.chat import ChatCompletionMessageToolCall
 from pydantic import TypeAdapter
 from sglang.srt.entrypoints.openai.protocol import Tool
@@ -68,6 +69,12 @@ def append_observation_tokens(sample: Sample, token_ids: list[int], *, tokenizer
     if sample.rollout_store_plan is not None:
         sample.rollout_store_plan = sample.rollout_store_plan.insert_tokens(len(token_ids))
     pad_rollout_topk_logprobs(sample, len(token_ids))
+    for field in ("rollout_routed_experts", "rollout_indexer_topk"):
+        # No forward ran the inserted tokens: -1 rows, which the next turn's forward replaces.
+        rows = getattr(sample, field)  # config-access-exempt: sample field name is selected from the replay fields
+        if rows is not None:
+            padding = np.full((len(token_ids), *rows.shape[1:]), -1, dtype=rows.dtype)
+            setattr(sample, field, np.concatenate((rows, padding)))
     sample.response += tokenizer.decode(token_ids)
     sample.response_length += len(token_ids)
     sample.tokens += token_ids
