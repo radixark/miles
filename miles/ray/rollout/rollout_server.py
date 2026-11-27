@@ -175,6 +175,14 @@ class RolloutServer:
         return await asyncio.gather(*[cell.flush_cache() for cell in self._addressable_cells()])
 
     @requires_lock
+    async def drain_serving(self) -> None:
+        cells = [cell for cell in self._addressable_cells() if cell.is_serving]
+        await async_utils.gather_and_raise_first(
+            [cell.mark_updating() for cell in cells],
+            describe_failure=lambda index: f"Removing cell {cells[index].meta.cell_id} from its router failed",
+        )
+
+    @requires_lock
     async def abort_all(self) -> None:
         cells = self._addressable_cells()
         await async_utils.gather_and_raise_first(

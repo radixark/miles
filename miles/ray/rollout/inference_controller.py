@@ -237,6 +237,15 @@ class InferenceController:
                 receiver_pool=receiver_pool,
             )
 
+        # Gate dispatch for the update window: the router stops sending new
+        # requests to engines about to swap weights; in-flight requests drain
+        # on the engines themselves. mark_weights_ready publishes them again.
+        try:
+            await srv.drain_serving()
+        except BaseException:
+            await self._restore_drained_cells()
+            raise
+
         return UpdatableEngines(
             rollout_engines=srv.api_clients,
             engine_gpu_counts=srv.engine_gpu_counts,
@@ -250,7 +259,21 @@ class InferenceController:
 
     @lock_exempt
     async def abort_update_weights(self) -> None:
+        # An aborted update never replaced the weights, so cells drained for it
+        # go back to serving before the window closes.
+        await self._restore_drained_cells()
         self.context_lock.release_if_detached()
+
+    @lock_exempt
+    async def _restore_drained_cells(self) -> None:
+        drained = [cell for srv in self.servers.values() for cell in srv.all_server_cells.values() if cell.is_drained]
+        results = await asyncio.gather(*[cell.mark_weights_ready() for cell in drained], return_exceptions=True)
+        for cell, result in zip(drained, results, strict=True):
+            if isinstance(result, BaseException):
+                logger.warning(
+                    f"Cell {cell.meta.cell_id} could not rejoin the router after the update window closed",
+                    exc_info=result,
+                )
 
     @releases_lock
     async def end_update_weights(
