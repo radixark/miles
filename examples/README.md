@@ -45,6 +45,7 @@ Not fully verified — for experimental and development use.
 - **[bpo](./experimental/bpo)**: Custom loss plugin implementing Bellman Policy Optimization (BPO) via `--loss-type custom_loss`.
 - **[DrGRPO](./experimental/DrGRPO)**: Custom reducer for Dr.GRPO algorithm.
 - **[eval](./experimental/eval)**: Documentation and setup for evaluation environments using NeMo-Skills.
+  - **[agenticrl_bench_via_api](./experimental/eval/agenticrl_bench_via_api)**: Evaluate Kimi Code on AgenticRL-Bench tasks through an API and Harbor-managed sandboxes.
 - **[eval_multi_task](./experimental/eval_multi_task)**: Example for supporting OOD evaluation tasks, e.g., GPQA, IFBench.
 - **[formal_math](./experimental/formal_math)**: Examples related to formal math reasoning tasks, including a single round demo.
 - **[multi_agent](./experimental/multi_agent)**: Example of running multi-agent RL with `miles`.
