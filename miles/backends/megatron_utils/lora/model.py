@@ -61,19 +61,3 @@ def optim_step(
 ) -> dict[int, dict]:
     stepped = {slot: slot_optimizers[slot] for slot in adam_params_by_slot}
     return step_slot_optimizers(stepped, adam_params_by_slot)
-
-
-def load_slot(
-    args: Namespace, model: Sequence[DDP], adapter_slots: BridgeAdapterSlots, slot: int, rank: int, alpha: float
-) -> SlotOptimizer:
-    # the gateway takes no per-adapter seed
-    adapter_slots.init(slot, rank, alpha, seed=None)
-    slot_optimizer = SlotOptimizer(args, model, slot, adapter_slots.slot_parameters(slot))
-    slot_optimizer.zero_grads()
-    return slot_optimizer
-
-
-def unload_slot(adapter_slots: BridgeAdapterSlots, slot_optimizer: SlotOptimizer) -> None:
-    """The caller drops the instance afterwards; its state dies with it."""
-    adapter_slots.clear(slot_optimizer.slot)
-    slot_optimizer.zero_grads()
