@@ -226,3 +226,8 @@ def _validate_true_on_policy_args(args) -> None:
         raise ValueError("--true-on-policy-mode does not cover LoRA")
     if args.rollout_top_p != 1.0 or args.rollout_top_k > 0:
         raise ValueError("--true-on-policy-mode covers plain temperature sampling: --rollout-top-p 1, no top-k")
+    if args.use_routing_replay or args.use_rollout_routing_replay:
+        raise ValueError(
+            "--true-on-policy-mode reruns the engine's routing for the MoE value, so routing replay would reach only "
+            "the gradient; drop the routing replay flags"
+        )
