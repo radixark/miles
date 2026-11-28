@@ -45,7 +45,7 @@ from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.dp_schedule import TrainParallelConfig
 from miles.utils.lora.utils import build_lora_config, lora_rollout_enabled
-from miles.utils.memory_utils import clear_memory, print_memory
+from miles.utils.memory_utils import clear_memory, print_memory, release_host_memory
 from miles.utils.object_store import StoreObjectRef
 from miles.utils.profile_utils import TrainProfiler
 from miles.utils.timer import Timer, inverse_timer, timer
@@ -148,9 +148,11 @@ class TorchNativeTrainRayActor(TrainRayActor):
         where = "host" if to_host else "device"
         print_memory(f"before moving the model to {where}")
         move_train_state(self.model_parts, self.optimizers, to_host=to_host)
-        clear_memory()
+        # the host cache holds the pinned staging buffers of the move and the
+        # replay queues' pinned entries; on the way to the host both are done with
+        clear_memory(clear_host_memory=to_host)
         dist.barrier(group=get_gloo_group())
-        print_memory(f"after moving the model to {where}")
+        print_memory(f"after moving the model to {where}", processes=to_host)
 
     def train(
         self,
@@ -187,6 +189,10 @@ class TorchNativeTrainRayActor(TrainRayActor):
                 finally:
                     # Before the shard is released, on failure too: the replay fills still read it.
                     routing_replay.reset()
+            # the deserialised shard and its CPU copies are this step's peak; hand
+            # them back now instead of carrying the largest step so far
+            del rollout_data
+            release_host_memory()
 
         perf.log_perf_data_raw(
             rollout_id=rollout_id,
