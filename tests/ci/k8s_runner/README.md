@@ -19,7 +19,7 @@ The platform team installs and maintains the namespaces, LeaderWorkerSet, the ad
 | Namespace | Holds |
 |---|---|
 | `miles-ci-k8s-runner` | the runner `Deployment`, the `runner-launcher` ServiceAccount, and the `github-runner-app-creds` Secret |
-| `miles-ci-k8s` | the driver `Job`s and everything they create, under the `miles-workbench` ServiceAccount (`charts/miles-workbench`) |
+| `miles-ci-k8s` | the driver `Job`s and everything they create; a driver runs as the `miles-workbench` ServiceAccount, and a finished run uninstalls its own release as `miles-uninstaller` (both from `charts/miles-workbench`) |
 
 A driver `Job` can only run as a ServiceAccount of `miles-ci-k8s`, and nothing in `miles-ci-k8s` can read a Secret of `miles-ci-k8s-runner`, so code under test never reaches the runner credential.
 
@@ -41,7 +41,7 @@ In `miles-ci-k8s`:
 - capabilities `SYS_PTRACE` and `SYS_NICE` on GPU containers; every other container drops all capabilities; no container is privileged or allows privilege escalation;
 - `hostIPC` on GPU pods (`charts/miles-run`), which is why the node must be dedicated to this namespace;
 - `hostPath` mounts of `/storage/shared/miles-ci-k8s/ext`, `/storage/models` (read-only), `/data/miles_ci/jit`, and `/dev/shm/miles-<release>`;
-- `NVIDIA_VISIBLE_DEVICES` set only through a `fieldRef`;
+- `NVIDIA_VISIBLE_DEVICES` set to the literal `all` on colocate pools, the only pods that set it; a policy that allows it only through a `fieldRef` rejects those pools;
 - egress to pods of the same namespace, cluster DNS, the cluster API server, public HTTPS, and the metric-history Postgres endpoint.
 
 In `miles-ci-k8s-runner`: the `hostPath` mount `/storage/shared/miles-ci-k8s/ext`, and egress to cluster DNS, the cluster API server, and public HTTPS.
@@ -58,6 +58,12 @@ kubectl apply -f tests/ci/k8s_runner/runner-launcher-rbac.yaml
 
 ```bash
 kubectl apply -f tests/ci/k8s_runner/runner-deployment.yaml
+```
+
+Create the two ServiceAccounts of `miles-ci-k8s` and their Roles from the workbench chart. Only these templates are applied, because CI has no use for the workbench pod itself:
+
+```bash
+helm template miles-workbench charts/miles-workbench --namespace miles-ci-k8s --set objectName=miles-workbench --show-only templates/serviceaccount.yaml --show-only templates/rbac.yaml --show-only templates/uninstaller-rbac.yaml | kubectl apply -f -
 ```
 
 The reaper image is pinned by digest, so it reads the launcher from a ConfigMap. Recreate the ConfigMap whenever `tests/ci/k8s_run_driver_job.py` changes on the default branch:
