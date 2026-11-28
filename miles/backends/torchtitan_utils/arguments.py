@@ -7,8 +7,6 @@ from miles.backends.torchtitan_utils.lora_names import GROUPED_LORA_RANK_MULTIPL
 from miles.backends.training_utils.loss.hub.response_layout import validate_response_layout_args
 from miles.kernels.tpu import FLASH_ATTENTION_BLOCK
 from miles.platforms import current_platform, tpu_shared_slice
-from miles.utils.hf_utils.config import load_hf_config
-from miles.utils.lora.hf_lora_targets import get_hf_lora_targets, has_hf_lora_targets
 from miles.utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 
 _FSDP_REDUCE_DTYPES = ("float32", "bfloat16")
@@ -158,22 +156,11 @@ def _validate_lora_args(args) -> None:
         )
     if args.lora_dropout != 0:
         raise ValueError(f"torchtitan's LoRA has no dropout; got --lora-dropout {args.lora_dropout}")
-    if lora_rollout_enabled(args) and not _engine_serves_adapters(args.hf_checkpoint):
-        raise ValueError(
-            f"SGLang has no LoRA path for {args.hf_checkpoint}'s model type, so the adapter sync would fail at load; "
-            "pass --lora-train-only: the engines then run without adapters and each weight sync carries the base "
-            "with the adapters merged in"
-        )
     if lora_rollout_enabled(args) and args.colocate_memory_peak_device == "gpu":
         raise ValueError(
             "--colocate-memory-peak-device gpu pauses the LoRA grad buffers of the megatron backend, "
             "which the torchtitan backend does not have; use the default cpu"
         )
-
-
-def _engine_serves_adapters(hf_checkpoint: str) -> bool:
-    hf_config = load_hf_config(hf_checkpoint).to_dict()
-    return not has_hf_lora_targets(hf_config) or get_hf_lora_targets(hf_config).engine_serves_adapters
 
 
 def _validate_platform_args(args) -> None:

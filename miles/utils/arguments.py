@@ -50,7 +50,7 @@ from miles.utils.hf_utils.config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora.arguments import validate_lora_args, validate_lora_args_after_megatron
 from miles.utils.lora.hf_lora_targets import unembed_lora_targets
-from miles.utils.lora.utils import is_lora_enabled, lora_sync_sends_base
+from miles.utils.lora.utils import is_lora_enabled, lora_rollout_enabled, lora_sync_sends_base
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp, pp_layer_splits
 from miles.utils.object_store_config import (
     MOONCAKE_MASTER_ADDRESS_KEY,
@@ -1717,6 +1717,17 @@ def miles_validate_args(args):
             "--check-lora-weight-equal verifies the adapter in the weight-update session's end_weight_update, "
             "which only --http-lora-ship tensors uses; path mode has no checksum to compare against."
         )
+
+    if args.lora_sync_reload:
+        assert (
+            lora_rollout_enabled(args) and not args.multi_lora
+        ), "--lora-sync-reload reloads the single served adapter: it needs LoRA rollouts and no multi-LoRA"
+        assert (
+            args.colocate and args.lora_base_cpu_backup
+        ), "--lora-sync-reload sends no base weights: it needs --colocate and --lora-base-cpu-backup"
+        assert not args.check_weight_update_equal, "--check-weight-update-equal rewrites the base every sync"
+        # SGLang's unload waits until no request holds the adapter; a request kept across the sync would hang it
+        assert not args.partial_rollout, "--lora-sync-reload unloads the adapter, so no request may span a sync"
 
     if args.colocate:
         if args.offload_train is None:

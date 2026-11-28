@@ -28,8 +28,9 @@ class HfLoraTargets:
     packed_expert_gate_up_layout: str | None = None
     # the HF vocab: the most head lora_B rows an HF-shaped source may hold
     vocab_size: int | None = None
-    # SGLang loads this family's adapters; False: rollouts can follow the trained policy only through merged weights
-    engine_serves_adapters: bool = True
+    # with --lora-train-only the sync carries the base with the adapters merged in, so rollouts follow the trained
+    # policy on an engine that serves no adapters for this family (SGLang before sgl-project/sglang#53710)
+    merged_sync_when_train_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -43,7 +44,7 @@ class _HfLoraModelSpec:
     tinker_name_renames: tuple[tuple[str, str], ...] = ()
     component_rows_by_fused_module: Callable[[dict], tuple[tuple[str, tuple[int, ...]], ...]] = lambda config: ()
     packed_expert_gate_up_layout: str | None = None
-    engine_serves_adapters: bool = True
+    merged_sync_when_train_only: bool = False
 
 
 # official Tinker exports (checked against SDK 0.36 exports): HF names except the head and the stacked 3D experts
@@ -377,10 +378,10 @@ _HF_LORA_MODELS = {
         unwrap_text_config=True,
         default_train_unembed=True,
     ),
-    # Inkling 2 Small and the looped Inkling 2 Mini share one layout. SGLang has no LoRA path for the looped model
-    # (main and sgl-project/sglang#51926 adapt neither its fused qkvr nor its routed experts)
+    # Inkling 2 Small and the looped Inkling 2 Mini share one layout; SGLang serves the looped model's adapters
+    # from sgl-project/sglang#53710 on
     "inkling2": _INKLING2,
-    "inkling2_loop": replace(_INKLING2, engine_serves_adapters=False),
+    "inkling2_loop": replace(_INKLING2, merged_sync_when_train_only=True),
 }
 
 
@@ -405,7 +406,7 @@ def get_hf_lora_targets(hf_config: dict) -> HfLoraTargets:
         component_rows_by_fused_module=spec.component_rows_by_fused_module(text_config),
         vocab_size=text_config.get("vocab_size"),
         packed_expert_gate_up_layout=spec.packed_expert_gate_up_layout,
-        engine_serves_adapters=spec.engine_serves_adapters,
+        merged_sync_when_train_only=spec.merged_sync_when_train_only,
     )
 
 

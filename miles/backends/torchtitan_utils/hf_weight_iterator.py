@@ -75,12 +75,12 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
 
 
 def merge_lora_scale(args, hf_config) -> float | None:
-    """alpha / rank when the sync must carry the adapters merged into the base: LoRA trains, the engines run without
-    adapters (--lora-train-only), and the family's engine serves no adapters, so merged weights are the only way the
-    rollouts follow the trained policy. None otherwise: the base goes out as stored."""
+    """alpha / rank when the sync carries the adapters merged into the base: LoRA trains, the engines run without
+    adapters (--lora-train-only), and the family asks for merged weights then (Inkling 2 Mini, for engines that serve
+    none of its adapters). None otherwise: the base goes out as stored."""
     if not is_lora_enabled(args) or lora_rollout_enabled(args) or not has_hf_lora_targets(hf_config.to_dict()):
         return None
-    if get_hf_lora_targets(hf_config.to_dict()).engine_serves_adapters:
+    if not get_hf_lora_targets(hf_config.to_dict()).merged_sync_when_train_only:
         return None
     return args.lora_alpha / args.lora_rank
 

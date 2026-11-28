@@ -306,11 +306,10 @@ def test_lora_flags_torchtitan_cannot_honor_are_rejected(tmp_path, monkeypatch):
     mini = write_checkpoint_config(tmp_path / "mini")
     small = write_checkpoint_config(tmp_path / "small", model_type="inkling2")
     validate_torchtitan_args(_args(lora_rank=8, hf_checkpoint=str(qwen3)))
-    # SGLang serves Inkling 2 Small's adapters, not the looped Mini's: Mini syncs merged weights instead
+    # both serve adapters (the looped Mini from sgl-project/sglang#53710 on) or sync merged weights with train-only
     validate_torchtitan_args(_args(lora_rank=8, titan_model_name="inkling2", hf_checkpoint=small))
+    validate_torchtitan_args(_args(lora_rank=8, titan_model_name="inkling2", hf_checkpoint=mini))
     validate_torchtitan_args(_args(lora_rank=8, titan_model_name="inkling2", hf_checkpoint=mini, lora_train_only=True))
-    with pytest.raises(ValueError, match="no LoRA path.*--lora-train-only"):
-        validate_torchtitan_args(_args(lora_rank=8, titan_model_name="inkling2", hf_checkpoint=mini))
     with pytest.raises(ValueError, match="qwen3 / inkling2 only"):
         validate_torchtitan_args(_args(lora_rank=8, titan_model_name="glm5_next"))
     with pytest.raises(ValueError, match="use --optimizer adam with LoRA"):

@@ -88,6 +88,17 @@ class LoraConfig(BaseConfig):
             )
         ),
     ] = False
+    lora_sync_reload: A[
+        bool,
+        Arg(
+            help=(
+                "LoRA + colocate: sync the adapter with upstream SGLang's unload_lora_adapter and "
+                "load_lora_adapter_from_tensors (CUDA IPC) instead of the weight-update session, which needs "
+                "register_lora_adapter and streamed adapter tensors (sglang-miles only). Needs "
+                "--lora-base-cpu-backup, since this sync carries no base weights."
+            )
+        ),
+    ] = False
     lora_train_only: A[
         bool,
         Arg(
