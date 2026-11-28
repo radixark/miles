@@ -29,6 +29,35 @@ class TestConnectFiltersPeersWithoutMetadata:
         assert protocol.cell_updaters_of_cell_id["cell-a"].is_errored
         assert p2p_sender.transfer_engine.written_sessions() == [healthy.session_id(0)]
 
+    @pytest.mark.parametrize("staged_update", [False, True])
+    def test_a_trainer_and_an_engine_that_disagree_on_staging_fail_the_connect(
+        self, p2p_sender: Any, make_rollout_api: Any, p2p_transport: str, staged_update: bool
+    ) -> None:
+        """Staged, the engines are not paused: a write must not land in live weights. Not staged, a write into a
+        staging region would never be installed."""
+        if p2p_transport != "mori":
+            pytest.skip("only the MoRI seed publishes a staging region")
+        protocol = p2p_sender.make_protocol(p2p_staged_update=staged_update)
+        engine = make_rollout_api("cell-a", gpu_count=1, weight_update_staging=not staged_update)
+
+        with pytest.raises(AssertionError, match="must be set together"):
+            p2p_sender.connect(protocol, [engine])
+
+    def test_a_staged_update_writes_the_staging_region_an_engine_publishes(
+        self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any, p2p_transport: str
+    ) -> None:
+        if p2p_transport != "mori":
+            pytest.skip("only the MoRI seed publishes a staging region")
+        protocol = p2p_sender.make_protocol(p2p_staged_update=True)
+        engine = make_rollout_api("cell-a", gpu_count=1, weight_update_staging=True)
+
+        p2p_sender.connect(protocol, [engine])
+        p2p_sender.begin_sync(protocol, weight_version=1)
+        protocol.send_bucket(make_bucket("hf.w"))
+        protocol.after_base_weights()
+
+        assert p2p_sender.transfer_engine.written_sessions() == [engine.session_id(0)]
+
     def test_no_reachable_peer_leaves_the_rank_a_non_sender(
         self, p2p_sender: Any, make_rollout_api: Any, make_bucket: Any
     ) -> None:
@@ -572,9 +601,11 @@ class TestReconnectionWithOutstandingWrites:
 
         hold.release.set()
         if late_failure:
-            native_error = (
-                "returned -1" if p2p_sender.p2p_transport == "mooncake" else "NIXL WRITE of 1 weights is ERR"
-            )
+            native_error = {
+                "mooncake": "returned -1",
+                "nixl": "NIXL WRITE of 1 weights is ERR",
+                "mori": r"MoRI WRITE of 1 weights to .* failed: errors",
+            }[p2p_sender.p2p_transport]
             with pytest.raises(RuntimeError, match=native_error):
                 old_future.result(timeout=10)
         else:

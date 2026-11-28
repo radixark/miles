@@ -31,6 +31,7 @@ def _make_protocol(calls: list[tuple[str, dict]]) -> UpdateWeightFromDiskDelta:
         update_weight_local_checkpoint_dir="/local/ckpt",
         update_weight_disk_dir="/shared/delta",
         pause_generation_mode="retract",
+        p2p_staged_update=False,
         check_weight_update_equal=False,
     )
     protocol.rollout_engines = [_RecordingApiClient(calls)]
@@ -158,6 +159,7 @@ def test_initial_sync_encodes_loaded_trainer_from_hf_baseline(tmp_path, changed)
             custom_update_weight_post_write_path=None,
             check_weight_update_equal=False,
             pause_generation_mode="retract",
+            p2p_staged_update=False,
         )
     )
     calls = []

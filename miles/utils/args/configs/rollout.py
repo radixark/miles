@@ -373,14 +373,39 @@ class RolloutRelatedConfig(BaseConfig):
         str,
         Arg(
             type_parser=None,
-            choices=["mooncake", "nixl"],
+            choices=["mooncake", "nixl", "mori"],
             help=(
                 "What a P2P weight update writes over. The rollout engines must publish their weights for it: "
                 "--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine for mooncake, "
-                "--sglang-remote-instance-weight-loader-start-seed-via-nixl for nixl."
+                "--sglang-remote-instance-weight-loader-start-seed-via-nixl for nixl, "
+                "--sglang-remote-instance-weight-loader-start-seed-via-mori for mori (MoRI-IO RDMA, AMD GPUs)."
             ),
         ),
     ] = "mooncake"
+    p2p_mori_transfer_buffer: A[
+        str | None,
+        Arg(
+            type_parser=None,
+            choices=["gpu", "cpu"],
+            help=(
+                "Where --p2p-transport mori stages weights before the RDMA write. gpu (the default with mori): "
+                "each trainer GPU's memory, written through that GPU's own NIC; the trainer must not use "
+                "expandable_segments. cpu: page-locked host memory, which MoRI spreads over the node's NICs."
+            ),
+        ),
+    ] = None
+    p2p_staged_update: A[
+        bool,
+        Arg(
+            help=(
+                "Write a P2P weight update into the rollout engines' staging region instead of their live weights, "
+                "without pausing them: they keep generating with the old weights during the transfer and install "
+                "the new ones between two forward steps. In-flight requests keep their KV cache, as with "
+                "--pause-generation-mode in_place. Needs --p2p-transport mori and engines started with "
+                "--sglang-weight-update-staging, which hold a second copy of the weights in device memory."
+            )
+        ),
+    ] = False
 
 
 class RolloutRelatedRolloutOnlyConfig(BaseConfig):

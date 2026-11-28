@@ -1644,6 +1644,25 @@ def miles_validate_args(args):
         )
         assert args.prefill_num_servers is None, "P2P weight transfer mode has not been tested when PD is enabled."
         assert args.lora_rank <= 0, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
+    if args.update_weight_transfer_mode == "p2p" and args.p2p_transport == "mori":
+        args.p2p_mori_transfer_buffer = args.p2p_mori_transfer_buffer or "gpu"
+    else:
+        assert (
+            args.p2p_mori_transfer_buffer is None
+        ), "--p2p-mori-transfer-buffer applies only with --update-weight-transfer-mode p2p --p2p-transport mori"
+    if args.p2p_staged_update:
+        assert (
+            args.update_weight_transfer_mode == "p2p" and args.p2p_transport == "mori"
+        ), "--p2p-staged-update needs --update-weight-transfer-mode p2p --p2p-transport mori"
+        assert args.pause_generation_mode == "in_place", (
+            "--p2p-staged-update never pauses the engines, so in-flight requests keep their KV cache across the "
+            "update: that is --pause-generation-mode in_place, and the settings derived from it must match"
+        )
+        assert not args.check_weight_transfer_checksum, (
+            "--check-weight-transfer-checksum compares each write with the engine's live weights, which a staged "
+            "update changes only when it is installed; use --check-weight-update-equal (--ci-test turns this "
+            "check on: pass --no-check-weight-transfer-checksum with it)"
+        )
 
     if args.update_weight_transfer_mode == "disk-delta":
         assert not args.colocate, (

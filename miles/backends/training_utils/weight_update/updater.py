@@ -158,6 +158,7 @@ class WeightUpdater:
                     enable_mtp_training=self.args.enable_mtp_training,
                 ),
                 sync_base=sync_base,
+                use_staging=self.args.p2p_staged_update,
             )
         _mark_cells_errored_on_any_rank(cell_updaters)
         dist.barrier(group=get_gloo_group())
@@ -187,7 +188,12 @@ class WeightUpdater:
             protocol.finalize(weight_version)
             _mark_cells_errored_on_any_rank(cell_updaters)
             if protocol.use_weight_update_session and driver:
-                end_weight_update(cell_updaters, expected_lora_checksums=checksums)
+                end_weight_update(
+                    cell_updaters,
+                    expected_lora_checksums=checksums,
+                    # a staged update takes effect inside this call, and its version with it
+                    weight_version=weight_version if self.args.p2p_staged_update else None,
+                )
                 set_weight_version(cell_updaters, weight_version)
                 maybe_resume_engines(self.args, cell_updaters)
             _mark_cells_errored_on_any_rank(cell_updaters)

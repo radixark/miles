@@ -23,6 +23,7 @@ def _make_args(
         fully_async=fully_async,
         colocate=colocate,
         pause_generation_mode=pause_generation_mode,
+        p2p_staged_update=False,
     )
 
 
@@ -85,7 +86,18 @@ class TestWeightUpdateSessionFanOut:
         begin_weight_update(_make_updaters(clients), "draft", sync_base=False)
 
         for client in clients:
-            assert client.calls == [("begin_weight_update", {"selector": "draft", "sync_base": False})]
+            assert client.calls == [
+                ("begin_weight_update", {"selector": "draft", "sync_base": False, "use_staging": False})
+            ]
+
+    def test_an_engine_that_refuses_a_staged_session_is_given_up(self) -> None:
+        """It keeps generating, unpaused: a write into it would corrupt the weights it is computing with."""
+        clients = [_RecordingClient(result={"success": False, "message": "no staging region"}), _RecordingClient()]
+        updaters = _make_updaters(clients)
+
+        begin_weight_update(updaters, use_staging=True)
+
+        assert [updater.is_errored for updater in updaters] == [True, False]
 
     def test_the_lora_checksum_manifest_reaches_every_cell(self) -> None:
         """An unverified engine could serve an adapter that never finished streaming."""
@@ -95,7 +107,9 @@ class TestWeightUpdateSessionFanOut:
         end_weight_update(_make_updaters(clients), expected_lora_checksums=checksums)
 
         for client in clients:
-            assert client.calls == [("end_weight_update", {"expected_lora_checksums": checksums})]
+            assert client.calls == [
+                ("end_weight_update", {"expected_lora_checksums": checksums, "weight_version": None})
+            ]
 
 
 class TestSetWeightVersion:

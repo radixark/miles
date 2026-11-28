@@ -2,6 +2,10 @@
 
 The session frame is: pause -> begin -> (transfer) -> set version -> end ->
 resume. Callers gate driver-only calls (typically global rank 0) themselves.
+
+With --p2p-staged-update the engines are never paused: the transfer lands in
+their staging region while they generate, and `end` installs it together with
+the version, so the frame is begin -> (transfer) -> end.
 """
 
 from argparse import Namespace
@@ -19,7 +23,7 @@ def maybe_pause_engines(args: Namespace, cell_updaters: Sequence[_RolloutCellUpd
     in_place pausing freezes requests and resumes them against their existing
     KV cache, so flushing would discard exactly what that mode preserves.
     """
-    if driver_owns_generation_pause(args):
+    if driver_owns_generation_pause(args) or args.p2p_staged_update:
         return
     mode = args.pause_generation_mode
     async_utils.wait_futures([updater.submit_client_call("pause_generation", mode=mode) for updater in cell_updaters])
@@ -28,7 +32,7 @@ def maybe_pause_engines(args: Namespace, cell_updaters: Sequence[_RolloutCellUpd
 
 
 def maybe_resume_engines(args: Namespace, cell_updaters: Sequence[_RolloutCellUpdater]) -> None:
-    if driver_owns_generation_pause(args):
+    if driver_owns_generation_pause(args) or args.p2p_staged_update:
         return
     async_utils.wait_futures([updater.submit_client_call("continue_generation") for updater in cell_updaters])
 
@@ -42,34 +46,54 @@ def weight_update_selector(*, speculative_algorithm: str | None, enable_mtp_trai
 
 
 def begin_weight_update(
-    cell_updaters: Sequence[_RolloutCellUpdater], selector: str = "all", *, sync_base: bool = True
+    cell_updaters: Sequence[_RolloutCellUpdater],
+    selector: str = "all",
+    *,
+    sync_base: bool = True,
+    use_staging: bool = False,
 ) -> None:
     """Open a weight-update session on the selected engines. ``sync_base=False``
-    declares an adapter-only session: no quant unpack, base tensors rejected."""
-    async_utils.wait_futures(
+    declares an adapter-only session: no quant unpack, base tensors rejected.
+    ``use_staging=True`` declares that the transfer writes the staging region."""
+    results = async_utils.wait_futures(
         [
-            updater.submit_client_call("begin_weight_update", selector=selector, sync_base=sync_base)
+            updater.submit_client_call(
+                "begin_weight_update", selector=selector, sync_base=sync_base, use_staging=use_staging
+            )
             for updater in cell_updaters
         ]
     )
+    if use_staging:
+        # an engine that refused keeps generating: nothing may be written to it
+        _mark_errored_on_failure(cell_updaters, results, "begin_weight_update(use_staging=True)")
 
 
 def end_weight_update(
-    cell_updaters: Sequence[_RolloutCellUpdater], *, expected_lora_checksums: Mapping | None = None
+    cell_updaters: Sequence[_RolloutCellUpdater],
+    *,
+    expected_lora_checksums: Mapping | None = None,
+    weight_version: int | None = None,
 ) -> None:
     """Close the session: re-finalize base weights (sync_base sessions) and apply
-    the streamed LoRA stash (optionally verified against a sha256 manifest)."""
+    the streamed LoRA stash (optionally verified against a sha256 manifest).
+    ``weight_version`` is for a staged session, whose weights this call installs."""
     results = async_utils.wait_futures(
         [
-            updater.submit_client_call("end_weight_update", expected_lora_checksums=expected_lora_checksums)
+            updater.submit_client_call(
+                "end_weight_update",
+                expected_lora_checksums=expected_lora_checksums,
+                weight_version=None if weight_version is None else str(weight_version),
+            )
             for updater in cell_updaters
         ]
     )
+    _mark_errored_on_failure(cell_updaters, results, "end_weight_update")
+
+
+def _mark_errored_on_failure(cell_updaters: Sequence[_RolloutCellUpdater], results: Sequence, call: str) -> None:
     for updater, result in zip(cell_updaters, results, strict=True):
         if isinstance(result, Mapping) and result.get("success") is False:
-            updater.mark_errored(
-                RuntimeError(f"end_weight_update failed on a rollout engine: {result.get('message')}")
-            )
+            updater.mark_errored(RuntimeError(f"{call} failed on a rollout engine: {result.get('message')}"))
 
 
 def register_lora_adapter(

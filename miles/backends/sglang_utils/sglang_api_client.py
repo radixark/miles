@@ -501,15 +501,25 @@ class SGLangApiClient:
     async def abort_all_requests(self, timeout: float | None = None):
         return await self._make_request("abort_request", {"abort_all": True}, timeout=timeout)
 
-    async def begin_weight_update(self, selector: str = "all", sync_base: bool = True):
+    async def begin_weight_update(self, selector: str = "all", sync_base: bool = True, use_staging: bool = False):
         """Open a weight-update session on the engine. sync_base=False declares an
-        adapter-only session (no quant unpack; base tensors rejected)."""
-        return await self._make_request("begin_weight_update", {"selector": selector, "sync_base": sync_base})
+        adapter-only session (no quant unpack; base tensors rejected). use_staging=True
+        declares that the base weights are written to the engine's staging region, so it
+        keeps generating with its live weights until end_weight_update installs them."""
+        payload = {"selector": selector, "sync_base": sync_base}
+        if use_staging:
+            # sent only when set: an engine without a staging region rejects the field
+            payload["use_staging"] = True
+        return await self._make_request("begin_weight_update", payload)
 
-    async def end_weight_update(self, expected_lora_checksums=None):
+    async def end_weight_update(self, expected_lora_checksums=None, weight_version: str | None = None):
         """Close the weight-update session: re-finalize base weights (sync_base
-        sessions) and apply the streamed LoRA stash."""
-        return await self._make_request("end_weight_update", {"expected_lora_checksums": expected_lora_checksums})
+        sessions) and apply the streamed LoRA stash. A use_staging session installs
+        the staged weights here, and records `weight_version` in the same step."""
+        payload = {"expected_lora_checksums": expected_lora_checksums}
+        if weight_version is not None:
+            payload["weight_version"] = weight_version
+        return await self._make_request("end_weight_update", payload)
 
     async def update_weight_version(self, weight_version: str, abort_all_requests: bool = False):
         return await self._make_request(

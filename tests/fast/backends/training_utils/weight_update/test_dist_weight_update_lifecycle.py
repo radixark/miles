@@ -81,6 +81,7 @@ def _make_updater(
     pause_generation_mode: str = "retract",
     begin_sync_result: bool = True,
     weight_update_ft: bool = False,
+    p2p_staged_update: bool = False,
 ) -> WeightUpdater:
     begin_sync_versions: list[int] = []
 
@@ -114,6 +115,7 @@ def _make_updater(
     iterator.iter_hf_weights.return_value = iter([])
     args = TrainerConfig.model_construct(
         pause_generation_mode=pause_generation_mode,
+        p2p_staged_update=p2p_staged_update,
         check_lora_weight_equal=False,
         sglang=SglangConfig(models=[], base_args={"speculative_algorithm": None}),
         enable_mtp_training=False,
@@ -216,8 +218,33 @@ class TestWeightUpdateSessionFrame:
         for method in phases:
             assert _engines_called(calls, method) == list(range(_ENGINE_COUNT))
         assert _kwargs_of(calls, "pause_generation") == [{"mode": pause_generation_mode}] * _ENGINE_COUNT
-        assert _kwargs_of(calls, "begin_weight_update") == [{"selector": "all", "sync_base": True}] * _ENGINE_COUNT
+        assert (
+            _kwargs_of(calls, "begin_weight_update")
+            == [{"selector": "all", "sync_base": True, "use_staging": False}] * _ENGINE_COUNT
+        )
+        assert (
+            _kwargs_of(calls, "end_weight_update")
+            == [{"expected_lora_checksums": None, "weight_version": None}] * _ENGINE_COUNT
+        )
         assert _kwargs_of(calls, "update_weight_version") == [{"weight_version": "1"}] * _ENGINE_COUNT
+
+    def test_a_staged_update_never_pauses_and_installs_the_weights_with_their_version(self):
+        """The engines generate throughout, so nothing may pause, flush or resume them; the version must change
+        in the call that installs the weights, or tokens in between are attributed to the wrong one."""
+        calls: list[tuple[int, str, dict]] = []
+        updater = _make_updater(_make_engines(calls), pause_generation_mode="in_place", p2p_staged_update=True)
+
+        _run(updater, weight_version=7)
+
+        assert _phases(calls) == ["begin_weight_update", "end_weight_update", "update_weight_version"]
+        assert (
+            _kwargs_of(calls, "begin_weight_update")
+            == [{"selector": "all", "sync_base": True, "use_staging": True}] * _ENGINE_COUNT
+        )
+        assert (
+            _kwargs_of(calls, "end_weight_update")
+            == [{"expected_lora_checksums": None, "weight_version": "7"}] * _ENGINE_COUNT
+        )
 
     def test_in_place_pause_mode_skips_the_flush(self):
         """in_place pause keeps the running requests, so their cache must survive."""

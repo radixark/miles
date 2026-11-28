@@ -14,6 +14,7 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator import Weigh
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.protocols.p2p_rollout_cell_updater import _P2PRolloutCellUpdater
 from miles.backends.training_utils.weight_update.protocols.transports.mooncake import MooncakeTransport
+from miles.backends.training_utils.weight_update.protocols.transports.mori import MoriTransport
 from miles.backends.training_utils.weight_update.protocols.transports.nixl import NixlTransport
 from miles.backends.training_utils.weight_update.protocols.transports.p2p_transport import P2PTransport
 from miles.backends.training_utils.weight_update.protocols.transports.remote_shard import RemoteShard
@@ -58,11 +59,19 @@ class _RunnerSender:
         return hf_name in self.model_replicas.hf_name_mapping.param_names_by_hf_name
 
 
+def _create_native_transport(args: Namespace) -> MooncakeTransport | NixlTransport | MoriTransport:
+    if args.p2p_transport == NixlTransport.name:
+        return NixlTransport(write_timeout=args.p2p_transfer_timeout)
+    if args.p2p_transport == MoriTransport.name:
+        return MoriTransport(write_timeout=args.p2p_transfer_timeout, transfer_buffer=args.p2p_mori_transfer_buffer)
+    return MooncakeTransport()
+
+
 # ============================== transfer protocol ==============================
 
 
 class UpdateWeightP2P(WeightTransferProtocol):
-    """Write target and supported MTP draft weights to published GPU addresses over Mooncake or NIXL."""
+    """Write target and supported MTP draft weights to published GPU addresses over Mooncake, NIXL or MoRI."""
 
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
@@ -212,11 +221,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 self.is_sender = False
                 return
             if self._transport is None:
-                self._transport = P2PTransport(
-                    NixlTransport(write_timeout=self.args.p2p_transfer_timeout)
-                    if self.args.p2p_transport == NixlTransport.name
-                    else MooncakeTransport()
-                )
+                self._transport = P2PTransport(_create_native_transport(self.args))
             remote_shards_by_runner_role = self._transport.connect(
                 self.cell_updaters_of_cell_id, engine_cell_ids, assignments, runner_roles
             )
@@ -255,6 +260,15 @@ class UpdateWeightP2P(WeightTransferProtocol):
                 continue
             model_replica = model_replicas.get_or_build(configs_by_rollout_engine_rank[rollout_engine_rank])
             for remote_shard in remote_shards:
+                # staged, the engines are not paused, so a write must not land in their live weights; not
+                # staged, a write into a staging region would never be installed
+                assert remote_shard.is_staging == self.args.p2p_staged_update, (
+                    f"the {runner_role} of rollout engine {remote_shard.rollout_engine_ind} rank "
+                    f"{rollout_engine_rank} publishes its "
+                    f"{'staging region' if remote_shard.is_staging else 'live weights'} for writes, but "
+                    f"--p2p-staged-update is {self.args.p2p_staged_update}: it and "
+                    "--sglang-weight-update-staging must be set together"
+                )
                 assert_replica_matches_shard(
                     model_replica,
                     remote_shard.published_nbytes_by_name,

@@ -27,6 +27,8 @@ class RemoteShard:
     # what the transport names the runner it writes into, such as a Mooncake session or a NIXL agent
     transport_peer: str
     weight_locations_by_name: dict[str, RemoteWeightLocation]
+    # the locations are the runner's staging region, not the weights it computes with
+    is_staging: bool = False
 
     @property
     def published_nbytes_by_name(self) -> dict[str, int]:
@@ -111,4 +113,6 @@ def _query_remote_shard(
             name: RemoteWeightLocation(*location)
             for name, location in transfer_engine_info["weights_info_dict"].items()
         },
+        # absent from engines that have no staging region
+        is_staging=transfer_engine_info.get("weight_update_staging", False),
     )
