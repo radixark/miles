@@ -64,18 +64,23 @@ async def serve(args, *, disposer: Disposer):
         ckpt_load_config=ckpt_load_config,
     )
 
-    await resolve_router_addrs(args, router_providers=compute_router_providers(args, capability=capability))
-    inference_controller = create_inference_controller_handle(capability=capability)
-    await inference_controller.init()
-    disposer.add(inference_controller)
-    args.inference_runtime_mut_state.set_(await inference_controller.get_inference_runtime_immut_state())
-    init_http_client(args)
+    router_url = None
+    if args.starts_inference_engines:
+        await resolve_router_addrs(args, router_providers=compute_router_providers(args, capability=capability))
+        inference_controller = create_inference_controller_handle(capability=capability)
+        await inference_controller.init()
+        disposer.add(inference_controller)
+        args.inference_runtime_mut_state.set_(await inference_controller.get_inference_runtime_immut_state())
+        init_http_client(args)
+        router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
 
-    trainer = create_trainer_handles(args, trainer_configs=trainer_configs, capability=capability)[
-        actor_config.trainer_id
-    ]
-    await trainer.init(trainer_request)
-    disposer.add(trainer)
+    trainer = None
+    if args.tinker_mode != "inference":
+        trainer = create_trainer_handles(args, trainer_configs=trainer_configs, capability=capability)[
+            actor_config.trainer_id
+        ]
+        await trainer.init(trainer_request)
+        disposer.add(trainer)
 
     lora_layout = get_hf_lora_targets(full_hf_config.to_dict())
     config = GatewayConfig(
@@ -96,7 +101,6 @@ async def serve(args, *, disposer: Disposer):
         trains_mlp="mlp" in args.tinker_lora_groups,
         trains_unembed="unembed" in args.tinker_lora_groups,
     )
-    router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
     dp_size = actor_world_size // (
         args.raw_megatron.base_args["tensor_model_parallel_size"]
