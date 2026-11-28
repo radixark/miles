@@ -70,10 +70,13 @@ def wait_for_server_ready(
         if process is not None and not _is_process_running(process):
             raise RuntimeError(f"Server process died before port {port} became ready")
         try:
-            with socket.create_connection((host, port), timeout=1):
-                return
+            with socket.create_connection((host, port), timeout=1) as sock:
+                # Probing an unbound port in the ephemeral range can connect the socket to itself.
+                if sock.getsockname() != sock.getpeername():
+                    return
         except OSError:
-            time.sleep(0.5)
+            pass
+        time.sleep(0.5)
     raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
 
 
@@ -86,11 +89,14 @@ async def wait_tcp_ready_async(host: str, port: int, *, timeout: float = 30) -> 
             _reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(host.strip("[]"), port), timeout=_CONNECT_ATTEMPT_TIMEOUT_SECONDS
             )
+            self_connected = writer.get_extra_info("sockname") == writer.get_extra_info("peername")
             writer.close()
             await writer.wait_closed()
-            return
+            if not self_connected:
+                return
         except (OSError, asyncio.TimeoutError):
-            await asyncio.sleep(_CONNECT_RETRY_INTERVAL_SECONDS)
+            pass
+        await asyncio.sleep(_CONNECT_RETRY_INTERVAL_SECONDS)
     raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
 
 
