@@ -23,6 +23,16 @@ class RolloutBufferConfig(BaseConfig):
             help="enable dynamic global batch size, disable trim samples in rollout buffer when converting samples to train data"
         ),
     ] = False
+    dynamic_global_batch_steps: A[
+        int,
+        Arg(
+            help=(
+                "With --use-dynamic-global-batch-size: optimizer steps per rollout. The global batch is the "
+                "rollout's sample count divided by this, rounded down to a multiple of the data parallel size, "
+                "so up to steps * dp_size - 1 samples are dropped (default: 1, one step over all samples)"
+            )
+        ),
+    ] = 1
 
 
 class RolloutBufferRolloutOnlyConfig(BaseConfig):

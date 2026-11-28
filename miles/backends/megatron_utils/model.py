@@ -1125,8 +1125,8 @@ def load_model_state(
             # the scheduler counts trained samples: a rollout trains whole global batches and trims the rest
             rollout_samples = args.rollout_batch_size * args.n_samples_per_prompt
             if args.use_dynamic_global_batch_size:
-                # one step on the rollout rounded down to the DP size
-                batch_size = get_parallel_state().effective_dp.size
+                # --dynamic-global-batch-steps steps on the rollout, rounded down to steps * the DP size
+                batch_size = get_parallel_state().effective_dp.size * args.dynamic_global_batch_steps
             else:
                 batch_size = args.backend.global_batch_size
             # an adapter's iteration is its last completed rollout; its run trained from its first rollout on
