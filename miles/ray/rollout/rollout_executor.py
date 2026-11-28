@@ -34,6 +34,7 @@ from miles.rollout.base_types import (
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
 from miles.rollout.data_source import RolloutDataResumeMismatch
 from miles.rollout.fully_async_data_buffer import Group
+from miles.rollout.fully_async_rollout import FullyAsyncRolloutFn
 from miles.rollout.inference_rollout.compatibility import load_rollout_function
 from miles.utils import object_store, observers
 from miles.utils.args.custom_function import CustomFunctionConfig
@@ -153,6 +154,11 @@ class RolloutExecutor(DedicatedRpcLoopWorker):
                 fn_args = _compute_rollout_function_config(args, self.args.rollout_function_path)
                 rollout_input = RolloutFnConstructorInput(args=fn_args, data_source=self.data_source)
                 self.generate_rollout = load_rollout_function(rollout_input, self.args.rollout_function_path)
+                if isinstance(self.generate_rollout, FullyAsyncRolloutFn) and not self.args.fully_async:
+                    raise ValueError(
+                        f"--rollout-function-path {self.args.rollout_function_path} names a FullyAsyncRolloutFn "
+                        "subclass; pass --fully-async so the mode's checks and driver scheduling apply"
+                    )
                 if self.args.eval_function_path == self.args.rollout_function_path:
                     # Reuse the instance so train and eval share one state (and stateful
                     # rollout fns like FullyAsyncRolloutFn are not constructed twice).
