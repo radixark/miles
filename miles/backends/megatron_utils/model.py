@@ -53,6 +53,7 @@ from miles.utils.bf16_stochastic_rounding import (
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory
+from miles.utils.nvfp4_fake_qat import nvfp4_fake_qat_amax_cache
 from miles.utils.test_utils.fault_injector.controller import reach_fault_hook
 from miles.utils.test_utils.fault_injector.models import FaultHookName
 from miles.utils.tracking_utils.structured_log import log_structured
@@ -419,18 +420,19 @@ def forward_only(
     config.timers = None
     forward_data_store = []
     num_steps_per_rollout = len(num_microbatches)
-    for step_id in range(num_steps_per_rollout):
-        # collect_non_loss_data
-        forward_data_store += forward_backward_func(
-            forward_step_func=forward_step,
-            data_iterator=data_iterator,
-            model=model_chunks,
-            num_microbatches=num_microbatches[step_id],
-            seq_length=args.backend.seq_length,
-            micro_batch_size=args.backend.micro_batch_size,
-            forward_only=True,
-            collect_non_loss_data=True,
-        )
+    with nvfp4_fake_qat_amax_cache():
+        for step_id in range(num_steps_per_rollout):
+            # collect_non_loss_data
+            forward_data_store += forward_backward_func(
+                forward_step_func=forward_step,
+                data_iterator=data_iterator,
+                model=model_chunks,
+                num_microbatches=num_microbatches[step_id],
+                seq_length=args.backend.seq_length,
+                micro_batch_size=args.backend.micro_batch_size,
+                forward_only=True,
+                collect_non_loss_data=True,
+            )
 
     # Move model back to the train mode.
     for model_module in model_chunks:
@@ -583,7 +585,7 @@ def run_forward_backward_pass(
 
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
-    with torch.no_grad() if forward_only else nullcontext():
+    with torch.no_grad() if forward_only else nullcontext(), nvfp4_fake_qat_amax_cache():
         return forward_backward_func(
             forward_step_func=forward_step,
             data_iterator=data_iterator,

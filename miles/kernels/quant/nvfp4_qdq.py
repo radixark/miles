@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import functools
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any
@@ -1221,6 +1222,27 @@ def compute_nvfp4_amax(x: torch.Tensor) -> torch.Tensor:
     return torch.linalg.vector_norm(x.detach(), ord=float("inf"), dtype=torch.float32)
 
 
+def compute_nvfp4_amaxes(xs: Sequence[torch.Tensor]) -> list[torch.Tensor]:
+    """Compute TE-compatible FP32 per-tensor amaxes, batching homogeneous CUDA tensors."""
+    if not xs:
+        return []
+    for x in xs:
+        if x.numel() == 0:
+            raise ValueError("Cannot compute NVFP4 amax for an empty tensor.")
+    if len(xs) == 1:
+        return [compute_nvfp4_amax(xs[0])]
+    first = xs[0]
+    if first.is_cuda and all(x.is_cuda and x.device == first.device and x.dtype == first.dtype for x in xs[1:]):
+        return list(
+            torch._foreach_norm(
+                [x.detach() for x in xs],
+                ord=float("inf"),
+                dtype=torch.float32,
+            )
+        )
+    return [compute_nvfp4_amax(x) for x in xs]
+
+
 def fused_nvfp4_qdq(x: torch.Tensor, amax: torch.Tensor, config: NVFP4QDQConfig | None = None) -> torch.Tensor:
     """Run register-resident NVFP4 QDQ and return a detached high-precision tensor."""
     if config is None:
@@ -1249,12 +1271,21 @@ class _FusedNVFP4QDQSTE(torch.autograd.Function):
         return grad_output, None, None
 
 
-def fake_nvfp4_quantization_ste(x: torch.Tensor, config: NVFP4QDQConfig | None = None) -> torch.Tensor:
+def fake_nvfp4_quantization_ste(
+    x: torch.Tensor,
+    config: NVFP4QDQConfig | None = None,
+    *,
+    amax: torch.Tensor | None = None,
+) -> torch.Tensor:
     """Apply fused NVFP4 QDQ in forward and the straight-through estimator in backward."""
     if config is None:
         config = current_nvfp4_qdq_config()
-    amax = compute_nvfp4_amax(x)
-    output = _FusedNVFP4QDQSTE.apply(x, amax, config)
+    if amax is None:
+        amax = compute_nvfp4_amax(x)
+    if torch.is_grad_enabled() and x.requires_grad:
+        output = _FusedNVFP4QDQSTE.apply(x, amax, config)
+    else:
+        output = fused_nvfp4_qdq(x, amax, config)
     if hasattr(x, "main_grad"):  # config-access-exempt: main_grad is optional backend-attached tensor metadata
         output.main_grad = x.main_grad
     return output
@@ -1264,6 +1295,7 @@ __all__ = [
     "NVFP4QDQConfig",
     "NVFP4QDQErrorMode",
     "compute_nvfp4_amax",
+    "compute_nvfp4_amaxes",
     "current_nvfp4_qdq_config",
     "fake_nvfp4_quantization_ste",
     "fused_nvfp4_qdq",
