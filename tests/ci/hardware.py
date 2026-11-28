@@ -36,6 +36,9 @@ class CudaStage:
     runs_on: tuple[str, ...]
     # CPU architecture of the stage's runners; its job requires that architecture's CI image.
     image_arch: str
+    # Set on a stage whose runners admit only some runs: the stage that runs its tests in any
+    # other run (a fork head, a /rerun-test outside the stage's access group).
+    fallback: str | None = None
 
 
 CUDA_STAGES: dict[str, CudaStage] = {
@@ -46,7 +49,18 @@ CUDA_STAGES: dict[str, CudaStage] = {
     "stage-c-2-gpu-h200": CudaStage("hopper", 2, ("h200", "2gpu"), "amd64"),
     "stage-c-4-gpu-b200": CudaStage("blackwell", 4, ("b200", "4gpu"), "amd64"),
     "stage-c-8-gpu-b200": CudaStage("blackwell", 8, ("b200", "8gpu"), "amd64"),
+    # Runs through _run-ci-k8s.yml with --cluster-backend kubernetes; see tests/ci/k8s_runner.
+    "stage-c-8-gpu-h200-k8s": CudaStage("hopper", 8, ("k8s-h200-driver",), "amd64", fallback="stage-c-8-gpu-h200"),
 }
+
+for _name, _stage in CUDA_STAGES.items():
+    if _stage.fallback is not None:
+        _fallback = CUDA_STAGES[_stage.fallback]
+        assert _fallback.fallback is None, f"{_name}: fallback {_stage.fallback} is itself restricted"
+        assert (_fallback.arch, _fallback.num_gpus) == (
+            _stage.arch,
+            _stage.num_gpus,
+        ), f"{_name}: fallback {_stage.fallback} differs in arch or GPU count"
 
 
 def auto_arch(hardware: list[str]) -> str:
@@ -65,12 +79,17 @@ def target_stage(home_suite: str, arch: str) -> str | None:
     smallest stage with enough GPUs: a test declares its own budget through
     `ray start --num-gpus` / `torchrun --nproc-per-node` rather than reading the
     devices it can see, so a larger stage just leaves the surplus idle. None
-    when that arch has no stage big enough.
+    when that arch has no stage big enough. A restricted stage is a destination
+    only for the tests homed there.
     """
     home = CUDA_STAGES[home_suite]
     if home.arch == arch:
         return home_suite
-    fits = [name for name, stage in CUDA_STAGES.items() if stage.arch == arch and stage.num_gpus >= home.num_gpus]
+    fits = [
+        name
+        for name, stage in CUDA_STAGES.items()
+        if stage.arch == arch and stage.num_gpus >= home.num_gpus and stage.fallback is None
+    ]
     # Tie-break on the name so two stages of equal width choose deterministically.
     return min(fits, key=lambda name: (CUDA_STAGES[name].num_gpus, name), default=None)
 
@@ -81,14 +100,18 @@ def dispatch_targets(
     *,
     dispatch_arches: frozenset[str],
     absorb: bool,
+    admit_restricted_stages: bool = True,
 ) -> set[str]:
     """Every CUDA stage that runs this registration under one dispatch policy.
 
     Empty `dispatch_arches` is AUTO: the test runs once, on `auto_arch`, which
     the home-stage invariant makes equal to its home stage's arch. `absorb` is
     what allows a test to leave its home stage at all; without it a requested
-    arch that is not the test's own simply selects nothing.
+    arch that is not the test's own simply selects nothing. A run not admitted
+    to restricted stages treats a test homed on one as homed on its fallback.
     """
+    if not admit_restricted_stages and CUDA_STAGES[home_suite].fallback is not None:
+        home_suite = CUDA_STAGES[home_suite].fallback
     supported = set(hardware)
     arches = (supported & dispatch_arches) if dispatch_arches else {auto_arch(supported)}
 

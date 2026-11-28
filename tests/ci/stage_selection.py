@@ -18,6 +18,7 @@ PR_GPU_STAGES = frozenset(
         "stage-c-4-gpu-h200",
         "stage-c-8-gpu-h100",
         "stage-c-8-gpu-h200",
+        "stage-c-8-gpu-h200-k8s",
         "stage-c-4-gpu-b200",
         "stage-c-8-gpu-b200",
         "stage-c-2-gpu-mi350",
@@ -93,6 +94,7 @@ def _stages_for(registration: CIRegistry, run_policy: RunPolicy) -> set[str]:
             stage,
             dispatch_arches=run_policy.dispatch_arches,
             absorb=run_policy.absorb,
+            admit_restricted_stages=run_policy.admit_restricted_stages,
         )
     }
 
@@ -149,7 +151,11 @@ def _affected_stages(
         registered_files.add(registration.filename)
         for stage in PR_GPU_STAGES:
             if runs_in_stage(
-                registration, stage, dispatch_arches=run_policy.dispatch_arches, absorb=run_policy.absorb
+                registration,
+                stage,
+                dispatch_arches=run_policy.dispatch_arches,
+                absorb=run_policy.absorb,
+                admit_restricted_stages=run_policy.admit_restricted_stages,
             ):
                 stages_by_file.setdefault(registration.filename, set()).add(stage)
 

@@ -16,7 +16,14 @@ _RUN_CI_PREFIX = "run-ci-"
 # admits it past `_SAFE_RUN_CI_LABEL` and keeps `strip_run_ci_prefix` quiet.
 # `run-ci-blackwell-only` matches the prefix regex already and, being absent
 # from KNOWN_LABELS, is dropped from the domain set like any other scope label.
-_WORKFLOW_ONLY_LABELS = {"nightly", "bypass-fastfail"} | {f"run-on-{arch}" for arch in KNOWN_ARCHES}
+_WORKFLOW_ONLY_LABELS = {"nightly", "bypass-fastfail", "no-restricted-stages"} | {
+    f"run-on-{arch}" for arch in KNOWN_ARCHES
+}
+
+# Not a PR-side choice: the workflow adds it for a run that restricted stages
+# (`CudaStage.fallback`) do not admit, and every stage job receives it with the
+# other raw labels. Setting it by hand only moves tests onto fallback stages.
+_NO_RESTRICTED_STAGES_LABEL = "no-restricted-stages"
 
 # Scope label selecting the tests that only run on Blackwell. Distinct from
 # `run-on-blackwell`: this one runs the Blackwell-exclusive set, that one
@@ -53,6 +60,8 @@ class RunPolicy:
     # Whether a test may execute outside its home stage. Only an explicit
     # `run-on-*` sets this, so every other run selects exactly what it does today.
     absorb: bool = False
+    # False sends a test homed on a restricted stage to that stage's fallback.
+    admit_restricted_stages: bool = True
 
 
 @dataclass(frozen=True)
@@ -151,6 +160,7 @@ def resolve_policy(cadence: str, raw_labels: set[str]) -> RunPolicy:
         write_baseline=cadence in {NIGHTLY_CADENCE, WEEKLY_CADENCE},
         dispatch_arches=dispatch_arches,
         absorb=absorb,
+        admit_restricted_stages=_NO_RESTRICTED_STAGES_LABEL not in raw_labels,
     )
 
 
@@ -182,7 +192,7 @@ def _canonical_pr_labels(pr_labels_json: str) -> tuple[str, ...]:
 
 
 def resolve_workflow_inputs(
-    event_name: str, schedule: str, pr_labels_json: str, cadence_override: str = ""
+    event_name: str, schedule: str, pr_labels_json: str, cadence_override: str = "", head_is_fork: bool = False
 ) -> WorkflowPolicy:
     """Adapt GitHub trigger facts to the workflow's stable policy outputs.
 
@@ -191,6 +201,9 @@ def resolve_workflow_inputs(
     trigger inference: a called workflow inherits the *caller's* event_name, so
     inferring from the trigger would silently degrade a release run to
     `regular` scope.
+
+    `head_is_fork` marks a pull request whose head repository is not this
+    one. Restricted stages refuse such a run, so its tests fall back.
     """
     if cadence_override:
         cadence, raw_labels = cadence_override, ()
@@ -206,6 +219,8 @@ def resolve_workflow_inputs(
         cadence, raw_labels = REGULAR_CADENCE, ()
     else:
         raise ValueError(f"Unsupported PR Test trigger: {event_name}")
+    if head_is_fork and _NO_RESTRICTED_STAGES_LABEL not in raw_labels:
+        raw_labels = (*raw_labels, _NO_RESTRICTED_STAGES_LABEL)
 
     run_policy = resolve_policy(cadence, set(raw_labels))
     return WorkflowPolicy(
@@ -241,6 +256,7 @@ def main() -> int:
             schedule=os.environ.get("SCHEDULE", ""),
             pr_labels_json=os.environ.get("PR_LABELS_JSON", ""),
             cadence_override=os.environ.get("CADENCE_OVERRIDE", ""),
+            head_is_fork=os.environ.get("HEAD_IS_FORK", "") == "true",
         )
         if event_name == "pull_request":
             from tests.ci.ci_register import collect_tests, discover_ci_files

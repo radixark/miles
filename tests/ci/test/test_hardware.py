@@ -140,3 +140,12 @@ def test_blackwell_work_never_reaches_a_hopper_stage():
     assert target_stage("stage-c-4-gpu-b200", "hopper") == "stage-c-4-gpu-h200"
     assert dispatch_targets("stage-c-8-gpu-b200", ["blackwell"], dispatch_arches=HOPPER, absorb=True) == set()
     assert dispatch_targets("stage-c-4-gpu-b200", ["blackwell"], dispatch_arches=HOPPER, absorb=True) == set()
+
+
+def test_a_run_not_admitted_to_a_restricted_stage_uses_its_fallback():
+    home, hardware = "stage-c-8-gpu-h200-k8s", ["hopper", "blackwell"]
+
+    assert dispatch_targets(home, hardware, dispatch_arches=frozenset(), absorb=False) == {home}
+    assert dispatch_targets(
+        home, hardware, dispatch_arches=frozenset(), absorb=False, admit_restricted_stages=False
+    ) == {"stage-c-8-gpu-h200"}

@@ -125,6 +125,8 @@ jobs:
           # be passed explicitly rather than inferred from the trigger.
           CADENCE_OVERRIDE: ${{ inputs.cadence || '' }}
           CHANGED_FILES_PATH: ${{ runner.temp }}/changed-files.z
+          # Restricted stages refuse a fork head; its tests run on their fallback stages instead.
+          HEAD_IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
         run: python -m tests.ci.ci_policy
 
   # Selected CUDA tests need the amd64 image after the fast CPU gate completes; the
@@ -320,6 +322,34 @@ jobs:
       ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-h200
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size ${{ strategy.job-total }}
+        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
+        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+        ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
+    secrets: inherit
+
+  # The runner group admits only the workflow file on the default branch, so this stage calls it
+  # by its pinned path; a local `./` path would resolve to the triggering ref and get no runner.
+  stage-c-8-gpu-h200-k8s:
+    needs: [resolve-ci-policy, resolve-ci-image-amd64, stage-a-cpu]
+    if: |
+      always() && !cancelled() &&
+      needs.resolve-ci-policy.result == 'success' &&
+      needs.resolve-ci-image-amd64.result == 'success' &&
+      !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-h200-k8s') &&
+      (needs.stage-a-cpu.result == 'success' ||
+        needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: [0]
+    uses: radixark/miles/.github/workflows/_run-ci-k8s.yml@main
+    with:
+      runs_on: '["k8s-h200-driver"]'
+      container_image: ${{ needs.resolve-ci-image-amd64.outputs.container_image }}
+      ref: ${{ inputs.ref || '' }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-h200-k8s
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size ${{ strategy.job-total }}
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
