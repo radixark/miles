@@ -44,6 +44,7 @@ class KubernetesWorkerIdentity:
             worker_in_cell_index=self.worker_in_cell_index,
             num_workers_per_cell=self.num_workers_per_cell,
             gpu_ids=self.gpu_ids,
+            num_workers_per_node=self.workers_per_pod,
             capability=capability,
         )
 

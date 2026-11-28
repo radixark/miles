@@ -29,6 +29,7 @@ _TRAIN_BACKEND_DEFAULTS: dict[str, Any] = dict(
     ckpt_step=None,
     exit_on_missing_checkpoint=False,
     num_layers=None,
+    optimizer_cpu_offload=False,
 )
 
 # declared with no default and resolved after parsing, so the raw parser value is one no production

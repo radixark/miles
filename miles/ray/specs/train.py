@@ -203,6 +203,7 @@ class TrainerSpec(BaseServeSpec):
             rank=ctx.worker_in_cell_index,
             role=ctx.args.trainer_role,
             cell_index=ctx.cell_index,
+            num_workers_per_node=ctx.num_workers_per_node,
         )
 
 
@@ -221,6 +222,8 @@ def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, fp8_scales: str)
         **{name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST},
         **args.train_env_vars,
     }
+    if args.trainer_cpu_threads is not None and "OMP_NUM_THREADS" not in args.train_env_vars:
+        env_vars["OMP_NUM_THREADS"] = str(args.trainer_cpu_threads)
 
     if source_patcher_config := args.dumper_source_patcher_config_train:
         env_vars["DUMPER_SOURCE_PATCHER_CONFIG"] = source_patcher_config
