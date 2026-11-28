@@ -2,7 +2,12 @@ from dataclasses import dataclass
 
 import torch
 
-from miles.backends.fsdp_utils.arguments import FSDPArgs, build_dataclass_parser, load_args_from_parser
+from miles.backends.fsdp_utils.arguments import (
+    FSDPArgs,
+    build_dataclass_parser,
+    load_args_from_parser,
+    validate_cpu_offload_threads_args,
+)
 from miles.backends.training_utils.loss.hub.response_layout import padded_rows_enabled, validate_response_layout_args
 from miles.kernels.tpu import FLASH_ATTENTION_BLOCK
 from miles.platforms import current_platform, tpu_shared_slice
@@ -105,6 +110,7 @@ def validate_torchtitan_args(args) -> None:
             "--ci-test with --use-routing-replay: the replay checker syncs to the host from inside a block, which a "
             "static-shape platform compiles fullgraph. Drop --ci-test or run the check on a dynamic-shape platform."
         )
+    validate_cpu_offload_threads_args(args)
     if args.stream_optimizer_state_to_disk:
         if not args.optimizer_cpu_offload:
             raise ValueError(

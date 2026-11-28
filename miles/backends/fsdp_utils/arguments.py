@@ -2,6 +2,7 @@ import argparse
 import dataclasses
 import difflib
 import logging
+import os
 import typing
 from dataclasses import dataclass
 
@@ -56,6 +57,10 @@ class FSDPArgs:
     # Megatron's name for the same switch: the fp32 master params (FSDP's sharded params), their grads and the
     # optimizer state live on the host, and the optimizer steps on the CPU
     optimizer_cpu_offload: bool = False
+    # intra-op torch threads each trainer rank gives the host optimizer (and the host gradient clip) under
+    # --optimizer-cpu-offload. None: the node's CPUs divided evenly among its trainer ranks; 0: torch's default,
+    # which sizes every rank's pool for the whole node, so N ranks per node oversubscribe it N-fold
+    optimizer_cpu_offload_threads: int | None = None
     fsdp_cpu_offload: bool = False  # deprecated spelling of --optimizer-cpu-offload
     fsdp_cpu_backend: str | None = (
         "gloo"  # CPU backend for FSDP CPU offload (e.g., "gloo"). Set to None to disable hybrid backend.
@@ -188,6 +193,39 @@ def validate_kernel_backend_args(args) -> None:
 
     if args.true_on_policy_mode or args.deterministic_mode:
         raise ValueError("--kernel-backend hub is incompatible with --true-on-policy-mode / --deterministic-mode")
+
+
+def validate_cpu_offload_threads_args(args) -> None:
+    threads = args.optimizer_cpu_offload_threads
+    if threads is None:
+        return
+    if threads < 0:
+        raise ValueError(f"--optimizer-cpu-offload-threads must be 0 or positive, got {threads}")
+    if not args.optimizer_cpu_offload:
+        raise ValueError(
+            "--optimizer-cpu-offload-threads sizes the host optimizer's thread pool; it needs --optimizer-cpu-offload"
+        )
+
+
+def host_optimizer_threads(backend_args, *, ranks_per_node: int, cpu_count: int | None = None) -> int | None:
+    """Intra-op threads one trainer rank should run the host optimizer with, or None to leave torch's default.
+
+    torch sizes its default pool for the whole node; with --optimizer-cpu-offload every rank on the node steps its
+    AdamW shard and clips its gradients on the host at the same time, so N ranks run N pools of that size and the
+    slowest rank gates the step. The default shares the node's CPUs evenly: the CPUs this process may run on
+    (its affinity mask, so a container's CPU set counts) divided by the ranks per node.
+    """
+    if not backend_args.optimizer_cpu_offload:
+        return None
+    requested = backend_args.optimizer_cpu_offload_threads
+    if requested is not None:
+        return requested or None
+    if cpu_count is None:
+        try:
+            cpu_count = len(os.sched_getaffinity(0))
+        except AttributeError:  # not a Linux host
+            cpu_count = os.cpu_count() or 1
+    return max(1, cpu_count // max(ranks_per_node, 1))
 
 
 def validate_hybrid_shard_args(args) -> None:
