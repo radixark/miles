@@ -1,5 +1,6 @@
 import logging
 
+import numpy as np
 import torch
 
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
@@ -51,7 +52,9 @@ def log(args, metrics, step_key: str):
 
 
 def _serializable(metrics) -> dict:
-    return {k: (v.item() if isinstance(v, torch.Tensor) else v) for k, v in metrics.items()}
+    # numpy scalars too: np.max/np.min over ints return numpy.int64, which
+    # pydantic cannot serialize (log_multi_turn_data's round_number stats).
+    return {k: (v.item() if isinstance(v, (torch.Tensor, np.generic)) else v) for k, v in metrics.items()}
 
 
 def finish_tracking():

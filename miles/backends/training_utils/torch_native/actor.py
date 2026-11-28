@@ -82,6 +82,8 @@ class TorchNativeTrainRayActor(TrainRayActor):
     tokenizer: PreTrainedTokenizerBase
     ref_runner: StepRunner | None = None
     align_token_side_channel: Callable[[torch.Tensor, int], torch.Tensor] | None = None
+    # True when the model moves multimodal inputs to the GPU itself
+    multimodal_on_host: ClassVar[bool] = False
     # every rank holds its own slice of the rollout; a backend whose CP peers share one sets this on one of them
     dumps_train_data: bool = True
     # the most samples one microbatch may pack; a backend whose step holds a fixed number of sequences sets it
@@ -364,6 +366,7 @@ class TorchNativeTrainRayActor(TrainRayActor):
                 self.args.data_pad_size_multiplier,
                 self.args.qkv_format,
                 get_position_ids=True,
+                multimodal_on_host=self.multimodal_on_host,
             )
 
     @timer

@@ -264,6 +264,9 @@ def build_model_config(
         dim=arch.dim,
         vocab_size=arch.vocab_size,
         num_streams=arch.num_streams,
+        image_token_id=getattr(
+            hf_config, "image_token_id", None
+        ),  # config-access-exempt: text-only checkpoints have none
         tok_embeddings=Embedding.Config(num_embeddings=arch.vocab_size, embedding_dim=arch.dim),
         norm=Glm5NextRMSNorm.Config(dim=arch.dim, eps=arch.norm_eps),
         lm_head=_linear(arch.dim, arch.vocab_size),
