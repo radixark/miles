@@ -1184,6 +1184,29 @@ class TestClusterBackend:
 
         assert args.use_distributed_post is True
 
+    def test_a_ray_run_posts_through_per_node_actors_by_default(self):
+        """One connection pool for every in-flight stream serializes the executor at about a thousand samples."""
+        args = self._parse(["--cluster-backend", "ray", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.use_distributed_post is True
+
+    def test_an_explicit_no_use_distributed_post_keeps_the_local_pool(self):
+        args = self._parse(["--cluster-backend", "ray", "--num-rollout", "1", "--no-use-distributed-post"])
+
+        miles_validate_args(args)
+
+        assert args.use_distributed_post is False
+
+    def test_a_kubernetes_run_posts_locally_by_default(self):
+        """There is no Ray cluster to place the actors on, so the default resolves to the local pool there."""
+        args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.use_distributed_post is False
+
 
 def test_recompute_logprobs_via_prefill_flag_is_parsed():
     parser = argparse.ArgumentParser()

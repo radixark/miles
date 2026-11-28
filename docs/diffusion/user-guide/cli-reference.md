@@ -211,7 +211,7 @@ See [Dtype Control](/diffusion/advanced/dtype-control).
 | `--rollout-shuffle` | flag | on | Shuffle the prompt order once per epoch (seeded by `--rollout-seed`). `--no-rollout-shuffle` reads the jsonl in file order; the SFT rollout (`miles.rollout.sft_rollout`) shuffles every epoch regardless. |
 | `--over-sampling-batch-size` | int | – | Must equal `--rollout-batch-size` today. |
 | `--sglang-server-concurrency` | int | `512` | In-flight generate requests are capped at this × the number of engines — one global limit, with each request routed to the least-loaded engine. |
-| `--use-distributed-post` | flag | off | Rollout HTTP POSTs go through per-node Ray actors instead of the local client (`--num-gpus-per-node` actors per node). |
+| `--use-distributed-post` / `--no-use-distributed-post` | tri-state | on under `--cluster-backend ray` | Rollout HTTP POSTs go through per-node Ray actors instead of the local client (`--num-gpus-per-node` actors per node, each with its own connection pool). Off under `--cluster-backend kubernetes`, which has no Ray cluster for the actors. |
 | `--use-miles-router` | flag | off | **Required** — the SGLang router is not supported here. |
 | `--miles-router-timeout` | float | – | |
 | `--miles-router-max-connections` | int | – | |
