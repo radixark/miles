@@ -20,6 +20,8 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator.checkpoint_t
 )
 from miles.platforms import current_platform
 from miles.utils.hf_utils.config import load_hf_config
+from miles.utils.lora.hf_lora_targets import get_hf_lora_targets, has_hf_lora_targets
+from miles.utils.lora.utils import is_lora_enabled, lora_rollout_enabled
 
 
 class TitanHfWeightIterator(HfWeightIteratorBase):
@@ -37,12 +39,16 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
             getattr(text_config, "q_lora_rank", None)
             or None  # config-access-exempt: HF models without query LoRA omit q_lora_rank
         )
+        self._merge_lora_scale = merge_lora_scale(self.args, hf_config)
 
     def _iter_hf_param_units(self, weights, *, materialize):
         # an engine sharing the slice over ICI takes each EP rank's experts from the paired trainer rank
         local_experts = self.args.update_weight_transfer_mode == "ici"
         for name, tensor in hf_weights(
-            self.model, complete_across_pp=self.placement.gather_pp, local_experts=local_experts
+            self.model,
+            complete_across_pp=self.placement.gather_pp,
+            local_experts=local_experts,
+            merge_lora_scale=self._merge_lora_scale,
         ):
             if materialize:
                 yield [(name, self._to_engine_dtype(name, tensor))]
@@ -68,8 +74,19 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
                 yield [(name, tensor)]
 
 
+def merge_lora_scale(args, hf_config) -> float | None:
+    """alpha / rank when the sync carries the adapters merged into the base: LoRA trains, the engines run without
+    adapters (--lora-train-only), and the family asks for merged weights then (Inkling 2 Mini, for engines that serve
+    none of its adapters). None otherwise: the base goes out as stored."""
+    if not is_lora_enabled(args) or lora_rollout_enabled(args) or not has_hf_lora_targets(hf_config.to_dict()):
+        return None
+    if not get_hf_lora_targets(hf_config.to_dict()).merged_sync_when_train_only:
+        return None
+    return args.lora_alpha / args.lora_rank
+
+
 def hf_weights(
-    trainer, *, complete_across_pp: bool = True, local_experts: bool = False
+    trainer, *, complete_across_pp: bool = True, local_experts: bool = False, merge_lora_scale: float | None = None
 ) -> Iterator[tuple[str, torch.Tensor]]:
     # FSDP2 CPU offload keeps the shards on the host; gather_full_param moves one tensor at a time
     offloaded = (
@@ -80,7 +97,12 @@ def hf_weights(
         for part in trainer.model_parts:
             part.to(current_platform.current_device())
     try:
-        yield from _hf_weights_on_device(trainer, complete_across_pp=complete_across_pp, local_experts=local_experts)
+        yield from _hf_weights_on_device(
+            trainer,
+            complete_across_pp=complete_across_pp,
+            local_experts=local_experts,
+            merge_lora_scale=merge_lora_scale,
+        )
     finally:
         if offloaded:
             for part in trainer.model_parts:
@@ -115,15 +137,16 @@ _GROUPED_EXPERTS = ".routed_experts."
 
 
 def _hf_weights_on_device(
-    trainer, *, complete_across_pp: bool, local_experts: bool
+    trainer, *, complete_across_pp: bool, local_experts: bool, merge_lora_scale: float | None = None
 ) -> Iterator[tuple[str, torch.Tensor]]:
     sd_adapter = _state_dict_adapter(trainer)
-    state = {
-        k: v for part in trainer.model_parts for k, v in part.state_dict().items() if not lora_names.is_adapter_key(k)
-    }
+    full_state = {k: v for part in trainer.model_parts for k, v in part.state_dict().items()}
+    state = {k: v for k, v in full_state.items() if not lora_names.is_adapter_key(k)}
+    adapters = {k: v for k, v in full_state.items() if lora_names.is_adapter_key(k)} if merge_lora_scale else {}
+    assert not (adapters and local_experts), "merging LoRA into the synced weights needs gathered experts, not ICI"
     layout = _StageLayout.from_trainer(trainer, complete_across_pp=complete_across_pp)
 
-    dense = {k: v for k, v in state.items() if _GROUPED_EXPERTS not in k}
+    dense = {k: _maybe_merged(k, v, adapters, merge_lora_scale) for k, v in state.items() if _GROUPED_EXPERTS not in k}
     yield from layout.stream(sd_adapter.to_hf(dense))
 
     mine = sorted(k for k in state if _GROUPED_EXPERTS in k)
@@ -133,7 +156,33 @@ def _hf_weights_on_device(
     everyone: list = [None] * layout.world
     dist.all_gather_object(everyone, mine)
     for key in sorted(set().union(*everyone)):
-        yield from layout.stream(sd_adapter.to_hf({key: gather_full_param(state[key])}) if key in state else {})
+        if key not in state:
+            yield from layout.stream({})
+            continue
+        full = _maybe_merged(key, state[key], adapters, merge_lora_scale)
+        yield from layout.stream(sd_adapter.to_hf({key: full}))
+
+
+def _maybe_merged(
+    key: str, weight: torch.Tensor, adapters: dict[str, torch.Tensor], scale: float | None
+) -> torch.Tensor:
+    """The stored weight, or for an adapted projection the full weight with its adapters merged in (never stored)."""
+    projection = key.removesuffix(".weight")
+    lora_a = adapters.get(f"{projection}.lora_a.weight")
+    if lora_a is None:
+        return gather_full_param(weight) if _GROUPED_EXPERTS in key else weight
+    lora_b = adapters[f"{projection}.lora_b.weight"]
+    base = gather_full_param(weight)
+    merged = lora_names.merged_weight(base, gather_full_param(lora_a), gather_full_param(lora_b), scale=scale)
+    if os.environ.get("MILES_LORA_MERGE_DIAG"):
+        # how much of the adapter survives the cast back to the base dtype
+        changed = int((merged != base).sum())
+        print(
+            f"[merge_diag] {projection} changed={changed}/{merged.numel()} "
+            f"lora_b_absmax={float(gather_full_param(lora_b).abs().max()):.3e}",
+            flush=True,
+        )
+    return merged
 
 
 def _local_experts(sd_adapter, state, keys: list[str]) -> Iterator[tuple[str, torch.Tensor]]:

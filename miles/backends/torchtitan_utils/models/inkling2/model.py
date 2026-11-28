@@ -14,6 +14,7 @@ from torchtitan.models.base.module import Module, ModuleDict
 from torchtitan.models.common.decoder import Decoder
 from torchtitan.models.common.decoder_sharding import replicated_state_sharding_config
 from torchtitan.models.common.flops import get_nparams_and_active_nparams
+from torchtitan.models.common.linear import Linear
 from torchtitan.models.common.moe import MoE
 
 from miles.backends.torchtitan_utils.models.inkling2.layers import (
@@ -77,23 +78,20 @@ class _Fp32OutMatmul(torch.autograd.Function):
         return grad_x, grad_w
 
 
-class Fp32OutLinear(Module):
-    """bf16 GEMM with an fp32 output, as the checkpoint's unembedding requests."""
+class Fp32OutLinear(Linear):
+    """bf16 GEMM with an fp32 output, as the checkpoint's unembedding requests. A ``Linear`` so LoRA can adapt it:
+    torchtitan's LoRA adds its bf16 delta to these fp32 (pre-softcap) logits."""
 
     @dataclass(kw_only=True, slots=True)
-    class Config(Module.Config):
-        in_features: int
-        out_features: int
-
-    def __init__(self, config: Config):
-        super().__init__()
-        self.weight = nn.Parameter(torch.empty(config.out_features, config.in_features))
+    class Config(Linear.Config):
+        pass
 
     def reset_parameters(self) -> None:
         nn.init.normal_(self.weight, std=self.weight.shape[1] ** -0.5)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return _Fp32OutMatmul.apply(x.reshape(-1, x.shape[-1]), self.weight.to(x.dtype)).view(*x.shape[:-1], -1)
+    def _linear(self, input: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor | None) -> torch.Tensor:
+        x_TD = input.reshape(-1, input.shape[-1])
+        return _Fp32OutMatmul.apply(x_TD, weight.to(input.dtype)).view(*input.shape[:-1], -1)
 
 
 class Inkling2Block(Module):
@@ -102,7 +100,8 @@ class Inkling2Block(Module):
         layer_id: int
         is_local: bool
         block_size: int
-        attention: Inkling2Attention.Config
+        # named as the module it builds, so LoRA targets (config paths) are state-dict paths
+        attn: Inkling2Attention.Config
         input_norm: Inkling2RMSNorm.Config
         mlp_norm: Inkling2RMSNorm.Config
         feed_forward: MoE.Config
@@ -117,7 +116,7 @@ class Inkling2Block(Module):
         self.layer_id = config.layer_id
         self.is_local = config.is_local
         self.is_block_boundary = config.layer_id % config.block_size == 0
-        self.attn = config.attention.build()
+        self.attn = config.attn.build()
         if config.is_local:
             self.attn_norm = config.input_norm.build()
         else:
@@ -273,11 +272,12 @@ class Inkling2Model(Decoder):
     def project_row_norms(self) -> None:
         """Rescale each pretrained-normalized projection row back to its norm at the first call.
 
-        Rows are local under FSDP and EP (both shard dim 0), so this needs no communication.
+        Rows are local under FSDP and EP (both shard dim 0), so this needs no communication. A frozen weight (the
+        LoRA base) never moves, so it is skipped; a LoRA run's effective rows W + (alpha / r) B A are not projected.
         """
         targets = self._row_norm_targets
         for name, param in self.named_parameters():
-            if not _ROW_NORM_PARAM.search(name):
+            if not param.requires_grad or not _ROW_NORM_PARAM.search(name):
                 continue
             local = param.to_local() if isinstance(param, DTensor) else param
             if local.numel() == 0:

@@ -88,6 +88,17 @@ class LoraConfig(BaseConfig):
             )
         ),
     ] = False
+    lora_sync_reload: A[
+        bool,
+        Arg(
+            help=(
+                "LoRA + colocate: sync the adapter with upstream SGLang's unload_lora_adapter and "
+                "load_lora_adapter_from_tensors (CUDA IPC) instead of the weight-update session, which needs "
+                "register_lora_adapter and streamed adapter tensors (sglang-miles only). Needs "
+                "--lora-base-cpu-backup, since this sync carries no base weights."
+            )
+        ),
+    ] = False
     lora_train_only: A[
         bool,
         Arg(
@@ -95,7 +106,9 @@ class LoraConfig(BaseConfig):
                 "Train LoRA adapters in Megatron but keep rollout engines on the frozen "
                 "base policy: SGLang LoRA serving and adapter weight sync are disabled "
                 "(only the base weights are synced). For models without SGLang LoRA "
-                "support (e.g. Inkling native LoRA)."
+                "support (e.g. Inkling native LoRA). The torchtitan backend instead syncs the base "
+                "with the adapters merged in for a family whose engine serves no adapters "
+                "(Inkling 2 Mini), so rollouts follow the trained policy."
             )
         ),
     ] = False

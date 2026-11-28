@@ -32,8 +32,13 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
 
     urls = await get_worker_urls(args)
     logger.info(f"Abort request for {urls}")
+    # SGLang main requires the admin key on /abort_request once the server has one
+    base_args = args.sglang.base_args
+    admin_key = base_args.get("admin_api_key") or base_args.get("api_key")
+    headers = {"Authorization": f"Bearer {admin_key}"} if admin_key else None
     results = await asyncio.gather(
-        *[post(f"{url}/abort_request", {"abort_all": True}) for url in urls], return_exceptions=True
+        *[post(f"{url}/abort_request", {"abort_all": True}, headers=headers) for url in urls],
+        return_exceptions=True,
     )
     for url, result in zip(urls, results, strict=True):
         if isinstance(result, Exception):

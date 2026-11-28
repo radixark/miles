@@ -332,6 +332,10 @@ class SGLangApiClient:
                 return response.json()["weight_version"]
         response.raise_for_status()
 
+    async def unload_lora_adapter(self, lora_name: str):
+        """Unload a LoRA adapter; SGLang waits until no request holds it."""
+        return await self._make_request("unload_lora_adapter", {"lora_name": lora_name})
+
     async def register_lora_adapter(self, lora_name: str, config_dict: dict, pinned: bool = False):
         """Create-or-refresh a LoRA adapter's identity and config (weights zeroed)."""
         return await self._make_request(

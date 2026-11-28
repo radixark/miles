@@ -4,6 +4,7 @@ from contextlib import contextmanager
 
 import torch
 import torch.distributed as dist
+from torchtitan.components.checkpointer import MODEL
 
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.torchtitan_utils import compat
@@ -36,6 +37,19 @@ from miles.utils.tracking_utils.tracking import init_tracking
 from miles.utils.workers.rpc.common.wire_types import Pickled
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def checkpoint_cache_released(trainer):
+    """torchtitan's checkpointer caches a state dict whose tensors share the parameters' storage. Moving the train
+    state replaces every parameter tensor, so the cache would keep each old one alive: after sleep() the whole
+    model would still sit on the GPU. Drop the cache for the move and rebuild it from the moved parameters."""
+    wrapper = trainer.engine.checkpointer.states[MODEL]
+    wrapper.cached_state_dict = {}
+    try:
+        yield
+    finally:
+        wrapper.state_dict()
 
 
 def _steps_per_rollout(args: TrainerConfig) -> int:
@@ -137,7 +151,8 @@ class TorchtitanTrainRayActor(TorchNativeTrainRayActor):
 
     def _move_train_state(self, *, to_host: bool) -> None:
         if not self.args.backend.optimizer_cpu_offload:
-            super()._move_train_state(to_host=to_host)
+            with checkpoint_cache_released(self.trainer):
+                super()._move_train_state(to_host=to_host)
             return
         # the training state already lives on the host; moving it would pull it all onto the GPU on wake
         where = "host" if to_host else "device"

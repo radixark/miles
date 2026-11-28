@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import torch
 
 from miles.backends.fsdp_utils.arguments import FSDPArgs, build_dataclass_parser, load_args_from_parser
+from miles.backends.torchtitan_utils.lora_names import GROUPED_LORA_RANK_MULTIPLE
 from miles.backends.training_utils.loss.hub.response_layout import validate_response_layout_args
 from miles.kernels.tpu import FLASH_ATTENTION_BLOCK
 from miles.platforms import current_platform, tpu_shared_slice
@@ -123,11 +124,25 @@ def validate_torchtitan_args(args) -> None:
     validate_response_layout_args(args)
 
 
+_LORA_MODELS = ("qwen3", "inkling2")
+
+
 def _validate_lora_args(args) -> None:
-    if args.titan_model_name != "qwen3":
+    if args.titan_model_name not in _LORA_MODELS:
         raise ValueError(
-            f"torchtitan LoRA is validated on --titan-model-name qwen3 only; {args.titan_model_name} builds "
-            "projections whose module paths or HF names the LoRA target mapping does not handle yet"
+            f"torchtitan LoRA is validated on --titan-model-name {' / '.join(_LORA_MODELS)} only; "
+            f"{args.titan_model_name} builds projections whose module paths or HF names the LoRA target mapping "
+            "does not handle yet"
+        )
+    if args.optimizer != "adam":
+        raise ValueError(
+            f"torchtitan LoRA trains its adapters with AdamW and has no --optimizer {args.optimizer} layout for them; "
+            "use --optimizer adam with LoRA"
+        )
+    if args.experts_shared_outer_loras and args.lora_rank % GROUPED_LORA_RANK_MULTIPLE:
+        raise ValueError(
+            f"shared-outer routed-expert LoRA runs grouped matmuls that need --lora-rank divisible by "
+            f"{GROUPED_LORA_RANK_MULTIPLE}; got {args.lora_rank}"
         )
     if args.lora_type != "lora":
         raise ValueError(

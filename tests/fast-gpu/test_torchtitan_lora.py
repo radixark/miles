@@ -57,7 +57,7 @@ def test_a_single_layer_can_be_targeted():
 
 
 def test_moe_experts_are_refused_but_moe_attention_is_adapted():
-    with pytest.raises(ValueError, match="name no Linear projection"):
+    with pytest.raises(ValueError, match="name no projection"):
         convert_model_config(
             _qwen3("30B-A3B"), hf_targets=resolve_hf_lora_targets(_QWEN3_MOE_HF_CONFIG), rank=8, alpha=16
         )

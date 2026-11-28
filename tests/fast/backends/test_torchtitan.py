@@ -47,6 +47,7 @@ def _args(**overrides) -> Namespace:
         ci_test=False,
         use_routing_replay=False,
         use_rollout_routing_replay=False,
+        optimizer="adam",
         optimizer_cpu_offload=False,
         stream_optimizer_state_to_disk=False,
         stream_optimizer_state_moment_dtype="fp32",
@@ -61,6 +62,8 @@ def _args(**overrides) -> Namespace:
         lora_dropout=0.0,
         lora_adapter_path=None,
         lora_train_only=False,
+        experts_shared_outer_loras=False,
+        hf_checkpoint=None,
         colocate_memory_peak_device="cpu",
         titan_fsdp_reduce_dtype="float32",
         # read by the padded-rows loss layout's startup check on a static-shape platform
@@ -293,11 +296,30 @@ def test_recording_routes_in_a_compiled_block_is_refused_without_dynamic_shapes(
     validate_torchtitan_args(_args(use_routing_replay=True))
 
 
-def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):
+def test_lora_flags_torchtitan_cannot_honor_are_rejected(tmp_path, monkeypatch):
+    from tests.fast.backends.inkling2_tiny import write_checkpoint_config
+
     monkeypatch.setattr(torch, "__version__", "2.14.0")
-    validate_torchtitan_args(_args(lora_rank=8))
-    with pytest.raises(ValueError, match="qwen3 only"):
+    qwen3 = tmp_path / "qwen3"
+    qwen3.mkdir()
+    (qwen3 / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+    mini = write_checkpoint_config(tmp_path / "mini")
+    small = write_checkpoint_config(tmp_path / "small", model_type="inkling2")
+    validate_torchtitan_args(_args(lora_rank=8, hf_checkpoint=str(qwen3)))
+    # both serve adapters (the looped Mini from sgl-project/sglang#53710 on) or sync merged weights with train-only
+    validate_torchtitan_args(_args(lora_rank=8, titan_model_name="inkling2", hf_checkpoint=small))
+    validate_torchtitan_args(_args(lora_rank=8, titan_model_name="inkling2", hf_checkpoint=mini))
+    validate_torchtitan_args(_args(lora_rank=8, titan_model_name="inkling2", hf_checkpoint=mini, lora_train_only=True))
+    with pytest.raises(ValueError, match="qwen3 / inkling2 only"):
         validate_torchtitan_args(_args(lora_rank=8, titan_model_name="glm5_next"))
+    with pytest.raises(ValueError, match="use --optimizer adam with LoRA"):
+        validate_torchtitan_args(
+            _args(lora_rank=8, titan_model_name="inkling2", hf_checkpoint=small, optimizer="muon")
+        )
+    with pytest.raises(ValueError, match="divisible by 8"):
+        validate_torchtitan_args(
+            _args(lora_rank=4, titan_model_name="inkling2", hf_checkpoint=small, experts_shared_outer_loras=True)
+        )
     with pytest.raises(ValueError, match="--lora-type lora"):
         validate_torchtitan_args(_args(lora_rank=8, lora_type="canonical_lora"))
     with pytest.raises(ValueError, match="kaiming"):
@@ -305,7 +327,7 @@ def test_lora_flags_torchtitan_cannot_honor_are_rejected(monkeypatch):
     with pytest.raises(ValueError, match="no dropout"):
         validate_torchtitan_args(_args(lora_rank=8, lora_dropout=0.05))
     with pytest.raises(ValueError, match="grad buffers"):
-        validate_torchtitan_args(_args(lora_rank=8, colocate_memory_peak_device="gpu"))
+        validate_torchtitan_args(_args(lora_rank=8, hf_checkpoint=str(qwen3), colocate_memory_peak_device="gpu"))
     validate_torchtitan_args(_args(lora_rank=8, colocate_memory_peak_device="gpu", lora_train_only=True))
 
 

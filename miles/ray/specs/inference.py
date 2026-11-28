@@ -441,7 +441,10 @@ def _compute_spec_inference_engine(
                 model_id=model_cfg.name,
                 worker_type=server_group_config.worker_type.value,
                 num_gpus_per_engine=server_group_config.num_gpus_per_engine,
-                sglang_api_key=args.sglang.get_value("api_key", group=server_group_config),
+                # SGLang main refuses its admin endpoints (memory occupation, weight updates) without the admin key
+                sglang_api_key=server_group_config.overrides.get("admin_api_key")
+                or args.sglang.base_args.get("admin_api_key")
+                or args.sglang.get_value("api_key", group=server_group_config),
                 needs_offload=server_group_config.needs_offload,
                 update_weights=model_cfg.update_weights,
                 health_check_timeout_seconds=compute_health_check_timeout_seconds(pp_size=server_group_config.pp_size),

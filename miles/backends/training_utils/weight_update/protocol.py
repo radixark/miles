@@ -83,6 +83,10 @@ def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
         raise ValueError(f"Unknown --update-weight-transfer-mode {mode!r}")
     if mode == "broadcast_packed" and (args.train_backend != "megatron" or args.colocate):
         raise ValueError("broadcast_packed requires Megatron non-colocated weight transfer")
+    if args.colocate and args.lora_sync_reload:
+        from miles.backends.training_utils.weight_update.protocols.lora_reload import UpdateLoraFromTensorsReload
+
+        return UpdateLoraFromTensorsReload(args)
     if args.colocate:
         from miles.backends.training_utils.weight_update.protocols.cuda_ipc import UpdateWeightFromTensor
 
