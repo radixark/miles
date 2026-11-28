@@ -9,6 +9,7 @@ import secrets
 import time
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import NamedTuple
 
 from miles.tinker.core.checkpoint_expiry import CheckpointExpiry
@@ -83,6 +84,7 @@ class TinkerService:
         self.free_slots = set(range(config.n_slots))
         self._wake = asyncio.Event()
         self._trainer_lock = asyncio.Lock()
+        self._profile_session: dict | None = None
         self._sample_tasks: dict[str, tuple] = {}  # request_id -> (task, session_id)
         self._create_tasks: set = set()
         self._cleanup_tasks: set = set()
@@ -221,6 +223,66 @@ class TinkerService:
                 return
             self.futures.resolve(record.create_request_id, {"op": "create_model", "model_id": record.model_id})
 
+    def _check_profile_owner(self, tenant, model_id, target):
+        if not self.config.profiling_enabled:
+            raise UserInputError("Launch the gateway with --tinker-enable-profiling")
+        session = self._profile_session
+        if session is None:
+            self.get_model(tenant, model_id)
+        elif (session["tenant"], session["model_id"], session["target"]) != (tenant, model_id, target):
+            raise OwnershipError("Profiling session belongs to another tenant, model or target")
+
+    async def start_profile(self, tenant, model_id, target, options):
+        async with self._trainer_lock:
+            self.get_model(tenant, model_id)
+            self._check_profile_owner(tenant, model_id, target)
+            if self._profile_session is not None:
+                status = await self.backend.profiling_status(target)
+                if target == "inference" or any(worker["active"] for worker in status["workers"]):
+                    raise UserInputError("A profiling session is already active; stop it first")
+            output_dir = str(Path(self.config.checkpoint_root) / model_id / "profiles" / uuid.uuid4().hex / target)
+            metadata = {"model_id": model_id, "target": target, "output_dir": output_dir}
+            self._profile_session = {**metadata, "tenant": tenant}
+            try:
+                result = await self.backend.start_profile(target, {**options, "output_dir": output_dir})
+            except Exception:
+                # Keep ownership until every worker has acknowledged cleanup.
+                try:
+                    await self.backend.stop_profile(target)
+                except Exception:
+                    logger.exception("Profiling startup rollback failed; session ownership retained")
+                else:
+                    self._profile_session = None
+                raise
+            return {**metadata, **result}
+
+    async def profiling_status(self, tenant, model_id, target):
+        async with self._trainer_lock:
+            self._check_profile_owner(tenant, model_id, target)
+            if self._profile_session is None:
+                return {"active": False, "status": "stopped"}
+            result = await self.backend.profiling_status(target)
+            active = any(worker["active"] for worker in result["workers"]) if target == "trainer" else None
+            return {
+                "model_id": model_id,
+                "target": target,
+                "output_dir": self._profile_session["output_dir"],
+                "active": active,
+                **result,
+            }
+
+    async def stop_profile(self, tenant, model_id, target):
+        async with self._trainer_lock:
+            self._check_profile_owner(tenant, model_id, target)
+            if self._profile_session is None:
+                return {"active": False, "status": "stopped"}
+            result = await self.backend.stop_profile(target)
+            closing_model = self._profile_session.get("closing_model")
+            if closing_model is not None:
+                await self._release_model_slot(closing_model)
+            self._profile_session = None
+            return {"active": False, **result}
+
     def get_model(self, tenant: str, model_id: str) -> ModelRecord:
         record = self.models.get(model_id)
         if record is None:
@@ -244,6 +306,17 @@ class TinkerService:
         for request_id in [record.create_request_id, *record.request_id_by_seq.values()]:
             if self.futures.get(request_id, record.tenant) is not None:
                 self.futures.fail(request_id, error, category)
+        if self._profile_session is not None and self._profile_session["model_id"] == model_id:
+            try:
+                await self.backend.stop_profile(self._profile_session["target"])
+            except Exception:
+                self._profile_session["closing_model"] = record
+                logger.exception("Profiling cleanup failed; owner can retry stop before slot release")
+                return
+            self._profile_session = None
+        await self._release_model_slot(record)
+
+    async def _release_model_slot(self, record: ModelRecord) -> None:
         if await self.backend.trainer_dead():
             return
         if record.slot_initialized:

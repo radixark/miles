@@ -555,6 +555,31 @@ class TrainerController:
         assert cell.is_alive, "the Tinker trainer cell is unavailable"
         return await cell.execute(fn_name, **kwargs)
 
+    async def _profile_workers(self, method: str, config: dict | None = None) -> list:
+        cells = [cell for cell in self._cells if cell.is_alive]
+        if not cells:
+            raise ValueError("No live training cells to profile")
+        calls = []
+        for cell in cells:
+            options = {}
+            if config is not None:
+                options["config"] = {
+                    **config,
+                    "output_dir": str(Path(config["output_dir"]) / f"cell-{cell.cell_index:05d}"),
+                }
+            calls.append(cell.execute(method, kill_on_failure=False, **options))
+        outputs = await gather_and_raise_first(calls)
+        return [worker for output in outputs for worker in output]
+
+    async def start_profile(self, config: dict) -> list:
+        return await self._profile_workers("start_profile", config)
+
+    async def profiling_status(self) -> list:
+        return await self._profile_workers("profiling_status")
+
+    async def stop_profile(self) -> list:
+        return await self._profile_workers("stop_profile")
+
     async def forward_backward(self, batch_id: int, data_ref: object_store.StoreObjectRef) -> list:
         return await self._execute_slots("forward_backward", batch_id=batch_id, rollout_data_ref=data_ref)
 

@@ -78,7 +78,7 @@ from miles.utils.types import RolloutBatch
 from miles.utils.workers.naming import compute_cell_id
 from miles.utils.workers.rpc.common.wire_types import Pickled
 
-from ...utils.profile_utils import TrainProfiler
+from ...utils.profile_utils import TrainProfiler, profile_training_operation
 from ...utils.tensor_backper import TensorBackuper
 from ..training_utils.parallel import get_parallel_state
 from .checkpoint import load_checkpoint
@@ -304,7 +304,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.offload_train:
             self.sleep()
 
-        self.prof.on_init_end()
+        self.prof.on_init_end(self.model)
 
         return load_output.start_rollout_id
 
@@ -667,6 +667,7 @@ class MegatronTrainRayActor(TrainRayActor):
             rollout_id=rollout_id, attempt=attempt
         )
     )
+    @profile_training_operation
     def train(
         self,
         rollout_id: int,

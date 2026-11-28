@@ -79,6 +79,7 @@ async def serve(args, *, disposer: Disposer):
 
     lora_layout = get_hf_lora_targets(full_hf_config.to_dict())
     config = GatewayConfig(
+        profiling_enabled=args.tinker_enable_profiling,
         base_model=args.tinker_base_model or args.hf_checkpoint,
         n_slots=args.multi_lora_n_adapters,
         checkpoint_root=args.tinker_checkpoint_root,

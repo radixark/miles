@@ -113,3 +113,39 @@ The router exposes a small FastAPI surface used internally by Miles:
 | `/workers/{id}` | DELETE | Unregister a worker |
 | `/add_worker`, `/remove_worker`, `/list_workers` | POST / POST / GET | The same, in sgl-router's pre-0.2.2 API |
 | any other path | GET / POST / PUT / DELETE | Proxied to a selected SGLang worker — e.g. `/generate`, `/v1/chat/completions`, `/health`. |
+
+## Dynamic worker profiling
+
+```python
+from miles.utils.profile_utils import DynamicProfiler
+
+profiler = DynamicProfiler(external=(model, optimizer))
+profiler.start({"output_dir": "./profiles", "activities": ["CPU", "CUDA"],
+                "skip_first": 1, "wait": 1, "warmup": 1, "active": 2, "repeat": 1,
+                "profile_memory": True, "profile_modules": True})
+for batch in batches:
+    with profiler.capture(step=run.global_step, operation="train"):
+        train_step(batch)
+    profiler.profile_step()
+profiler.stop()
+```
+
+Each active operation exports a Perfetto-compatible trace and checksummed manifest;
+CUDA memory adds allocator snapshots and VRAM counters. MemTracker adds overlapping
+module snapshots (requires registered objects and `with_stack=false`). Completed
+artifacts must fit `max_bytes` (default 950 MB); temporary exports may be larger.
+Uploads and stitching belong to callers. Setup/export errors preserve workload outcomes.
+
+Scheduling follows `torch.profiler.schedule`; `profile_step()` advances at update
+boundaries independently of the real run-step label. Warmup exports nothing; repeat=0
+continues until stopped. Every rank records by default, under separate cell/rank paths.
+Multi-LoRA captures shared adapter execution; model ownership only controls the session.
+
+Enable gateway controls with `--tinker-enable-profiling`: owner-authenticated
+`POST /api/v1/{start_profiling,stop_profiling}` and `GET /api/v1/profiling_status`
+accept `model_id` and `target=trainer|inference`. Status reports worker schedule,
+captures and errors. Trainer sessions expire at control/operation boundaries after
+`max_duration_sec` (default 7200). Inference uses SGLang's native all-rank profiler
+in separate engine directories: `active` is its step budget, memory enables `MEM`.
+Inference rejects nondefault schedules/durations, module tracking and rank subsets;
+its progress is engine-managed and its exports have no fabricated run-step label.

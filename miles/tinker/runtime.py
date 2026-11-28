@@ -176,6 +176,21 @@ class MilesBackend:
     def lora_groups(self, target_modules) -> dict[str, bool]:
         return classify_lora_groups(target_modules, self.lora_layout)
 
+    async def start_profile(self, target, options):
+        if target == "trainer":
+            return {"workers": await self.trainer.start_profile(config=options)}
+        return await self.inference_controller.profile_inference(action="start", options=options)
+
+    async def profiling_status(self, target):
+        if target == "trainer":
+            return {"workers": await self.trainer.profiling_status()}
+        return {"status": "engine-managed", "progress_available": False}
+
+    async def stop_profile(self, target):
+        if target == "trainer":
+            return {"workers": await self.trainer.stop_profile()}
+        return await self.inference_controller.profile_inference(action="stop", options={})
+
     async def trainer_dead(self) -> bool:
         return await self.trainer.has_errored_cell()
 

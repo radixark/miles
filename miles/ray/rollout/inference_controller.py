@@ -3,6 +3,7 @@ import logging
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
@@ -452,6 +453,26 @@ class InferenceController:
             add=_add,
             remove=_remove,
         )
+
+    @with_lock
+    async def profile_inference(self, action: str, options: dict) -> dict:
+        clients = [client for server in self.servers.values() for client in server.api_clients]
+        if not clients:
+            raise ValueError("No inference engines to profile")
+        if action == "start":
+            output_dirs = [str(Path(options["output_dir"]) / f"engine-{index:05d}") for index in range(len(clients))]
+            await async_utils.gather_and_raise_first(
+                [
+                    client.start_profile(**{**options, "output_dir": output_dir})
+                    for client, output_dir in zip(clients, output_dirs, strict=True)
+                ]
+            )
+            return {"engines": len(clients), "action": action, "output_dirs": output_dirs}
+        elif action == "stop":
+            await async_utils.gather_and_raise_first([client.stop_profile(allow_completed=True) for client in clients])
+        else:
+            raise ValueError(f"Unknown profiling action: {action}")
+        return {"engines": len(clients), "action": action}
 
     # -------------------------- utils -----------------------------
 

@@ -4,6 +4,7 @@ from miles.utils.args.schema import A, Arg, BaseConfig
 class TinkerConfig(BaseConfig):
     tinker_lora_groups: list[str] | None = None
 
+    tinker_enable_profiling: A[bool, Arg(help="Enable dynamic worker profiling")] = False
     tinker_server_host: A[str, Arg()] = "0.0.0.0"
     tinker_server_port: A[int, Arg()] = 10613
     tinker_base_model: A[
