@@ -7,6 +7,7 @@ import multiprocessing
 import os
 import random
 import socket
+import struct
 import subprocess
 import time
 import urllib.parse
@@ -70,10 +71,13 @@ def wait_for_server_ready(
         if process is not None and not _is_process_running(process):
             raise RuntimeError(f"Server process died before port {port} became ready")
         try:
-            with socket.create_connection((host, port), timeout=1):
-                return
+            with socket.create_connection((host, port), timeout=1) as sock:
+                if sock.getsockname() != sock.getpeername():
+                    return
+                _reset_self_connection(sock)
         except OSError:
-            time.sleep(0.5)
+            pass
+        time.sleep(0.5)
     raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
 
 
@@ -86,12 +90,24 @@ async def wait_tcp_ready_async(host: str, port: int, *, timeout: float = 30) -> 
             _reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(host.strip("[]"), port), timeout=_CONNECT_ATTEMPT_TIMEOUT_SECONDS
             )
+            sock = writer.get_extra_info("socket")
+            self_connected = sock.getsockname() == sock.getpeername()
+            if self_connected:
+                _reset_self_connection(sock)
             writer.close()
             await writer.wait_closed()
-            return
+            if not self_connected:
+                return
         except (OSError, asyncio.TimeoutError):
-            await asyncio.sleep(_CONNECT_RETRY_INTERVAL_SECONDS)
+            pass
+        await asyncio.sleep(_CONNECT_RETRY_INTERVAL_SECONDS)
     raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
+
+
+def _reset_self_connection(sock) -> None:
+    # Probing a free port in the ephemeral range can pair the socket with itself (TCP self-connect), which
+    # is not a listener; close with RST so no TIME_WAIT holds the port against the server's bind.
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
 
 
 def _is_process_running(process: "multiprocessing.Process | subprocess.Popen") -> bool:

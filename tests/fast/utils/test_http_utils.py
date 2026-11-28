@@ -316,6 +316,20 @@ class TestWaitForServerReady:
 class _FakeSocket:
     """Minimal stand-in for a connected socket (used as context manager)."""
 
+    def __init__(self, self_connected: bool = False) -> None:
+        self.peer = ("127.0.0.1", 9999)
+        self.local = self.peer if self_connected else ("127.0.0.1", 40000)
+        self.lingered = False
+
+    def getsockname(self):
+        return self.local
+
+    def getpeername(self):
+        return self.peer
+
+    def setsockopt(self, level, option, value):
+        self.lingered = (level, option) == (socket.SOL_SOCKET, socket.SO_LINGER)
+
     def __enter__(self):
         return self
 
@@ -392,15 +406,43 @@ class TestWaitForServerReadySimulatedDelays:
 class _FakeWriter:
     """Minimal stand-in for the writer half of an opened connection."""
 
-    def __init__(self) -> None:
+    def __init__(self, self_connected: bool = False) -> None:
         self.closed: bool = False
         self.wait_closed_awaited: bool = False
+        self.sock = _FakeSocket(self_connected)
+
+    def get_extra_info(self, name: str):
+        assert name == "socket"
+        return self.sock
 
     def close(self) -> None:
         self.closed = True
 
     async def wait_closed(self) -> None:
         self.wait_closed_awaited = True
+
+
+class TestSelfConnectIsNotReady:
+    def test_sync_probe_resets_a_self_connection_and_keeps_polling(self):
+        sockets = [_FakeSocket(self_connected=True), _FakeSocket()]
+        with (
+            patch("miles.utils.http_utils.time.sleep"),
+            patch("miles.utils.http_utils.socket.create_connection", side_effect=sockets),
+        ):
+            wait_for_server_ready("127.0.0.1", 9999, timeout=10)
+        assert sockets[0].lingered and not sockets[1].lingered
+
+    async def test_async_probe_resets_a_self_connection_and_keeps_polling(self, monkeypatch):
+        writers = [_FakeWriter(self_connected=True), _FakeWriter()]
+        pending = iter(writers)
+
+        async def fake_open_connection(host, port):
+            return object(), next(pending)
+
+        monkeypatch.setattr(http_utils, "_CONNECT_RETRY_INTERVAL_SECONDS", 0)
+        monkeypatch.setattr(http_utils.asyncio, "open_connection", fake_open_connection)
+        await wait_tcp_ready_async("127.0.0.1", 9999, timeout=10)
+        assert writers[0].sock.lingered and writers[0].closed and not writers[1].sock.lingered
 
 
 class TestWaitTcpReadyAsync:
