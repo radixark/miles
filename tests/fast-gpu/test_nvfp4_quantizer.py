@@ -3,9 +3,11 @@ from tests.ci.ci_register import register_cuda_ci
 register_cuda_ci(est_time=60, suite="stage-c-4-gpu-b200", labels=["precision"], hardware=["blackwell"], num_gpus=2)
 
 
+import gc
 import json
 import os
 import sys
+import weakref
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -896,6 +898,121 @@ class TestNVFP4FakeQATAdapter:
         assert all(value is expected_value for value, expected_value in zip(actual, expected, strict=False))
         assert all(weight is call[0] for weight, call in zip(weights, calls, strict=False))
         assert all(call[1] is qdq_config for call in calls)
+
+    def test_amax_cache_reuses_amax_across_microbatches_invalidates_on_mutation_and_avoids_strong_refs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        weights = [torch.nn.Parameter(torch.ones(4, 16, dtype=torch.bfloat16) * (i + 1)) for i in range(3)]
+        ephemeral = torch.ones(4, 16, dtype=torch.bfloat16)
+        ephemeral_ref = weakref.ref(ephemeral)
+        qdq_config = object()
+        config_calls = 0
+        amax_calls: list[list[int]] = []
+        qdq_calls: list[tuple[int, object, torch.Tensor]] = []
+        fake_module = ModuleType("miles.kernels.quant.nvfp4_qdq")
+
+        def current_config():
+            nonlocal config_calls
+            config_calls += 1
+            return qdq_config
+
+        def compute_amaxes(xs):
+            amax_calls.append([id(x) for x in xs])
+            return [torch.linalg.vector_norm(x.detach(), ord=float("inf"), dtype=torch.float32) for x in xs]
+
+        def fake_qdq(weight, config, *, amax=None):
+            qdq_calls.append((id(weight), config, amax))
+            return weight
+
+        fake_module.current_nvfp4_qdq_config = current_config
+        fake_module.compute_nvfp4_amaxes = compute_amaxes
+        fake_module.fake_nvfp4_quantization_ste = fake_qdq
+        monkeypatch.setitem(sys.modules, "miles.kernels.quant.nvfp4_qdq", fake_module)
+
+        # Disabled flag short-circuits inside the cache context without resolving config.
+        monkeypatch.setenv(nvfp4_qat.NVFP4_FAKE_QAT_FLAG, "0")
+        with nvfp4_qat.nvfp4_fake_qat_amax_cache():
+            assert nvfp4_qat.maybe_fake_quantize_nvfp4_weight_tensors(weights) is weights
+            assert config_calls == 0
+
+        monkeypatch.setenv(nvfp4_qat.NVFP4_FAKE_QAT_FLAG, "1")
+        with nvfp4_qat.nvfp4_fake_qat_amax_cache():
+            nvfp4_qat.maybe_fake_quantize_nvfp4_weight_tensors([*weights, ephemeral])
+            del ephemeral
+            gc.collect()
+            # Cache holds only weak references to weight tensors.
+            assert ephemeral_ref() is None
+
+            # Nested cache context reuses the enclosing pass cache and exact FP32 amax tensors.
+            with nvfp4_qat.nvfp4_fake_qat_amax_cache():
+                nvfp4_qat.maybe_fake_quantize_nvfp4_weight_tensors(weights)
+            assert config_calls == 1
+            assert len(amax_calls) == 1
+            assert len(amax_calls[0]) == 4
+            first_amaxes = [call[2] for call in qdq_calls[:3]]
+            second_amaxes = [call[2] for call in qdq_calls[4:7]]
+            assert all(a is b for a, b in zip(first_amaxes, second_amaxes, strict=True))
+
+            # In-place mutation increments _version and invalidates only that tensor.
+            with torch.no_grad():
+                weights[1].mul_(3.0)
+            nvfp4_qat.maybe_fake_quantize_nvfp4_weight_tensors(weights)
+            assert len(amax_calls) == 2
+            assert amax_calls[1] == [id(weights[1])]
+            assert qdq_calls[-2][2].item() == pytest.approx(6.0)
+
+        # Cache clears unconditionally on exception as well as normal exit.
+        with pytest.raises(RuntimeError, match="boom"):
+            with nvfp4_qat.nvfp4_fake_qat_amax_cache():
+                nvfp4_qat.maybe_fake_quantize_nvfp4_weight_tensors(weights)
+                raise RuntimeError("boom")
+        assert nvfp4_qat._AMAX_CACHE_VAR.get() is None
+
+        with nvfp4_qat.nvfp4_fake_qat_amax_cache():
+            nvfp4_qat.maybe_fake_quantize_nvfp4_weight_tensors(weights)
+        assert config_calls == 3
+        assert len(amax_calls) == 4
+        assert len(amax_calls[3]) == 3
+
+    def test_cached_and_batched_qdq_match_uncached_bit_exactly_on_gpu(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from miles.kernels.quant.nvfp4_qdq import compute_nvfp4_amaxes
+
+        torch.manual_seed(7)
+        weights = [
+            torch.nn.Parameter(torch.randn(128, 256, device="cuda", dtype=torch.bfloat16) * (i + 1)) for i in range(6)
+        ]
+        # Verify batched foreach infinity norm matches per-tensor vector_norm bit-exactly.
+        batched = compute_nvfp4_amaxes(weights)
+        singles = [compute_nvfp4_amax(w) for w in weights]
+        for b, s in zip(batched, singles, strict=True):
+            assert b.dtype == torch.float32
+            assert torch.equal(b.view(torch.int32), s.view(torch.int32))
+
+        monkeypatch.setenv(nvfp4_qat.NVFP4_FAKE_QAT_FLAG, "1")
+        for env_overrides in (
+            {"NVTE_NVFP4_4OVER6": "none"},
+            {
+                "NVTE_NVFP4_4OVER6": "all",
+                "NVTE_NVFP4_4OVER6_E4M3_USE_256": "none",
+                "NVTE_NVFP4_4OVER6_ERR_MODE": "MSE",
+                "NVTE_NVFP4_4OVER6_ERR_USE_FAST_MATH": "1",
+            },
+        ):
+            for key, value in env_overrides.items():
+                monkeypatch.setenv(key, value)
+            uncached = nvfp4_qat.maybe_fake_quantize_nvfp4_weight_tensors(weights)
+            with nvfp4_qat.nvfp4_fake_qat_amax_cache():
+                cached_first = nvfp4_qat.maybe_fake_quantize_nvfp4_weight_tensors(weights)
+                cached_second = nvfp4_qat.maybe_fake_quantize_nvfp4_weight_tensors(weights)
+                with torch.no_grad():
+                    cached_no_grad = nvfp4_qat.maybe_fake_quantize_nvfp4_weight_tensors(weights)
+
+            for ref, c1, c2, cng in zip(uncached, cached_first, cached_second, cached_no_grad, strict=True):
+                assert torch.equal(c1.detach().view(torch.uint16), ref.detach().view(torch.uint16))
+                assert torch.equal(c2.detach().view(torch.uint16), ref.detach().view(torch.uint16))
+                assert torch.equal(cng.view(torch.uint16), ref.detach().view(torch.uint16))
+                assert c1.requires_grad and c2.requires_grad
+                assert not cng.requires_grad
 
 
 if __name__ == "__main__":
