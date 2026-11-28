@@ -53,9 +53,18 @@ class Platform:
         return torch.cuda.get_device_name() if torch.cuda.is_available() else None
 
 
+def _is_sail() -> bool:
+    """SAIL is CUDA-like (torch.cuda, PCCL as "nccl"); the alixpu device node and a ZW device name identify it."""
+    return os.path.exists("/dev/alixpu") and torch.cuda.is_available() and "ZW" in torch.cuda.get_device_name()
+
+
 def _select_platform() -> Platform:
     device_type = os.environ.get("MILES_ACCELERATOR", "cuda")
     if device_type == "cuda":
+        if _is_sail():
+            from miles.platforms.sail import SailPlatform
+
+            return SailPlatform()
         return Platform()
     if device_type == "tpu":
         # imports torch_tpu, which CUDA processes never load
