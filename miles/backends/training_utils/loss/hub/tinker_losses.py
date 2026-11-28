@@ -132,15 +132,17 @@ def cross_entropy_loss_function(
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
 ) -> tuple[torch.Tensor, dict]:
     log_probs = _target_logprobs(args, batch, logits)
-    per_datum_losses = [
-        -(_as_tensor_like(weights, log_prob) * log_prob * mask).sum()
-        for log_prob, weights, mask in zip(
-            log_probs,
-            _local_response_values(args, batch, batch["loss_weights"]),
-            _local_response_masks(args, batch, log_probs),
-            strict=True,
-        )
-    ]
+    per_datum_losses = []
+    for log_prob, weights, mask in zip(
+        log_probs,
+        _local_response_values(args, batch, batch["loss_weights"]),
+        _local_response_masks(args, batch, log_probs),
+        strict=True,
+    ):
+        active = mask != 0
+        lp = torch.where(active, log_prob, 0.0)
+        w = torch.where(active, _as_tensor_like(weights, log_prob), 0.0)
+        per_datum_losses.append(-(w * lp * mask).sum())
     return _sum_loss_and_outputs(args, batch, logits, log_probs, per_datum_losses)
 
 
@@ -159,8 +161,12 @@ def importance_sampling_loss_function(
         _local_response_masks(args, batch, log_probs),
         strict=True,
     ):
-        ratio = torch.exp(log_prob - _as_tensor_like(sampling_log_prob, log_prob))
-        per_datum_losses.append(-(ratio * _as_tensor_like(advantage, log_prob) * mask).sum())
+        active = mask != 0
+        lp = torch.where(active, log_prob, 0.0)
+        slp = torch.where(active, _as_tensor_like(sampling_log_prob, log_prob), 0.0)
+        adv = torch.where(active, _as_tensor_like(advantage, log_prob), 0.0)
+        ratio = torch.exp(lp - slp)
+        per_datum_losses.append(-(ratio * adv * mask).sum())
     return _sum_loss_and_outputs(args, batch, logits, log_probs, per_datum_losses)
 
 
@@ -182,8 +188,11 @@ def ppo_loss_function(
         _local_response_masks(args, batch, log_probs),
         strict=True,
     ):
-        ratio = torch.exp(log_prob - _as_tensor_like(sampling_log_prob, log_prob))
-        advantages = _as_tensor_like(advantage, log_prob)
+        active = mask != 0
+        lp = torch.where(active, log_prob, 0.0)
+        slp = torch.where(active, _as_tensor_like(sampling_log_prob, log_prob), 0.0)
+        advantages = torch.where(active, _as_tensor_like(advantage, log_prob), 0.0)
+        ratio = torch.exp(lp - slp)
         objective = torch.minimum(ratio * advantages, torch.clamp(ratio, clip_low, clip_high) * advantages)
         per_datum_losses.append(-(objective * mask).sum())
     return _sum_loss_and_outputs(args, batch, logits, log_probs, per_datum_losses)
@@ -207,9 +216,13 @@ def cispo_loss_function(
         _local_response_masks(args, batch, log_probs),
         strict=True,
     ):
-        ratio = torch.exp(log_prob - _as_tensor_like(sampling_log_prob, log_prob))
+        active = mask != 0
+        lp = torch.where(active, log_prob, 0.0)
+        slp = torch.where(active, _as_tensor_like(sampling_log_prob, log_prob), 0.0)
+        adv = torch.where(active, _as_tensor_like(advantage, log_prob), 0.0)
+        ratio = torch.exp(lp - slp)
         coefficient = torch.clamp(ratio, clip_low, clip_high).detach()
-        per_datum_losses.append(-(coefficient * log_prob * _as_tensor_like(advantage, log_prob) * mask).sum())
+        per_datum_losses.append(-(coefficient * lp * adv * mask).sum())
     return _sum_loss_and_outputs(args, batch, logits, log_probs, per_datum_losses)
 
 
@@ -230,8 +243,12 @@ def dro_loss_function(
         _local_response_masks(args, batch, log_probs),
         strict=True,
     ):
-        divergence = log_prob - _as_tensor_like(sampling_log_prob, log_prob)
-        objective = log_prob * _as_tensor_like(advantage, log_prob) - 0.5 * beta * divergence**2
+        active = mask != 0
+        lp = torch.where(active, log_prob, 0.0)
+        slp = torch.where(active, _as_tensor_like(sampling_log_prob, log_prob), 0.0)
+        adv = torch.where(active, _as_tensor_like(advantage, log_prob), 0.0)
+        divergence = lp - slp
+        objective = lp * adv - 0.5 * beta * divergence**2
         per_datum_losses.append(-(objective * mask).sum())
     return _sum_loss_and_outputs(args, batch, logits, log_probs, per_datum_losses)
 

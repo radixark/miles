@@ -327,17 +327,24 @@ def policy_loss_function(
 
     if args.use_kl_loss:
         assert reference_log_probs is not None, "ref_log_probs must be provided when --use-kl-loss is set"
+        # Mask before exponentiation: nan_to_num after exp still produces NaN gradients (0 * inf).
+        # Bounding both log-ratios to [-40, 40] keeps exp(40) * exp(40) < float32 max.
+        kl_valid = active_tokens & torch.isfinite(log_probs) & torch.isfinite(reference_log_probs)
+        if args.kl_loss_type == "k3":
+            kl_valid = kl_valid & ((log_probs - reference_log_probs).abs() <= 40)
         importance_ratio = None
         if args.use_unbiased_kl:
-            importance_ratio = torch.exp(log_probs - old_log_probs)
+            ratio_log = log_probs - old_log_probs
+            kl_valid = kl_valid & torch.isfinite(ratio_log) & (ratio_log.abs() <= 40)
+            importance_ratio = torch.where(kl_valid, ratio_log, 0.0).exp()
         kl = compute_approx_kl(
-            log_probs,
-            reference_log_probs,
+            torch.where(kl_valid, log_probs, 0.0),
+            torch.where(kl_valid, reference_log_probs, 0.0),
             kl_loss_type=args.kl_loss_type,
             importance_ratio=importance_ratio,
         )
         kl = torch.where(
-            active_tokens,
+            kl_valid,
             torch.nan_to_num(kl, nan=0.0, posinf=0.0, neginf=0.0),
             kl.new_zeros(()),
         )
