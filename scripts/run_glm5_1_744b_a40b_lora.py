@@ -79,6 +79,8 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 
     # performance
     num_gpus_per_node: int = 4
+    # Sequence packing, used only with the tilelang backend (thd). bshd forbids it.
+    max_tokens_per_gpu: int = 8192
 
     # LoRA
     lora_rank: int = 16
@@ -131,17 +133,25 @@ class ScriptArgs(command_utils.ExecuteTrainConfig):
 def _get_parallel_config(args: ScriptArgs) -> str:
     """Single-node MoE layout: TP = EP = num_gpus_per_node, DP1 (mirrors run_glm5_744b_a40b).
 
-    The DSA kernel backend dictates the query layout; both forbid --use-dynamic-batch-size,
-    hence --micro-batch-size 1: megatron needs bshd (the unfused megatron-core
-    DSA core-attention takes a 4D query), tilelang needs thd (the fused kernels index by
-    cu_seqlens).
+    The DSA kernel backend dictates the query layout: megatron needs bshd (the unfused
+    megatron-core DSA core-attention takes a 4D query), tilelang needs thd (the fused
+    kernels index by cu_seqlens).
+
+    Only bshd forbids --use-dynamic-batch-size; validate_args asserts it for that layout
+    alone, so megatron runs with --micro-batch-size 1. thd supports sequence packing.
     """
     ngpu = args.num_gpus_per_node
-    qkv_format = "thd" if args.dsa_attention_backend == "tilelang" else "bshd"
+    packs = args.dsa_attention_backend == "tilelang"
+    qkv_format = "thd" if packs else "bshd"
+    batching = (
+        f"--use-dynamic-batch-size --max-tokens-per-gpu {args.max_tokens_per_gpu} "
+        if packs
+        else "--micro-batch-size 1 "
+    )
     return (
         f"--tensor-model-parallel-size {ngpu} --sequence-parallel --pipeline-model-parallel-size 1 "
         f"--context-parallel-size 1 --expert-model-parallel-size {ngpu} --expert-tensor-parallel-size 1 "
-        f"--qkv-format {qkv_format} --micro-batch-size 1 "
+        f"--qkv-format {qkv_format} {batching}"
     )
 
 
