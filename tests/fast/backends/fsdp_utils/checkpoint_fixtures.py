@@ -13,9 +13,9 @@ def cpu_checkpoint_actor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Sim
     monkeypatch.setattr(checkpoint.dist, "get_rank", lambda *args, **kwargs: 0)
     monkeypatch.setattr(checkpoint.dist, "get_world_size", lambda *args, **kwargs: 1)
     monkeypatch.setattr(checkpoint.dist, "barrier", lambda *args, **kwargs: None)
-    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    monkeypatch.setattr(torch.accelerator, "synchronize", lambda: None)
     monkeypatch.setattr(torch.cuda, "get_rng_state_all", lambda: [])
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(checkpoint, "current_platform", SimpleNamespace(device_type="cuda"))
     model = torch.nn.Linear(2, 1, bias=False)
     with torch.no_grad():
         model.weight.fill_(1)
