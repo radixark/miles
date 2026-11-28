@@ -35,6 +35,7 @@ def _target_logprobs(args: Namespace, batch: RolloutBatch, logits: torch.Tensor)
         response_lengths=batch["response_lengths"],
         with_entropy=False,
         max_seq_lens=batch.get("max_seq_lens", None),
+        lm_head=batch.get("lm_head"),
     )
     return outputs["log_probs"]
 

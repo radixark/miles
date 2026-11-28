@@ -64,7 +64,7 @@ def _step(variant, args, layer, hidden, rows, targets, tp_group):
         )
     else:
 
-        def project(rows_hidden):
+        def project(rows_hidden, _):
             logits, _ = layer(rows_hidden.unsqueeze(1))
             return logits.squeeze(1)
 

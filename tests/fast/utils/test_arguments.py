@@ -1293,9 +1293,8 @@ def _fused_lm_head_args(extra):
         (["--train-backend", "fsdp"], "needs --train-backend megatron"),
         (["--loss-type", "custom_loss"], "supports --loss-type policy_loss and sft_loss"),
         (["--loss-type", "score_centering"], "supports --loss-type policy_loss and sft_loss"),
-        (["--multi-lora-n-adapters", "2"], "does not support multi-LoRA"),
     ],
-    ids=["true_on_policy", "fsdp", "custom_loss", "score_centering", "multi_lora"],
+    ids=["true_on_policy", "fsdp", "custom_loss", "score_centering"],
 )
 def test_fused_lm_head_backend_rejects_what_it_does_not_cover(extra, message):
     with pytest.raises(ValueError, match=message):
@@ -1317,19 +1316,21 @@ def test_fused_lm_head_backend_rejects_megatron_schedules_it_breaks(megatron_fla
 
 
 @pytest.mark.parametrize(
-    ("backend", "lora_rank", "targets", "rejected"),
+    ("backend", "lora_rank", "n_adapters", "targets", "rejected"),
     [
-        ("fused_lm_head", 8, ["model.layers.*.self_attn.q_proj", "lm_head"], True),
-        ("fused_lm_head", 8, ["model.layers.*.self_attn.q_proj"], False),
-        ("fused_lm_head", 0, ["lm_head"], False),
-        ("fused", 8, ["lm_head"], False),
+        ("fused_lm_head", 8, 0, ["model.layers.*.self_attn.q_proj", "lm_head"], True),
+        ("fused_lm_head", 8, 2, ["model.layers.*.self_attn.q_proj", "lm_head"], False),
+        ("fused_lm_head", 8, 0, ["model.layers.*.self_attn.q_proj"], False),
+        ("fused_lm_head", 0, 0, ["lm_head"], False),
+        ("fused", 8, 0, ["lm_head"], False),
     ],
-    ids=["unembed_adapted", "no_unembed", "lora_off", "other_backend"],
+    ids=["single_lora_unembed", "multi_lora_unembed", "no_unembed", "lora_off", "other_backend"],
 )
-def test_fused_lm_head_backend_rejects_lora_on_the_output_layer(backend, lora_rank, targets, rejected):
+def test_fused_lm_head_backend_rejects_lora_on_the_output_layer(backend, lora_rank, n_adapters, targets, rejected):
     args = SimpleNamespace(
         log_probs_backend=backend,
         lora_rank=lora_rank,
+        multi_lora_n_adapters=n_adapters,
         lora_adapter_path=None,
         hf_lora_targets=targets,
         hf_checkpoint="unused",

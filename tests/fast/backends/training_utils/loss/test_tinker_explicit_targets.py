@@ -56,3 +56,20 @@ def test_shifted_targets_degenerate_to_next_token_scoring(monkeypatch):
 
     expected = torch.log_softmax(logits.squeeze(0)[:-1], dim=-1).gather(-1, torch.tensor(sequence[1:]).unsqueeze(-1))
     torch.testing.assert_close(log_probs, expected.squeeze(-1))
+
+
+def test_tinker_targets_pass_the_fused_head_to_log_prob_scoring(monkeypatch):
+    head = object()
+    batch = _batch([[1, 2, 3]], [[8, 9]])
+    batch["lm_head"] = head
+    expected = torch.tensor([-0.2, -0.4])
+
+    def score(_hidden, **kwargs):
+        assert kwargs["lm_head"] is head
+        assert kwargs["unconcat_tokens"][0].tolist() == [1, 8, 9]
+        return {"log_probs": [expected]}
+
+    monkeypatch.setattr(tinker_losses, "get_log_probs_and_entropy", score)
+    assert tinker_losses._target_logprobs(
+        make_args(log_probs_backend="fused_lm_head"), batch, torch.zeros(1, 3, 4)
+    ) == [expected]
