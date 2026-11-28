@@ -307,3 +307,15 @@ class TestPipelineLayerPartition:
         args = make_args(sglang_pp_size=2, sglang_pp_layer_partition="1,1", rollout_num_gpus=0)
 
         assert args.sglang.models == []
+
+
+def test_a_lora_rollout_starts_on_an_sglang_without_the_dp_attention_flag():
+    """SGLang main dropped --enable-dp-attention, so its parsed server args lack the key; a LoRA rollout
+    engine used to fail at launch reading it."""
+    args = make_args(lora_rank=16)
+    args.sglang.base_args.pop("enable_dp_attention", None)
+
+    server_args = compute(args)
+
+    assert server_args["enable_lora"] is True
+    assert server_args["max_loras_per_batch"] == 1

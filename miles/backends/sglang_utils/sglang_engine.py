@@ -182,7 +182,8 @@ def _compute_server_args(
     elif lora_rollout_enabled(args):
         attention_dp = sglang_attention_dp_enabled(
             attn_dp_size=base_args["attn_dp_size"],
-            enable_dp_attention=base_args["enable_dp_attention"],
+            # SGLang main has no --enable-dp-attention; attention DP there is attn_dp_size > 1 alone
+            enable_dp_attention=base_args.get("enable_dp_attention", False),
             dp_size=base_args["dp_size"],
         )
         kwargs["enable_lora"] = True
