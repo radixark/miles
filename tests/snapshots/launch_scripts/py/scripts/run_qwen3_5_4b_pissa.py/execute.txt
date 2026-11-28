@@ -1,0 +1,268 @@
+### 0
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 1
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 2
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 3
+[launcher lifetime] ray job submit
+  --address=http://127.0.0.1:8265
+  --submission-id=pissa-260101-000000-000-lora
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --spec miles_plugins.models.qwen3_5 get_qwen3_5_spec
+  --disable-bias-linear
+  --qk-layernorm
+  --group-query-attention
+  --num-attention-heads 16
+  --num-query-groups 4
+  --kv-channels 256
+  --num-layers 32
+  --hidden-size 2560
+  --ffn-hidden-size 9216
+  --normalization RMSNorm
+  --apply-layernorm-1p
+  --position-embedding-type rope
+  --norm-epsilon 1e-6
+  --rotary-percent 0.25
+  --swiglu
+  --vocab-size 248320
+  --rotary-base 10000000
+  --attention-output-gate
+  --hf-checkpoint /root/models/Qwen3.5-4B
+  --load /root/models/Qwen3.5-4B_torch_dist
+  --ref-load /root/models/Qwen3.5-4B_torch_dist
+  --save /root/shared_data/260101-000000-000/lora/checkpoints
+  --save-interval 20
+  --megatron-to-hf-mode raw
+  --no-load-optim
+  --no-load-rng
+  --finetune
+  --lora-rank 32
+  --lora-alpha 32
+  --lora-dropout 0
+  --lora-type canonical_lora
+  --lora-A-init-method kaiming
+  --target-modules attn,mlp
+  --no-gradient-accumulation-fusion
+  --prompt-data /root/datasets/gsm8k/train.parquet
+  --input-key messages
+  --label-key label
+  --apply-chat-template
+  --apply-chat-template-kwargs '{"enable_thinking": false}'
+  --rollout-shuffle
+  --rollout-seed 42
+  --seed 42
+  --rm-type math
+  --num-rollout 100
+  --rollout-batch-size 32
+  --n-samples-per-prompt 8
+  --rollout-max-response-len 2048
+  --rollout-temperature 1
+  --global-batch-size 256
+  --balance-data
+  --eval-interval 20
+  --eval-prompt-data gsm8k /root/datasets/gsm8k/test.parquet
+  --eval-input-key messages
+  --eval-label-key label
+  --n-samples-per-eval-prompt 1
+  --eval-temperature 0
+  --eval-max-response-len 2048
+  --advantage-estimator grpo
+  --use-kl-loss
+  --kl-loss-coef 0
+  --kl-loss-type low_var_kl
+  --entropy-coef 0
+  --eps-clip 0.2
+  --eps-clip-high 0.28
+  --optimizer adam
+  --lr 3e-06
+  --lr-decay-style constant
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.98
+  --tensor-model-parallel-size 2
+  --sequence-parallel
+  --expert-model-parallel-size 1
+  --expert-tensor-parallel-size 1
+  --pipeline-model-parallel-size 1
+  --context-parallel-size 1
+  --use-dynamic-batch-size
+  --max-tokens-per-gpu 8192
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --rollout-num-gpus-per-engine 1
+  --sglang-mem-fraction-static 0.4
+  --sglang-dtype bfloat16
+  --sglang-max-lora-rank 32
+  --sglang-lora-backend triton
+  --sglang-decode-log-interval 1000
+  --attention-dropout 0
+  --hidden-dropout 0
+  --update-weight-buffer-size 536870912
+  --actor-num-nodes 1
+  --actor-num-gpus-per-node 8
+  --num-gpus-per-node 8
+  --colocate
+  --accumulate-allreduce-grads-in-fp32
+  --attention-softmax-in-fp32
+  --attention-backend flash
+  --check-lora-weight-equal
+  --dump-details /root/shared_data/260101-000000-000/lora/details
+  --use-tensorboard
+  --tb-project-name /root/shared_data/260101-000000-000/tensorboard
+  --tb-experiment-name lora 
+  --use-wandb
+  --wandb-project miles-run_qwen3_5_4b_pissa
+  --wandb-group 260101-000000-000-lora
+  --wandb-key 'frozen-wandb-api-key'
+  --disable-wandb-random-suffix 
+  --deploy-component all
+
+### 4
+ray stop
+  --force
+
+### 5
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 6
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 7
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 8
+[launcher lifetime] ray job submit
+  --address=http://127.0.0.1:8265
+  --submission-id=pissa-260101-000000-000-pissa
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --spec miles_plugins.models.qwen3_5 get_qwen3_5_spec
+  --disable-bias-linear
+  --qk-layernorm
+  --group-query-attention
+  --num-attention-heads 16
+  --num-query-groups 4
+  --kv-channels 256
+  --num-layers 32
+  --hidden-size 2560
+  --ffn-hidden-size 9216
+  --normalization RMSNorm
+  --apply-layernorm-1p
+  --position-embedding-type rope
+  --norm-epsilon 1e-6
+  --rotary-percent 0.25
+  --swiglu
+  --vocab-size 248320
+  --rotary-base 10000000
+  --attention-output-gate
+  --hf-checkpoint /root/models/Qwen3.5-4B-pissa-r32/residual_base
+  --load /root/models/Qwen3.5-4B-pissa-r32_torch_dist
+  --ref-load /root/models/Qwen3.5-4B_torch_dist
+  --save /root/shared_data/260101-000000-000/pissa/checkpoints
+  --save-interval 20
+  --megatron-to-hf-mode raw
+  --no-load-optim
+  --no-load-rng
+  --finetune
+  --lora-rank 32
+  --lora-alpha 32
+  --lora-dropout 0
+  --lora-type canonical_lora
+  --lora-A-init-method kaiming
+  --target-modules attn,mlp
+  --no-gradient-accumulation-fusion
+  --lora-adapter-path /root/models/Qwen3.5-4B-pissa-r32/adapter
+  --prompt-data /root/datasets/gsm8k/train.parquet
+  --input-key messages
+  --label-key label
+  --apply-chat-template
+  --apply-chat-template-kwargs '{"enable_thinking": false}'
+  --rollout-shuffle
+  --rollout-seed 42
+  --seed 42
+  --rm-type math
+  --num-rollout 100
+  --rollout-batch-size 32
+  --n-samples-per-prompt 8
+  --rollout-max-response-len 2048
+  --rollout-temperature 1
+  --global-batch-size 256
+  --balance-data
+  --eval-interval 20
+  --eval-prompt-data gsm8k /root/datasets/gsm8k/test.parquet
+  --eval-input-key messages
+  --eval-label-key label
+  --n-samples-per-eval-prompt 1
+  --eval-temperature 0
+  --eval-max-response-len 2048
+  --advantage-estimator grpo
+  --use-kl-loss
+  --kl-loss-coef 0
+  --kl-loss-type low_var_kl
+  --entropy-coef 0
+  --eps-clip 0.2
+  --eps-clip-high 0.28
+  --optimizer adam
+  --lr 3e-06
+  --lr-decay-style constant
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.98
+  --tensor-model-parallel-size 2
+  --sequence-parallel
+  --expert-model-parallel-size 1
+  --expert-tensor-parallel-size 1
+  --pipeline-model-parallel-size 1
+  --context-parallel-size 1
+  --use-dynamic-batch-size
+  --max-tokens-per-gpu 8192
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --rollout-num-gpus-per-engine 1
+  --sglang-mem-fraction-static 0.4
+  --sglang-dtype bfloat16
+  --sglang-max-lora-rank 32
+  --sglang-lora-backend triton
+  --sglang-decode-log-interval 1000
+  --attention-dropout 0
+  --hidden-dropout 0
+  --update-weight-buffer-size 536870912
+  --actor-num-nodes 1
+  --actor-num-gpus-per-node 8
+  --num-gpus-per-node 8
+  --colocate
+  --accumulate-allreduce-grads-in-fp32
+  --attention-softmax-in-fp32
+  --attention-backend flash
+  --check-lora-weight-equal
+  --dump-details /root/shared_data/260101-000000-000/pissa/details
+  --use-tensorboard
+  --tb-project-name /root/shared_data/260101-000000-000/tensorboard
+  --tb-experiment-name pissa 
+  --use-wandb
+  --wandb-project miles-run_qwen3_5_4b_pissa
+  --wandb-group 260101-000000-000-pissa
+  --wandb-key 'frozen-wandb-api-key'
+  --disable-wandb-random-suffix 
+  --deploy-component all
+
+### 9
+ray stop
+  --force
