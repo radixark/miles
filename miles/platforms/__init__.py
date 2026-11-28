@@ -1,4 +1,4 @@
-"""The training process's platform: what differs between CUDA and TPU (torch_tpu), chosen once by MILES_ACCELERATOR.
+"""The training process's platform: what differs between CUDA, TPU (torch_tpu), and XPU, chosen once by MILES_ACCELERATOR.
 
 Everything `torch.accelerator` covers (synchronize, empty_cache, memory stats, the device index) is called directly.
 """
@@ -7,6 +7,7 @@ import functools
 import os
 
 import torch
+import torch.distributed as dist
 
 
 class Platform:
@@ -47,6 +48,11 @@ class Platform:
     def current_device(self) -> torch.device:
         return torch.device(self.device_type, torch.accelerator.current_device_index())
 
+    @property
+    def dist_backend(self) -> str:
+        """The collective backend torch pairs with this device: nccl on CUDA/ROCm, xccl on XPU."""
+        return dist.get_default_backend_for_device(self.device_type)
+
     @functools.cache  # noqa: B019 -- one instance per process
     def device_name(self) -> str | None:
         """The CUDA device's marketing name (for peak-FLOPs lookup); None without a CUDA device."""
@@ -62,7 +68,11 @@ def _select_platform() -> Platform:
         from miles.platforms.tpu import TpuPlatform
 
         return TpuPlatform()
-    raise ValueError(f"MILES_ACCELERATOR={device_type!r}; expected cuda or tpu")
+    if device_type == "xpu":
+        from miles.platforms.xpu import XpuPlatform
+
+        return XpuPlatform()
+    raise ValueError(f"MILES_ACCELERATOR={device_type!r}; expected cuda, tpu or xpu")
 
 
 current_platform = _select_platform()
