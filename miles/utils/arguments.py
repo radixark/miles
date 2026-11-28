@@ -375,10 +375,15 @@ def parse_args_and_get_parser(
 
         validate_torchtitan_args(args)
     else:
-        from miles.backends.fsdp_utils.arguments import validate_hybrid_shard_args, validate_kernel_backend_args
+        from miles.backends.fsdp_utils.arguments import (
+            validate_cpu_offload_threads_args,
+            validate_hybrid_shard_args,
+            validate_kernel_backend_args,
+        )
 
         validate_hybrid_shard_args(args)
         validate_kernel_backend_args(args)
+        validate_cpu_offload_threads_args(args)
 
     if backend != "megatron":
         training_backend_arg_names.update(

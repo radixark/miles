@@ -13,6 +13,7 @@ import torch
 import torch.distributed as dist
 
 import miles.utils.eval_config
+from miles.backends.fsdp_utils.arguments import host_optimizer_threads
 from miles.backends.megatron_utils.checkpoint_request import MegatronCkptLoadConfig
 from miles.backends.training_utils.data.token_space_media_process import (
     RolloutEngineProcessorArgs,
@@ -266,6 +267,16 @@ class TrainRayActor(NodeProbeMixin):
             )
         current_platform.bind_device_after_process_group()
         init_gloo_group()
+
+        if args.train_backend in ("fsdp", "torchtitan") and args.backend.optimizer_cpu_offload:
+            ranks_per_node = args.critic_num_gpus_per_node if role == "critic" else args.actor_num_gpus_per_node
+            threads = host_optimizer_threads(args.backend, ranks_per_node=ranks_per_node)
+            if threads is not None:
+                torch.set_num_threads(threads)
+                logger.info(
+                    f"FSDP CPU offload: {threads} intra-op threads per rank for the host optimizer "
+                    f"({ranks_per_node} trainer ranks per node)"
+                )
 
         with args.backend.mutable():
             args.backend.rank = dist.get_rank()
