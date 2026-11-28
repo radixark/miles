@@ -4,6 +4,7 @@ import logging
 import os
 import shlex
 
+from sglang.srt.lora.utils import get_normalized_target_modules
 from sglang.srt.server_args import ServerArgs
 
 from miles.backends.sglang_utils.arguments import sglang_attention_dp_enabled
@@ -92,6 +93,14 @@ def compute_engine_launch_cmd(
     return shlex.join([*interpreter_prefix, "-m", "sglang.launch_server", *server_args_to_argv(launch_args)])
 
 
+def _served_lora_target_modules(adapter_targets: list[str] | str) -> list[str]:
+    """--lora-target-modules for SGLang: its served module names. SGLang reduces the HF target paths to these
+    names itself (get_normalized_target_modules), and its parser accepts only them."""
+    if adapter_targets == "all-linear":
+        return ["all"]
+    return sorted(get_normalized_target_modules(adapter_targets))
+
+
 def _compute_server_args(
     args,
     *,
@@ -176,9 +185,7 @@ def _compute_server_args(
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = args.multi_lora_n_adapters
         kwargs["max_lora_rank"] = max(args.lora_rank, 1)
-        kwargs["lora_target_modules"] = (
-            ["all"] if args.lora_adapter_targets == "all-linear" else args.lora_adapter_targets
-        )
+        kwargs["lora_target_modules"] = _served_lora_target_modules(args.lora_adapter_targets)
     elif lora_rollout_enabled(args):
         attention_dp = sglang_attention_dp_enabled(
             attn_dp_size=base_args["attn_dp_size"],
@@ -190,9 +197,7 @@ def _compute_server_args(
         # attention DP serves only pinned adapters (sgl-project/sglang#36389), and SGLang never pins the last slot
         kwargs["max_loras_per_batch"] = 2 if attention_dp else 1
         kwargs["max_lora_rank"] = max(args.lora_rank, 1)
-        kwargs["lora_target_modules"] = (
-            ["all"] if args.lora_adapter_targets == "all-linear" else args.lora_adapter_targets
-        )
+        kwargs["lora_target_modules"] = _served_lora_target_modules(args.lora_adapter_targets)
 
         if engine_loads_adapter_from_disk(args):
             if attention_dp:

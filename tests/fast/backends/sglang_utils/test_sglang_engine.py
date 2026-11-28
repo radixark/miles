@@ -5,6 +5,7 @@ import shlex
 import sys
 
 import pytest
+from sglang.srt.lora.utils import get_normalized_target_modules
 from tests.fast.backends.sglang_utils.conftest import make_engine_args, tiny_model_path
 
 pytest.importorskip("sglang")
@@ -131,8 +132,14 @@ class TestLoraTargetModules:
                 "model.layers.*.linear_attn.out_proj",
             ],
             "all-linear",
+            [
+                *(f"model.llm.layers.*.attn.{p}" for p in ("wq_du", "wk_dv", "wv_dv", "wr_du", "gate_attn", "wo_ud")),
+                "model.llm.layers.*.mlp.experts.gate_up_proj",
+                "model.llm.layers.*.mlp.experts.down_proj",
+                "model.llm.unembed",
+            ],
         ],
-        ids=["qkv", "gdn", "gdn-output", "inkling"],
+        ids=["qkv", "gdn", "gdn-output", "inkling", "inkling2-mini"],
     )
     @pytest.mark.parametrize("multi_lora", [False, True], ids=["single", "multi"])
     def test_adapter_selection_reaches_engine_and_sync_config(self, adapter_targets, multi_lora):
@@ -146,7 +153,9 @@ class TestLoraTargetModules:
             multi_lora_n_adapters=4,
         )
         targets = parse_server_args_argv(shlex.split(_cmd(args=args))[3:]).lora_target_modules
-        assert set(targets) == ({"all"} if adapter_targets == "all-linear" else set(adapter_targets))
+        # SGLang takes its served module names, the ones it reduces the HF target paths to
+        expected = {"all"} if adapter_targets == "all-linear" else get_normalized_target_modules(adapter_targets)
+        assert set(targets) == expected
         assert build_lora_config(args, target_modules=adapter_targets)["target_modules"] == adapter_targets
 
 
