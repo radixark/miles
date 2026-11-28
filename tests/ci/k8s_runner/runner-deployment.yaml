@@ -109,6 +109,11 @@ spec:
               value: "miles-ci-k8s"
             - name: K8S_GPFS_ROOT
               value: "/storage/shared/miles-ci-k8s/ext"
+            # Every pod a CI job creates is scheduled like this pod: same node, same taint.
+            - name: K8S_NODE_SELECTOR
+              value: "kubernetes.io/hostname=gpu-10-220-71-29"
+            - name: K8S_TOLERATION
+              value: "radixark.io/pool=cicd:NoSchedule"
           command:
             - bash
             - -euo

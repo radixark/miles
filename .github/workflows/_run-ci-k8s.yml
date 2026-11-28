@@ -1,0 +1,208 @@
+# doc-dev: docs/developer/ci/00-stage.md
+name: CI Job (Kubernetes)
+
+# One CI job run with --cluster-backend kubernetes. The self-hosted runner it lands on is the
+# unprivileged in-cluster pod of tests/ci/k8s_runner: it runs no test code. It stages the sources on
+# shared storage and submits one driver Job, which runs `execute_command` inside the CI image.
+#
+# The organization runner group admits only the jobs of this file at refs/heads/main, so a caller
+# references it as radixark/miles/.github/workflows/_run-ci-k8s.yml@main. A fork can make that same
+# call from its own workflow file, so the fork refusal below has to live here.
+
+on:
+  workflow_call:
+    inputs:
+      execute_command:
+        type: string
+        required: true
+      runs_on:
+        type: string
+        required: true
+        description: 'JSON-encoded list of runner labels (all required), e.g. ''["k8s-h200-driver"]''.'
+      container_image:
+        type: string
+        required: true
+      timeout_minutes:
+        description: 'Job budget, including GPU admission waiting, staging, execution, and cleanup.'
+        type: number
+        required: false
+        default: 360
+      ref:
+        description: 'Git ref to check out (empty = the triggering commit).'
+        type: string
+        required: false
+        default: ''
+      plan_already_resolved:
+        description: 'Skip hosted planning when a trusted caller already selected an enabled test at an exact ref.'
+        type: boolean
+        required: false
+        default: false
+    secrets:
+      WANDB_API_KEY:
+        required: false
+      NEON_DATABASE_URL:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  refuse-fork-pull-request:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Any event that carries a pull request counts, so pull_request_target cannot route around it.
+      # A deleted fork has no head repository, which also differs from this repository.
+      - name: Refuse a pull request event whose head is a fork
+        shell: bash
+        env:
+          HAS_PULL_REQUEST: ${{ github.event.pull_request != null }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ "$HAS_PULL_REQUEST" = true ] && [ "$HEAD_REPOSITORY" != "$BASE_REPOSITORY" ]; then
+            echo "::error::Kubernetes CI does not run pull request events from forks (head repository: ${HEAD_REPOSITORY:-deleted})"
+            exit 1
+          fi
+
+  plan:
+    needs: refuse-fork-pull-request
+    if: ${{ !inputs.plan_already_resolved }}
+    runs-on: ubuntu-latest
+    outputs:
+      has_tests: ${{ steps.select.outputs.has_tests }}
+      ref: ${{ steps.select.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Resolve suite plan
+        id: select
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          ${{ inputs.execute_command }} --list-only --github-output "$GITHUB_OUTPUT"
+
+  run:
+    needs: [refuse-fork-pull-request, plan]
+    if: |
+      !cancelled() &&
+      needs.refuse-fork-pull-request.result == 'success' &&
+      (inputs.plan_already_resolved ||
+        (needs.plan.result == 'success' && needs.plan.outputs.has_tests == 'true'))
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    env:
+      KUBECTL_VERSION: v1.35.4
+      KUBECTL_SHA256: b529430df69a688fd61b64ad2299edb5fd71cb58be2a4779dba624c7d3510efd
+      CRANE_VERSION: v0.20.6
+      CRANE_SHA256: c1d593d01551f2c9a3df5ca0a0be4385a839bd9b86d4a76e18d7b17d16559127
+    steps:
+      - name: Checkout the tested source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.plan_already_resolved && inputs.ref || needs.plan.outputs.ref }}
+          submodules: true
+          persist-credentials: false
+
+      # The launcher and the actions run from the default branch, never from the tested ref.
+      - name: Checkout the trusted launcher
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: .ci-trusted
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions
+            tests/ci/k8s_run_driver_job.py
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve dependency refs
+        id: resolve-refs
+        uses: ./.ci-trusted/.github/actions/resolve-dependency-refs
+        with:
+          megatron_ref: ${{ github.event.inputs.ci_megatron_pr || '' }}
+          sglang_ref: ${{ github.event.inputs.ci_sglang_pr || '' }}
+          pr_body: ${{ github.event.pull_request.body || '' }}
+
+      # The driver image's own Megatron-LM and SGLang checkouts are as old as the image, so both
+      # are staged at the resolved refs, as the Ray job syncs them inside its container.
+      - name: Checkout Megatron-LM
+        uses: actions/checkout@v4
+        with:
+          repository: radixark/Megatron-LM
+          ref: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
+          path: .ci-megatron
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Checkout SGLang
+        uses: actions/checkout@v4
+        with:
+          repository: sgl-project/sglang
+          ref: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
+          path: .ci-sglang
+          persist-credentials: false
+
+      - name: Move the staged trees out of the tested source
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/k8s-ci"
+          mv .ci-trusted "$RUNNER_TEMP/k8s-ci/trusted"
+          mv .ci-megatron "$RUNNER_TEMP/k8s-ci/Megatron-LM"
+          mv .ci-sglang "$RUNNER_TEMP/k8s-ci/sglang"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the launcher's tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/k8s-ci/bin"
+          mkdir -p "$bin"
+          curl -fsSLo "$bin/kubectl" "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          echo "${KUBECTL_SHA256}  $bin/kubectl" | sha256sum --check --strict
+          chmod +x "$bin/kubectl"
+          archive="$RUNNER_TEMP/k8s-ci/crane.tar.gz"
+          curl -fsSLo "$archive" "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz"
+          echo "${CRANE_SHA256}  $archive" | sha256sum --check --strict
+          tar -xzf "$archive" -C "$bin" crane
+          echo "$bin" >> "$GITHUB_PATH"
+          python3 -m pip install --quiet 'pyyaml==6.0.2'
+
+      - name: Run tests in a driver Job
+        shell: bash
+        env:
+          CONTAINER_IMAGE: ${{ inputs.container_image }}
+          EXECUTE_COMMAND: ${{ inputs.execute_command }}
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          MEGATRON_BRIDGE_REF: ${{ github.event.inputs.ci_megatron_bridge_pr || '' }}
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+          GITHUB_COMMIT_NAME: ${{ inputs.ref || github.sha }}_${{ github.event.pull_request.number || github.event.inputs.pull_number || 'non-pr' }}
+        run: |
+          set -euo pipefail
+          ci_job_id="gh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(tr -d - < /proc/sys/kernel/random/uuid | cut -c1-8)"
+          # K8S_NAMESPACE, K8S_GPFS_ROOT, K8S_NODE_SELECTOR and K8S_TOLERATION come from the runner
+          # pod (tests/ci/k8s_runner/runner-deployment.yaml).
+          python3 "$RUNNER_TEMP/k8s-ci/trusted/tests/ci/k8s_run_driver_job.py" run \
+            --image "$CONTAINER_IMAGE" \
+            --ci-job-id "$ci_job_id" \
+            --miles-source-dir "$GITHUB_WORKSPACE" \
+            --megatron-source-dir "$RUNNER_TEMP/k8s-ci/Megatron-LM" \
+            --sglang-source-dir "$RUNNER_TEMP/k8s-ci/sglang" \
+            --megatron-bridge-ref "$MEGATRON_BRIDGE_REF" \
+            --pr-body "$PR_BODY" \
+            --node-selector "$K8S_NODE_SELECTOR" \
+            --toleration "$K8S_TOLERATION" \
+            --env "WANDB_API_KEY=${WANDB_API_KEY}" \
+            --env "NEON_DATABASE_URL=${NEON_DATABASE_URL}" \
+            --env "GITHUB_COMMIT_NAME=${GITHUB_COMMIT_NAME}" \
+            -- bash -c "python3 tests/ci/verify_source_resolution.py && $EXECUTE_COMMAND"

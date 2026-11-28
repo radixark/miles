@@ -6,6 +6,9 @@ The cluster-side objects Miles owns for running `--cluster-backend kubernetes` C
 |---|---|
 | `runner-launcher-rbac.yaml` | `runner-launcher` (may manage `Job`s and read `Pod`s, logs, and `Event`s in `miles-ci-k8s`) and `miles-ci-reaper` (may delete leaked CI objects in `miles-ci-k8s`) |
 | `runner-deployment.yaml` | the ephemeral runner `Deployment` |
+| `reaper-cronjob.yaml` | a `CronJob` that removes Helm releases, command jobs, and staging directories whose driver `Job` is gone |
+
+A CI job reaches the runner through `.github/workflows/_run-ci-k8s.yml`, which runs `tests/ci/k8s_run_driver_job.py` from the default branch.
 
 ## Who owns what
 
@@ -61,4 +64,14 @@ Create the two ServiceAccounts of `miles-ci-k8s` and their Roles from the workbe
 
 ```bash
 helm template miles-workbench charts/miles-workbench --namespace miles-ci-k8s --set objectName=miles-workbench --show-only templates/serviceaccount.yaml --show-only templates/rbac.yaml --show-only templates/uninstaller-rbac.yaml | kubectl apply -f -
+```
+
+The reaper image is pinned by digest, so it reads the launcher from a ConfigMap. Recreate the ConfigMap whenever `tests/ci/k8s_run_driver_job.py` changes on the default branch:
+
+```bash
+kubectl create configmap miles-ci-reaper-script --namespace miles-ci-k8s --from-file=tests/ci/k8s_run_driver_job.py --dry-run=client -o yaml | kubectl apply -f -
+```
+
+```bash
+kubectl apply -f tests/ci/k8s_runner/reaper-cronjob.yaml
 ```
